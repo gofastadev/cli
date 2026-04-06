@@ -7,9 +7,9 @@ import (
 	"net/http"
 
 	"github.com/gorilla/mux"
-	"github.com/gofastadev/gofasta/app/dtos"
-	svcInterfaces "github.com/gofastadev/gofasta/app/services/interfaces"
-	"github.com/gofastadev/gofasta/app/utils"
+	"{{.ModulePath}}/app/dtos"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"github.com/gofastadev/gofasta/pkg/utils"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 )

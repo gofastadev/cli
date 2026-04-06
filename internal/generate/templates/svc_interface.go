@@ -5,7 +5,7 @@ var SvcInterface = `package interfaces
 import (
 	"context"
 
-	"github.com/gofastadev/gofasta/app/dtos"
+	"{{.ModulePath}}/app/dtos"
 )
 
 type {{.Name}}ServiceInterface interface {

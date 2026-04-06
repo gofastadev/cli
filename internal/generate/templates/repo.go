@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gofastadev/gofasta/app/models"
-	repoInterfaces "github.com/gofastadev/gofasta/app/repositories/interfaces"
+	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"gorm.io/gorm"
 )
 

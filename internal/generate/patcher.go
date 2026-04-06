@@ -20,9 +20,10 @@ func PatchContainer(d ScaffoldData) error {
 		return nil
 	}
 
-	repoImport := "\trepoInterfaces \"github.com/gofastadev/gofasta/app/repositories/interfaces\""
+	repoImport := fmt.Sprintf("\trepoInterfaces \"%s/app/repositories/interfaces\"", d.ModulePath)
+	controllersImport := fmt.Sprintf("\"%s/app/rest/controllers\"", d.ModulePath)
 	if !strings.Contains(s, "repoInterfaces") {
-		s = strings.Replace(s, "\t\"github.com/gofastadev/gofasta/app/rest/controllers\"", repoImport+"\n\t\"github.com/gofastadev/gofasta/app/rest/controllers\"", 1)
+		s = strings.Replace(s, "\t"+controllersImport, repoImport+"\n\t"+controllersImport, 1)
 	}
 
 	fields := fmt.Sprintf("\t%sRepo       repoInterfaces.%sRepositoryInterface\n\t%sService    svcInterfaces.%sServiceInterface\n",

@@ -4,7 +4,7 @@ var Routes = `package routes
 
 import (
 	"github.com/gorilla/mux"
-	"github.com/gofastadev/gofasta/app/rest/controllers"
+	"{{.ModulePath}}/app/rest/controllers"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 )
 

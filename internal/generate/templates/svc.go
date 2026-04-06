@@ -6,12 +6,12 @@ import (
 	"context"
 	"math"
 
-	"github.com/gofastadev/gofasta/app/dtos"
-	"github.com/gofastadev/gofasta/app/models"
-	repoInterfaces "github.com/gofastadev/gofasta/app/repositories/interfaces"
-	svcInterfaces "github.com/gofastadev/gofasta/app/services/interfaces"
-	"github.com/gofastadev/gofasta/app/utils"
-	"github.com/gofastadev/gofasta/app/validators"
+	"{{.ModulePath}}/app/dtos"
+	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"github.com/gofastadev/gofasta/pkg/utils"
+	"github.com/gofastadev/gofasta/pkg/validators"
 )
 
 var _ svcInterfaces.{{.Name}}ServiceInterface = (*{{.Name}}Service)(nil)
