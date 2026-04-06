@@ -1,0 +1,20 @@
+// {{.ProjectName}} API
+//
+//	@title			{{.ProjectName}} API
+//	@version		1.0
+//	@description	A web application built with the Gofasta framework.
+//	@host			localhost:8080
+//	@BasePath		/api/v1
+//	@schemes		http https
+//
+//	@securityDefinitions.apikey	BearerAuth
+//	@in							header
+//	@name						Authorization
+//	@description				Enter "Bearer {token}"
+package main
+
+import "{{.ModulePath}}/cmd"
+
+func main() {
+	cmd.Execute()
+}

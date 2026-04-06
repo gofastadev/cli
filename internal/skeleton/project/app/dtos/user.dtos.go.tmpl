@@ -1,0 +1,54 @@
+package dtos
+
+import "github.com/google/uuid"
+
+type TUserFieldsForUpdateDto struct {
+	ID            uuid.UUID `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification=users"`
+	RecordVersion int       `json:"recordVersion" validate:"required,min=1"`
+	FirstName     *string   `json:"firstName,omitempty" validate:"omitempty,min=1,max=50"`
+	OtherNames    *string   `json:"otherNames,omitempty" validate:"omitempty,min=1,max=150"`
+	Email         *string   `json:"email,omitempty" validate:"omitempty,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber   *string   `json:"phoneNumber,omitempty" validate:"omitempty,is_record_exist_by_phone_number_for_conflict=users"`
+	IsActive      *bool     `json:"isActive,omitempty"`
+	IsDeletable   *bool     `json:"isDeletable,omitempty"`
+}
+
+type TCreateUserDto struct {
+	FirstName      string    `json:"firstName" validate:"required,min=1,max=50"`
+	OtherNames     string    `json:"otherNames" validate:"required,min=1,max=150"`
+	Email          string    `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber    string    `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
+	ProfilePicture *string   `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
+}
+
+type TArchiveUserDto struct {
+	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users,is_record_deletable=users"`
+}
+
+type TFindUserByIDDto struct {
+	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users"`
+}
+
+type UserFieldsForFiltersDto struct {
+	FirstName   *string `json:"firstName,omitempty" schema:"firstName"`
+	OtherNames  *string `json:"otherNames,omitempty" schema:"otherNames"`
+	Email       *string `json:"email,omitempty" schema:"email"`
+	PhoneNumber *string `json:"phoneNumber,omitempty" schema:"phoneNumber"`
+}
+
+type UserFiltersDto struct {
+	Fields     *UserFieldsForFiltersDto `json:"fields" schema:"fields"`
+	Pagination *TPaginationInputDto     `json:"pagination,omitempty" schema:"pagination"`
+	Sorting    *TSortingInputDto        `json:"sorting,omitempty" schema:"sorting"`
+}
+
+type TUserFiltersQueryParamsDto struct {
+	FirstName       *string          `json:"firstName,omitempty" schema:"firstName"`
+	OtherNames      *string          `json:"otherNames,omitempty" schema:"otherNames"`
+	Email           *string          `json:"email,omitempty" schema:"email"`
+	PhoneNumber     *string          `json:"phoneNumber,omitempty" schema:"phoneNumber"`
+	Limit           *int             `json:"limit,omitempty" schema:"limit" validate:"gte=1"`
+	Page            *int             `json:"page,omitempty" schema:"page" validate:"gte=1"`
+	SortByField     string           `json:"sortByField" schema:"sortByField" validate:"required"`
+	SortOrientation *SortOrientation `json:"sortOrientation,omitempty" schema:"sortOrientation" validate:"omitempty"`
+}

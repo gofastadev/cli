@@ -1,0 +1,19 @@
+package seeds
+
+import (
+	"log/slog"
+
+	"github.com/gofastadev/gofasta/pkg/seeds"
+	"gorm.io/gorm"
+)
+
+// RunAll executes all registered seed functions.
+func RunAll(db *gorm.DB) error {
+	// Register your seed functions here
+	seeds.Register(func(db *gorm.DB) error {
+		slog.Info("example seed: no data to insert (customize db/seeds/seed.go)")
+		return nil
+	})
+
+	return seeds.RunAll(db)
+}

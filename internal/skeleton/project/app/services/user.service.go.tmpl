@@ -1,0 +1,154 @@
+package services
+
+import (
+	"context"
+	"log/slog"
+	"math"
+
+	"{{.ModulePath}}/app/dtos"
+	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"{{.ModulePath}}/app/validators"
+	"github.com/gofastadev/gofasta/pkg/utils"
+)
+
+// Compile-time check that UserService implements UserServiceInterface.
+var _ svcInterfaces.UserServiceInterface = (*UserService)(nil)
+
+type UserService struct {
+	UserRepo  repoInterfaces.UserRepositoryInterface
+	Validator *validators.AppValidator
+}
+
+func NewUserService(userRepo repoInterfaces.UserRepositoryInterface, appValidator *validators.AppValidator) *UserService {
+	return &UserService{
+		UserRepo:  userRepo,
+		Validator: appValidator,
+	}
+}
+
+func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.UserFiltersDto) (*dtos.TUsersResponseDto, error) {
+	paginator := utils.PreparePaginating{PageFilters: filters.Pagination, Sorting: filters.Sorting}
+	page := paginator.GetPage()
+	limit := paginator.GetLimit()
+	sort := paginator.GetSort()
+
+	filterMap := utils.ConvertStructToMap(filters.Fields)
+	users, totalCount, err := u.UserRepo.FindWithFilters(ctx, filterMap, page, limit, sort)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert models to DTOs
+	var userDtos []*dtos.User
+	for _, user := range users {
+		dto, err := castUserModelToUserDto(user)
+		if err != nil {
+			return nil, err
+		}
+		userDtos = append(userDtos, dto)
+	}
+
+	totalRecords := int(totalCount)
+	totalPages := int(math.Ceil(float64(totalCount) / float64(limit)))
+	return &dtos.TUsersResponseDto{
+		Data: userDtos,
+		Pagination: &dtos.TPaginationObjectDto{
+			TotalRecords:   &totalRecords,
+			CurrentPage:    &page,
+			RecordsPerPage: &limit,
+			TotalPages:     &totalPages,
+		},
+	}, nil
+}
+
+func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto) (*dtos.TUserResponseDto, error) {
+	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
+		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
+	}
+	randomPassword, err := utils.GeneratePassword(16)
+	if err != nil {
+		slog.Error("failed to generate random password", "error", err)
+		return nil, err
+	}
+	userData := &models.User{
+		FirstName:   input.FirstName,
+		OtherNames:  input.OtherNames,
+		PhoneNumber: input.PhoneNumber,
+		Email:       input.Email,
+		Password:    randomPassword,
+	}
+	if err := u.UserRepo.Create(ctx, userData); err != nil {
+		return nil, err
+	}
+	user, err := castUserModelToUserDto(userData)
+	return &dtos.TUserResponseDto{Data: user}, err
+}
+
+func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForUpdateDto) (*dtos.TUserResponseDto, error) {
+	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
+		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
+	}
+	if userToUpd, _ := u.UserRepo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion); userToUpd == nil {
+		fieldName := "recordVersion"
+		return &dtos.TUserResponseDto{Errors: []*dtos.TCommonAPIErrorDto{{FieldName: &fieldName, Message: "The record version you passed is not matching"}}}, nil
+	}
+	userDataForUpdate := utils.ConvertStructToMap(input)
+	if err := u.UserRepo.Update(ctx, input.ID, userDataForUpdate); err != nil {
+		return nil, err
+	}
+	foundUser, err := u.UserRepo.FindByID(ctx, input.ID)
+	if err != nil {
+		return nil, err
+	}
+	dto, err := castUserModelToUserDto(foundUser)
+	if err != nil {
+		return nil, err
+	}
+	return &dtos.TUserResponseDto{Data: dto}, nil
+}
+
+func (u *UserService) FindUserByID(ctx context.Context, filters dtos.TFindUserByIDDto) (*dtos.TUserResponseDto, error) {
+	if validationErrors := u.Validator.ValidateStruct(filters); len(validationErrors) > 0 {
+		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
+	}
+	user, err := u.UserRepo.FindByID(ctx, filters.UserID)
+	if err != nil {
+		return nil, err
+	}
+	dto, err := castUserModelToUserDto(user)
+	if err != nil {
+		return nil, err
+	}
+	return &dtos.TUserResponseDto{Data: dto}, nil
+}
+
+func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.TCommonResponseDto, error) {
+	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
+		return &dtos.TCommonResponseDto{Errors: validationErrors}, nil
+	}
+	if err := u.UserRepo.SoftDelete(ctx, input.UserID); err != nil {
+		return nil, err
+	}
+	status := 200
+	message := "Success"
+	return &dtos.TCommonResponseDto{Status: status, Message: &message}, nil
+}
+
+func castUserModelToUserDto(user *models.User) (*dtos.User, error) {
+	foundUser := &dtos.User{
+		ID:            user.ID,
+		RecordVersion: user.RecordVersion,
+		FirstName:     user.FirstName,
+		OtherNames:    user.OtherNames,
+		PhoneNumber:   user.PhoneNumber,
+		Email:         user.Email,
+		CreatedAt:     user.CreatedAt,
+		UpdatedAt:     user.UpdatedAt,
+		IsActive:      user.IsActive,
+		IsDeletable:   user.IsDeletable,
+		DeletedAt:     &user.DeletedAt,
+	}
+	return foundUser, nil
+}

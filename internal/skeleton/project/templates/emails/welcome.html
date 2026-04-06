@@ -1,0 +1,8 @@
+{{template "base.html" .}}
+{{define "content"}}
+<h2>Welcome, {{.Name}}!</h2>
+<p>Thank you for joining <strong>{{.AppName}}</strong>. Your account has been created successfully.</p>
+<p>You can get started right away:</p>
+<p><a href="{{.LoginURL}}" class="btn">Log In to Your Account</a></p>
+<p>If you have any questions, just reply to this email &mdash; we're happy to help.</p>
+{{end}}

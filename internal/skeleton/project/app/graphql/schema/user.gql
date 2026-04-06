@@ -1,0 +1,75 @@
+# OBJECT TYPES FOR OUTPUT
+type User {
+  id: ID!
+  recordVersion: Int!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+  firstName: String!
+  otherNames: String!
+  email: String!
+  phoneNumber: String!
+  isActive: Boolean!
+  isDeletable: Boolean!
+  deletedAt: DateTime
+}
+
+type TUsersResponseDto {
+  data: [User!]!
+  pagination: TPaginationObjectDto!
+}
+
+type TUserResponseDto {
+  data: User
+  errors: [TCommonApiErrorDto]
+}
+
+# QUERIES
+extend type Query {
+  findUsersWithFilters(filters: UserFiltersDto!): TUsersResponseDto!
+  findUserById(filters: TFindUserByIdDto!): TUserResponseDto!
+}
+
+# MUTATIONS
+extend type Mutation {
+  createUser(input: TCreateUserDto!): TUserResponseDto!
+  updateUser(input: TUserFieldsForUpdateDto!): TUserResponseDto!
+  archiveUser(input: TArchiveUserDto!): TCommonResponseDto!
+}
+
+# INPUTS
+input TFindUserByIdDto {
+  userId: ID!
+}
+input TArchiveUserDto {
+  userId: ID!
+}
+input TCreateUserDto {
+  firstName: String!
+  otherNames: String!
+  email: String!
+  phoneNumber: String!
+}
+
+input UserFieldsForFiltersDto {
+  firstName: String
+  otherNames: String
+  email: String
+  phoneNumber: String
+}
+
+input UserFiltersDto {
+  fields: UserFieldsForFiltersDto
+  pagination: TPaginationInputDto
+  sorting: TSortingInputDto
+}
+
+input TUserFieldsForUpdateDto {
+  id: ID!
+  recordVersion: Int!
+  firstName: String
+  otherNames: String
+  email: String
+  phoneNumber: String
+  IsActive: Boolean
+  IsDeletable: Boolean
+}

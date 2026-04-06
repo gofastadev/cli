@@ -1,0 +1,12 @@
+package models
+
+import "github.com/gofastadev/gofasta/pkg/models"
+
+type User struct {
+	models.BaseModelImpl
+	FirstName   string `gorm:"not null"`
+	OtherNames  string `gorm:"not null"`
+	Email       string `gorm:"not null"`
+	PhoneNumber string `gorm:"not null"`
+	Password    string `gorm:"not null"`
+}

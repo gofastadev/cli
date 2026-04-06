@@ -1,0 +1,26 @@
+# {{.ProjectName}} Environment Configuration
+# Copy this to .env and customize as needed.
+# All values have sensible defaults — you can start with an empty .env file.
+
+# Server
+PORT=8080
+
+# Database (used by Docker Compose and the app)
+{{.ProjectNameUpper}}_DATABASE_DRIVER=postgres
+{{.ProjectNameUpper}}_DATABASE_USER={{.ProjectNameLower}}
+{{.ProjectNameUpper}}_DATABASE_PASSWORD={{.ProjectNameLower}}
+{{.ProjectNameUpper}}_DATABASE_NAME={{.ProjectNameLower}}_dev
+DB_HOST_PORT=5433
+
+# Logging
+{{.ProjectNameUpper}}_LOG_LEVEL=debug
+{{.ProjectNameUpper}}_LOG_FORMAT=text
+
+# Email (configure when needed)
+# {{.ProjectNameUpper}}_EMAIL_PROVIDER=smtp
+# {{.ProjectNameUpper}}_EMAIL_FROM_NAME=My App
+# {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=noreply@example.com
+# {{.ProjectNameUpper}}_EMAIL_SMTP_HOST=smtp.gmail.com
+# {{.ProjectNameUpper}}_EMAIL_SMTP_PORT=587
+# {{.ProjectNameUpper}}_EMAIL_SMTP_USERNAME=
+# {{.ProjectNameUpper}}_EMAIL_SMTP_PASSWORD=

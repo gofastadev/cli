@@ -1,0 +1,54 @@
+# {{.ProjectName}} Development Environment
+# Usage: docker compose up
+# That's it. No .env needed for basic startup.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: deployments/docker/dev.dockerfile
+    container_name: {{.ProjectNameLower}}_app
+    ports:
+      - "${PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - .:/{{.ProjectNameLower}}
+      - go_modules:/go/pkg/mod
+      - go_build_cache:/root/.cache/go-build
+    environment:
+      - PORT=${PORT:-8080}
+      - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
+      - {{.ProjectNameUpper}}_DATABASE_HOST=db
+      - {{.ProjectNameUpper}}_DATABASE_PORT=5432
+      - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}
+      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-{{.ProjectNameLower}}}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}_dev}
+      - {{.ProjectNameUpper}}_DATABASE_SSLMODE=disable
+      - {{.ProjectNameUpper}}_LOG_LEVEL=${{"{"}}{{.ProjectNameUpper}}_LOG_LEVEL:-debug}
+      - {{.ProjectNameUpper}}_LOG_FORMAT=${{"{"}}{{.ProjectNameUpper}}_LOG_FORMAT:-text}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: {{.ProjectNameLower}}_db
+    ports:
+      - "${DB_HOST_PORT:-5433}:5432"
+    environment:
+      POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}
+      POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-{{.ProjectNameLower}}}
+      POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}_dev}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  db_data:
+  go_modules:
+  go_build_cache:

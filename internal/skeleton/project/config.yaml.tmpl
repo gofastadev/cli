@@ -1,0 +1,121 @@
+server:
+  port: "8080"
+  shutdown_timeout: 15s
+  allowed_origins:
+    - "*"
+
+database:
+  driver: postgres     # postgres, mysql, sqlite, sqlserver, clickhouse
+  host: localhost
+  port: "5432"
+  sslmode: disable
+  max_idle: 10
+  max_open: 100
+  max_life: 1h
+  # For sqlite: driver: postgres, name: {{.ProjectNameLower}}.db
+  # For mysql: driver: postgres, port: "3306"
+  # For sqlserver: driver: sqlserver, port: "1433"
+  # For clickhouse: driver: clickhouse, port: "9000"
+
+graphql:
+  playground_route: /graphql-playground
+  general_route: /graphql
+
+log:
+  level: info
+  format: text
+
+email:
+  provider: smtp        # smtp, sendgrid, or brevo
+  from_name: {{.ProjectName}} App
+  from_address: noreply@example.com
+  smtp:
+    host: localhost
+    port: 587
+    use_tls: true
+  # sendgrid:
+  #   api_key: SG.your-api-key
+  # brevo:
+  #   api_key: xkeysib-your-api-key
+
+auth:
+  jwt_secret: "change-me-in-production"
+  access_token_expiry: 15m
+  refresh_token_expiry: 168h
+  rbac_model: configs/rbac_model.conf
+  rbac_policy: configs/rbac_policy.csv
+
+rate_limit:
+  enabled: false
+  rate: "100-S"           # 100 requests per second
+  store: memory           # memory or redis
+
+cache:
+  driver: memory          # memory or redis
+  # redis:
+  #   host: localhost
+  #   port: "6379"
+  #   password: ""
+  #   db: 0
+
+security:
+  hsts: true
+  hsts_max_age: 31536000
+  frame_deny: true
+  content_type_nosniff: true
+  browser_xss_filter: true
+  referrer_policy: "strict-origin-when-cross-origin"
+
+storage:
+  driver: local           # local or s3
+  local:
+    path: ./uploads
+  # s3:
+  #   endpoint: s3.amazonaws.com
+  #   bucket: my-bucket
+  #   access_key: ""
+  #   secret_key: ""
+  #   region: us-east-1
+  #   use_ssl: true
+
+queue:
+  enabled: false
+  concurrency: 10
+  queues:
+    default: 1
+  # redis:
+  #   host: localhost
+  #   port: "6379"
+  #   password: ""
+  #   db: 1
+
+websocket:
+  enabled: true
+
+i18n:
+  default_language: en
+  locales_dir: locales
+
+feature_flag:
+  enabled: false
+  config_path: configs/features.yaml
+
+encryption:
+  key: ""                 # Set a 32-byte key to enable (e.g. "12345678901234567890123456789012")
+
+session:
+  driver: cookie          # cookie or filesystem
+  secret: "change-me-in-production-32bytes!"
+  session_name: {{.ProjectNameLower}}_session
+  # filesystem_path: ./sessions
+
+observability:
+  metrics_enabled: true
+  tracing_enabled: false
+  metrics_path: /metrics
+  service_name: {{.ProjectNameLower}}
+
+jobs:
+  - name: example
+    schedule: "0 0 */6 * * *"
+    enabled: false

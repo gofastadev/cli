@@ -1,0 +1,19 @@
+//go:build wireinject
+
+package di
+
+import (
+	"github.com/google/wire"
+	"{{.ModulePath}}/app/di/providers"
+)
+
+// InitializeServiceContainer builds the full dependency graph at compile time.
+func InitializeServiceContainer() (*ServiceContainer, error) {
+	wire.Build(
+		providers.CoreSet,
+		providers.UserSet,
+		providers.GraphQLSet,
+		wire.Struct(new(ServiceContainer), "*"),
+	)
+	return nil, nil
+}

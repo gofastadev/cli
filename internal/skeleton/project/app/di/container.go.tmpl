@@ -1,0 +1,46 @@
+package di
+
+import (
+	"log/slog"
+
+	"{{.ModulePath}}/app/graphql/resolvers"
+	"github.com/gofastadev/gofasta/pkg/auth"
+	"github.com/gofastadev/gofasta/pkg/cache"
+	"github.com/gofastadev/gofasta/pkg/config"
+	"github.com/gofastadev/gofasta/pkg/encryption"
+	"github.com/gofastadev/gofasta/pkg/i18n"
+	"github.com/gofastadev/gofasta/pkg/mailer"
+	"github.com/gofastadev/gofasta/pkg/notify"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+	"{{.ModulePath}}/app/rest/controllers"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"{{.ModulePath}}/app/validators"
+	"github.com/gofastadev/gofasta/pkg/queue"
+	"github.com/gofastadev/gofasta/pkg/session"
+	"github.com/gofastadev/gofasta/pkg/storage"
+	"github.com/gofastadev/gofasta/pkg/websocket"
+	"gorm.io/gorm"
+)
+
+// ServiceContainer holds all application dependencies, assembled by Wire.
+type ServiceContainer struct {
+	Config         *config.AppConfig
+	DB             *gorm.DB
+	Logger         *slog.Logger
+	Validator      *validators.AppValidator
+	EmailSender    mailer.EmailSender
+	CacheService   cache.CacheService
+	JWTService     *auth.JWTService
+	RBACService    *auth.RBACService
+	StorageService storage.StorageService
+	QueueService   queue.QueueService
+	WebSocketHub   *websocket.Hub
+	Notifier       *notify.Notifier
+	I18nService    *i18n.I18nService
+	Encrypter      *encryption.Encrypter
+	SessionStore   *session.Store
+	UserRepo       repoInterfaces.UserRepositoryInterface
+	UserService    svcInterfaces.UserServiceInterface
+	UserController *controllers.UserController
+	Resolver       *resolvers.Resolver
+}

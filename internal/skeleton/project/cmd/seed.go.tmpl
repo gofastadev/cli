@@ -1,0 +1,55 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+
+	"github.com/gofastadev/gofasta/pkg/config"
+	"github.com/gofastadev/gofasta/pkg/logger"
+	"{{.ModulePath}}/db/seeds"
+	"github.com/spf13/cobra"
+)
+
+var seedCmd = &cobra.Command{
+	Use:   "seed",
+	Short: "Run database seed functions to populate dev/test data",
+	Long: `Seed the database with sample data defined in db/seeds/.
+Use --fresh to drop all tables, re-run migrations, then seed.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		fresh, _ := cmd.Flags().GetBool("fresh")
+		return runSeed(fresh)
+	},
+}
+
+func init() {
+	seedCmd.Flags().Bool("fresh", false, "Drop tables, re-migrate, then seed")
+	rootCmd.AddCommand(seedCmd)
+}
+
+func runSeed(fresh bool) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return err
+	}
+	logger.NewLogger(&cfg.Log)
+
+	if fresh {
+		fmt.Println("Dropping and re-migrating database...")
+		dbURL := buildMigrationURL(cfg)
+		dropCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "down", "-all")
+		dropCmd.Stdout = os.Stdout
+		dropCmd.Stderr = os.Stderr
+		dropCmd.Run() // ignore errors (may be empty)
+
+		upCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		upCmd.Stdout = os.Stdout
+		upCmd.Stderr = os.Stderr
+		if err := upCmd.Run(); err != nil {
+			return fmt.Errorf("migration failed: %w", err)
+		}
+	}
+
+	db := config.SetupDB(&cfg.Database)
+	return seeds.RunAll(db)
+}

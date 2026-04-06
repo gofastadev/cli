@@ -1,0 +1,79 @@
+package validators
+
+import (
+	"log/slog"
+	"net/url"
+	"reflect"
+
+	"github.com/go-playground/validator/v10"
+	"github.com/gofastadev/gofasta/pkg/utils"
+	"gorm.io/gorm"
+)
+
+func isUUIDv4Valid(fl validator.FieldLevel) bool {
+	id := getValue(fl)
+	_, err := utils.ParseIdStringIsValidUUID(id)
+	return err == nil
+}
+
+func isRecordExistByName(db *gorm.DB) validator.Func {
+	return func(fl validator.FieldLevel) bool {
+		if fl.Field().Kind() == reflect.Ptr && fl.Field().IsNil() {
+			return true
+		}
+		name := getValue(fl)
+		tableName := fl.Param()
+		var count int64
+		err := db.Table(tableName).Where("name = ?", name).Count(&count).Error
+		if err != nil {
+			slog.Error("error querying the database", "error", err)
+			return false
+		}
+		return count == 0
+	}
+}
+
+func isRecordExistById(db *gorm.DB) validator.Func {
+	return func(fl validator.FieldLevel) bool {
+		if fl.Field().Kind() == reflect.Ptr && fl.Field().IsNil() {
+			return true
+		}
+		id := getValue(fl)
+		tableName := fl.Param()
+		var count int64
+		err := db.Table(tableName).Where("id = ? AND deleted_at IS NULL", id).Count(&count).Error
+		if err != nil {
+			slog.Error("error querying the database", "error", err)
+			return false
+		}
+		return count > 0
+	}
+}
+
+func isRecordDeletable(db *gorm.DB) validator.Func {
+	return func(fl validator.FieldLevel) bool {
+		if fl.Field().Kind() == reflect.Ptr && fl.Field().IsNil() {
+			return true
+		}
+		id := getValue(fl)
+		tableName := fl.Param()
+		var count int64
+		err := db.Table(tableName).Where("id = ? AND is_deletable = ?", id, true).Count(&count).Error
+		if err != nil {
+			slog.Error("error querying the database", "error", err)
+			return false
+		}
+		return count == 1
+	}
+}
+
+func isValidURL(fl validator.FieldLevel) bool {
+	if fl.Field().Kind() == reflect.Ptr && fl.Field().IsNil() {
+		return true // Allows nil values if the field is optional
+	}
+
+	urlStr := fl.Field().String()
+	parsedURL, err := url.ParseRequestURI(urlStr)
+
+	return err == nil && (parsedURL.Scheme == "http" || parsedURL.Scheme == "https") && parsedURL.Host != ""
+}

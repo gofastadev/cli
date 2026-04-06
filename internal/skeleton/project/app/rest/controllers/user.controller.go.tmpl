@@ -1,0 +1,177 @@
+package controllers
+
+import (
+	"encoding/json"
+	"net/http"
+
+	"github.com/gorilla/mux"
+	"github.com/gorilla/schema"
+	"{{.ModulePath}}/app/dtos"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"github.com/gofastadev/gofasta/pkg/utils"
+	apperrors "github.com/gofastadev/gofasta/pkg/errors"
+	"github.com/gofastadev/gofasta/pkg/httputil"
+)
+
+var decoder = schema.NewDecoder()
+
+func init() {
+	decoder.IgnoreUnknownKeys(true)
+}
+
+// UserController handles RESTful requests for users.
+type UserController struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+
+// NewUserControllerInstance creates a new UserController.
+func NewUserControllerInstance(userService svcInterfaces.UserServiceInterface) *UserController {
+	return &UserController{UserService: userService}
+}
+
+// ListUsers handles GET /users requests.
+//
+//	@Summary		List users
+//	@Description	Get all users with optional filtering, pagination, and sorting
+//	@Tags			users
+//	@Produce		json
+//	@Param			sortByField	query		string	true	"Field to sort by"
+//	@Success		200			{object}	dtos.TUsersResponseDto
+//	@Failure		400			{object}	map[string]string
+//	@Router			/users [get]
+func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return apperrors.NewBadRequest("failed to parse query parameters", nil)
+	}
+	var filters dtos.TUserFiltersQueryParamsDto
+	if err := decoder.Decode(&filters, r.URL.Query()); err != nil {
+		return apperrors.NewBadRequest("invalid query parameters", nil)
+	}
+
+	var userFilters dtos.UserFiltersDto
+	userFilters.Fields = &dtos.UserFieldsForFiltersDto{
+		FirstName:   filters.FirstName,
+		OtherNames:  filters.OtherNames,
+		Email:       filters.Email,
+		PhoneNumber: filters.PhoneNumber,
+	}
+	userFilters.Pagination = &dtos.TPaginationInputDto{
+		Limit: filters.Limit,
+		Page:  filters.Page,
+	}
+	sortField := filters.SortByField
+	if sortField == "" {
+		sortField = "id"
+	}
+	userFilters.Sorting = &dtos.TSortingInputDto{
+		SortByField:     sortField,
+		SortOrientation: filters.SortOrientation,
+	}
+
+	usersRes, err := uc.UserService.FindUsersWithFilters(r.Context(), userFilters)
+	if err != nil {
+		return apperrors.NewInternal("failed to fetch users", err)
+	}
+	return httputil.OK(w, usersRes)
+}
+
+// CreateUser handles POST /users requests.
+//
+//	@Summary		Create a user
+//	@Description	Create a new user account
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Param			user	body		dtos.TCreateUserDto	true	"User data"
+//	@Success		201		{object}	dtos.TUserResponseDto
+//	@Failure		400		{object}	map[string]string
+//	@Router			/users [post]
+func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) error {
+	var user dtos.TCreateUserDto
+	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
+		return apperrors.NewBadRequest("invalid request payload", nil)
+	}
+
+	createdUser, err := uc.UserService.CreateUser(r.Context(), user)
+	if err != nil {
+		return apperrors.NewInternal("failed to create user", err)
+	}
+	return httputil.Created(w, createdUser)
+}
+
+// UpdateUser handles PUT /users/{id} requests.
+//
+//	@Summary		Update a user
+//	@Description	Update user fields by ID
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Param			id		path		string						true	"User ID"
+//	@Param			user	body		dtos.TUserFieldsForUpdateDto	true	"Fields to update"
+//	@Success		200		{object}	dtos.TUserResponseDto
+//	@Failure		400		{object}	map[string]string
+//	@Router			/users/{id} [put]
+func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
+	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	if err != nil {
+		return apperrors.NewBadRequest("id should be a valid UUID", nil)
+	}
+
+	var dataForUpdate dtos.TUserFieldsForUpdateDto
+	if err := json.NewDecoder(r.Body).Decode(&dataForUpdate); err != nil {
+		return apperrors.NewBadRequest("invalid request payload", nil)
+	}
+	dataForUpdate.ID = userId
+
+	updatedUser, err := uc.UserService.UpdateUser(r.Context(), dataForUpdate)
+	if err != nil {
+		return apperrors.NewInternal("failed to update user", err)
+	}
+	return httputil.OK(w, updatedUser)
+}
+
+// GetUser handles GET /users/{id} requests.
+//
+//	@Summary		Get a user
+//	@Description	Get a single user by ID
+//	@Tags			users
+//	@Produce		json
+//	@Param			id	path		string	true	"User ID"
+//	@Success		200	{object}	dtos.TUserResponseDto
+//	@Failure		400	{object}	map[string]string
+//	@Router			/users/{id} [get]
+func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
+	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	if err != nil {
+		return apperrors.NewBadRequest("id should be a valid UUID", nil)
+	}
+
+	user, err := uc.UserService.FindUserByID(r.Context(), dtos.TFindUserByIDDto{UserID: userId})
+	if err != nil {
+		return apperrors.NewInternal("failed to find user", err)
+	}
+	return httputil.OK(w, user)
+}
+
+// ArchiveUser handles DELETE /users/{id} requests.
+//
+//	@Summary		Archive a user
+//	@Description	Soft-delete a user by ID
+//	@Tags			users
+//	@Produce		json
+//	@Param			id	path		string	true	"User ID"
+//	@Success		200	{object}	dtos.TCommonResponseDto
+//	@Failure		400	{object}	map[string]string
+//	@Router			/users/{id} [delete]
+func (uc *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
+	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	if err != nil {
+		return apperrors.NewBadRequest("id should be a valid UUID", nil)
+	}
+
+	res, err := uc.UserService.ArchiveUser(r.Context(), dtos.TArchiveUserDto{UserID: userId})
+	if err != nil {
+		return apperrors.NewInternal("failed to archive user", err)
+	}
+	return httputil.OK(w, res)
+}

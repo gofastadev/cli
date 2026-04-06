@@ -1,0 +1,173 @@
+package cmd
+
+import (
+	"context"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/playground"
+	"{{.ModulePath}}/app"
+	"{{.ModulePath}}/app/di"
+	"{{.ModulePath}}/app/jobs"
+	"{{.ModulePath}}/app/rest/controllers"
+	"{{.ModulePath}}/app/rest/routes"
+	apperrors "github.com/gofastadev/gofasta/pkg/errors"
+	"github.com/gofastadev/gofasta/pkg/middleware"
+	"github.com/gofastadev/gofasta/pkg/observability"
+	"github.com/gofastadev/gofasta/pkg/scheduler"
+	"github.com/spf13/cobra"
+)
+
+var serveCmd = &cobra.Command{
+	Use:   "serve",
+	Short: "Start the HTTP server",
+	Long:  "Start the {{.ProjectNameLower}} HTTP server with GraphQL and REST endpoints.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return startServer()
+	},
+}
+
+func init() {
+	rootCmd.AddCommand(serveCmd)
+}
+
+func startServer() error {
+	container, err := di.InitializeServiceContainer()
+	if err != nil {
+		return err
+	}
+	di.WireSetterDependencies(container)
+
+	cfg := container.Config
+	logger := container.Logger
+
+	// Initialize tracing (if enabled)
+	if cfg.Observability.TracingEnabled {
+		shutdown := observability.InitTracer(cfg.Observability.ServiceName)
+		defer shutdown()
+	}
+
+	// Start WebSocket hub
+	go container.WebSocketHub.Run()
+
+	// Build GraphQL handler
+	graphqlHandler := handler.NewDefaultServer(app.NewExecutableSchema(app.Config{
+		Resolvers: container.Resolver,
+	}))
+	graphqlHandler.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
+
+	// Build REST router
+	healthController := controllers.NewHealthController(container.DB, container.CacheService)
+	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
+		UserController:   container.UserController,
+		HealthController: healthController,
+		WebSocketHub:     container.WebSocketHub,
+	})
+
+	mux := http.NewServeMux()
+	mux.Handle(cfg.GraphQL.PlaygroundRoute, playground.Handler("GraphQL playground", cfg.GraphQL.GeneralRoute))
+	mux.Handle(cfg.GraphQL.GeneralRoute, graphqlHandler)
+	mux.Handle("/", apiRouter)
+
+	// Prometheus metrics endpoint
+	if cfg.Observability.MetricsEnabled {
+		mux.Handle(cfg.Observability.MetricsPath, observability.MetricsHandler())
+	}
+
+	// Build middleware chain
+	middlewares := []middleware.Middleware{
+		middleware.RequestID(),
+		middleware.RequestLogging(logger),
+		middleware.Recovery(logger),
+		middleware.CORS(cfg.Server.AllowedOrigins),
+		middleware.SecurityHeaders(cfg.Security),
+	}
+	if cfg.RateLimit.Enabled {
+		middlewares = append(middlewares, middleware.RateLimit(cfg.RateLimit))
+	}
+	if cfg.Observability.MetricsEnabled {
+		middlewares = append(middlewares, middleware.Middleware(observability.MetricsMiddleware))
+	}
+	if cfg.Observability.TracingEnabled {
+		middlewares = append(middlewares, middleware.Middleware(observability.TracingMiddleware(cfg.Observability.ServiceName)))
+	}
+	rootHandler := middleware.Chain(mux, middlewares...)
+
+	srv := &http.Server{
+		Addr:    ":" + cfg.Server.Port,
+		Handler: rootHandler,
+	}
+
+	// Start cron job scheduler
+	sched := startScheduler(container, logger)
+
+	// Start async task queue (if enabled)
+	if container.QueueService != nil {
+		go func() {
+			if err := container.QueueService.Start(); err != nil {
+				slog.Error("queue server error", "error", err)
+			}
+		}()
+	}
+
+	// Graceful shutdown
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		slog.Info("server starting", "port", cfg.Server.Port, "playground", cfg.GraphQL.PlaygroundRoute)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("server error", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	<-ctx.Done()
+	slog.Info("shutting down gracefully")
+
+	sched.Stop()
+
+	if container.QueueService != nil {
+		container.QueueService.Shutdown()
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownTimeout)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server forced to shutdown", "error", err)
+	}
+
+	if sqlDB, err := container.DB.DB(); err == nil {
+		sqlDB.Close()
+	}
+
+	slog.Info("server stopped")
+	return nil
+}
+
+func startScheduler(container *di.ServiceContainer, logger *slog.Logger) *scheduler.Scheduler {
+	sched := scheduler.New(logger)
+	registry := map[string]scheduler.Job{
+		"example": jobs.NewExampleJob(logger),
+	}
+	for _, jobCfg := range container.Config.Jobs {
+		if !jobCfg.Enabled {
+			continue
+		}
+		job, ok := registry[jobCfg.Name]
+		if !ok {
+			slog.Warn("unknown job in config, skipping", "job", jobCfg.Name)
+			continue
+		}
+		if err := sched.Register(jobCfg.Schedule, job); err != nil {
+			slog.Error("failed to register job", "job", jobCfg.Name, "error", err)
+		}
+	}
+	sched.Start()
+	return sched
+}

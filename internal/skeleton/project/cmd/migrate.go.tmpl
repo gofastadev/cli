@@ -1,0 +1,80 @@
+package cmd
+
+import (
+	"fmt"
+	"log/slog"
+	"os"
+	"os/exec"
+
+	"github.com/gofastadev/gofasta/pkg/config"
+	"github.com/gofastadev/gofasta/pkg/logger"
+	"github.com/spf13/cobra"
+)
+
+var migrateCmd = &cobra.Command{
+	Use:   "migrate",
+	Short: "Run database migrations",
+}
+
+var migrateUpCmd = &cobra.Command{
+	Use:   "up",
+	Short: "Apply all pending migrations",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMigration("up")
+	},
+}
+
+var migrateDownCmd = &cobra.Command{
+	Use:   "down",
+	Short: "Rollback the last migration",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runMigration("down")
+	},
+}
+
+func init() {
+	migrateCmd.AddCommand(migrateUpCmd)
+	migrateCmd.AddCommand(migrateDownCmd)
+	rootCmd.AddCommand(migrateCmd)
+}
+
+func runMigration(direction string) error {
+	cfg, err := config.LoadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+	logger.NewLogger(&cfg.Log)
+
+	dbURL := buildMigrationURL(cfg)
+
+	migrateCmd := exec.Command("migrate",
+		"-path", "db/migrations",
+		"-database", dbURL,
+		direction,
+	)
+	migrateCmd.Stdout = os.Stdout
+	migrateCmd.Stderr = os.Stderr
+
+	slog.Info("running migration", "direction", direction)
+	if err := migrateCmd.Run(); err != nil {
+		return fmt.Errorf("migration %s failed: %w", direction, err)
+	}
+	slog.Info("migration completed", "direction", direction)
+	return nil
+}
+
+func buildMigrationURL(cfg *config.AppConfig) string {
+	db := cfg.Database
+	switch db.Driver {
+	case "mysql":
+		return fmt.Sprintf("mysql://%s:%s@tcp(%s:%s)/%s", db.User, db.Password, db.Host, db.Port, db.Name)
+	case "sqlite":
+		return fmt.Sprintf("sqlite3://%s", db.Name)
+	case "sqlserver":
+		return fmt.Sprintf("sqlserver://%s:%s@%s:%s?database=%s", db.User, db.Password, db.Host, db.Port, db.Name)
+	case "clickhouse":
+		return fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s", db.User, db.Password, db.Host, db.Port, db.Name)
+	default:
+		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", db.User, db.Password, db.Host, db.Port, db.Name, db.SSLMode)
+	}
+}

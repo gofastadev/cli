@@ -1,0 +1,43 @@
+package validators
+
+import (
+	ut "github.com/go-playground/universal-translator"
+	"github.com/go-playground/validator/v10"
+	"{{.ModulePath}}/app/dtos"
+	"github.com/gofastadev/gofasta/pkg/utils"
+	"gorm.io/gorm"
+)
+
+// AppValidator is a reusable validator instance created once at startup.
+type AppValidator struct {
+	validate *validator.Validate
+	trans    ut.Translator
+}
+
+// NewAppValidator creates and returns a singleton-style validator with all
+// custom validations and translations registered.
+func NewAppValidator(db *gorm.DB) *AppValidator {
+	validate, trans, err := newValidator(db)
+	if err != nil {
+		panic("failed to initialize validator: " + err.Error())
+	}
+	return &AppValidator{
+		validate: validate,
+		trans:    trans,
+	}
+}
+
+// ValidateStruct validates the input struct and returns any validation errors.
+func (v *AppValidator) ValidateStruct(input interface{}) []*dtos.TCommonAPIErrorDto {
+	valErrs := []*dtos.TCommonAPIErrorDto{}
+	validationError := v.validate.Struct(input)
+	if validationError != nil {
+		if validationErrors, ok := validationError.(validator.ValidationErrors); ok {
+			for _, vErr := range validationErrors {
+				fieldName := utils.ConvertUpperCamelToLowerCamel(vErr.Field())
+				valErrs = append(valErrs, &dtos.TCommonAPIErrorDto{Message: vErr.Translate(v.trans), FieldName: &fieldName})
+			}
+		}
+	}
+	return valErrs
+}

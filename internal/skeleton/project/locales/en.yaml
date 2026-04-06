@@ -1,0 +1,16 @@
+welcome:
+  other: "Welcome, {{.Name}}!"
+not_found:
+  other: "Resource not found"
+unauthorized:
+  other: "Authentication required"
+forbidden:
+  other: "You don't have permission to access this resource"
+validation_failed:
+  other: "Validation failed"
+internal_error:
+  other: "An internal error occurred"
+password_reset:
+  other: "Your password has been reset successfully"
+email_verified:
+  other: "Your email has been verified"

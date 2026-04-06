@@ -1,0 +1,14 @@
+# Feature Flags Configuration
+# See: https://docs.gofeatureflag.org/
+#
+# Example:
+# new-dashboard:
+#   variations:
+#     enabled: true
+#     disabled: false
+#   defaultRule:
+#     variation: disabled
+#   targeting:
+#     - name: beta-users
+#       query: userID eq "admin"
+#       variation: enabled

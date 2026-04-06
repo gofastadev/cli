@@ -1,0 +1,5 @@
+p, admin, /api/v1/*, (GET)|(POST)|(PUT)|(DELETE)
+p, user, /api/v1/*, (GET)
+p, user, /api/v1/users/*, (PUT)
+
+g, admin, user

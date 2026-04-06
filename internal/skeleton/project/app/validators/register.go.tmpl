@@ -1,0 +1,53 @@
+package validators
+
+import (
+	"fmt"
+
+	"github.com/go-playground/locales/en"
+	ut "github.com/go-playground/universal-translator"
+	"github.com/go-playground/validator/v10"
+	en_translations "github.com/go-playground/validator/v10/translations/en"
+	"github.com/gofastadev/gofasta/pkg/validators"
+	"gorm.io/gorm"
+)
+
+// NewValidator creates and returns a new validator instance with custom error messages
+func newValidator(db *gorm.DB) (*validator.Validate, ut.Translator, error) {
+	validate := validator.New()
+
+	// Create a universal translator and register English translations
+	en := en.New()
+	uni := ut.New(en, en)
+
+	trans, found := uni.GetTranslator("en")
+	if !found {
+		return nil, nil, fmt.Errorf("translator not found")
+	}
+
+	// Register English translations
+	err := en_translations.RegisterDefaultTranslations(validate, trans)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	for tag, message := range getCustomValidationMessages() {
+		validate.RegisterTranslation(tag, trans, func(ut ut.Translator) error {
+			return ut.Add(tag, message, true)
+		}, func(ut ut.Translator, fe validator.FieldError) string {
+			t, _ := ut.T(tag, fe.Field(), fe.Param())
+			return t
+		})
+	}
+
+	// COMMON VALIDATORS (from framework)
+	validators.RegisterCommonValidators(validate, db)
+
+	// USER VALIDATIONS
+	validate.RegisterValidation("is_record_exist_by_email_for_conflict", isRecordExistByEmailForConflict(db))
+	validate.RegisterValidation("does_record_exist_by_email_for_verification", doesRecordExistByEmailForVerification(db))
+	validate.RegisterValidation("is_record_exist_by_phone_number_for_conflict", isRecordExistByPhoneNumberForConflict(db))
+	validate.RegisterValidation("is_record_exist_by_phone_number_for_verification", isRecordExistByPhoneNumberForVerification(db))
+	validate.RegisterValidation("is_valid_phone_number", isValidPhoneNumber)
+
+	return validate, trans, nil
+}

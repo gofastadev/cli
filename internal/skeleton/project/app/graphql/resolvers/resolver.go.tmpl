@@ -1,0 +1,16 @@
+package resolvers
+
+import svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+
+// This file will not be regenerated automatically.
+//
+// It serves as dependency injection for your app, add any dependencies you require here.
+
+type Resolver struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+
+// NewResolver creates a new Resolver with the provided service dependencies.
+func NewResolver(userService svcInterfaces.UserServiceInterface) *Resolver {
+	return &Resolver{UserService: userService}
+}
