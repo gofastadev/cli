@@ -1,0 +1,7 @@
+type Query {
+  queryHealth: TCommonResponseDto!
+}
+
+type Mutation {
+  mutationHealth: TCommonResponseDto!
+}

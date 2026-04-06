@@ -1,0 +1,34 @@
+scalar DateTime
+
+enum SortOrientation {
+  ASC
+  DESC
+}
+
+input TPaginationInputDto {
+  limit: Int
+  page: Int
+}
+
+input TSortingInputDto {
+  sortByField: String!
+  sortOrientation: SortOrientation
+}
+
+type TPaginationObjectDto {
+  totalRecords: Int
+  recordsPerPage: Int
+  totalPages: Int
+  currentPage: Int
+}
+
+type TCommonAPIErrorDto {
+  fieldName: String
+  message: String!
+}
+
+type TCommonResponseDto {
+  status: Int!
+  message: String
+  errors: [TCommonAPIErrorDto!]
+}

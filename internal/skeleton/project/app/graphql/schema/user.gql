@@ -20,7 +20,7 @@ type TUsersResponseDto {
 
 type TUserResponseDto {
   data: User
-  errors: [TCommonApiErrorDto]
+  errors: [TCommonAPIErrorDto]
 }
 
 # QUERIES

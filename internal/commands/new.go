@@ -170,9 +170,32 @@ func runNew(nameOrPath string) error {
 		fmt.Println("   ⚠ Could not install cobra")
 	}
 
+	// Add tool dependencies
+	fmt.Println("📦 Installing tool dependencies...")
+	runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+	runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
+	runCmdSilent("go", "get", "github.com/air-verse/air@latest")
+	runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
+	// Register as Go tools
+	runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
+	runCmdSilent("go", "mod", "edit", "-tool", "github.com/google/wire/cmd/wire")
+	runCmdSilent("go", "mod", "edit", "-tool", "github.com/air-verse/air")
+	runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
+
 	// Tidy
 	fmt.Println("📦 Running go mod tidy...")
 	runCmdSilent("go", "mod", "tidy")
+
+	// Generate code
+	fmt.Println("\n🔌 Generating Wire DI code...")
+	if err := runCmdSilent("go", "tool", "wire", "./app/di/"); err != nil {
+		fmt.Println("   ⚠ Wire generation skipped (can be run later with: make wire)")
+	}
+
+	fmt.Println("📊 Generating GraphQL code...")
+	if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
+		fmt.Println("   ⚠ gqlgen generation skipped (can be run later with: make gqlgen)")
+	}
 
 	// Initialize git
 	fmt.Println("\n🔧 Initializing git repository...")
