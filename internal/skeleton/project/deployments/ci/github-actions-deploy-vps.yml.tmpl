@@ -1,0 +1,63 @@
+# .github/workflows/deploy-vps.yml
+# Deploy to any VPS via SSH (Docker or bare metal).
+# Copy to .github/workflows/ and set GitHub secrets:
+#   VPS_HOST, VPS_USER, VPS_SSH_KEY, DEPLOY_METHOD (docker or binary)
+
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy-docker:
+    if: ${{"{{"}} vars.DEPLOY_METHOD == 'docker' || vars.DEPLOY_METHOD == '' {{"}}"}}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy via Docker
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
+          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
+          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
+          script: |
+            cd /opt/{{.ProjectNameLower}}
+            git pull origin main
+            docker compose -f deployments/docker/compose.production.yaml up -d --build
+            echo "Deployed successfully!"
+
+  deploy-binary:
+    if: ${{"{{"}} vars.DEPLOY_METHOD == 'binary' {{"}}"}}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Build binary
+        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.ProjectNameLower}} ./app/main
+
+      - name: Deploy binary via SCP
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
+          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
+          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
+          source: "{{.ProjectNameLower}},config.yaml,db/migrations/*,templates/*"
+          target: /etc/{{.ProjectNameLower}}/
+
+      - name: Restart service
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
+          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
+          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
+          script: |
+            sudo mv /etc/{{.ProjectNameLower}}/{{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}}
+            sudo chmod +x /usr/local/bin/{{.ProjectNameLower}}
+            cd /etc/{{.ProjectNameLower}} && sudo -u {{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}} migrate up || true
+            sudo systemctl restart {{.ProjectNameLower}}

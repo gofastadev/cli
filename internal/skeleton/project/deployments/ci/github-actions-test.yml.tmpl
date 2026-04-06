@@ -1,0 +1,53 @@
+# .github/workflows/test.yml
+# Copy this file to .github/workflows/test.yml
+#
+# Runs on every push and PR: lint, test, build.
+
+name: Test
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: {{.ProjectNameLower}}
+          POSTGRES_PASSWORD: {{.ProjectNameLower}}
+          POSTGRES_DB: {{.ProjectNameLower}}_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U {{.ProjectNameLower}}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Run tests
+        run: go test ./... -v
+        env:
+          {{.ProjectNameUpper}}_DATABASE_HOST: localhost
+          {{.ProjectNameUpper}}_DATABASE_PORT: "5432"
+          {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
+          {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
+          {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test

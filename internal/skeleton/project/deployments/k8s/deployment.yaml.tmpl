@@ -1,0 +1,60 @@
+# {{.ProjectName}} Kubernetes Deployment
+# Works with: AWS EKS, GCP GKE, Azure AKS, any k8s cluster.
+#
+# Deploy:
+#   kubectl apply -f deployments/k8s/
+#
+# Customize:
+#   - Replace IMAGE with your registry image (e.g. 123456.dkr.ecr.us-east-1.amazonaws.com/myapp:latest)
+#   - Create the secret: kubectl create secret generic {{.ProjectNameLower}}-secrets --from-env-file=.env
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{.ProjectNameLower}}
+  labels:
+    app: {{.ProjectNameLower}}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: {{.ProjectNameLower}}
+  template:
+    metadata:
+      labels:
+        app: {{.ProjectNameLower}}
+    spec:
+      containers:
+        - name: {{.ProjectNameLower}}
+          image: IMAGE:TAG    # Replace with your container registry image
+          ports:
+            - containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: {{.ProjectNameLower}}-secrets
+          env:
+            - name: {{.ProjectNameUpper}}_DATABASE_HOST
+              value: {{.ProjectNameLower}}-db     # Points to the DB service below
+            - name: {{.ProjectNameUpper}}_DATABASE_PORT
+              value: "5432"
+            - name: {{.ProjectNameUpper}}_LOG_FORMAT
+              value: json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5

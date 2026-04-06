@@ -1,0 +1,30 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.ProjectNameLower}}
+  labels:
+    app: {{.ProjectNameLower}}
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: {{.ProjectNameLower}}
+
+---
+# Database service (for dev/staging — use managed DB in production)
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{.ProjectNameLower}}-db
+  labels:
+    app: {{.ProjectNameLower}}-db
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+  selector:
+    app: {{.ProjectNameLower}}-db

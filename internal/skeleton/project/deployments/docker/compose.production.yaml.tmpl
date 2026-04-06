@@ -1,0 +1,56 @@
+# {{.ProjectName}} Production Docker Compose
+# Usage: docker compose -f deployments/docker/compose.production.yaml up -d
+# Works on any VPS, AWS EC2, GCP Compute Engine, Azure VM.
+
+services:
+  app:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_app
+    ports:
+      - "${PORT:-8080}:8080"
+    environment:
+      - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
+      - {{.ProjectNameUpper}}_DATABASE_HOST=db
+      - {{.ProjectNameUpper}}_DATABASE_PORT=5432
+      - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
+      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+      - {{.ProjectNameUpper}}_DATABASE_SSLMODE=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}
+      - {{.ProjectNameUpper}}_LOG_LEVEL=${{"{"}}{{.ProjectNameUpper}}_LOG_LEVEL:-info}
+      - {{.ProjectNameUpper}}_LOG_FORMAT=${{"{"}}{{.ProjectNameUpper}}_LOG_FORMAT:-json}
+      - {{.ProjectNameUpper}}_EMAIL_PROVIDER=${{"{"}}{{.ProjectNameUpper}}_EMAIL_PROVIDER:-smtp}
+      - {{.ProjectNameUpper}}_EMAIL_FROM_NAME=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_NAME}
+      - {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  db:
+    image: postgres:16-alpine
+    container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
+    environment:
+      POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
+      POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  db_data:

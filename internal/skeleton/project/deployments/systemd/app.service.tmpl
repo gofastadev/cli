@@ -1,0 +1,45 @@
+# {{.ProjectName}} Systemd Service
+# For bare metal VPS deployment (no Docker).
+#
+# Setup:
+#   1. Build: go build -o /usr/local/bin/{{.ProjectNameLower}} ./app/main
+#   2. Copy config: cp config.yaml /etc/{{.ProjectNameLower}}/config.yaml
+#   3. Copy migrations: cp -r db/migrations /etc/{{.ProjectNameLower}}/migrations
+#   4. Copy templates: cp -r templates /etc/{{.ProjectNameLower}}/templates
+#   5. Create env file: cp .env /etc/{{.ProjectNameLower}}/.env
+#   6. Create user: useradd -r -s /bin/false {{.ProjectNameLower}}
+#   7. Install service: cp deployments/systemd/app.service /etc/systemd/system/{{.ProjectNameLower}}.service
+#   8. Enable: systemctl enable {{.ProjectNameLower}} && systemctl start {{.ProjectNameLower}}
+#   9. Logs: journalctl -u {{.ProjectNameLower}} -f
+
+[Unit]
+Description={{.ProjectName}} Application Server
+After=network.target postgresql.service mysql.service
+Wants=network.target
+
+[Service]
+Type=simple
+User={{.ProjectNameLower}}
+Group={{.ProjectNameLower}}
+WorkingDirectory=/etc/{{.ProjectNameLower}}
+EnvironmentFile=/etc/{{.ProjectNameLower}}/.env
+ExecStart=/usr/local/bin/{{.ProjectNameLower}} serve
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/{{.ProjectNameLower}}
+PrivateTmp=true
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

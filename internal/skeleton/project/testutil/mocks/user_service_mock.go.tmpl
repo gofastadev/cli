@@ -1,0 +1,52 @@
+package mocks
+
+import (
+	"context"
+
+	"{{.ModulePath}}/app/dtos"
+	"github.com/stretchr/testify/mock"
+)
+
+type MockUserService struct {
+	mock.Mock
+}
+
+func (m *MockUserService) FindUsersWithFilters(ctx context.Context, filters dtos.UserFiltersDto) (*dtos.TUsersResponseDto, error) {
+	args := m.Called(ctx, filters)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*dtos.TUsersResponseDto), args.Error(1)
+}
+
+func (m *MockUserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto) (*dtos.TUserResponseDto, error) {
+	args := m.Called(ctx, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*dtos.TUserResponseDto), args.Error(1)
+}
+
+func (m *MockUserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForUpdateDto) (*dtos.TUserResponseDto, error) {
+	args := m.Called(ctx, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*dtos.TUserResponseDto), args.Error(1)
+}
+
+func (m *MockUserService) FindUserByID(ctx context.Context, filters dtos.TFindUserByIDDto) (*dtos.TUserResponseDto, error) {
+	args := m.Called(ctx, filters)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*dtos.TUserResponseDto), args.Error(1)
+}
+
+func (m *MockUserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.TCommonResponseDto, error) {
+	args := m.Called(ctx, input)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*dtos.TCommonResponseDto), args.Error(1)
+}
