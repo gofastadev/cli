@@ -92,7 +92,9 @@ func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForU
 	}
 	if userToUpd, _ := u.UserRepo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion); userToUpd == nil {
 		fieldName := "recordVersion"
-		return &dtos.TUserResponseDto{Errors: []*dtos.TCommonAPIErrorDto{{FieldName: &fieldName, Message: "The record version you passed is not matching"}}}, nil
+		return &dtos.TUserResponseDto{Errors: []*dtos.TCommonAPIErrorDto{
+				{FieldName: &fieldName, Message: "The record version you passed is not matching"},
+			}}, nil
 	}
 	userDataForUpdate := utils.ConvertStructToMap(input)
 	if err := u.UserRepo.Update(ctx, input.ID, userDataForUpdate); err != nil {
