@@ -5,6 +5,7 @@ import (
 
 	"github.com/gorilla/mux"
 	"{{.ModulePath}}/app/rest/controllers"
+	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 	"github.com/gofastadev/gofasta/pkg/websocket"
 )
@@ -12,7 +13,7 @@ import (
 // RouteConfig holds all controllers needed for route registration.
 type RouteConfig struct {
 	UserController   *controllers.UserController
-	HealthController *controllers.HealthController
+	HealthController *health.Controller
 	WebSocketHub     *websocket.Hub
 }
 

@@ -120,8 +120,8 @@ func PatchRouteConfig(d ScaffoldData) error {
 	}
 
 	s = strings.Replace(s,
-		"\tHealthController *controllers.HealthController",
-		fmt.Sprintf("\t%s *controllers.%sController\n\tHealthController *controllers.HealthController", controllerField, d.Name),
+		"\tHealthController *health.Controller",
+		fmt.Sprintf("\t%s *controllers.%sController\n\tHealthController *health.Controller", controllerField, d.Name),
 		1)
 
 	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)\n", d.Name, controllerField)

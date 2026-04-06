@@ -13,9 +13,9 @@ import (
 	"{{.ModulePath}}/app"
 	"{{.ModulePath}}/app/di"
 	"{{.ModulePath}}/app/jobs"
-	"{{.ModulePath}}/app/rest/controllers"
 	"{{.ModulePath}}/app/rest/routes"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
+	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
 	"github.com/gofastadev/gofasta/pkg/scheduler"
@@ -61,7 +61,7 @@ func startServer() error {
 	graphqlHandler.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
 
 	// Build REST router
-	healthController := controllers.NewHealthController(container.DB, container.CacheService)
+	healthController := health.NewController(container.DB, container.CacheService)
 	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
 		UserController:   container.UserController,
 		HealthController: healthController,

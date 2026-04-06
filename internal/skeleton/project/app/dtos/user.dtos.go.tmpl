@@ -1,6 +1,35 @@
 package dtos
 
-import "github.com/google/uuid"
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// User is the output DTO for User. Will be overwritten by gqlgen when run.
+type User struct {
+	ID            uuid.UUID  `json:"id"`
+	RecordVersion int        `json:"recordVersion"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
+	FirstName     string     `json:"firstName"`
+	OtherNames    string     `json:"otherNames"`
+	Email         string     `json:"email"`
+	PhoneNumber   string     `json:"phoneNumber"`
+	IsActive      bool       `json:"isActive"`
+	IsDeletable   bool       `json:"isDeletable"`
+	DeletedAt     *time.Time `json:"deletedAt,omitempty"`
+}
+
+type TUserResponseDto struct {
+	Data   *User                 `json:"data,omitempty"`
+	Errors []*TCommonAPIErrorDto `json:"errors,omitempty"`
+}
+
+type TUsersResponseDto struct {
+	Data       []*User               `json:"data"`
+	Pagination *TPaginationObjectDto `json:"pagination"`
+}
 
 type TUserFieldsForUpdateDto struct {
 	ID            uuid.UUID `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification=users"`
