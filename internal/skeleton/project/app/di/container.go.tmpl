@@ -3,7 +3,9 @@ package di
 import (
 	"log/slog"
 
+{{- if .GraphQL}}
 	"{{.ModulePath}}/app/graphql/resolvers"
+{{- end}}
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
 	"github.com/gofastadev/gofasta/pkg/config"
@@ -42,5 +44,7 @@ type ServiceContainer struct {
 	UserRepo       repoInterfaces.UserRepositoryInterface
 	UserService    svcInterfaces.UserServiceInterface
 	UserController *controllers.UserController
+{{- if .GraphQL}}
 	Resolver       *resolvers.Resolver
+{{- end}}
 }

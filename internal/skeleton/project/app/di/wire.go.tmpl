@@ -12,7 +12,9 @@ func InitializeServiceContainer() (*ServiceContainer, error) {
 	wire.Build(
 		providers.CoreSet,
 		providers.UserSet,
+{{- if .GraphQL}}
 		providers.GraphQLSet,
+{{- end}}
 		wire.Struct(new(ServiceContainer), "*"),
 	)
 	return nil, nil

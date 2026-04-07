@@ -16,7 +16,7 @@ var initCmd = &cobra.Command{
   1. Creates .env from .env.example (if .env doesn't exist)
   2. Runs go mod tidy
   3. Generates Wire DI code
-  4. Generates GraphQL code
+  4. Generates GraphQL code (if gqlgen.yml exists)
   5. Runs database migrations
   6. Verifies the build compiles
 
@@ -59,10 +59,14 @@ func runInit() error {
 		fmt.Println("   ⚠ Wire generation failed (you may need to fix compilation errors first)")
 	}
 
-	// Step 4: Generate GraphQL
-	fmt.Println("\n📊 Generating GraphQL code...")
-	if err := runCmd("go", "tool", "gqlgen", "generate"); err != nil {
-		fmt.Println("   ⚠ gqlgen generation failed (you may need to fix schema errors first)")
+	// Step 4: Generate GraphQL (only if project has GraphQL support)
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		fmt.Println("\n📊 Generating GraphQL code...")
+		if err := runCmd("go", "tool", "gqlgen", "generate"); err != nil {
+			fmt.Println("   ⚠ gqlgen generation failed (you may need to fix schema errors first)")
+		}
+	} else {
+		fmt.Println("\n📊 Skipping GraphQL (no gqlgen.yml found)")
 	}
 
 	// Step 5: Run migrations

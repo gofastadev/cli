@@ -1,4 +1,4 @@
-.PHONY: dev up down build wire generate test test-integration lint clean migrate-up migrate-down init
+.PHONY: dev up down build wire generate test test-integration lint clean migrate-up migrate-down init{{if .GraphQL}} gqlgen{{end}}
 
 # ──────────────────────────────────────────────
 # Development (pick one)
@@ -28,8 +28,10 @@ wire:
 generate:
 	go generate ./...
 
+{{- if .GraphQL}}
 gqlgen:
 	go tool gqlgen generate
+{{- end}}
 
 # ──────────────────────────────────────────────
 # Testing

@@ -44,6 +44,7 @@ server {
         proxy_buffers 8 8k;
     }
 
+{{- if .GraphQL}}
     # GraphQL playground — allow larger payloads
     location /graphql {
         proxy_pass http://{{.ProjectNameLower}}_backend;
@@ -54,6 +55,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
         client_max_body_size 10m;
     }
+{{- end}}
 
     # Health check endpoint (for load balancers)
     location /health {
