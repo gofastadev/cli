@@ -63,22 +63,28 @@ var dotfileRenames = map[string]string{
 	"air.toml":        ".air.toml",
 }
 
-func runNew(nameOrPath string, includeGraphQL bool) error {
-	projectName := filepath.Base(nameOrPath)
+// resolveProjectPaths extracts the project directory, display name, and Go module path
+// from the user-provided nameOrPath argument.
+func resolveProjectPaths(nameOrPath string) (projectDir, projectName, modulePath string) {
+	projectName = filepath.Base(nameOrPath)
 
-	// Determine the directory to create: use full path for absolute paths,
-	// otherwise just the base name (relative to cwd).
-	projectDir := nameOrPath
+	// Use full path for absolute paths, otherwise just the base name.
+	projectDir = nameOrPath
 	if !filepath.IsAbs(nameOrPath) {
 		projectDir = projectName
 	}
 
 	// Module path: use nameOrPath only if it looks like a Go module path
 	// (e.g. github.com/org/repo), not a filesystem path.
-	modulePath := projectName
+	modulePath = projectName
 	if strings.Contains(nameOrPath, "/") && !filepath.IsAbs(nameOrPath) {
 		modulePath = nameOrPath
 	}
+	return
+}
+
+func runNew(nameOrPath string, includeGraphQL bool) error {
+	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
 
 	if _, err := os.Stat(projectDir); err == nil {
 		return fmt.Errorf("directory %q already exists", projectDir)
