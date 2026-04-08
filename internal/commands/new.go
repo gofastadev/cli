@@ -65,13 +65,23 @@ var dotfileRenames = map[string]string{
 
 func runNew(nameOrPath string, includeGraphQL bool) error {
 	projectName := filepath.Base(nameOrPath)
-	modulePath := nameOrPath
-	if !strings.Contains(modulePath, "/") {
-		modulePath = projectName
+
+	// Determine the directory to create: use full path for absolute paths,
+	// otherwise just the base name (relative to cwd).
+	projectDir := nameOrPath
+	if !filepath.IsAbs(nameOrPath) {
+		projectDir = projectName
 	}
 
-	if _, err := os.Stat(projectName); err == nil {
-		return fmt.Errorf("directory %q already exists", projectName)
+	// Module path: use nameOrPath only if it looks like a Go module path
+	// (e.g. github.com/org/repo), not a filesystem path.
+	modulePath := projectName
+	if strings.Contains(nameOrPath, "/") && !filepath.IsAbs(nameOrPath) {
+		modulePath = nameOrPath
+	}
+
+	if _, err := os.Stat(projectDir); err == nil {
+		return fmt.Errorf("directory %q already exists", projectDir)
 	}
 
 	data := ProjectData{
@@ -85,14 +95,14 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	fmt.Printf("🚀 Creating new gofasta project: %s\n\n", projectName)
 
 	// Create project directory
-	fmt.Printf("📁 Creating directory %s/\n", projectName)
-	if err := os.MkdirAll(projectName, 0755); err != nil {
+	fmt.Printf("📁 Creating directory %s/\n", projectDir)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		return err
 	}
 
 	// Change into the new directory
 	origDir, _ := os.Getwd()
-	if err := os.Chdir(projectName); err != nil {
+	if err := os.Chdir(projectDir); err != nil {
 		return err
 	}
 	defer os.Chdir(origDir)
