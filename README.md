@@ -4,7 +4,7 @@ The command-line tool for the [Gofasta](https://github.com/gofastadev/gofasta) G
 
 ## Install
 
-**Option A — Go install (requires Go 1.24+):**
+**Option A — Go install (requires Go 1.25.8+):**
 
 ```bash
 go install github.com/gofastadev/cli/cmd/gofasta@latest

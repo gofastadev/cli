@@ -20,7 +20,7 @@ Thank you for your interest in contributing to the Gofasta CLI! This document ex
    cd cli
    ```
 
-2. **Verify Go version** (1.24 or later required):
+2. **Verify Go version** (1.25.8 or later required):
 
    ```bash
    go version
