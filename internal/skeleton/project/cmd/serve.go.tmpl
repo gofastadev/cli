@@ -8,13 +8,15 @@ import (
 	"os/signal"
 	"syscall"
 
+{{- if .GraphQL}}
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"{{.ModulePath}}/app"
+	apperrors "github.com/gofastadev/gofasta/pkg/errors"
+{{- end}}
 	"{{.ModulePath}}/app/di"
 	"{{.ModulePath}}/app/jobs"
 	"{{.ModulePath}}/app/rest/routes"
-	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
@@ -25,7 +27,7 @@ import (
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the HTTP server",
-	Long:  "Start the {{.ProjectNameLower}} HTTP server with GraphQL and REST endpoints.",
+	Long:  "Start the {{.ProjectNameLower}} HTTP server{{if .GraphQL}} with GraphQL and{{end}} REST endpoints.",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return startServer()
 	},
@@ -54,11 +56,13 @@ func startServer() error {
 	// Start WebSocket hub
 	go container.WebSocketHub.Run()
 
+{{- if .GraphQL}}
 	// Build GraphQL handler
 	graphqlHandler := handler.NewDefaultServer(app.NewExecutableSchema(app.Config{
 		Resolvers: container.Resolver,
 	}))
 	graphqlHandler.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
+{{- end}}
 
 	// Build REST router
 	healthController := health.NewController(container.DB, container.CacheService)
@@ -69,8 +73,10 @@ func startServer() error {
 	})
 
 	mux := http.NewServeMux()
+{{- if .GraphQL}}
 	mux.Handle(cfg.GraphQL.PlaygroundRoute, playground.Handler("GraphQL playground", cfg.GraphQL.GeneralRoute))
 	mux.Handle(cfg.GraphQL.GeneralRoute, graphqlHandler)
+{{- end}}
 	mux.Handle("/", apiRouter)
 
 	// Prometheus metrics endpoint
@@ -119,7 +125,7 @@ func startServer() error {
 	defer stop()
 
 	go func() {
-		slog.Info("server starting", "port", cfg.Server.Port, "playground", cfg.GraphQL.PlaygroundRoute)
+		slog.Info("server starting", "port", cfg.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)

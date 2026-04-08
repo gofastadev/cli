@@ -17,9 +17,11 @@ database:
   # For sqlserver: driver: sqlserver, port: "1433"
   # For clickhouse: driver: clickhouse, port: "9000"
 
+{{- if .GraphQL}}
 graphql:
   playground_route: /graphql-playground
   general_route: /graphql
+{{- end}}
 
 log:
   level: info

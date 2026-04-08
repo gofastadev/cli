@@ -6,7 +6,7 @@
 # Run:    docker run -p 8080:8080 --env-file .env myapp
 
 # ── Stage 1: Build ──
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25.8-alpine AS builder
 
 RUN apk add --no-cache git
 

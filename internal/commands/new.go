@@ -19,6 +19,15 @@ type ProjectData struct {
 	ProjectNameLower string // lowercase: "myapp"
 	ProjectNameUpper string // UPPERCASE: "MYAPP"
 	ModulePath       string // Go module path: "github.com/myorg/myapp"
+	GraphQL          bool   // true when --graphql flag is passed
+}
+
+// graphqlOnlyPaths lists skeleton paths that should be skipped for REST-only projects.
+var graphqlOnlyPaths = []string{
+	"app/graphql/",
+	"app/generated_stub.go.tmpl",
+	"app/di/providers/graphql.go.tmpl",
+	"gqlgen.yml.tmpl",
 }
 
 var newCmd = &cobra.Command{
@@ -33,12 +42,16 @@ Examples:
   gofasta new github.com/myorg/myapp`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runNew(args[0])
+		gql, _ := cmd.Flags().GetBool("graphql")
+		gqlShort, _ := cmd.Flags().GetBool("gql")
+		return runNew(args[0], gql || gqlShort)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(newCmd)
+	newCmd.Flags().Bool("graphql", false, "Include GraphQL support (gqlgen) alongside REST")
+	newCmd.Flags().Bool("gql", false, "Shorthand for --graphql")
 }
 
 // dotfileRenames maps embedded names to actual dotfile names.
@@ -50,15 +63,25 @@ var dotfileRenames = map[string]string{
 	"air.toml":        ".air.toml",
 }
 
-func runNew(nameOrPath string) error {
+func runNew(nameOrPath string, includeGraphQL bool) error {
 	projectName := filepath.Base(nameOrPath)
-	modulePath := nameOrPath
-	if !strings.Contains(modulePath, "/") {
-		modulePath = projectName
+
+	// Determine the directory to create: use full path for absolute paths,
+	// otherwise just the base name (relative to cwd).
+	projectDir := nameOrPath
+	if !filepath.IsAbs(nameOrPath) {
+		projectDir = projectName
 	}
 
-	if _, err := os.Stat(projectName); err == nil {
-		return fmt.Errorf("directory %q already exists", projectName)
+	// Module path: use nameOrPath only if it looks like a Go module path
+	// (e.g. github.com/org/repo), not a filesystem path.
+	modulePath := projectName
+	if strings.Contains(nameOrPath, "/") && !filepath.IsAbs(nameOrPath) {
+		modulePath = nameOrPath
+	}
+
+	if _, err := os.Stat(projectDir); err == nil {
+		return fmt.Errorf("directory %q already exists", projectDir)
 	}
 
 	data := ProjectData{
@@ -66,19 +89,20 @@ func runNew(nameOrPath string) error {
 		ProjectNameLower: strings.ToLower(projectName),
 		ProjectNameUpper: strings.ToUpper(projectName),
 		ModulePath:       modulePath,
+		GraphQL:          includeGraphQL,
 	}
 
 	fmt.Printf("🚀 Creating new gofasta project: %s\n\n", projectName)
 
 	// Create project directory
-	fmt.Printf("📁 Creating directory %s/\n", projectName)
-	if err := os.MkdirAll(projectName, 0755); err != nil {
+	fmt.Printf("📁 Creating directory %s/\n", projectDir)
+	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		return err
 	}
 
 	// Change into the new directory
 	origDir, _ := os.Getwd()
-	if err := os.Chdir(projectName); err != nil {
+	if err := os.Chdir(projectDir); err != nil {
 		return err
 	}
 	defer os.Chdir(origDir)
@@ -101,6 +125,18 @@ func runNew(nameOrPath string) error {
 		relPath := strings.TrimPrefix(path, "project/")
 		if relPath == "" || relPath == "project" {
 			return nil
+		}
+
+		// Skip GraphQL-only files when not using --graphql
+		if !data.GraphQL {
+			for _, prefix := range graphqlOnlyPaths {
+				if strings.HasPrefix(relPath, prefix) {
+					if d.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
+				}
+			}
 		}
 
 		if d.IsDir() {
@@ -172,12 +208,16 @@ func runNew(nameOrPath string) error {
 
 	// Add tool dependencies
 	fmt.Println("📦 Installing tool dependencies...")
-	runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+	if includeGraphQL {
+		runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+	}
 	runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
 	runCmdSilent("go", "get", "github.com/air-verse/air@latest")
 	runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
 	// Register as Go tools
-	runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
+	if includeGraphQL {
+		runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
+	}
 	runCmdSilent("go", "mod", "edit", "-tool", "github.com/google/wire/cmd/wire")
 	runCmdSilent("go", "mod", "edit", "-tool", "github.com/air-verse/air")
 	runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
@@ -192,9 +232,11 @@ func runNew(nameOrPath string) error {
 		fmt.Println("   ⚠ Wire generation skipped (can be run later with: make wire)")
 	}
 
-	fmt.Println("📊 Generating GraphQL code...")
-	if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
-		fmt.Println("   ⚠ gqlgen generation skipped (can be run later with: make gqlgen)")
+	if includeGraphQL {
+		fmt.Println("📊 Generating GraphQL code...")
+		if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
+			fmt.Println("   ⚠ gqlgen generation skipped (can be run later with: make gqlgen)")
+		}
 	}
 
 	// Initialize git

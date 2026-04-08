@@ -48,8 +48,11 @@ func runDev() error {
 	port := configutil.GetPort()
 	fmt.Println("\n🚀 Starting air (hot reload)...")
 	fmt.Printf("   REST API:    http://localhost:%s\n", port)
-	fmt.Printf("   GraphQL:     http://localhost:%s/graphql\n", port)
-	fmt.Printf("   Playground:  http://localhost:%s/graphql-playground\n\n", port)
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		fmt.Printf("   GraphQL:     http://localhost:%s/graphql\n", port)
+		fmt.Printf("   Playground:  http://localhost:%s/graphql-playground\n", port)
+	}
+	fmt.Println()
 
 	airCmd := exec.Command("go", "tool", "air")
 	airCmd.Stdout = os.Stdout
