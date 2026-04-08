@@ -12,11 +12,11 @@ import (
 	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"{{.ModulePath}}/app"
+	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 {{- end}}
 	"{{.ModulePath}}/app/di"
 	"{{.ModulePath}}/app/jobs"
 	"{{.ModulePath}}/app/rest/routes"
-	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
