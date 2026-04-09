@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.8"
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -23,18 +37,15 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: Vet
-        run: go vet ./...
-
       - name: Test with coverage
         run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
 
-      - name: Upload coverage to Coveralls
-        uses: coverallsapp/github-action@v2
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: coverage.out
-          format: golang
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.out
+          fail_ci_if_error: false
 
       - name: Build
         run: go build -o /dev/null ./cmd/gofasta/

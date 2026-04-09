@@ -32,13 +32,19 @@ Thank you for your interest in contributing to the Gofasta CLI! This document ex
    go mod tidy
    ```
 
-4. **Build the CLI:**
+4. **Install golangci-lint** (optional, but recommended):
+
+   ```bash
+   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+   ```
+
+5. **Build the CLI:**
 
    ```bash
    go build -o /tmp/gofasta ./cmd/gofasta/
    ```
 
-5. **Test it:**
+6. **Test it:**
 
    ```bash
    /tmp/gofasta --help
@@ -134,6 +140,7 @@ Files **without** `.tmpl` are copied as-is.
 
 ## Code Style
 
+- Run `golangci-lint run` before submitting a PR. The repository's `.golangci.yml` configures all required linters.
 - Follow standard Go conventions (`gofmt`, `go vet`).
 - Keep the CLI's dependencies minimal — it should not import the gofasta framework library.
 - Template files should produce clean, readable Go code.

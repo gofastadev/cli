@@ -30,7 +30,7 @@ cd /tmp/testproject && go build ./...
 ## Checklist
 
 - [ ] `go test ./...` passes
-- [ ] `go vet ./...` passes
+- [ ] `golangci-lint run` passes
 - [ ] If skeleton templates changed: generated project compiles with `go build ./...`
 - [ ] If generation templates changed: tested with `gofasta g scaffold`
 - [ ] Related issue linked (e.g. `Fixes #123`)
