@@ -19,8 +19,9 @@ func init() {
 	rootCmd.AddCommand(generate.WireCmd)
 }
 
-// Execute runs the root command.
-func Execute() {
+// Execute runs the root command with the given version string.
+func Execute(version string) {
+	rootCmd.Version = version
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

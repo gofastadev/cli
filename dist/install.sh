@@ -1,13 +1,17 @@
 #!/bin/sh
 # Gofasta CLI installer script
 # Usage: curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
+# Override install directory: GOFASTA_INSTALL_DIR=/custom/path sh install.sh
 set -e
 
 REPO="gofastadev/cli"
-INSTALL_DIR="/usr/local/bin"
+INSTALL_DIR="${GOFASTA_INSTALL_DIR:-/usr/local/bin}"
 
 # Detect OS and architecture
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+case "$OS" in
+    mingw*|msys*|cygwin*) OS="windows" ;;
+esac
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64)  ARCH="amd64" ;;

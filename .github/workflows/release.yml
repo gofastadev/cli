@@ -44,9 +44,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          go build -ldflags="-s -w" -o dist/gofasta-${GOOS}-${GOARCH}${EXT} ./cmd/gofasta/
+          go build -ldflags="-s -w -X main.Version=${VERSION}" -o dist/gofasta-${GOOS}-${GOARCH}${EXT} ./cmd/gofasta/
 
       - name: Upload binary
         uses: actions/upload-artifact@v4
@@ -70,3 +71,32 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/gofasta-*
+
+      - name: Update Homebrew formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          FORMULA="dist/homebrew/gofasta.rb"
+          cp "$FORMULA" "$FORMULA.bak"
+
+          for PAIR in "darwin-arm64" "darwin-amd64" "linux-arm64" "linux-amd64"; do
+            BINARY="dist/gofasta-${PAIR}"
+            if [ -f "$BINARY" ]; then
+              SHA=$(sha256sum "$BINARY" | awk '{print $1}')
+              # Replace the placeholder or existing SHA for this binary
+              sed -i "/$PAIR/{ n; s/sha256 \".*\"/sha256 \"$SHA\"/; }" "$FORMULA"
+            fi
+          done
+
+          sed -i "s/version \".*\"/version \"$VERSION\"/" "$FORMULA"
+
+          rm -f "$FORMULA.bak"
+
+      - name: Commit Homebrew formula
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout main
+          git add dist/homebrew/gofasta.rb
+          git diff --cached --quiet && exit 0
+          git commit -m "chore: update Homebrew formula for ${GITHUB_REF_NAME}"
+          git push
