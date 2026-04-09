@@ -13,7 +13,7 @@ func TestRootCmd_HasSubcommands(t *testing.T) {
 		names = append(names, c.Name())
 	}
 
-	expectedCmds := []string{"new", "dev", "init", "migrate", "seed", "serve", "swagger", "generate", "wire", "upgrade", "version", "db", "doctor", "routes", "console"}
+	expectedCmds := []string{"new", "dev", "init", "migrate", "seed", "serve", "swagger", "generate", "wire", "upgrade", "version", "db", "doctor", "routes", "console", "deploy"}
 	for _, expected := range expectedCmds {
 		assert.Contains(t, names, expected, "rootCmd should have subcommand: %s", expected)
 	}

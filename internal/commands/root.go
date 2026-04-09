@@ -12,6 +12,10 @@ var rootCmd = &cobra.Command{
 	Use:   "gofasta",
 	Short: "Gofasta - A scalable Go web framework CLI",
 	Long:  "Gofasta CLI tool for scaffolding, generating code, and managing gofasta projects.",
+	Run: func(cmd *cobra.Command, args []string) {
+		printBanner()
+		cmd.Help()
+	},
 }
 
 func init() {
