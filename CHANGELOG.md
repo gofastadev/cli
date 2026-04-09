@@ -30,4 +30,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - `gofasta init` — initialize a cloned project (env, deps, codegen, migrations)
 - `gofasta swagger` — generate OpenAPI/Swagger documentation
 - `gofasta wire` — regenerate Wire dependency injection code
+- `gofasta upgrade` — self-update to the latest version (detects Homebrew, go install, or binary)
+- `gofasta --version` — print the installed CLI version
 - Homebrew formula and shell installer for distribution
