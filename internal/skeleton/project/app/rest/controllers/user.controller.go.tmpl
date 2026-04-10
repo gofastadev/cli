@@ -112,7 +112,7 @@ func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) err
 //	@Failure		400		{object}	map[string]string
 //	@Router			/users/{id} [put]
 func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -141,7 +141,7 @@ func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) err
 //	@Failure		400	{object}	map[string]string
 //	@Router			/users/{id} [get]
 func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -164,7 +164,7 @@ func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error 
 //	@Failure		400	{object}	map[string]string
 //	@Router			/users/{id} [delete]
 func (uc *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}

@@ -36,7 +36,7 @@ func (c *{{.Name}}Controller) List(w http.ResponseWriter, r *http.Request) error
 }
 
 func (c *{{.Name}}Controller) GetByID(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -60,7 +60,7 @@ func (c *{{.Name}}Controller) Create(w http.ResponseWriter, r *http.Request) err
 }
 
 func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -77,7 +77,7 @@ func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) err
 }
 
 func (c *{{.Name}}Controller) Archive(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIdStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
