@@ -37,10 +37,10 @@ func runInit() error {
 		if _, err := os.Stat(".env.example"); err == nil {
 			fmt.Println("📋 Creating .env from .env.example...")
 			input, _ := os.ReadFile(".env.example")
-			os.WriteFile(".env", input, 0644)
+			_ = os.WriteFile(".env", input, 0o644)
 		} else {
 			fmt.Println("📋 Creating empty .env file...")
-			os.WriteFile(".env", []byte("# Environment config\n"), 0644)
+			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
 		}
 	} else {
 		fmt.Println("✓  .env already exists")
@@ -97,6 +97,11 @@ func runInit() error {
 	return nil
 }
 
+// runCmd runs an external command and streams stdout/stderr to the user. The
+// first argument is the program name; it is kept as a parameter (rather than
+// hard-coded to "go") so tests and future callers can target other binaries.
+//
+//nolint:unparam // name parameter kept for future flexibility.
 func runCmd(name string, args ...string) error {
 	cmd := execCommand(name, args...)
 	cmd.Stdout = os.Stdout

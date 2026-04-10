@@ -63,7 +63,7 @@ func runDev() error {
 	go func() {
 		<-sigChan
 		if airCmd.Process != nil {
-			airCmd.Process.Signal(os.Interrupt)
+			_ = airCmd.Process.Signal(os.Interrupt)
 		}
 	}()
 

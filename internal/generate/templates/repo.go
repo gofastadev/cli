@@ -1,5 +1,6 @@
 package templates
 
+// Repo is the Go template for generating a GORM repository.
 var Repo = `package repositories
 
 import (

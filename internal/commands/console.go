@@ -46,7 +46,7 @@ func runConsole() error {
 	go func() {
 		<-sigChan
 		if cmd.Process != nil {
-			cmd.Process.Signal(os.Interrupt)
+			_ = cmd.Process.Signal(os.Interrupt)
 		}
 	}()
 

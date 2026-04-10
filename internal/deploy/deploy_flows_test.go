@@ -33,29 +33,27 @@ func newTestCfg(method string) *DeployConfig {
 }
 
 // withinProject cd's into a tempdir seeded with a minimal project layout.
-func withinProject(t *testing.T) string {
+func withinProject(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	require.NoError(t, os.Chdir(dir))
 
 	// Create directories & files the deploy functions expect
-	require.NoError(t, os.MkdirAll("deployments/docker", 0755))
-	require.NoError(t, os.MkdirAll("deployments/nginx", 0755))
-	require.NoError(t, os.MkdirAll("deployments/systemd", 0755))
-	require.NoError(t, os.MkdirAll("db/migrations", 0755))
-	require.NoError(t, os.MkdirAll("templates", 0755))
-	require.NoError(t, os.MkdirAll("configs", 0755))
-	require.NoError(t, os.MkdirAll("app/main", 0755))
-	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0644))
-	require.NoError(t, os.WriteFile("deployments/nginx/app.conf", []byte("server {}\n"), 0644))
-	require.NoError(t, os.WriteFile("deployments/systemd/app.service", []byte("[Unit]\n"), 0644))
-	require.NoError(t, os.WriteFile("config.yaml", []byte("server: {port: \"8080\"}\n"), 0644))
-	require.NoError(t, os.WriteFile(".env", []byte("K=V\n"), 0644))
-	require.NoError(t, os.WriteFile("db/migrations/1.sql", []byte("-- migration\n"), 0644))
-
-	return dir
+	require.NoError(t, os.MkdirAll("deployments/docker", 0o755))
+	require.NoError(t, os.MkdirAll("deployments/nginx", 0o755))
+	require.NoError(t, os.MkdirAll("deployments/systemd", 0o755))
+	require.NoError(t, os.MkdirAll("db/migrations", 0o755))
+	require.NoError(t, os.MkdirAll("templates", 0o755))
+	require.NoError(t, os.MkdirAll("configs", 0o755))
+	require.NoError(t, os.MkdirAll("app/main", 0o755))
+	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0o644))
+	require.NoError(t, os.WriteFile("deployments/nginx/app.conf", []byte("server {}\n"), 0o644))
+	require.NoError(t, os.WriteFile("deployments/systemd/app.service", []byte("[Unit]\n"), 0o644))
+	require.NoError(t, os.WriteFile("config.yaml", []byte("server: {port: \"8080\"}\n"), 0o644))
+	require.NoError(t, os.WriteFile(".env", []byte("K=V\n"), 0o644))
+	require.NoError(t, os.WriteFile("db/migrations/1.sql", []byte("-- migration\n"), 0o644))
 }
 
 // --- Live-mode success: DeployDocker end-to-end ---
@@ -378,10 +376,10 @@ func TestRollback_WithStagedOutputs(t *testing.T) {
 	cfg.DryRun = false
 	stdouts := []string{
 		"20260102-000000\n20260101-000000\n", // ls releases
-		"/opt/test/releases/20260102-000000",  // readlink current
-		"",                                    // compose up
-		"",                                    // symlink
-		"",                                    // health check
+		"/opt/test/releases/20260102-000000", // readlink current
+		"",                                   // compose up
+		"",                                   // symlink
+		"",                                   // health check
 	}
 	codes := []int{0, 0, 0, 0, 0}
 	stagedFakeExec(t, codes, stdouts)

@@ -34,7 +34,7 @@ func PatchContainer(d ScaffoldData) error {
 	s = strings.Replace(s, "\tResolver       *resolvers.Resolver", fields+"\tResolver       *resolvers.Resolver", 1)
 
 	fmt.Printf("  patch: %s\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
@@ -55,7 +55,7 @@ func PatchWireFile(d ScaffoldData) error {
 	s = strings.Replace(s, "\t\tproviders.GraphQLSet,", fmt.Sprintf("\t\t%s,\n\t\tproviders.GraphQLSet,", providerRef), 1)
 
 	fmt.Printf("  patch: %s\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
@@ -101,7 +101,7 @@ func PatchResolver(d ScaffoldData) error {
 	s = beforeClose + ", " + fieldName + ": " + paramName + afterClose
 
 	fmt.Printf("  patch: %s\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // PatchRouteConfig adds controller to RouteConfig and registers routes in app/rest/routes/index.routes.go.
@@ -128,7 +128,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 	s = strings.Replace(s, "\n\treturn r", routeCall+"\n\treturn r", 1)
 
 	fmt.Printf("  patch: %s\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // PatchServeFile adds the controller to RouteConfig initialization in cmd/serve.go.
@@ -152,5 +152,5 @@ func PatchServeFile(d ScaffoldData) error {
 		1)
 
 	fmt.Printf("  patch: %s\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }

@@ -25,9 +25,9 @@ func TestParseFields_StringType(t *testing.T) {
 
 func TestParseFields_AllTypes(t *testing.T) {
 	tests := []struct {
-		typeStr  string
-		goType   string
-		gqlType  string
+		typeStr string
+		goType  string
+		gqlType string
 	}{
 		{"string", "string", "String"},
 		{"text", "string", "String"},

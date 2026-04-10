@@ -10,17 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func chdirProject(t *testing.T, configYAML string) string {
+func chdirProject(t *testing.T, configYAML string) {
 	t.Helper()
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	require.NoError(t, os.Chdir(dir))
-	require.NoError(t, os.WriteFile("go.mod", []byte("module github.com/test/myapp\n\ngo 1.21\n"), 0644))
+	require.NoError(t, os.WriteFile("go.mod", []byte("module github.com/test/myapp\n\ngo 1.21\n"), 0o644))
 	if configYAML != "" {
-		require.NoError(t, os.WriteFile("config.yaml", []byte(configYAML), 0644))
+		require.NoError(t, os.WriteFile("config.yaml", []byte(configYAML), 0o644))
 	}
-	return dir
 }
 
 func makeFlagCmd(flags map[string]string) *cobra.Command {

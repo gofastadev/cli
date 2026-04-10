@@ -1,5 +1,6 @@
 package templates
 
+// RepoInterface is the Go template for generating a repository interface.
 var RepoInterface = `package interfaces
 
 import (

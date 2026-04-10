@@ -9,6 +9,8 @@ import (
 const binaryTotalSteps = 12
 
 // DeployBinary deploys the application as a compiled binary managed by systemd.
+//
+//nolint:gocyclo,revive // linear 12-step pipeline; name kept for public-API stability.
 func DeployBinary(cfg *DeployConfig) error {
 	step := 0
 
@@ -22,16 +24,16 @@ func DeployBinary(cfg *DeployConfig) error {
 	// Step 2: Cross-compile binary
 	step++
 	PrintStep(step, binaryTotalSteps, fmt.Sprintf("Cross-compiling binary (linux/%s)...", cfg.Arch))
-	os.MkdirAll("tmp", 0755)
+	_ = os.MkdirAll("tmp", 0o755)
 	binaryPath := filepath.Join("tmp", cfg.AppName)
 
 	// Set cross-compilation environment
 	prevCGO := os.Getenv("CGO_ENABLED")
 	prevGOOS := os.Getenv("GOOS")
 	prevGOARCH := os.Getenv("GOARCH")
-	os.Setenv("CGO_ENABLED", "0")
-	os.Setenv("GOOS", "linux")
-	os.Setenv("GOARCH", cfg.Arch)
+	_ = os.Setenv("CGO_ENABLED", "0")
+	_ = os.Setenv("GOOS", "linux")
+	_ = os.Setenv("GOARCH", cfg.Arch)
 	defer func() {
 		setOrUnset("CGO_ENABLED", prevCGO)
 		setOrUnset("GOOS", prevGOOS)
@@ -63,13 +65,13 @@ func DeployBinary(cfg *DeployConfig) error {
 	step++
 	PrintStep(step, binaryTotalSteps, "Uploading migrations, templates, and configs...")
 	if _, err := os.Stat("db/migrations"); err == nil {
-		CopyDir(cfg, "db/migrations/.", filepath.Join(releasePath, "migrations"))
+		_ = CopyDir(cfg, "db/migrations/.", filepath.Join(releasePath, "migrations"))
 	}
 	if _, err := os.Stat("templates"); err == nil {
-		CopyDir(cfg, "templates/.", filepath.Join(releasePath, "templates"))
+		_ = CopyDir(cfg, "templates/.", filepath.Join(releasePath, "templates"))
 	}
 	if _, err := os.Stat("configs"); err == nil {
-		CopyDir(cfg, "configs/.", filepath.Join(releasePath, "configs"))
+		_ = CopyDir(cfg, "configs/.", filepath.Join(releasePath, "configs"))
 	}
 
 	// Step 6: Copy shared config files
@@ -83,7 +85,7 @@ func DeployBinary(cfg *DeployConfig) error {
 		"ln -sf %s/.env %s/.env 2>/dev/null; ln -sf %s/config.yaml %s/config.yaml 2>/dev/null",
 		cfg.SharedPath(), releasePath, cfg.SharedPath(), releasePath,
 	)
-	RunRemote(cfg, symlinkShared)
+	_ = RunRemote(cfg, symlinkShared)
 
 	// Step 7: Install binary
 	step++
@@ -109,7 +111,7 @@ func DeployBinary(cfg *DeployConfig) error {
 			"sudo cp %s /etc/systemd/system/%s.service",
 			remoteSvc, cfg.AppName,
 		)
-		RunRemote(cfg, installSvc)
+		_ = RunRemote(cfg, installSvc)
 	} else {
 		PrintWarning("No systemd service file found at " + serviceFile)
 	}
@@ -121,7 +123,7 @@ func DeployBinary(cfg *DeployConfig) error {
 		"cd %s && /usr/local/bin/%s migrate up 2>/dev/null || echo '   Migrations: nothing to apply or skipped'",
 		releasePath, cfg.AppName,
 	)
-	RunRemote(cfg, migrateCmd)
+	_ = RunRemote(cfg, migrateCmd)
 
 	// Step 10: Restart service
 	step++
@@ -156,7 +158,7 @@ func DeployBinary(cfg *DeployConfig) error {
 	}
 
 	// Cleanup local temp binary
-	os.Remove(binaryPath)
+	_ = os.Remove(binaryPath)
 
 	fmt.Println()
 	PrintSuccess(fmt.Sprintf("Deployed %s to %s (binary)", cfg.ReleaseTag, cfg.Host))
@@ -169,8 +171,8 @@ func DeployBinary(cfg *DeployConfig) error {
 
 func setOrUnset(key, value string) {
 	if value == "" {
-		os.Unsetenv(key)
+		_ = os.Unsetenv(key)
 	} else {
-		os.Setenv(key, value)
+		_ = os.Setenv(key, value)
 	}
 }

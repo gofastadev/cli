@@ -2,7 +2,6 @@ package commands
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/gofastadev/cli/internal/deploy"
@@ -21,7 +20,10 @@ func stubDeployLookPath(t *testing.T) {
 }
 
 // stubDeployExec stubs both exec.LookPath and exec.Command in the deploy
-// package so non-dry-run code paths don't actually shell out.
+// package so non-dry-run code paths don't actually shell out. The exitCode
+// parameter is kept for future call sites that want non-zero exits.
+//
+//nolint:unparam // exitCode kept for future flexibility.
 func stubDeployExec(t *testing.T, exitCode int) {
 	t.Helper()
 	stubDeployLookPath(t)
@@ -31,30 +33,32 @@ func stubDeployExec(t *testing.T, exitCode int) {
 
 // setupDeployProject writes a minimal gofasta project structure in a tempdir
 // for the deploy commands to consume.
-func setupDeployProject(t *testing.T, host string) string {
+func setupDeployProject(t *testing.T, host string) {
 	t.Helper()
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	require.NoError(t, os.Chdir(dir))
 
 	// go.mod — required for readAppName
-	require.NoError(t, os.WriteFile("go.mod", []byte("module github.com/test/myapp\n\ngo 1.21\n"), 0644))
+	require.NoError(t, os.WriteFile("go.mod", []byte("module github.com/test/myapp\n\ngo 1.21\n"), 0o644))
 
 	// config.yaml with deploy section
 	yaml := ""
 	if host != "" {
 		yaml = "deploy:\n  host: " + host + "\n  method: docker\n"
 	}
-	require.NoError(t, os.WriteFile("config.yaml", []byte(yaml), 0644))
+	require.NoError(t, os.WriteFile("config.yaml", []byte(yaml), 0o644))
 
 	// compose.yaml for docker method
-	require.NoError(t, os.MkdirAll("deployments/docker", 0755))
-	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0644))
-
-	return dir
+	require.NoError(t, os.MkdirAll("deployments/docker", 0o755))
+	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0o644))
 }
 
+// makeDeployCmd builds a cobra.Command with the deploy flag set for test use.
+// The dryRun parameter is kept for future non-dry-run test cases.
+//
+//nolint:unparam // dryRun kept for future flexibility.
 func makeDeployCmd(dryRun bool, flags map[string]string) *cobra.Command {
 	c := &cobra.Command{}
 	c.Flags().String("host", "", "")
@@ -64,10 +68,10 @@ func makeDeployCmd(dryRun bool, flags map[string]string) *cobra.Command {
 	c.Flags().String("arch", "", "")
 	c.Flags().Bool("dry-run", false, "")
 	if dryRun {
-		c.Flags().Set("dry-run", "true")
+		_ = c.Flags().Set("dry-run", "true")
 	}
 	for k, v := range flags {
-		c.Flags().Set(k, v)
+		_ = c.Flags().Set(k, v)
 	}
 	return c
 }
@@ -82,14 +86,13 @@ func TestRunDeploy_DockerDryRun(t *testing.T) {
 }
 
 func TestRunDeploy_BinaryDryRun(t *testing.T) {
-	dir := setupDeployProject(t, "user@example.com")
+	setupDeployProject(t, "user@example.com")
 	stubDeployLookPath(t)
 	// Binary method needs a buildable ./app/main package
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "app/main"), 0755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "app/main/main.go"), []byte("package main\nfunc main() {}\n"), 0644))
+	require.NoError(t, os.MkdirAll("app/main", 0o755))
+	require.NoError(t, os.WriteFile("app/main/main.go", []byte("package main\nfunc main() {}\n"), 0o644))
 	cmd := makeDeployCmd(true, map[string]string{"method": "binary"})
-	// Binary path actually calls `go build` (dry-run only dry-runs SSH/SCP, not RunLocal).
-	// Wait — RunLocal also respects DryRun. So go build is also skipped. Good.
+	// Binary path actually calls `go build` but RunLocal respects DryRun.
 	assert.NoError(t, runDeploy(cmd))
 }
 

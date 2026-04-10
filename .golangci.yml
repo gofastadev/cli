@@ -1,3 +1,5 @@
+version: "2"
+
 run:
   timeout: 5m
 
@@ -6,11 +8,9 @@ linters:
     # Bugs / correctness
     - errcheck
     - staticcheck
-    - gosimple
     - govet
     - ineffassign
     - unused
-    - typecheck
 
     # Complexity
     - gocyclo
@@ -22,8 +22,6 @@ linters:
     # Style / structure
     - gocritic
     - revive
-    - gofmt
-    - goimports
     - misspell
     - unconvert
     - unparam
@@ -31,66 +29,73 @@ linters:
     - prealloc
     - nolintlint
 
-linters-settings:
-  gocyclo:
-    min-complexity: 15
-  gocognit:
-    min-complexity: 30
-  dupl:
-    threshold: 150
-  gocritic:
-    enabled-tags:
-      - diagnostic
-      - style
-      - performance
-    disabled-checks:
-      - hugeParam
-      - rangeValCopy
-  revive:
+  settings:
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 30
+    dupl:
+      threshold: 150
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: superfluous-else
+        - name: unreachable-code
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 30
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    paths:
+      - dist
     rules:
-      - name: blank-imports
-      - name: context-as-argument
-      - name: context-keys-type
-      - name: dot-imports
-      - name: error-return
-      - name: error-strings
-      - name: error-naming
-      - name: exported
-        arguments:
-          - "checkPrivateReceivers"
-      - name: if-return
-      - name: increment-decrement
-      - name: var-naming
-      - name: var-declaration
-      - name: range
-      - name: receiver-naming
-      - name: time-naming
-      - name: unexported-return
-      - name: indent-error-flow
-      - name: errorf
-      - name: superfluous-else
-      - name: unreachable-code
-  misspell:
-    locale: US
-  nakedret:
-    max-func-lines: 30
-  nolintlint:
-    require-explanation: true
-    require-specific: true
+      - path: _test\.go
+        linters:
+          - dupl
+          - gocritic
+          - gocyclo
+          - gocognit
+          - errcheck
+      - path: internal/generate/templates/
+        linters:
+          - dupl
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
 
 issues:
-  exclude-dirs:
-    - dist
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - dupl
-        - gocritic
-        - gocyclo
-        - gocognit
-        - errcheck
-    - path: internal/generate/templates/
-      linters:
-        - dupl
   max-issues-per-linter: 0
   max-same-issues: 0

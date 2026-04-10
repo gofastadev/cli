@@ -15,14 +15,13 @@ import (
 var errDummy = errors.New("dummy")
 
 // chdirTemp creates a new temp dir and cd's into it for the duration of the test.
-func chdirTemp(t *testing.T) string {
+func chdirTemp(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	origDir, err := os.Getwd()
 	require.NoError(t, err)
-	t.Cleanup(func() { os.Chdir(origDir) })
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	require.NoError(t, os.Chdir(dir))
-	return dir
 }
 
 // writeConfigYAML drops a minimal postgres config.yaml into cwd.

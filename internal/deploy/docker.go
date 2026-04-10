@@ -10,6 +10,8 @@ import (
 const dockerTotalSteps = 11
 
 // DeployDocker deploys the application using Docker compose on the remote server.
+//
+//nolint:revive // name kept for public-API stability; rename is a breaking change.
 func DeployDocker(cfg *DeployConfig) error {
 	step := 0
 
@@ -76,12 +78,10 @@ func DeployDocker(cfg *DeployConfig) error {
 	step++
 	PrintStep(step, dockerTotalSteps, "Running database migrations...")
 	containerName := cfg.AppName + "_app"
-	migrateCmd := fmt.Sprintf("docker exec %s migrate -path /migrations -database \"$(docker exec %s cat /config.yaml | grep -A5 'database:' | head -1 || true)\" up 2>/dev/null || echo 'Migrations: nothing to apply or skipped'",
-		containerName, containerName)
-	// Simpler approach: the app container has migrate CLI built in from the Dockerfile
-	migrateCmd = fmt.Sprintf("docker exec %s sh -c 'migrate -path /migrations -database \"$DATABASE_URL\" up 2>/dev/null' || echo '   Migrations: nothing to apply or skipped'",
+	// The app container has migrate CLI built in from the Dockerfile.
+	migrateCmd := fmt.Sprintf("docker exec %s sh -c 'migrate -path /migrations -database \"$DATABASE_URL\" up 2>/dev/null' || echo '   Migrations: nothing to apply or skipped'",
 		containerName)
-	RunRemote(cfg, migrateCmd)
+	_ = RunRemote(cfg, migrateCmd)
 
 	// Step 9: Health check
 	step++

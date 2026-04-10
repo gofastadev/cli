@@ -31,7 +31,7 @@ func TestRunDoctor_ExecutesWithoutPanic(t *testing.T) {
 
 	// Should not panic regardless of which tools are installed
 	assert.NotPanics(t, func() {
-		runDoctor() //nolint:errcheck
+		_ = runDoctor()
 	})
 }
 

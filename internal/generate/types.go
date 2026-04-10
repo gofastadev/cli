@@ -19,12 +19,12 @@ type Field struct {
 
 // ScaffoldData holds all computed names and fields for template rendering.
 type ScaffoldData struct {
-	Name         string  // PascalCase: Product
-	LowerName    string  // camelCase: product
-	SnakeName    string  // snake_case: product
-	PluralName   string  // PascalCase plural: Products
-	PluralSnake  string  // snake_case plural: products
-	PluralLower  string  // camelCase plural: products
+	Name              string // PascalCase: Product
+	LowerName         string // camelCase: product
+	SnakeName         string // snake_case: product
+	PluralName        string // PascalCase plural: Products
+	PluralSnake       string // snake_case plural: products
+	PluralLower       string // camelCase plural: products
 	Fields            []Field
 	MigrationNum      string
 	IncludeController bool

@@ -82,9 +82,9 @@ func runRoutes() error {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	fmt.Fprintln(w, "METHOD\tPATH\tFILE")
+	_, _ = fmt.Fprintln(w, "METHOD\tPATH\tFILE")
 	for _, r := range allRoutes {
-		fmt.Fprintf(w, "%s\t%s\t%s\n", r.method, r.path, r.filename)
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", r.method, r.path, r.filename)
 	}
 	return w.Flush()
 }

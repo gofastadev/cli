@@ -17,7 +17,8 @@ const fakeEnvExitCode = "GOFASTA_FAKE_EXIT"
 // (default 0). This is the canonical os/exec testing pattern from the Go stdlib.
 func fakeExecCommand(exitCode int) func(name string, args ...string) *exec.Cmd {
 	return func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestHelperProcess", "--", name}
+		cs := make([]string, 0, 3+len(args))
+		cs = append(cs, "-test.run=TestHelperProcess", "--", name)
 		cs = append(cs, args...)
 		cmd := exec.Command(os.Args[0], cs...)
 		cmd.Env = append(os.Environ(),

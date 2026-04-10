@@ -81,7 +81,7 @@ func fetchLatestVersion() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("GitHub API returned status %d", resp.StatusCode)
@@ -136,7 +136,7 @@ func upgradeViaGoInstall() error {
 	return nil
 }
 
-func upgradeViaBinary(execPath string, version string) error {
+func upgradeViaBinary(execPath, version string) error {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
 
@@ -152,7 +152,7 @@ func upgradeViaBinary(execPath string, version string) error {
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
@@ -164,15 +164,15 @@ func upgradeViaBinary(execPath string, version string) error {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
+	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		return fmt.Errorf("download failed: %w", err)
 	}
-	tmpFile.Close()
+	_ = tmpFile.Close()
 
-	if err := os.Chmod(tmpPath, 0755); err != nil {
+	if err := os.Chmod(tmpPath, 0o755); err != nil {
 		return fmt.Errorf("failed to set permissions: %w", err)
 	}
 
@@ -192,7 +192,7 @@ func replaceViaCopy(src, dst string) error {
 		return fmt.Errorf("failed to read downloaded binary: %w", err)
 	}
 
-	if err := os.WriteFile(dst, input, 0755); err != nil {
+	if err := os.WriteFile(dst, input, 0o755); err != nil {
 		return fmt.Errorf("failed to write binary (you may need sudo): %w", err)
 	}
 

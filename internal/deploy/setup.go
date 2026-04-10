@@ -3,7 +3,6 @@ package deploy
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 const setupTotalSteps = 6
@@ -51,7 +50,7 @@ func SetupServer(cfg *DeployConfig) error {
 			"id -u %s &>/dev/null || sudo useradd -r -s /bin/false %s",
 			cfg.AppName, cfg.AppName,
 		)
-		RunRemote(cfg, createUser)
+		_ = RunRemote(cfg, createUser)
 		PrintSuccess("Service user ready")
 	}
 
@@ -107,7 +106,7 @@ func SetupServer(cfg *DeployConfig) error {
 			"sudo mkdir -p %s && sudo chown %s:%s %s",
 			svcDir, cfg.AppName, cfg.AppName, svcDir,
 		)
-		RunRemote(cfg, mkSvcDir)
+		_ = RunRemote(cfg, mkSvcDir)
 		PrintSuccess("Service directory created at " + svcDir)
 	} else {
 		PrintStep(step, setupTotalSteps, "Finalizing setup...")
@@ -117,16 +116,14 @@ func SetupServer(cfg *DeployConfig) error {
 	PrintSuccess(fmt.Sprintf("Server %s is ready for deployment!", cfg.Host))
 	fmt.Println()
 	PrintInfo("Next steps:")
-	PrintInfo(fmt.Sprintf("  gofasta deploy                  # Deploy your application"))
-	PrintInfo(fmt.Sprintf("  gofasta deploy status            # Check service status"))
+	PrintInfo("  gofasta deploy                  # Deploy your application")
+	PrintInfo("  gofasta deploy status            # Check service status")
 	fmt.Println()
 
 	// Suggest HTTPS setup
-	siteConf := filepath.Join("/etc/nginx/sites-available", cfg.AppName+".conf")
 	PrintInfo("For HTTPS (recommended):")
 	PrintInfo("  sudo apt-get install -y certbot python3-certbot-nginx")
-	PrintInfo(fmt.Sprintf("  sudo certbot --nginx -d your-domain.com"))
-	_ = siteConf
+	PrintInfo("  sudo certbot --nginx -d your-domain.com")
 
 	return nil
 }

@@ -12,7 +12,8 @@ const fakeEnvStdout = "GOFASTA_DEPLOY_FAKE_STDOUT"
 
 func fakeExecCommand(exitCode int, stdout string) func(name string, args ...string) *exec.Cmd {
 	return func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestDeployHelperProcess", "--", name}
+		cs := make([]string, 0, 3+len(args))
+		cs = append(cs, "-test.run=TestDeployHelperProcess", "--", name)
 		cs = append(cs, args...)
 		cmd := exec.Command(os.Args[0], cs...)
 		cmd.Env = append(os.Environ(),

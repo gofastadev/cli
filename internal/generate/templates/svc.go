@@ -1,5 +1,6 @@
 package templates
 
+// Svc is the Go template for generating a service implementation.
 var Svc = `package services
 
 import (

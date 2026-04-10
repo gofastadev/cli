@@ -16,7 +16,7 @@ func GenEmailTemplate(d ScaffoldData) error {
 		fmt.Printf("  skip (exists): %s\n", path)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
@@ -26,7 +26,7 @@ func GenEmailTemplate(d ScaffoldData) error {
 	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
 	content = strings.ReplaceAll(content, "__NAME__", d.Name)
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("  create: %s\n", path)

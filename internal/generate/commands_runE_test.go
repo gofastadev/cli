@@ -15,7 +15,8 @@ func fakeExecOK(t *testing.T) {
 	t.Helper()
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
-		cs := []string{"-test.run=TestGenHelperProcess", "--", name}
+		cs := make([]string, 0, 3+len(args))
+		cs = append(cs, "-test.run=TestGenHelperProcess", "--", name)
 		cs = append(cs, args...)
 		cmd := exec.Command(os.Args[0], cs...)
 		cmd.Env = append(os.Environ(),

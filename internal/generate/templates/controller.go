@@ -1,5 +1,6 @@
 package templates
 
+// Controller is the Go template for generating a REST controller.
 var Controller = `package controllers
 
 import (

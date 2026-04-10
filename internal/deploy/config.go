@@ -16,6 +16,8 @@ import (
 )
 
 // DeployConfig holds all deployment configuration.
+//
+//nolint:revive // name kept for public-API stability; rename is a breaking change.
 type DeployConfig struct {
 	Host          string
 	Method        string
@@ -32,6 +34,8 @@ type DeployConfig struct {
 }
 
 // LoadDeployConfig reads deploy config from config.yaml, overlays env vars, then CLI flags.
+//
+//nolint:gocyclo // flat sequence of flag-or-default checks; refactoring adds indirection.
 func LoadDeployConfig(cmd *cobra.Command) (*DeployConfig, error) {
 	k := loadKoanf()
 
@@ -150,7 +154,7 @@ func readAppName() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot read go.mod: %w (are you in a gofasta project directory?)", err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -168,12 +172,12 @@ func readAppName() (string, error) {
 func loadKoanf() *koanf.Koanf {
 	k := koanf.New(".")
 	if _, err := os.Stat("config.yaml"); err == nil {
-		k.Load(file.Provider("config.yaml"), yaml.Parser())
+		_ = k.Load(file.Provider("config.yaml"), yaml.Parser())
 	}
-	k.Load(env.Provider("GOFASTA_", ".", func(s string) string {
-		return strings.Replace(
+	_ = k.Load(env.Provider("GOFASTA_", ".", func(s string) string {
+		return strings.ReplaceAll(
 			strings.ToLower(strings.TrimPrefix(s, "GOFASTA_")),
-			"_", ".", -1,
+			"_", ".",
 		)
 	}), nil)
 	return k
