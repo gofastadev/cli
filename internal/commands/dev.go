@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -37,7 +36,7 @@ func runDev() error {
 	fmt.Println("🗄  Running migrations...")
 	dbURL := configutil.BuildMigrationURL()
 	if dbURL != "" {
-		migrateCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
@@ -54,7 +53,7 @@ func runDev() error {
 	}
 	fmt.Println()
 
-	airCmd := exec.Command("go", "tool", "air")
+	airCmd := execCommand("go", "tool", "air")
 	airCmd.Stdout = os.Stdout
 	airCmd.Stderr = os.Stderr
 	airCmd.Stdin = os.Stdin

@@ -1,0 +1,238 @@
+package generate
+
+import (
+	"os"
+	"os/exec"
+	"strconv"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// fakeExecOK swaps the runner execCommand to always succeed via TestHelperProcess.
+func fakeExecOK(t *testing.T) {
+	t.Helper()
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cs := []string{"-test.run=TestGenHelperProcess", "--", name}
+		cs = append(cs, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_GEN_HELPER=1",
+			"GOFASTA_GEN_EXIT=0",
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+}
+
+func TestGenHelperProcess(t *testing.T) {
+	if os.Getenv("GOFASTA_GEN_HELPER") != "1" {
+		return
+	}
+	code, _ := strconv.Atoi(os.Getenv("GOFASTA_GEN_EXIT"))
+	os.Exit(code)
+}
+
+// setupFullProject creates a temp project with all files that patchers + generators need.
+func setupFullProject(t *testing.T) {
+	setupTempProject(t)
+	// Container file (for PatchContainer)
+	require.NoError(t, os.MkdirAll("app/di/providers", 0755))
+	require.NoError(t, os.WriteFile("app/di/container.go", []byte(`package di
+
+type Container struct {
+	// services
+}
+
+func NewContainer() *Container {
+	return &Container{}
+}
+`), 0644))
+
+	// wire.go (for PatchWireFile)
+	require.NoError(t, os.WriteFile("app/di/wire.go", []byte(`//go:build wireinject
+// +build wireinject
+
+package di
+
+import "github.com/google/wire"
+
+var ProviderSet = wire.NewSet(
+	// providers
+)
+`), 0644))
+
+	// routes config (for PatchRouteConfig)
+	require.NoError(t, os.MkdirAll("app/rest/routes", 0755))
+	require.NoError(t, os.WriteFile("app/rest/routes/index.routes.go", []byte(`package routes
+
+import "github.com/gorilla/mux"
+
+type RouteConfig struct {
+	// controllers
+}
+
+func InitApiRoutes(config *RouteConfig) *mux.Router {
+	r := mux.NewRouter()
+	return r
+}
+`), 0644))
+
+	// serve.go (for PatchServeFile)
+	require.NoError(t, os.MkdirAll("app/commands", 0755))
+	require.NoError(t, os.WriteFile("app/commands/serve.go", []byte(`package commands
+
+func Serve() {
+	cfg := &routes.RouteConfig{
+		// controllers
+	}
+	_ = cfg
+}
+`), 0644))
+
+	// GraphQL resolver (for PatchResolver)
+	require.NoError(t, os.MkdirAll("app/graphql", 0755))
+	require.NoError(t, os.WriteFile("app/graphql/resolver.go", []byte(`package graphql
+
+type Resolver struct {
+	// services
+}
+`), 0644))
+
+	// config.yaml for job config patching
+	require.NoError(t, os.WriteFile("config.yaml", []byte(`database:
+  driver: postgres
+scheduler:
+  jobs: {}
+`), 0644))
+}
+
+func TestModelCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, modelCmd.RunE(modelCmd, []string{"Widget", "name:string"}))
+}
+
+func TestRepositoryCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, repositoryCmd.RunE(repositoryCmd, []string{"Widget", "name:string"}))
+}
+
+func TestDtoCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, dtoCmd.RunE(dtoCmd, []string{"Widget", "name:string"}))
+}
+
+func TestMigrationCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, migrationCmd.RunE(migrationCmd, []string{"Widget", "name:string"}))
+}
+
+func TestRouteCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, routeCmd.RunE(routeCmd, []string{"Widget"}))
+}
+
+func TestResolverCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	// Resolver step just invokes GenResolver which patches the resolver file.
+	os.MkdirAll("app/graphql", 0755)
+	os.WriteFile("app/graphql/resolver.go", []byte(`package graphql
+
+type Resolver struct {
+}
+`), 0644)
+	// resolverSteps has only GenResolver which needs the file to exist.
+	_ = resolverCmd.RunE(resolverCmd, []string{"Widget"})
+}
+
+func TestEmailTemplateCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, emailTemplateCmd.RunE(emailTemplateCmd, []string{"welcome"}))
+}
+
+func TestTaskCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	assert.NoError(t, taskCmd.RunE(taskCmd, []string{"send-email"}))
+}
+
+func TestJobCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	os.WriteFile("config.yaml", []byte("scheduler:\n  jobs: {}\n"), 0644)
+	// Need a scheduler_jobs.go or similar for PatchJobRegistry — create it.
+	os.MkdirAll("app/jobs", 0755)
+	os.WriteFile("app/jobs/registry.go", []byte(`package jobs
+
+func Register(s Scheduler) {
+	// jobs
+}
+
+type Scheduler interface{}
+`), 0644)
+	// jobCmd expects the registry path to exist — if it fails, still exercises RunE wrapper.
+	_ = jobCmd.RunE(jobCmd, []string{"cleanup", "0 0 0 * * *"})
+}
+
+func TestJobCmd_RunE_DefaultSchedule(t *testing.T) {
+	setupTempProject(t)
+	_ = jobCmd.RunE(jobCmd, []string{"cleanup"})
+}
+
+func TestProviderCmd_RunE(t *testing.T) {
+	setupFullProject(t)
+	_ = providerCmd.RunE(providerCmd, []string{"Widget"})
+}
+
+func TestServiceCmd_RunE_REST(t *testing.T) {
+	setupFullProject(t)
+	fakeExecOK(t)
+	assert.NoError(t, serviceCmd.RunE(serviceCmd, []string{"Widget", "name:string"}))
+}
+
+func TestServiceCmd_RunE_GraphQL(t *testing.T) {
+	setupFullProject(t)
+	fakeExecOK(t)
+	// Need a schema file for GenGraphQL or it may fail
+	require.NoError(t, os.MkdirAll("app/graphql/schema", 0755))
+	serviceCmd.Flags().Set("graphql", "true")
+	t.Cleanup(func() { serviceCmd.Flags().Set("graphql", "false") })
+	_ = serviceCmd.RunE(serviceCmd, []string{"Widget", "name:string"})
+}
+
+func TestControllerCmd_RunE(t *testing.T) {
+	setupFullProject(t)
+	fakeExecOK(t)
+	_ = controllerCmd.RunE(controllerCmd, []string{"Widget", "name:string"})
+}
+
+func TestScaffoldCmd_RunE(t *testing.T) {
+	setupFullProject(t)
+	fakeExecOK(t)
+	_ = scaffoldCmd.RunE(scaffoldCmd, []string{"Widget", "name:string"})
+}
+
+func TestWireCmd_RunE(t *testing.T) {
+	setupTempProject(t)
+	fakeExecOK(t)
+	assert.NoError(t, WireCmd.RunE(WireCmd, nil))
+}
+
+// RunWire + RunGqlgen via fake exec, direct invocations
+func TestRunWire_FakeOK(t *testing.T) {
+	fakeExecOK(t)
+	assert.NoError(t, RunWire(ScaffoldData{}))
+}
+
+func TestRunGqlgen_FakeOK(t *testing.T) {
+	fakeExecOK(t)
+	assert.NoError(t, RunGqlgen(ScaffoldData{}))
+}
+
+// hasGraphQLFlag branches
+func TestHasGraphQLFlag(t *testing.T) {
+	assert.False(t, hasGraphQLFlag(scaffoldCmd))
+	scaffoldCmd.Flags().Set("gql", "true")
+	assert.True(t, hasGraphQLFlag(scaffoldCmd))
+	scaffoldCmd.Flags().Set("gql", "false")
+}

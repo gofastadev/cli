@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/spf13/cobra"
@@ -42,7 +41,7 @@ func runDBReset(skipSeed bool) error {
 
 	// Step 1: Drop everything
 	slog.Info("dropping all tables")
-	dropCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "drop", "-f")
+	dropCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "drop", "-f")
 	dropCmd.Stdout = os.Stdout
 	dropCmd.Stderr = os.Stderr
 	if err := dropCmd.Run(); err != nil {
@@ -52,7 +51,7 @@ func runDBReset(skipSeed bool) error {
 
 	// Step 2: Re-apply all migrations
 	slog.Info("applying all migrations")
-	upCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+	upCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 	upCmd.Stdout = os.Stdout
 	upCmd.Stderr = os.Stderr
 	if err := upCmd.Run(); err != nil {
@@ -63,7 +62,7 @@ func runDBReset(skipSeed bool) error {
 	// Step 3: Seed
 	if !skipSeed {
 		slog.Info("seeding database")
-		seedCmd := exec.Command("go", "run", "./app/main", "seed")
+		seedCmd := execCommand("go", "run", "./app/main", "seed")
 		seedCmd.Stdout = os.Stdout
 		seedCmd.Stderr = os.Stderr
 		seedCmd.Stdin = os.Stdin

@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -28,7 +27,7 @@ func init() {
 }
 
 func runConsole() error {
-	yaegiPath, err := exec.LookPath("yaegi")
+	yaegiPath, err := execLookPath("yaegi")
 	if err != nil {
 		return fmt.Errorf("yaegi is not installed. Install it with:\n  go install github.com/traefik/yaegi/cmd/yaegi@latest")
 	}
@@ -37,7 +36,7 @@ func runConsole() error {
 	fmt.Println("Type Go code interactively. Press Ctrl+D to exit.")
 	fmt.Println()
 
-	cmd := exec.Command(yaegiPath)
+	cmd := execCommand(yaegiPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

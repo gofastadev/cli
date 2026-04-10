@@ -6,11 +6,18 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"os/exec"
 	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
+)
+
+// Package-level seams so tests can redirect network + URLs without hitting GitHub.
+var (
+	httpGet              = http.Get
+	osExecutable         = os.Executable
+	githubAPIURL         = "https://api.github.com/repos/gofastadev/cli/releases/latest"
+	githubDownloadURLFmt = "https://github.com/gofastadev/cli/releases/download/%s/%s"
 )
 
 var upgradeCmd = &cobra.Command{
@@ -54,7 +61,7 @@ func runUpgrade() error {
 	fmt.Printf("Upgrading gofasta: v%s → v%s\n", currentVersion, latestClean)
 
 	// Detect installation method and upgrade accordingly
-	execPath, err := os.Executable()
+	execPath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("cannot determine executable path: %w", err)
 	}
@@ -70,7 +77,7 @@ func runUpgrade() error {
 }
 
 func fetchLatestVersion() (string, error) {
-	resp, err := http.Get("https://api.github.com/repos/gofastadev/cli/releases/latest")
+	resp, err := httpGet(githubAPIURL)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +114,7 @@ func isGoInstall(execPath string) bool {
 
 func upgradeViaHomebrew() error {
 	fmt.Println("Detected Homebrew installation, running: brew upgrade gofasta")
-	cmd := exec.Command("brew", "upgrade", "gofasta")
+	cmd := execCommand("brew", "upgrade", "gofasta")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -119,7 +126,7 @@ func upgradeViaHomebrew() error {
 
 func upgradeViaGoInstall() error {
 	fmt.Println("Detected go install, running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
-	cmd := exec.Command("go", "install", "github.com/gofastadev/cli/cmd/gofasta@latest")
+	cmd := execCommand("go", "install", "github.com/gofastadev/cli/cmd/gofasta@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -138,10 +145,10 @@ func upgradeViaBinary(execPath string, version string) error {
 		binary += ".exe"
 	}
 
-	url := fmt.Sprintf("https://github.com/gofastadev/cli/releases/download/%s/%s", version, binary)
+	url := fmt.Sprintf(githubDownloadURLFmt, version, binary)
 	fmt.Printf("Downloading %s...\n", url)
 
-	resp, err := http.Get(url)
+	resp, err := httpGet(url)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}

@@ -9,6 +9,9 @@ import (
 	"strings"
 )
 
+// execCommand is a package-level seam for tests.
+var execCommand = exec.Command
+
 // sshBaseArgs returns the common SSH arguments for connections.
 func sshBaseArgs(cfg *DeployConfig) []string {
 	return []string{
@@ -27,7 +30,7 @@ func RunRemote(cfg *DeployConfig, command string) error {
 		return nil
 	}
 
-	cmd := exec.Command("ssh", args...)
+	cmd := execCommand("ssh", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -42,7 +45,7 @@ func RunRemoteInteractive(cfg *DeployConfig, command string) error {
 		return nil
 	}
 
-	cmd := exec.Command("ssh", args...)
+	cmd := execCommand("ssh", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
@@ -58,7 +61,7 @@ func RunRemoteCapture(cfg *DeployConfig, command string) (string, error) {
 		return "", nil
 	}
 
-	cmd := exec.Command("ssh", args...)
+	cmd := execCommand("ssh", args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -82,7 +85,7 @@ func CopyFile(cfg *DeployConfig, localPath, remotePath string) error {
 		return nil
 	}
 
-	cmd := exec.Command("scp", args...)
+	cmd := execCommand("scp", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -103,7 +106,7 @@ func CopyDir(cfg *DeployConfig, localDir, remoteDir string) error {
 		return nil
 	}
 
-	cmd := exec.Command("scp", args...)
+	cmd := execCommand("scp", args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -116,7 +119,7 @@ func RunLocalPiped(cfg *DeployConfig, shellCmd string) error {
 		return nil
 	}
 
-	cmd := exec.Command("sh", "-c", shellCmd)
+	cmd := execCommand("sh", "-c", shellCmd)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -129,7 +132,7 @@ func RunLocal(cfg *DeployConfig, name string, args ...string) error {
 		return nil
 	}
 
-	cmd := exec.Command(name, args...)
+	cmd := execCommand(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

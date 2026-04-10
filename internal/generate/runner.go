@@ -6,6 +6,9 @@ import (
 	"os/exec"
 )
 
+// execCommand is a package-level seam so tests can inject a fake.
+var execCommand = exec.Command
+
 // RunSteps executes a sequence of steps, stopping at the first error.
 func RunSteps(d ScaffoldData, steps []Step) error {
 	for _, s := range steps {
@@ -19,7 +22,7 @@ func RunSteps(d ScaffoldData, steps []Step) error {
 // RunWire regenerates the Wire dependency injection code.
 func RunWire(_ ScaffoldData) error {
 	fmt.Println("  running: go tool wire ./app/di/")
-	cmd := exec.Command("go", "tool", "wire", "./app/di/")
+	cmd := execCommand("go", "tool", "wire", "./app/di/")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -28,7 +31,7 @@ func RunWire(_ ScaffoldData) error {
 // RunGqlgen regenerates the GraphQL code from schema files.
 func RunGqlgen(_ ScaffoldData) error {
 	fmt.Println("  running: go tool gqlgen generate")
-	cmd := exec.Command("go", "tool", "gqlgen", "generate")
+	cmd := execCommand("go", "tool", "gqlgen", "generate")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

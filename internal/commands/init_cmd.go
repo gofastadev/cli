@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/spf13/cobra"
@@ -73,7 +72,7 @@ func runInit() error {
 	fmt.Println("\n🗄  Running database migrations...")
 	dbURL := configutil.BuildMigrationURL()
 	if dbURL != "" {
-		migrateCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
@@ -99,7 +98,7 @@ func runInit() error {
 }
 
 func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := execCommand(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

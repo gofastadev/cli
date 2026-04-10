@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
@@ -69,7 +68,7 @@ func runDoctor() error {
 
 		dbURL := configutil.BuildMigrationURL()
 		if dbURL != "" {
-			cmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "version")
+			cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "version")
 			if err := cmd.Run(); err == nil {
 				printCheck("database", "reachable", true)
 			} else {
@@ -93,7 +92,7 @@ func printCheck(name, info string, ok bool) {
 }
 
 func checkGoVersion() (string, bool) {
-	out, err := exec.Command("go", "version").Output()
+	out, err := execCommand("go", "version").Output()
 	if err != nil {
 		return "not found", false
 	}
@@ -101,7 +100,7 @@ func checkGoVersion() (string, bool) {
 }
 
 func checkMigrateVersion() (string, bool) {
-	out, err := exec.Command("migrate", "--version").CombinedOutput()
+	out, err := execCommand("migrate", "--version").CombinedOutput()
 	if err != nil {
 		return "not found — install: https://github.com/golang-migrate/migrate", false
 	}
@@ -109,7 +108,7 @@ func checkMigrateVersion() (string, bool) {
 }
 
 func checkDockerVersion() (string, bool) {
-	out, err := exec.Command("docker", "--version").Output()
+	out, err := execCommand("docker", "--version").Output()
 	if err != nil {
 		return "not found (optional)", false
 	}
@@ -118,7 +117,7 @@ func checkDockerVersion() (string, bool) {
 
 func checkGoTool(name string) func() (string, bool) {
 	return func() (string, bool) {
-		if err := exec.Command("go", "tool", "-n", name).Run(); err != nil {
+		if err := execCommand("go", "tool", "-n", name).Run(); err != nil {
 			return fmt.Sprintf("not found — run: go get %s", goToolInstallHint(name)), false
 		}
 		return "available (Go tool)", true

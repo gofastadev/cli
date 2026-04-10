@@ -23,10 +23,16 @@ func init() {
 	rootCmd.AddCommand(generate.WireCmd)
 }
 
+// runExecute is the testable core: runs the root command with the given
+// version and returns any error instead of calling os.Exit.
+func runExecute(version string) error {
+	rootCmd.Version = version
+	return rootCmd.Execute()
+}
+
 // Execute runs the root command with the given version string.
 func Execute(version string) {
-	rootCmd.Version = version
-	if err := rootCmd.Execute(); err != nil {
+	if err := runExecute(version); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}

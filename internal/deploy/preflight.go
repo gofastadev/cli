@@ -5,20 +5,23 @@ import (
 	"os/exec"
 )
 
+// Package-level seam for tests.
+var execLookPath = exec.LookPath
+
 // PreflightChecks verifies that all prerequisites are met before deploying.
 func PreflightChecks(cfg *DeployConfig) error {
 	fmt.Println("Running pre-flight checks...")
 	allPassed := true
 
 	// Local tool checks
-	if _, err := exec.LookPath("ssh"); err != nil {
+	if _, err := execLookPath("ssh"); err != nil {
 		printCheck("ssh", "not found — install OpenSSH", false)
 		allPassed = false
 	} else {
 		printCheck("ssh", "available", true)
 	}
 
-	if _, err := exec.LookPath("scp"); err != nil {
+	if _, err := execLookPath("scp"); err != nil {
 		printCheck("scp", "not found — install OpenSSH", false)
 		allPassed = false
 	} else {
@@ -26,7 +29,7 @@ func PreflightChecks(cfg *DeployConfig) error {
 	}
 
 	if cfg.Method == "docker" {
-		if _, err := exec.LookPath("docker"); err != nil {
+		if _, err := execLookPath("docker"); err != nil {
 			printCheck("docker (local)", "not found — required for docker deploy method", false)
 			allPassed = false
 		} else {

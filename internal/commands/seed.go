@@ -2,7 +2,6 @@ package commands
 
 import (
 	"os"
-	"os/exec"
 
 	"github.com/spf13/cobra"
 )
@@ -17,7 +16,7 @@ var seedCmd = &cobra.Command{
 		if fresh {
 			cmdArgs = append(cmdArgs, "--fresh")
 		}
-		c := exec.Command("go", cmdArgs...)
+		c := execCommand("go", cmdArgs...)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		c.Stdin = os.Stdin
