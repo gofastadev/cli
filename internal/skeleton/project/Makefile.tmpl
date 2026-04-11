@@ -1,19 +1,32 @@
-.PHONY: dev up down build wire generate test test-integration lint clean migrate-up migrate-down init{{if .GraphQL}} gqlgen{{end}}
+.PHONY: dev up down serve build wire generate test test-integration lint clean migrate migrate-up migrate-down seed init doctor{{if .GraphQL}} gqlgen{{end}}
 
 # ──────────────────────────────────────────────
 # Development (pick one)
 # ──────────────────────────────────────────────
+#
+# Every target here is a thin wrapper over the `gofasta` CLI so `make` users
+# and `gofasta` users run the same code path. If a target is broken, fix the
+# CLI command — don't fix it in the Makefile.
 
-# Run on host (requires Go + DB running)
+# Run on host with Air hot reload (requires Go + a reachable database).
+# Works with the db-in-Docker workflow: run `make up-db` first.
 dev:
-	go run ./app/main dev
+	gofasta dev
 
-# Run in Docker (requires Docker only)
+# Run everything in Docker (app + db in containers).
 up:
 	docker compose up --build
 
+# Start only the database container (for use with `make dev`).
+up-db:
+	docker compose up db -d
+
 down:
 	docker compose down
+
+# Run the HTTP server directly (no hot reload). Useful for profiling.
+serve:
+	gofasta serve
 
 # ──────────────────────────────────────────────
 # Build & Code Generation
@@ -23,7 +36,7 @@ build:
 	go build -o ./tmp/main ./app/main/
 
 wire:
-	go tool wire ./app/di/
+	gofasta wire
 
 generate:
 	go generate ./...
@@ -47,18 +60,26 @@ test-integration:
 # Database
 # ──────────────────────────────────────────────
 
+migrate: migrate-up
+
 migrate-up:
-	go run ./app/main migrate up
+	gofasta migrate up
 
 migrate-down:
-	go run ./app/main migrate down
+	gofasta migrate down
+
+seed:
+	gofasta seed
 
 # ──────────────────────────────────────────────
-# Setup
+# Setup & diagnostics
 # ──────────────────────────────────────────────
 
 init:
-	go run ./app/main init
+	gofasta init
+
+doctor:
+	gofasta doctor
 
 # ──────────────────────────────────────────────
 # Lint & Cleanup
