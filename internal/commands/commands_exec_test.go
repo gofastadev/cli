@@ -507,20 +507,56 @@ func TestRunNew_GoModInitFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "go mod init")
 }
 
-// Staged: go mod init succeeds, everything after fails. All post-init failures
-// are non-fatal (warnings), so runNew still returns nil. This exercises every
-// warning branch in runNew.
+// Staged: go mod init AND go get gofasta both succeed, everything after
+// fails. The gofasta install is a hard-fail step (see runNew) because the
+// scaffold is unusable without it, so to exercise the post-gofasta warning
+// branches we need the first two exec calls to succeed.
 func TestRunNew_WarningBranches(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 1) // first call (go mod init) ok, everything else fails
+	stagedFakeExec(t, 0, 0, 1) // mod init ok, gofasta install ok, everything else fails
 	err := runNew("warnapp", false)
 	assert.NoError(t, err)
 }
 
 func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 1)
+	stagedFakeExec(t, 0, 0, 1)
 	err := runNew("warnapp", true)
+	assert.NoError(t, err)
+}
+
+// When `go get github.com/gofastadev/gofasta` fails (e.g. sum.golang.org
+// has not yet indexed a freshly-published release), runNew must abort
+// with a clear error instead of silently producing a broken scaffold.
+// The longform "common causes" hint is printed to stdout before returning;
+// the returned error itself is short to keep staticcheck's ST1005 happy.
+func TestRunNew_GofastaInstallFails(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0, 1) // go mod init ok, go get gofasta fails
+	err := runNew("failapp", false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
+	assert.Contains(t, err.Error(), "failed to install")
+}
+
+// When GOFASTA_REPLACE points at a valid-looking local framework dir,
+// runNew should skip the network `go get` and wire the library via a
+// replace directive instead. Uses a fake framework layout (dir + go.mod)
+// that's just enough to satisfy installGofastaFromLocal's existence
+// checks; the underlying `go mod edit` calls are mocked via withFakeExec.
+func TestRunNew_GofastaReplaceHappyPath(t *testing.T) {
+	chdirTemp(t)
+	// Fake framework checkout — absolute path with a go.mod inside.
+	fakeFramework := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+	t.Setenv("GOFASTA_REPLACE", fakeFramework)
+	withFakeExec(t, 0)
+
+	err := runNew("replaceapp", false)
+	assert.NoError(t, err)
+	// The project dir should exist and contain the scaffolded files.
+	_, err = os.Stat(filepath.Join("replaceapp", "config.yaml"))
 	assert.NoError(t, err)
 }
 

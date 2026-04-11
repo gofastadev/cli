@@ -44,6 +44,17 @@ func init() {
 func runDev() error {
 	termcolor.PrintHeader("Starting gofasta development server...")
 
+	// Load .env if present so config overrides (DATABASE_HOST, PORT, etc.)
+	// propagate to both the migration preflight and the Air-spawned app.
+	// Without this, a host-running app can't see the values users put in
+	// .env and silently falls back to config.yaml defaults — which breaks
+	// the "app on host, db in Docker" workflow.
+	if loaded, err := loadDotEnv(".env"); err != nil {
+		termcolor.PrintWarn(".env present but could not be loaded: %v", err)
+	} else if loaded > 0 {
+		termcolor.PrintStep("📋 Loaded %d variables from .env", loaded)
+	}
+
 	// Try running migrations
 	termcolor.PrintStep("🗄  Running migrations...")
 	dbURL := configutil.BuildMigrationURL()

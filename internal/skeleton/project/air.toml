@@ -3,8 +3,15 @@ testdata_dir = "testdata"
 tmp_dir = "tmp"
 
 [build]
-  args_bin = []
-  bin = "./tmp/main"
+  # Pass "serve" as the subcommand so Air actually starts the HTTP server.
+  # The project's root cobra command has no Run function — without this, Air
+  # would launch `./tmp/main` with no arguments, cobra would print the help
+  # block, and the binary would exit with code 0. The dev loop would look
+  # "green" but nothing would be listening on the API port.
+  args_bin = ["serve"]
+  # `entrypoint` is the modern Air v1.60+ option. `bin` is deprecated but kept
+  # for compatibility; newer releases emit a warning otherwise.
+  entrypoint = "./tmp/main"
   cmd = "go build -o ./tmp/main ./app/main/"
   delay = 1000
   exclude_dir = ["assets", "tmp", "vendor", "testdata"]

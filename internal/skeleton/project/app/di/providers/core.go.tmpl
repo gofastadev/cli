@@ -5,9 +5,9 @@ import (
 
 	"github.com/google/wire"
 	"{{.ModulePath}}/app/validators"
-	"github.com/gofastadev/gofasta/pkg/config"
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
+	"github.com/gofastadev/gofasta/pkg/config"
 	"github.com/gofastadev/gofasta/pkg/encryption"
 	"github.com/gofastadev/gofasta/pkg/i18n"
 	"github.com/gofastadev/gofasta/pkg/logger"
@@ -20,10 +20,24 @@ import (
 	"gorm.io/gorm"
 )
 
+// LoadConfig reads configuration for this project.
+//
+// It calls config.LoadConfigWithPrefix with the project's uppercased name
+// as the env var prefix, so variables like {{.ProjectNameUpper}}_DATABASE_HOST
+// are honored. Using the project's own name as the prefix means the .env
+// file, docker-compose, CI configs, and k8s manifests all read variables
+// named after the project itself — no toolkit branding leaks into your
+// infrastructure files. A developer who later replaces pkg/config with a
+// different loader can reuse the same env var names without renaming
+// anything in their deployment configs.
+func LoadConfig() (*config.AppConfig, error) {
+	return config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
+}
+
 // CoreSet provides all core infrastructure.
 var CoreSet = wire.NewSet(
 	// Config
-	config.LoadConfig,
+	LoadConfig,
 	ProvideDBConfig,
 	ProvideLogConfig,
 	ProvideEmailConfig,

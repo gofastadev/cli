@@ -120,7 +120,14 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	data := ProjectData{
 		ProjectName:      projectName,
 		ProjectNameLower: strings.ToLower(projectName),
-		ProjectNameUpper: strings.ToUpper(projectName),
+		// Upper variant is used as an env-var prefix in compose.yaml,
+		// .env.example, k8s deployment.yaml, CI workflows, and the
+		// generated LoadConfig wrapper. Shell variable names only allow
+		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
+		// otherwise a project named "my-app" would produce invalid env
+		// vars like "MY-APP_DATABASE_HOST" and the framework would never
+		// read them.
+		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
 	}
@@ -230,10 +237,55 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	}
 
 	// Install gofasta library as a project dependency.
+	//
+	// This is a LOAD-BEARING step — the scaffold templates import gofasta
+	// packages and won't compile without it. If `go get` fails here (usually
+	// because sum.golang.org hasn't yet indexed a freshly-published gofasta
+	// release; the module proxy and sum DB are eventually-consistent), we
+	// must abort the scaffold rather than silently continuing with a broken
+	// project. A vague warning misleads the developer into thinking the
+	// project is usable.
+	//
+	// Escape hatch: if GOFASTA_REPLACE is set to a filesystem path, we
+	// skip the network fetch and point at that local checkout via a
+	// `replace` directive instead. CI uses this to compile the scaffold
+	// against framework tip-of-main without depending on the Go module
+	// proxy or sum database — which eliminates the "sum DB lag after
+	// release" class of failures entirely. Framework developers can also
+	// use it to test local framework changes against a scaffolded project
+	// before publishing.
 	fmt.Println()
-	termcolor.PrintStep("📦 Installing gofasta library...")
-	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
-		termcolor.PrintWarn("Could not install gofasta library (you may need to add it manually)")
+	if replacePath := os.Getenv("GOFASTA_REPLACE"); replacePath != "" {
+		termcolor.PrintStep("📦 Linking gofasta library from local path: %s", replacePath)
+		if err := installGofastaFromLocal(replacePath); err != nil {
+			return fmt.Errorf("failed to link gofasta from %s: %w", replacePath, err)
+		}
+	} else {
+		termcolor.PrintStep("📦 Installing gofasta library...")
+		if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
+			// Print the longform hint to the user then return a short,
+			// punctuation-clean error that satisfies ST1005. The hint
+			// below duplicates some text in the returned error, but it
+			// prints unconditionally (so it's visible even if the caller
+			// only shows a one-line error summary) and it preserves the
+			// multi-paragraph formatting that would otherwise trip
+			// staticcheck's error-string rules.
+			termcolor.PrintWarn("gofasta library install failed. Common causes:")
+			fmt.Println("  • sum.golang.org hasn't yet indexed a freshly-published release")
+			fmt.Printf("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
+			fmt.Println("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
+			fmt.Println("      generated project to retry after the sum DB catches up.")
+			fmt.Println("  • your network blocks the Go module proxy or github.com.")
+			fmt.Println("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
+			fmt.Println()
+			fmt.Println("If you're developing the gofasta framework itself, set GOFASTA_REPLACE")
+			fmt.Println("to the absolute path of your local gofasta checkout before running")
+			fmt.Println("`gofasta new` to bypass the network fetch entirely:")
+			fmt.Println()
+			fmt.Printf("  GOFASTA_REPLACE=/path/to/gofasta gofasta new %s\n", projectName)
+			fmt.Println()
+			return fmt.Errorf("failed to install github.com/gofastadev/gofasta: %w", err)
+		}
 	}
 
 	// Install cobra for project commands
@@ -376,6 +428,75 @@ func printGetStarted(projectName string) {
 	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
 	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
 	fmt.Println()
+}
+
+// installGofastaFromLocal wires the gofasta library into the scaffolded
+// project via a `replace` directive pointing at the given filesystem path,
+// instead of fetching from the module proxy. Used when GOFASTA_REPLACE is
+// set — typically by CI that has a fresh framework checkout alongside the
+// CLI, or by framework developers testing unreleased changes against the
+// scaffold.
+//
+// The sequence is:
+//  1. Resolve the path to an absolute form so `go mod edit -replace` gets
+//     an unambiguous target regardless of the current working directory.
+//  2. Verify the path exists and contains a go.mod — fail fast with a
+//     clear error if the caller mistyped it.
+//  3. Add a require for github.com/gofastadev/gofasta with a placeholder
+//     pseudo-version. `go mod tidy` (run later in the scaffold flow) will
+//     rewrite this to the actual v0.0.0-... pseudo-version that matches
+//     the local checkout. Without a require, the replace directive would
+//     be dangling and Go would refuse it.
+//  4. Add the replace directive pointing at the absolute local path.
+//
+// After this function returns, the subsequent `go mod tidy` step in the
+// scaffold flow will pick up the gofasta imports from the generated
+// templates, resolve them through the replace, and download the
+// transitive deps it needs (uuid, go-playground/validator, etc.) via the
+// normal proxy path.
+func installGofastaFromLocal(path string) error {
+	// filepath.Abs only fails if os.Getwd() fails, which happens when the
+	// current directory has been deleted out from under us — in which case
+	// everything else in this scaffold is already broken and stat below
+	// will surface a clearer error anyway. Ignore the error intentionally.
+	abs, _ := filepath.Abs(path)
+	info, err := os.Stat(abs)
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", abs)
+	}
+	if _, err := os.Stat(filepath.Join(abs, "go.mod")); err != nil {
+		return fmt.Errorf("%s does not contain a go.mod — is this a gofasta checkout?", abs)
+	}
+
+	// Placeholder require — tidy will rewrite it.
+	if err := runCmdSilent("go", "mod", "edit",
+		"-require", "github.com/gofastadev/gofasta@v0.0.0"); err != nil {
+		return fmt.Errorf("go mod edit -require: %w", err)
+	}
+	if err := runCmdSilent("go", "mod", "edit",
+		"-replace", "github.com/gofastadev/gofasta="+abs); err != nil {
+		return fmt.Errorf("go mod edit -replace: %w", err)
+	}
+	return nil
+}
+
+// envVarSafeUpper returns name uppercased with every non-[A-Z0-9_] character
+// stripped. Used to derive a shell-variable-safe prefix from a project name
+// that may contain dashes, dots, or other characters legal in go.mod paths
+// but illegal in shell env var names.
+func envVarSafeUpper(name string) string {
+	upper := strings.ToUpper(name)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			return r
+		default:
+			return -1
+		}
+	}, upper)
 }
 
 func runCmdSilent(name string, args ...string) error {
