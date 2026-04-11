@@ -186,12 +186,12 @@ func TestReadBinaryVersion_ExecError(t *testing.T) {
 func TestUpgradeViaGoInstall_Success(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
 	withFakeExecVersion(t, 0, "v2.0.0")
-	assert.NoError(t, upgradeViaGoInstall("2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
 }
 
 func TestUpgradeViaGoInstall_InstallFailure(t *testing.T) {
 	withFakeExec(t, 1)
-	err := upgradeViaGoInstall("2.0.0")
+	err := upgradeViaGoInstall("v2.0.0", "2.0.0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "go install failed")
 }
@@ -199,7 +199,7 @@ func TestUpgradeViaGoInstall_InstallFailure(t *testing.T) {
 func TestUpgradeViaGoInstall_VersionMismatch(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
 	withFakeExecVersion(t, 0, "v1.0.0")
-	err := upgradeViaGoInstall("2.0.0")
+	err := upgradeViaGoInstall("v2.0.0", "2.0.0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reports version")
 }
@@ -216,7 +216,7 @@ func TestUpgradeViaGoInstall_TargetPathError(t *testing.T) {
 	withFakeExec(t, 0)
 	// upgradeViaGoInstall swallows the goInstallTargetPath error and prints
 	// a warning rather than returning it.
-	assert.NoError(t, upgradeViaGoInstall("2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
 }
 
 func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
@@ -230,7 +230,7 @@ func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
 	withFakeExec(t, 0)
 	// upgradeViaGoInstall swallows the readBinaryVersion error and prints a
 	// warning rather than failing. Assert no error.
-	assert.NoError(t, upgradeViaGoInstall("2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
 }
 
 // --- upgradeViaBinary ---
