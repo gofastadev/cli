@@ -526,15 +526,17 @@ func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 }
 
 // When `go get github.com/gofastadev/gofasta` fails (e.g. sum.golang.org
-// has not yet indexed a freshly-published release), runNew must abort with
-// a clear error instead of silently producing a broken scaffold.
+// has not yet indexed a freshly-published release), runNew must abort
+// with a clear error instead of silently producing a broken scaffold.
+// The longform "common causes" hint is printed to stdout before returning;
+// the returned error itself is short to keep staticcheck's ST1005 happy.
 func TestRunNew_GofastaInstallFails(t *testing.T) {
 	chdirTemp(t)
 	stagedFakeExec(t, 0, 1) // go mod init ok, go get gofasta fails
 	err := runNew("failapp", false)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
-	assert.Contains(t, err.Error(), "sum.golang.org", "error should mention sum DB lag as a likely cause")
+	assert.Contains(t, err.Error(), "failed to install")
 }
 
 // --- runRoutes ---

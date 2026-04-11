@@ -218,6 +218,33 @@ func TestInstallGofastaFromLocal_EditRequireFails(t *testing.T) {
 	assert.Contains(t, err.Error(), "go mod edit")
 }
 
+// Covers the case where the initial `go mod edit -require` succeeds but
+// the subsequent `-replace` call fails. Staged fake exec returns 0 then 1.
+func TestInstallGofastaFromLocal_EditReplaceFails(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	fakeFramework := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+	stagedFakeExec(t, 0, 1) // require ok, replace fails
+
+	err := installGofastaFromLocal(fakeFramework)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "-replace")
+}
+
+// Ensures runNew surfaces a clear error when GOFASTA_REPLACE points at a
+// bogus path. The scaffold should abort at the install step rather than
+// producing a broken project.
+func TestRunNew_GofastaReplaceBadPath(t *testing.T) {
+	chdirTemp(t)
+	t.Setenv("GOFASTA_REPLACE", "/definitely/not/a/real/gofasta/checkout")
+	withFakeExec(t, 0) // go mod init still succeeds
+	err := runNew("badreplace", false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "link gofasta from")
+}
+
 // setupGoMod writes a minimal go.mod in the current directory so
 // subsequent `go mod edit` calls have something to operate on. Used by
 // the installGofastaFromLocal tests which need a project-like working
