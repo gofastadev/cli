@@ -201,10 +201,10 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		fmt.Println("   .env")
 	}
 
-	// Install gofasta framework as dependency
-	fmt.Println("\n📦 Installing gofasta framework...")
+	// Install gofasta library as a project dependency.
+	fmt.Println("\n📦 Installing gofasta library...")
 	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
-		fmt.Println("   ⚠ Could not install gofasta (you may need to add it manually)")
+		fmt.Println("   ⚠ Could not install gofasta library (you may need to add it manually)")
 	}
 
 	// Install cobra for project commands

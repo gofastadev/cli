@@ -142,7 +142,7 @@ Files **without** `.tmpl` are copied as-is.
 
 - Run `golangci-lint run` before submitting a PR. The repository's `.golangci.yml` configures all required linters.
 - Follow standard Go conventions (`gofmt`, `go vet`).
-- Keep the CLI's dependencies minimal — it should not import the gofasta framework library.
+- Keep the CLI's dependencies minimal — it should not import the `github.com/gofastadev/gofasta` library.
 - Template files should produce clean, readable Go code.
 
 ## Reporting Security Issues
