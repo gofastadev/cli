@@ -2,6 +2,8 @@ package providers
 
 import (
 	"log/slog"
+	"os"
+	"strings"
 
 	"github.com/google/wire"
 	"{{.ModulePath}}/app/validators"
@@ -20,13 +22,62 @@ import (
 	"gorm.io/gorm"
 )
 
-// LoadConfig reads configuration for this project. It calls the framework's
-// LoadConfigWithPrefix with the project-specific env var prefix so variables
-// like {{.ProjectNameUpper}}_DATABASE_HOST are honored instead of the default
-// GOFASTA_* prefix. This lets multiple gofasta projects coexist on the same
-// host without clobbering each other's env vars.
+// projectEnvPrefix is the shell-safe uppercase env var prefix for this
+// project (derived from the project name at scaffold time). All config
+// overrides for this project are expected to use this prefix — e.g.
+// {{.ProjectNameUpper}}_DATABASE_HOST, {{.ProjectNameUpper}}_DATABASE_PORT.
+const projectEnvPrefix = "{{.ProjectNameUpper}}_"
+
+// LoadConfig reads configuration for this project from config.yaml plus
+// environment variables prefixed with {{.ProjectNameUpper}}_.
+//
+// The upstream framework's config.LoadConfig hardcodes the "GOFASTA_" prefix,
+// so we bridge the two by shimming project-prefixed vars to GOFASTA_* vars
+// before calling it. This keeps the skeleton working against any framework
+// version (no cross-repo release coupling) while letting users set intuitive
+// project-specific env vars like {{.ProjectNameUpper}}_DATABASE_HOST in their
+// .env file, docker-compose, and k8s manifests.
+//
+// Shell wins: if both {{.ProjectNameUpper}}_FOO and GOFASTA_FOO are already
+// set, GOFASTA_FOO is left alone. The shim never overwrites an existing
+// GOFASTA_* var — it only fills in values the framework would otherwise
+// not see.
 func LoadConfig() (*config.AppConfig, error) {
-	return config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
+	bridgeProjectEnvToGofasta(projectEnvPrefix)
+	return config.LoadConfig()
+}
+
+// bridgeProjectEnvToGofasta walks the process environment and copies every
+// var prefixed with `prefix` over to an equivalent GOFASTA_-prefixed var,
+// so the framework's hardcoded-prefix reader can see them. Exported for
+// reuse from cmd/migrate.go and cmd/seed.go.
+func bridgeProjectEnvToGofasta(prefix string) {
+	if prefix == "" || prefix == "GOFASTA_" {
+		return
+	}
+	for _, kv := range os.Environ() {
+		idx := strings.IndexByte(kv, '=')
+		if idx <= 0 {
+			continue
+		}
+		key := kv[:idx]
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		target := "GOFASTA_" + strings.TrimPrefix(key, prefix)
+		if _, exists := os.LookupEnv(target); exists {
+			continue
+		}
+		_ = os.Setenv(target, kv[idx+1:])
+	}
+}
+
+// BridgeProjectEnv is the exported entry point for cmd/* subcommands that
+// need to translate this project's env vars before calling the framework's
+// LoadConfig directly (e.g. cmd/migrate.go builds a DSN without going
+// through the DI container).
+func BridgeProjectEnv() {
+	bridgeProjectEnvToGofasta(projectEnvPrefix)
 }
 
 // CoreSet provides all core infrastructure.

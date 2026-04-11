@@ -5,9 +5,10 @@ import (
 	"os"
 	"os/exec"
 
+	"{{.ModulePath}}/app/di/providers"
+	"{{.ModulePath}}/db/seeds"
 	"github.com/gofastadev/gofasta/pkg/config"
 	"github.com/gofastadev/gofasta/pkg/logger"
-	"{{.ModulePath}}/db/seeds"
 	"github.com/spf13/cobra"
 )
 
@@ -28,7 +29,8 @@ func init() {
 }
 
 func runSeed(fresh bool) error {
-	cfg, err := config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
+	providers.BridgeProjectEnv()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		return err
 	}

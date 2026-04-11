@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 
+	"{{.ModulePath}}/app/di/providers"
 	"github.com/gofastadev/gofasta/pkg/config"
 	"github.com/gofastadev/gofasta/pkg/logger"
 	"github.com/spf13/cobra"
@@ -39,7 +40,8 @@ func init() {
 }
 
 func runMigration(direction string) error {
-	cfg, err := config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
+	providers.BridgeProjectEnv()
+	cfg, err := config.LoadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}
