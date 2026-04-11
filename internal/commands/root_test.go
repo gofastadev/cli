@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -151,6 +152,72 @@ func TestAssignGroups_SetsKnownCommandGroups(t *testing.T) {
 			assert.Equal(t, id, c.GroupID, "command %q has wrong group", c.Name())
 		}
 	}
+}
+
+func TestPrintRootHelp_SkipsEmptyGroupAndSortsMultipleUngrouped(t *testing.T) {
+	// Exercise two branches of printRootHelp that the other tests don't reach:
+	//   1. The empty-group `continue` — fires when a group in groupOrder has
+	//      zero member commands. We temporarily clear the GroupID on every
+	//      command in the Shell integration group so groupShell is empty.
+	//   2. The ungrouped sort comparator — sort.SliceStable's `less` closure
+	//      is only invoked when there are ≥2 items to compare. A single
+	//      ungrouped command skips the closure entirely, so we add two.
+	rootCmd.InitDefaultHelpCmd()
+	rootCmd.InitDefaultCompletionCmd()
+	assignGroups()
+
+	// Temporarily blank out groupShell membership.
+	saved := map[string]string{}
+	for _, c := range rootCmd.Commands() {
+		if c.GroupID == groupShell {
+			saved[c.Name()] = c.GroupID
+			c.GroupID = ""
+		}
+	}
+	t.Cleanup(func() {
+		for name, id := range saved {
+			for _, c := range rootCmd.Commands() {
+				if c.Name() == name {
+					c.GroupID = id
+				}
+			}
+		}
+	})
+
+	// Two ungrouped commands out of alphabetical order so the sort has work
+	// to do and the comparator closure actually runs.
+	zulu := &cobra.Command{
+		Use:   "zulu-ephemeral",
+		Short: "throwaway — sorts last",
+		Run:   func(_ *cobra.Command, _ []string) {},
+	}
+	alpha := &cobra.Command{
+		Use:   "alpha-ephemeral",
+		Short: "throwaway — sorts first",
+		Run:   func(_ *cobra.Command, _ []string) {},
+	}
+	rootCmd.AddCommand(zulu, alpha)
+	t.Cleanup(func() {
+		rootCmd.RemoveCommand(zulu)
+		rootCmd.RemoveCommand(alpha)
+	})
+
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	t.Cleanup(func() { rootCmd.SetOut(nil) })
+	printRootHelp(rootCmd)
+
+	out := buf.String()
+	// Empty groupShell must not render its heading.
+	assert.NotContains(t, out, "Shell integration:",
+		"group with zero commands should be skipped entirely")
+	// Both ungrouped commands must appear, and alpha before zulu.
+	alphaIdx := strings.Index(out, "alpha-ephemeral")
+	zuluIdx := strings.Index(out, "zulu-ephemeral")
+	assert.NotEqual(t, -1, alphaIdx, "alpha-ephemeral missing from output")
+	assert.NotEqual(t, -1, zuluIdx, "zulu-ephemeral missing from output")
+	assert.Less(t, alphaIdx, zuluIdx,
+		"ungrouped commands should be sorted alphabetically (alpha before zulu)")
 }
 
 func TestPrintRootHelp_RendersUngroupedAndSkipsHidden(t *testing.T) {
