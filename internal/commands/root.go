@@ -187,6 +187,24 @@ func assignGroups() {
 	}
 }
 
+// fprintln / fprintf / fprint are internal wrappers that swallow the write
+// errors returned by fmt.Fprint*. Progress output to stdout is fire-and-
+// forget — if the writer has gone away there is nothing actionable to do,
+// and errcheck flags every unhandled return value. Using these wrappers
+// keeps the help-rendering code readable instead of prefixing every line
+// with `_, _ =`.
+func fprintln(w io.Writer, a ...any) {
+	_, _ = fmt.Fprintln(w, a...)
+}
+
+func fprintf(w io.Writer, format string, a ...any) {
+	_, _ = fmt.Fprintf(w, format, a...)
+}
+
+func fprint(w io.Writer, a ...any) {
+	_, _ = fmt.Fprint(w, a...)
+}
+
 // printRootHelp renders a grouped, nested command listing for the root
 // command. The output mirrors whitepaper §4.2 so users see the same
 // hierarchy in the terminal and in the docs. Subcommands are indented
@@ -198,13 +216,13 @@ func printRootHelp(cmd *cobra.Command) {
 
 	// Header — long description, not short, so the root help reads like
 	// the opening paragraph of the whitepaper.
-	fmt.Fprintln(w, cmd.Long)
-	fmt.Fprintln(w)
+	fprintln(w, cmd.Long)
+	fprintln(w)
 
-	fmt.Fprintln(w, termcolor.CBold("Usage:"))
-	fmt.Fprintf(w, "  %s [flags]\n", cmd.CommandPath())
-	fmt.Fprintf(w, "  %s [command]\n", cmd.CommandPath())
-	fmt.Fprintln(w)
+	fprintln(w, termcolor.CBold("Usage:"))
+	fprintf(w, "  %s [flags]\n", cmd.CommandPath())
+	fprintf(w, "  %s [command]\n", cmd.CommandPath())
+	fprintln(w)
 
 	// Group top-level commands by GroupID.
 	byGroup := map[string][]*cobra.Command{}
@@ -227,27 +245,27 @@ func printRootHelp(cmd *cobra.Command) {
 			continue
 		}
 		sort.SliceStable(cmds, func(i, j int) bool { return cmds[i].Name() < cmds[j].Name() })
-		fmt.Fprintln(w, termcolor.CBold(termcolor.CBrand(groupTitles[id]+":")))
+		fprintln(w, termcolor.CBold(termcolor.CBrand(groupTitles[id]+":")))
 		printCommandList(w, cmds, 1)
-		fmt.Fprintln(w)
+		fprintln(w)
 	}
 
 	if len(ungrouped) > 0 {
 		sort.SliceStable(ungrouped, func(i, j int) bool { return ungrouped[i].Name() < ungrouped[j].Name() })
-		fmt.Fprintln(w, termcolor.CBold("Additional commands:"))
+		fprintln(w, termcolor.CBold("Additional commands:"))
 		printCommandList(w, ungrouped, 1)
-		fmt.Fprintln(w)
+		fprintln(w)
 	}
 
 	// Flags block — use cobra's existing rendering so formatting stays
 	// consistent with subcommand help.
 	if flagsUsage := cmd.LocalFlags().FlagUsages(); flagsUsage != "" {
-		fmt.Fprintln(w, termcolor.CBold("Flags:"))
-		fmt.Fprint(w, flagsUsage)
-		fmt.Fprintln(w)
+		fprintln(w, termcolor.CBold("Flags:"))
+		fprint(w, flagsUsage)
+		fprintln(w)
 	}
 
-	fmt.Fprintf(w, "Use \"%s\" for more information about a command.\n",
+	fprintf(w, "Use \"%s\" for more information about a command.\n",
 		termcolor.CBold(cmd.CommandPath()+" [command] --help"))
 }
 
@@ -269,7 +287,7 @@ func printCommandList(w io.Writer, cmds []*cobra.Command, depth int) {
 func walkAndWrite(tw *tabwriter.Writer, cmds []*cobra.Command, depth int) {
 	indent := strings.Repeat("  ", depth)
 	for _, c := range cmds {
-		fmt.Fprintf(tw, "%s%s\t%s\n", indent, termcolor.CBold(c.Name()), termcolor.CDim(c.Short))
+		fprintf(tw, "%s%s\t%s\n", indent, termcolor.CBold(c.Name()), termcolor.CDim(c.Short))
 		children := visibleSubcommands(c)
 		if len(children) > 0 {
 			sort.SliceStable(children, func(i, j int) bool { return children[i].Name() < children[j].Name() })
