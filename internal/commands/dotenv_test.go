@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -131,6 +132,34 @@ LOADENV_GOOD=ok
 		_ = os.Unsetenv("LOADENV_GOOD")
 		_ = os.Unsetenv("LOADENV_WHITESPACE")
 	})
+}
+
+func TestParseDotEnvLine_EmptyKeyAfterTrim(t *testing.T) {
+	// A line like "   =value" trims to "=value". The `=` is at position 0
+	// so eq==0 and the function returns ok=false via the eq<=0 guard.
+	// Separately, a line like "\"\"=value" would have a key that's empty
+	// after trim but non-empty before. Force exactly that shape.
+	//
+	// Simpler: a line where the pre-`=` segment is all whitespace. After
+	// TrimSpace, key is empty → the `if key == "" ` branch fires.
+	_, _, ok := parseDotEnvLine("   \t  =val")
+	assert.False(t, ok, "line with all-whitespace key should be rejected")
+}
+
+func TestLoadDotEnv_ScannerError(t *testing.T) {
+	// bufio.Scanner returns ErrTooLong when a single token exceeds the
+	// buffer (default max 64KB). Write a line longer than that to force
+	// scanner.Err() to fire and loadDotEnv to surface the error.
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	giant := "BIG_LINE=" + strings.Repeat("x", 200000) + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(giant), 0o644))
+	_ = os.Unsetenv("BIG_LINE")
+	t.Cleanup(func() { _ = os.Unsetenv("BIG_LINE") })
+
+	_, err := loadDotEnv(path)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "read")
 }
 
 func TestLoadDotEnv_UnreadableFile(t *testing.T) {

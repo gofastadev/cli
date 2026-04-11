@@ -2,9 +2,11 @@ package commands
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestResolveProjectPaths_SimpleName(t *testing.T) {
@@ -90,6 +92,69 @@ func TestNewCmd_RequiresArgs(t *testing.T) {
 	err := rootCmd.Execute()
 	assert.Error(t, err)
 	rootCmd.SetArgs(nil)
+}
+
+// envVarSafeUpper strips illegal shell-var characters from a project name
+// so dashes, dots, and other punctuation don't produce invalid env var
+// prefixes like MY-APP_DATABASE_HOST. Covers the "default" branch of the
+// character-class switch which maps illegal runes to -1 (dropped).
+func TestEnvVarSafeUpper(t *testing.T) {
+	cases := map[string]string{
+		"myapp":      "MYAPP",
+		"MYAPP":      "MYAPP",
+		"my-app":     "MYAPP",
+		"my.app":     "MYAPP",
+		"my app":     "MYAPP",
+		"my-app.v2":  "MYAPPV2",
+		"my_app":     "MY_APP", // underscore IS legal in env var names
+		"acme_co-v3": "ACME_COV3",
+		"":           "",
+		"123app":     "123APP",
+		"---":        "",
+		"a@b#c$":     "ABC",
+	}
+	for in, want := range cases {
+		got := envVarSafeUpper(in)
+		if got != want {
+			t.Errorf("envVarSafeUpper(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// runNew MkdirAll error — the target project directory's parent is a
+// regular file, not a dir. os.MkdirAll fails with ENOTDIR. Uses an
+// absolute path so resolveProjectPaths preserves the full path (a
+// relative path would be collapsed to just the base segment).
+func TestRunNew_MkdirAllError(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	// Make "parent" a regular file so MkdirAll("<dir>/parent/proj") fails
+	// because one of its path components isn't a directory.
+	parentFile := filepath.Join(dir, "parent")
+	require.NoError(t, os.WriteFile(parentFile, []byte("x"), 0o644))
+
+	err := runNew(filepath.Join(parentFile, "proj"), false)
+	assert.Error(t, err)
+}
+
+// runNew Chdir error — pre-create the target directory with no-execute
+// permission so os.MkdirAll sees it already exists and returns nil, then
+// os.Chdir fails with EACCES because the directory has no execute bit.
+// Uses an absolute path for the same reason as the MkdirAll test.
+func TestRunNew_ChdirError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based access denial")
+	}
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	proj := filepath.Join(dir, "noaccess")
+	require.NoError(t, os.MkdirAll(proj, 0o000))
+	t.Cleanup(func() { _ = os.Chmod(proj, 0o755) })
+
+	err := runNew(proj, false)
+	assert.Error(t, err)
 }
 
 func TestProjectData_Fields(t *testing.T) {

@@ -116,7 +116,7 @@ func projectPrefix() string {
 	if err != nil {
 		return ""
 	}
-	for _, line := range strings.Split(string(content), "\n") {
+	for line := range strings.SplitSeq(string(content), "\n") {
 		line = strings.TrimSpace(line)
 		if !strings.HasPrefix(line, "module ") {
 			continue
