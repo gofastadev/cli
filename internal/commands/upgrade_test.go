@@ -20,7 +20,7 @@ import (
 type errReader struct{}
 
 func (errReader) Read(_ []byte) (int, error) { return 0, fmt.Errorf("simulated read error") }
-func (errReader) Close() error                { return nil }
+func (errReader) Close() error               { return nil }
 
 // swapHTTP replaces httpGet and restores at cleanup.
 func swapHTTP(t *testing.T, fn func(url string) (*http.Response, error)) {

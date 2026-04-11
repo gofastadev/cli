@@ -124,13 +124,28 @@ func C(code, s string) string {
 	return code + s + Reset
 }
 
-// Semantic wrappers — short names because they appear a lot.
-func CBold(s string) string   { return C(Bold, s) }
-func CDim(s string) string    { return C(Dim, s) }
-func CGreen(s string) string  { return C(Green, s) }
+// CBold wraps s in a bold ANSI escape when color is enabled.
+func CBold(s string) string { return C(Bold, s) }
+
+// CDim wraps s in a dim ANSI escape when color is enabled. Used for paths
+// and secondary text that should recede visually.
+func CDim(s string) string { return C(Dim, s) }
+
+// CGreen wraps s in a green ANSI escape when color is enabled. Used for
+// success markers and completed-operation lines.
+func CGreen(s string) string { return C(Green, s) }
+
+// CYellow wraps s in a yellow ANSI escape when color is enabled. Used for
+// warnings and non-fatal issues the user should notice.
 func CYellow(s string) string { return C(Yellow, s) }
-func CRed(s string) string    { return C(Red, s) }
-func CBlue(s string) string   { return C(Blue, s) }
+
+// CRed wraps s in a red ANSI escape when color is enabled. Used for errors
+// and failed checks.
+func CRed(s string) string { return C(Red, s) }
+
+// CBlue wraps s in a blue ANSI escape when color is enabled. Used for URLs
+// and references to external resources.
+func CBlue(s string) string { return C(Blue, s) }
 
 // CBrand renders s in gofasta Go Cyan, preferring truecolor and falling
 // back to 256-color when the terminal only supports that.
