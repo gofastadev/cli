@@ -42,7 +42,12 @@ services:
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}"]
+      # pg_isready must target the actual database name — without -d it tries
+      # to connect to a database named after the user, which is wrong whenever
+      # POSTGRES_DB differs from POSTGRES_USER and fills the log with
+      # "database <user> does not exist" FATALs until the retry budget is used
+      # up (or forever, if the container restarts).
+      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}} -d ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}_dev}"]
       interval: 2s
       timeout: 5s
       retries: 10

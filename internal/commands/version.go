@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -30,8 +31,24 @@ func init() {
 }
 
 func runVersion() error {
-	fmt.Printf("gofasta v%s\n", rootCmd.Version)
+	fmt.Printf("gofasta %s\n", displayVersion(rootCmd.Version))
 	fmt.Printf("Go:      %s\n", runtime.Version())
 	fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
 	return nil
+}
+
+// displayVersion formats a raw version string for human display. Release
+// tags arrive as "v0.1.4" from runtime/debug and should render as-is;
+// ldflags-injected tags may or may not carry the "v"; dev builds arrive
+// as "dev" or "(devel)". The output always has a leading "v" for
+// semver-like strings and is passed through unchanged for anything else.
+func displayVersion(v string) string {
+	switch v {
+	case "", "dev", "(devel)":
+		return v
+	}
+	if strings.HasPrefix(v, "v") {
+		return v
+	}
+	return "v" + v
 }

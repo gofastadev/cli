@@ -97,11 +97,10 @@ func runInit() error {
 
 	fmt.Println()
 	termcolor.PrintSuccess("Project initialized successfully!")
-	fmt.Println()
-	termcolor.PrintHeader("Next steps:")
-	fmt.Printf("  %s              %s\n", termcolor.CBold("make dev"), termcolor.CDim("# Run on host with hot reload"))
-	fmt.Printf("  %s               %s\n", termcolor.CBold("make up"), termcolor.CDim("# Run in Docker"))
-	fmt.Printf("  %s   %s\n", termcolor.CBold("gofasta g s Product"), termcolor.CDim("# Scaffold a new resource"))
+	// Reuse the same onboarding block that `gofasta new` prints so fresh
+	// projects and cloned projects see identical next-steps. Pass an empty
+	// name to skip the `cd` line — init runs from inside the project dir.
+	printGetStarted("")
 	return nil
 }
 

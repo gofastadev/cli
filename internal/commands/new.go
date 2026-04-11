@@ -284,17 +284,98 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	fmt.Println()
 	termcolor.PrintSuccess("Project %s created successfully!", termcolor.CBold(projectName))
-	fmt.Println()
-	termcolor.PrintHeader("Get started:")
-	fmt.Printf("  cd %s\n", projectName)
-	fmt.Printf("  %s                        %s\n", termcolor.CBold("make up"), termcolor.CDim("# Start with Docker (recommended)"))
-	fmt.Println("  # or")
-	fmt.Printf("  %s        %s\n", termcolor.CBold("docker compose up db -d"), termcolor.CDim("# Start DB only"))
-	fmt.Printf("  %s                       %s\n", termcolor.CBold("make dev"), termcolor.CDim("# Run on host with hot reload"))
-	fmt.Println()
-	termcolor.PrintHeader("Generate resources:")
-	fmt.Printf("  %s\n", termcolor.CBold("gofasta g s Product name:string price:float"))
+	printGetStarted(projectName)
 	return nil
+}
+
+// printGetStarted renders the post-scaffold onboarding block. Extracted so
+// `gofasta init` can reuse the exact same messaging — developers should see
+// the same next-steps regardless of whether they created a fresh project or
+// cloned an existing one. Pass an empty projectName to skip the `cd` line
+// (useful for init, which runs from inside the project directory).
+func printGetStarted(projectName string) {
+	fmt.Println()
+	termcolor.PrintHeader("Next steps:")
+	fmt.Println()
+	if projectName != "" {
+		fmt.Printf("  %s\n", termcolor.CBold("cd "+projectName))
+		fmt.Println()
+	}
+
+	// --- Development workflows ---------------------------------------------
+	//
+	// Three workflows, most-containerized first. Each is labeled with its
+	// tradeoff so the developer can pick without having to read the docs.
+	// gofasta commands are shown first; `make` targets are demoted to an
+	// "Also available as" block at the bottom.
+	termcolor.PrintHeader("Pick a development workflow:")
+	fmt.Println()
+
+	fmt.Printf("  %s  %s%s\n",
+		termcolor.CBold("A."),
+		termcolor.CBold("Everything in Docker"),
+		termcolor.CDim(" — fully containerized, zero host setup"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up -d        "), termcolor.CDim("# build + start app and db"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose logs -f app  "), termcolor.CDim("# tail application logs"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose down         "), termcolor.CDim("# stop everything"))
+	fmt.Println()
+
+	fmt.Printf("  %s  %s%s\n",
+		termcolor.CBold("B."),
+		termcolor.CBold("App on host, db in Docker"),
+		termcolor.CDim(" — fastest iteration, Air hot reload"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up db -d     "), termcolor.CDim("# start only the database"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# run app with hot reload + auto-migrate"))
+	fmt.Println()
+
+	fmt.Printf("  %s  %s%s\n",
+		termcolor.CBold("C."),
+		termcolor.CBold("Everything on host"),
+		termcolor.CDim(" — you manage your own database"))
+	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# expects db at the address in config.yaml"))
+	fmt.Println()
+
+	// --- Common tasks -------------------------------------------------------
+	termcolor.PrintHeader("Common tasks:")
+	fmt.Println()
+	tasks := [][2]string{
+		{"gofasta g scaffold Product name:string price:float", "generate a full REST resource, auto-wired end-to-end"},
+		{"gofasta g model Product name:string price:float", "just the model + matching migration"},
+		{"gofasta g job cleanup-tokens \"0 0 0 * * *\"", "scheduled cron job"},
+		{"gofasta g task send-welcome-email", "async background task for the queue worker"},
+		{"gofasta migrate up", "apply all pending database migrations"},
+		{"gofasta migrate down", "roll back the most recent migration"},
+		{"gofasta seed", "run seed functions (--fresh drops + re-migrates first)"},
+		{"gofasta routes", "list every registered REST route"},
+		{"gofasta swagger", "regenerate OpenAPI docs from code annotations"},
+		{"gofasta doctor", "check prerequisites and project health"},
+	}
+	for _, ln := range tasks {
+		fmt.Printf("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
+	}
+	fmt.Println()
+
+	// --- Make shortcuts (thin wrappers over the gofasta commands above) ---
+	termcolor.PrintHeader("Also available as Make targets:")
+	fmt.Println()
+	makeShortcuts := [][2]string{
+		{"make up", "docker compose up -d"},
+		{"make down", "docker compose down"},
+		{"make dev", "gofasta dev"},
+		{"make migrate", "gofasta migrate up"},
+		{"make seed", "gofasta seed"},
+	}
+	for _, ln := range makeShortcuts {
+		fmt.Printf("  %-14s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("→ "+ln[1]))
+	}
+	fmt.Println()
+
+	// --- Where to go next ---------------------------------------------------
+	termcolor.PrintHeader("Full command reference:")
+	fmt.Println()
+	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
+	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
+	fmt.Println()
 }
 
 func runCmdSilent(name string, args ...string) error {
