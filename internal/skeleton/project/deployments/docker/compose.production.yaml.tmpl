@@ -11,18 +11,18 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     environment:
-      - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
-      - {{.ProjectNameUpper}}_DATABASE_HOST=db
-      - {{.ProjectNameUpper}}_DATABASE_PORT=5432
-      - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
-      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
-      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
-      - {{.ProjectNameUpper}}_DATABASE_SSLMODE=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}
-      - {{.ProjectNameUpper}}_LOG_LEVEL=${{"{"}}{{.ProjectNameUpper}}_LOG_LEVEL:-info}
-      - {{.ProjectNameUpper}}_LOG_FORMAT=${{"{"}}{{.ProjectNameUpper}}_LOG_FORMAT:-json}
-      - {{.ProjectNameUpper}}_EMAIL_PROVIDER=${{"{"}}{{.ProjectNameUpper}}_EMAIL_PROVIDER:-smtp}
-      - {{.ProjectNameUpper}}_EMAIL_FROM_NAME=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_NAME}
-      - {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS}
+      - GOFASTA_DATABASE_DRIVER=${{"{"}}GOFASTA_DATABASE_DRIVER:-postgres}
+      - GOFASTA_DATABASE_HOST=db
+      - GOFASTA_DATABASE_PORT=5432
+      - GOFASTA_DATABASE_USER=${{"{"}}GOFASTA_DATABASE_USER}
+      - GOFASTA_DATABASE_PASSWORD=${{"{"}}GOFASTA_DATABASE_PASSWORD}
+      - GOFASTA_DATABASE_NAME=${{"{"}}GOFASTA_DATABASE_NAME}
+      - GOFASTA_DATABASE_SSLMODE=${{"{"}}GOFASTA_DATABASE_SSLMODE:-disable}
+      - GOFASTA_LOG_LEVEL=${{"{"}}GOFASTA_LOG_LEVEL:-info}
+      - GOFASTA_LOG_FORMAT=${{"{"}}GOFASTA_LOG_FORMAT:-json}
+      - GOFASTA_EMAIL_PROVIDER=${{"{"}}GOFASTA_EMAIL_PROVIDER:-smtp}
+      - GOFASTA_EMAIL_FROM_NAME=${{"{"}}GOFASTA_EMAIL_FROM_NAME}
+      - GOFASTA_EMAIL_FROM_ADDRESS=${{"{"}}GOFASTA_EMAIL_FROM_ADDRESS}
     depends_on:
       db:
         condition: service_healthy
@@ -36,13 +36,13 @@ services:
     image: postgres:16-alpine
     container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
     environment:
-      POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
-      POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
-      POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+      POSTGRES_USER: ${{"{"}}GOFASTA_DATABASE_USER}
+      POSTGRES_PASSWORD: ${{"{"}}GOFASTA_DATABASE_PASSWORD}
+      POSTGRES_DB: ${{"{"}}GOFASTA_DATABASE_NAME}
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${{"{"}}GOFASTA_DATABASE_USER}"]
       interval: 5s
       timeout: 5s
       retries: 5

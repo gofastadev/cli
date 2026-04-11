@@ -18,7 +18,7 @@ EXPOSE ${PORT:-8080}
 
 CMD ["sh", "-c", "\
     echo '==> Running migrations...' && \
-    migrate -database \"${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}?sslmode=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"${{"{"}}GOFASTA_DATABASE_DRIVER:-postgres}://${{"{"}}GOFASTA_DATABASE_USER}:${{"{"}}GOFASTA_DATABASE_PASSWORD}@${{"{"}}GOFASTA_DATABASE_HOST}:${{"{"}}GOFASTA_DATABASE_PORT}/${{"{"}}GOFASTA_DATABASE_NAME}?sslmode=${{"{"}}GOFASTA_DATABASE_SSLMODE:-disable}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
     echo '==> Starting dev server with hot reload...' && \
     echo '    REST:       http://localhost:'${PORT:-8080} && \
 {{- if .GraphQL}}

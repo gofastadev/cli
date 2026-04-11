@@ -19,23 +19,23 @@ PORT=8080
 #
 # For OPTION C (everything on host with your own postgres), change HOST/PORT
 # below to wherever your db lives — typically `localhost:5432`.
-{{.ProjectNameUpper}}_DATABASE_DRIVER=postgres
-{{.ProjectNameUpper}}_DATABASE_HOST=localhost
-{{.ProjectNameUpper}}_DATABASE_PORT=5433
-{{.ProjectNameUpper}}_DATABASE_USER={{.ProjectNameLower}}
-{{.ProjectNameUpper}}_DATABASE_PASSWORD={{.ProjectNameLower}}
-{{.ProjectNameUpper}}_DATABASE_NAME={{.ProjectNameLower}}_dev
+GOFASTA_DATABASE_DRIVER=postgres
+GOFASTA_DATABASE_HOST=localhost
+GOFASTA_DATABASE_PORT=5433
+GOFASTA_DATABASE_USER={{.ProjectNameLower}}
+GOFASTA_DATABASE_PASSWORD={{.ProjectNameLower}}
+GOFASTA_DATABASE_NAME={{.ProjectNameLower}}_dev
 DB_HOST_PORT=5433
 
 # Logging
-{{.ProjectNameUpper}}_LOG_LEVEL=debug
-{{.ProjectNameUpper}}_LOG_FORMAT=text
+GOFASTA_LOG_LEVEL=debug
+GOFASTA_LOG_FORMAT=text
 
 # Email (configure when needed)
-# {{.ProjectNameUpper}}_EMAIL_PROVIDER=smtp
-# {{.ProjectNameUpper}}_EMAIL_FROM_NAME=My App
-# {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=noreply@example.com
-# {{.ProjectNameUpper}}_EMAIL_SMTP_HOST=smtp.gmail.com
-# {{.ProjectNameUpper}}_EMAIL_SMTP_PORT=587
-# {{.ProjectNameUpper}}_EMAIL_SMTP_USERNAME=
-# {{.ProjectNameUpper}}_EMAIL_SMTP_PASSWORD=
+# GOFASTA_EMAIL_PROVIDER=smtp
+# GOFASTA_EMAIL_FROM_NAME=My App
+# GOFASTA_EMAIL_FROM_ADDRESS=noreply@example.com
+# GOFASTA_EMAIL_SMTP_HOST=smtp.gmail.com
+# GOFASTA_EMAIL_SMTP_PORT=587
+# GOFASTA_EMAIL_SMTP_USERNAME=
+# GOFASTA_EMAIL_SMTP_PASSWORD=
