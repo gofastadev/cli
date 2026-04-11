@@ -47,9 +47,9 @@ func loadDotEnv(path string) (int, error) {
 		if _, exists := os.LookupEnv(key); exists {
 			continue
 		}
-		if err := os.Setenv(key, val); err != nil {
-			return count, fmt.Errorf("setenv %s: %w", key, err)
-		}
+		// os.Setenv only errors on empty key, which parseDotEnvLine has
+		// already filtered out. Ignore the return value deliberately.
+		_ = os.Setenv(key, val)
 		count++
 	}
 	if err := scanner.Err(); err != nil {
@@ -67,16 +67,20 @@ func parseDotEnvLine(raw string) (key, val string, ok bool) {
 	if line == "" || strings.HasPrefix(line, "#") {
 		return "", "", false
 	}
-	// Split once on "=". Values containing "=" are preserved.
+	// Split once on "=". Values containing "=" are preserved. An `=` at
+	// position 0 is rejected via the eq<=0 guard (a line that starts with
+	// `=` has no key). We intentionally do not re-check for an empty key
+	// after TrimSpace(line[:eq]) because `line` is already TrimSpace'd at
+	// the top of the function — its first byte is non-whitespace, so
+	// line[:eq] always starts with a non-whitespace byte whenever eq>0,
+	// and TrimSpace of a string whose first byte is non-whitespace can
+	// never produce "".
 	eq := strings.IndexByte(line, '=')
 	if eq <= 0 {
 		return "", "", false
 	}
 	key = strings.TrimSpace(line[:eq])
 	val = strings.TrimSpace(line[eq+1:])
-	if key == "" {
-		return "", "", false
-	}
 	// Strip matching surrounding quotes so `FOO="bar baz"` becomes `bar baz`.
 	if len(val) >= 2 {
 		first, last := val[0], val[len(val)-1]

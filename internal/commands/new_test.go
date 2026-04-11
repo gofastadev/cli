@@ -138,22 +138,23 @@ func TestRunNew_MkdirAllError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// runNew Chdir error — pre-create the target directory with no-execute
-// permission so os.MkdirAll sees it already exists and returns nil, then
-// os.Chdir fails with EACCES because the directory has no execute bit.
-// Uses an absolute path for the same reason as the MkdirAll test.
+// runNew Chdir error — create a parent directory with no-execute
+// permission so MkdirAll succeeds for the parent (it already exists) but
+// Chdir into a child path inside it fails with EACCES. The target child
+// path doesn't exist yet (so runNew's "directory already exists" check
+// passes), and MkdirAll creates it with mode 0o755 — but then the
+// subsequent Chdir needs execute permission on the parent to enter the
+// child, which it doesn't have.
 func TestRunNew_ChdirError(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses chmod-based access denial")
 	}
-	dir := t.TempDir()
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origDir) })
-	proj := filepath.Join(dir, "noaccess")
-	require.NoError(t, os.MkdirAll(proj, 0o000))
-	t.Cleanup(func() { _ = os.Chmod(proj, 0o755) })
+	parent := t.TempDir()
+	// Drop execute permission on the parent.
+	require.NoError(t, os.Chmod(parent, 0o600))
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	err := runNew(proj, false)
+	err := runNew(filepath.Join(parent, "proj"), false)
 	assert.Error(t, err)
 }
 

@@ -134,16 +134,11 @@ LOADENV_GOOD=ok
 	})
 }
 
-func TestParseDotEnvLine_EmptyKeyAfterTrim(t *testing.T) {
+func TestParseDotEnvLine_LeadingEqualsRejected(t *testing.T) {
 	// A line like "   =value" trims to "=value". The `=` is at position 0
 	// so eq==0 and the function returns ok=false via the eq<=0 guard.
-	// Separately, a line like "\"\"=value" would have a key that's empty
-	// after trim but non-empty before. Force exactly that shape.
-	//
-	// Simpler: a line where the pre-`=` segment is all whitespace. After
-	// TrimSpace, key is empty → the `if key == "" ` branch fires.
 	_, _, ok := parseDotEnvLine("   \t  =val")
-	assert.False(t, ok, "line with all-whitespace key should be rejected")
+	assert.False(t, ok, "line with no key before `=` should be rejected")
 }
 
 func TestLoadDotEnv_ScannerError(t *testing.T) {

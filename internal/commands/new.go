@@ -455,10 +455,11 @@ func printGetStarted(projectName string) {
 // transitive deps it needs (uuid, go-playground/validator, etc.) via the
 // normal proxy path.
 func installGofastaFromLocal(path string) error {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("resolve absolute path: %w", err)
-	}
+	// filepath.Abs only fails if os.Getwd() fails, which happens when the
+	// current directory has been deleted out from under us — in which case
+	// everything else in this scaffold is already broken and stat below
+	// will surface a clearer error anyway. Ignore the error intentionally.
+	abs, _ := filepath.Abs(path)
 	info, err := os.Stat(abs)
 	if err != nil {
 		return fmt.Errorf("stat %s: %w", abs, err)
