@@ -2,16 +2,25 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// errReader is an io.ReadCloser that always errors — used to simulate a
+// network body that fails partway through io.Copy.
+type errReader struct{}
+
+func (errReader) Read(_ []byte) (int, error) { return 0, fmt.Errorf("simulated read error") }
+func (errReader) Close() error                { return nil }
 
 // swapHTTP replaces httpGet and restores at cleanup.
 func swapHTTP(t *testing.T, fn func(url string) (*http.Response, error)) {
@@ -144,6 +153,19 @@ func TestGoInstallTargetPath_DefaultHome(t *testing.T) {
 	assert.Equal(t, filepath.Join(home, "go", "bin", "gofasta"), p)
 }
 
+func TestGoInstallTargetPath_HomeError(t *testing.T) {
+	// On unix, os.UserHomeDir returns an error when $HOME is empty and there
+	// is no passwd fallback. Windows uses %USERPROFILE% instead — skip there.
+	if runtime.GOOS == "windows" {
+		t.Skip("UserHomeDir error path is unix-specific")
+	}
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "")
+	t.Setenv("HOME", "")
+	_, err := goInstallTargetPath()
+	assert.Error(t, err)
+}
+
 // --- readBinaryVersion ---
 
 func TestReadBinaryVersion_Success(t *testing.T) {
@@ -180,6 +202,21 @@ func TestUpgradeViaGoInstall_VersionMismatch(t *testing.T) {
 	err := upgradeViaGoInstall("2.0.0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reports version")
+}
+
+func TestUpgradeViaGoInstall_TargetPathError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("UserHomeDir error path is unix-specific")
+	}
+	// Clear every env var goInstallTargetPath consults so it falls through
+	// to os.UserHomeDir, which then errors because HOME is empty.
+	t.Setenv("GOBIN", "")
+	t.Setenv("GOPATH", "")
+	t.Setenv("HOME", "")
+	withFakeExec(t, 0)
+	// upgradeViaGoInstall swallows the goInstallTargetPath error and prints
+	// a warning rather than returning it.
+	assert.NoError(t, upgradeViaGoInstall("2.0.0"))
 }
 
 func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
@@ -237,6 +274,41 @@ func TestUpgradeViaBinary_Non200(t *testing.T) {
 	err := upgradeViaBinary("/tmp/nope", "v1.0.0")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 404")
+}
+
+func TestUpgradeViaBinary_CopyError(t *testing.T) {
+	// Return a response whose Body fails on the first read, forcing the
+	// io.Copy path inside upgradeViaBinary to error out.
+	swapHTTP(t, func(url string) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       errReader{},
+			Header:     make(http.Header),
+		}, nil
+	})
+	err := upgradeViaBinary(filepath.Join(t.TempDir(), "gofasta"), "v1.0.0")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "download failed")
+}
+
+func TestUpgradeViaBinary_CreateTempError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("TMPDIR is unix-specific")
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "bin")
+	}))
+	t.Cleanup(srv.Close)
+	swapDownloadURL(t, srv.URL+"/%s/%s")
+
+	// Capture a working tempdir BEFORE redirecting TMPDIR — t.TempDir itself
+	// reads TMPDIR and would fail if we pointed it at a nonexistent path.
+	execPath := filepath.Join(t.TempDir(), "gofasta")
+	// Now point os.TempDir at a nonexistent path so os.CreateTemp fails.
+	t.Setenv("TMPDIR", "/definitely/does/not/exist/gofasta-xyz")
+	err := upgradeViaBinary(execPath, "v1.0.0")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "temp file")
 }
 
 func TestUpgradeViaBinary_RenameFallback(t *testing.T) {
