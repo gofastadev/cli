@@ -49,6 +49,22 @@ var bannerShown bool
 // start from a clean slate.
 func resetBannerShown() { bannerShown = false }
 
+// isTTYFn reports whether w is an interactive terminal. Split out as a
+// package-level var so tests can mock terminal detection without needing
+// a real pty. Returns (isTTY, statError). A non-*os.File writer returns
+// (false, nil) — no error, just not a TTY.
+var isTTYFn = func(w io.Writer) (bool, error) {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false, nil
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode()&os.ModeCharDevice != 0, nil
+}
+
 // colorSupportFn decides whether the given writer should receive ANSI escapes.
 // Overridable by tests.
 var colorSupportFn = func(w io.Writer) (truecolor, any bool) {
@@ -63,20 +79,12 @@ var colorSupportFn = func(w io.Writer) (truecolor, any bool) {
 		return true, true
 	}
 	// Only emit color when the target writer is an interactive terminal.
-	if f, ok := w.(*os.File); ok {
-		info, err := f.Stat()
-		if err != nil {
-			return false, false
-		}
-		if info.Mode()&os.ModeCharDevice == 0 {
-			return false, false
-		}
-	} else {
-		// Not an *os.File — likely a buffer under test. Keep it plain.
+	tty, err := isTTYFn(w)
+	if err != nil || !tty {
 		return false, false
 	}
 	// Truecolor is advertised via $COLORTERM. Common values: "truecolor",
-	// "24bit". Anything else means the terminal probably only does 256/16.
+	// "24bit". Anything else means the terminal probably only does 256.
 	ct := strings.ToLower(os.Getenv("COLORTERM"))
 	truecolor = ct == "truecolor" || ct == "24bit"
 	return truecolor, true

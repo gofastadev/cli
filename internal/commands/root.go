@@ -94,10 +94,14 @@ func runExecute(version string) error {
 	return rootCmd.Execute()
 }
 
+// osExit is a package-level seam so tests can exercise Execute's error
+// path without actually terminating the test binary.
+var osExit = os.Exit
+
 // Execute runs the root command with the given version string.
 func Execute(version string) {
 	if err := runExecute(version); err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		osExit(1)
 	}
 }
