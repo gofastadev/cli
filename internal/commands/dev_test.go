@@ -28,7 +28,7 @@ func TestDevCmd_HasDescription(t *testing.T) {
 // setupDevTempdir creates a temp project dir, chdirs into it, writes a
 // minimal config.yaml so configutil.BuildMigrationURL returns a usable URL,
 // and restores the original cwd on cleanup.
-func setupDevTempdir(t *testing.T) string {
+func setupDevTempdir(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
@@ -36,7 +36,6 @@ func setupDevTempdir(t *testing.T) string {
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
 		[]byte("database:\n  driver: postgres\n  name: testdb\n"), 0o644))
 	require.NoError(t, os.Chdir(dir))
-	return dir
 }
 
 // runDev happy path — .env loaded, migration + air mocked to succeed,
