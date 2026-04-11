@@ -45,6 +45,54 @@ fi
 
 echo "gofasta v${VERSION} installed to ${INSTALL_DIR}/gofasta"
 echo ""
+
+# Verify the install directory is on PATH — if not, the user will get
+# "command not found" after install and blame us. Warn them before they try.
+case ":${PATH}:" in
+    *":${INSTALL_DIR}:"*)
+        # On PATH. Double-check the shell actually resolves `gofasta` to our
+        # install, not a stale binary from somewhere else.
+        RESOLVED=$(command -v gofasta 2>/dev/null || true)
+        if [ -z "$RESOLVED" ]; then
+            echo "⚠  ${INSTALL_DIR} is on \$PATH but your shell hasn't picked up"
+            echo "   the new binary yet. Run 'hash -r' (bash/zsh) or open a new"
+            echo "   terminal, then try 'gofasta --version'."
+            echo ""
+        elif [ "$RESOLVED" != "${INSTALL_DIR}/gofasta" ]; then
+            echo "⚠  Your shell resolves 'gofasta' to $RESOLVED, not the copy"
+            echo "   we just installed at ${INSTALL_DIR}/gofasta. Another"
+            echo "   installation may be earlier on \$PATH. Run"
+            echo "   'which -a gofasta' to see all of them."
+            echo ""
+        fi
+        ;;
+    *)
+        echo "⚠  ${INSTALL_DIR} is not on your \$PATH. Running 'gofasta' now"
+        echo "   will fail with 'command not found'. Add it to your shell config:"
+        echo ""
+        # Detect shell from $SHELL env var and suggest the right rc file.
+        SHELL_NAME=$(basename "${SHELL:-}")
+        case "$SHELL_NAME" in
+            zsh)
+                echo "   echo 'export PATH=\"\$PATH:${INSTALL_DIR}\"' >> ~/.zshrc"
+                echo "   source ~/.zshrc"
+                ;;
+            bash)
+                echo "   echo 'export PATH=\"\$PATH:${INSTALL_DIR}\"' >> ~/.bashrc"
+                echo "   source ~/.bashrc"
+                ;;
+            fish)
+                echo "   fish_add_path ${INSTALL_DIR}"
+                ;;
+            *)
+                echo "   export PATH=\"\$PATH:${INSTALL_DIR}\""
+                echo "   (add the line above to your shell's startup file)"
+                ;;
+        esac
+        echo ""
+        ;;
+esac
+
 echo "Get started:"
 echo "  gofasta new myapp"
 echo "  cd myapp"

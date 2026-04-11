@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+### Fixed
+- `gofasta --version` now reports the real module version for users who install via `go install`. Previously it always printed `dev` because `go install` does not apply build-time `-ldflags`. The CLI now falls back to `runtime/debug.ReadBuildInfo()` at startup to read the module version Go stamped into the binary. Pre-built binaries shipped via GitHub Releases are unaffected — they still use the `-X main.Version=<tag>` ldflag set by the release workflow.
+
+### Improved
+- `dist/install.sh` now detects whether the install directory is on the user's `$PATH` and prints exact, shell-specific `export PATH=…` instructions (zsh / bash / fish) when it isn't — preventing first-run `command not found` errors.
+- Installation documentation in README and the website now includes a dedicated troubleshooting section covering the `$GOPATH/bin` not-on-`$PATH` issue, with copy-paste fixes for every major shell.
+
 ## [0.1.0] - 2026-04-09
 
 ### Added

@@ -1,6 +1,6 @@
 # Gofasta CLI
 
-[![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![CodeQL](https://github.com/gofastadev/cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/codeql.yml) [![codecov](https://codecov.io/gh/gofastadev/cli/branch/main/graph/badge.svg)](https://codecov.io/gh/gofastadev/cli) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
+[![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![CodeQL](https://github.com/gofastadev/cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/codeql.yml) [![codecov](https://codecov.io/gh/gofastadev/cli/graph/badge.svg)](https://codecov.io/gh/gofastadev/cli) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
 
 The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go backend toolkit. The CLI is a standalone binary that creates new projects, generates code, and runs common development tasks. It does not import the gofasta library — it only manipulates files on disk.
 
@@ -14,7 +14,7 @@ The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` 
 go install github.com/gofastadev/cli/cmd/gofasta@latest
 ```
 
-Compiles the CLI from source using your local Go toolchain and drops the `gofasta` binary into `$GOBIN` (usually `~/go/bin`). Make sure `~/go/bin` is on your `PATH`.
+Compiles the CLI from source using your local Go toolchain and drops the `gofasta` binary into `$GOBIN` (or `$GOPATH/bin` if `GOBIN` is unset — usually `~/go/bin`).
 
 **Option B — Pre-built binary via shell script (no Go toolchain needed):**
 
@@ -22,13 +22,56 @@ Compiles the CLI from source using your local Go toolchain and drops the `gofast
 curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
 ```
 
-Downloads the latest pre-built binary for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) and installs it to `/usr/local/bin/gofasta`. Works on macOS and Linux for both `amd64` and `arm64`.
+Downloads the latest pre-built binary for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) and installs it to `/usr/local/bin/gofasta`. Works on macOS and Linux for both `amd64` and `arm64`. The script detects your shell and prints exact `export PATH=…` instructions if the install directory isn't already on your `$PATH`.
 
 Verify the installation:
 
 ```bash
 gofasta --help
 ```
+
+### Troubleshooting
+
+#### `command not found: gofasta` after `go install`
+
+This is the single most common first-time issue with any `go install`-distributed CLI, not specific to gofasta. Go installed the binary into `$GOPATH/bin` (typically `~/go/bin`), but that directory isn't on your shell's `$PATH`.
+
+**Verify the binary is actually there:**
+
+```bash
+ls -l "$(go env GOPATH)/bin/gofasta"
+```
+
+If you see the binary, the install worked — you just need to make the directory reachable. Add one line to your shell config and reload:
+
+```bash
+# zsh (default on macOS)
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc
+source ~/.zshrc
+
+# bash
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.bashrc
+source ~/.bashrc
+
+# fish
+fish_add_path (go env GOPATH)/bin
+```
+
+After that, `gofasta --help` should work in any new terminal session. This is a one-time setup — every future `go install` lands in the same directory.
+
+#### `gofasta --version` says `dev` (pre-v0.1.3 only)
+
+Earlier releases of the CLI shipped with a hardcoded `Version = "dev"` default that only got overridden for pre-built binaries. `go install` never applies build-time flags, so installs via Option A always reported `dev` regardless of the actual version. This was fixed in **v0.1.3**: the CLI now reads the installed module version via [`runtime/debug.ReadBuildInfo()`](https://pkg.go.dev/runtime/debug#ReadBuildInfo) at startup, so `go install` users see the correct tag.
+
+If you installed before v0.1.3, re-run `go install github.com/gofastadev/cli/cmd/gofasta@latest` to pick up the fix.
+
+#### Which install method should I use?
+
+| You have Go installed | You don't have Go installed |
+|---|---|
+| **Option A** — `go install` compiles a native binary with your exact toolchain and there's nothing to keep in sync. Upgrade with `go install …@latest`. | **Option B** — shell script. Downloads a pre-built binary from GitHub Releases. Upgrade with `gofasta upgrade`. |
+
+Both end up as a `gofasta` binary in a standard directory. Use whichever matches your environment.
 
 ## Create a New Project
 
