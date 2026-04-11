@@ -5,13 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // GenTask generates an async task handler file in app/tasks/.
 func GenTask(d ScaffoldData) error {
 	path := fmt.Sprintf("app/tasks/%s.task.go", d.SnakeName)
 	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("  skip (exists): %s\n", path)
+		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -25,7 +27,7 @@ func GenTask(d ScaffoldData) error {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("  create: %s\n", path)
+	termcolor.PrintCreate(path)
 	return nil
 }
 

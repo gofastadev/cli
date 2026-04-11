@@ -11,16 +11,36 @@ import (
 
 var dbCmd = &cobra.Command{
 	Use:   "db",
-	Short: "Database management commands",
+	Short: "Destructive database utilities (reset, rebuild, re-seed)",
+	Long: `Grouping for operations that wipe or recreate schema — separated from
+` + "`gofasta migrate`" + ` because these commands are destructive and should not be
+run accidentally against a shared database.
+
+Subcommands:
+  reset    Drop every table, re-apply all migrations, and re-run seeds
+
+All subcommands read config.yaml for connection details and delegate to
+golang-migrate for schema work. They respect the same environment variables
+and driver fallbacks as ` + "`gofasta migrate`" + `.`,
 }
 
 var dbResetCmd = &cobra.Command{
 	Use:   "reset",
-	Short: "Drop all tables, re-migrate, and seed the database",
-	Long: `Reset the database to a clean state by dropping all tables, re-applying
-all migrations, and running seed functions.
+	Short: "Drop every table, re-apply all migrations, and re-run seeds",
+	Long: `Rebuild the database from scratch. Executes three steps in order:
 
-Use --skip-seed to skip seeding after migration.`,
+  1. ` + "`migrate drop -f`" + ` — drops every table, including schema_migrations
+  2. ` + "`migrate up`" + `     — re-applies every migration from version 1
+  3. ` + "`go run ./app/main seed`" + ` — runs the project's seed functions
+
+Useful during development when schema churn makes incremental migrations
+awkward, or when you need a known-good fixture state.
+
+Use --skip-seed to stop after step 2 (schema reset without fixtures).
+
+This command is destructive and irreversible — all existing data is lost.
+Never run it against a shared or production database. ` + "`gofasta doctor`" + ` will
+warn if the configured database URL looks like a non-local host.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		skipSeed, _ := cmd.Flags().GetBool("skip-seed")
 		return runDBReset(skipSeed)

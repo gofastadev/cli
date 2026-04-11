@@ -6,15 +6,28 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check system prerequisites and project health",
-	Long: `Verify that required and optional tools are installed, check project
-configuration, and test database connectivity. Useful for diagnosing setup
-issues and for including in bug reports.`,
+	Short: "Audit system prerequisites, required tools, and project health",
+	Long: `Run a diagnostic sweep and print a table of checks with status icons.
+Useful as the first thing to run after installing the CLI, after cloning
+a project, and when filing bug reports — the output is designed to be
+pasted into an issue.
+
+Checks include:
+
+  - Go toolchain (version, GOPATH/GOBIN)
+  - Required tools: git, docker, migrate, air, wire, gqlgen, swag
+  - Project state: presence of config.yaml, .env, go.mod, db/migrations/
+  - Database connectivity: builds the migration URL and attempts a ping
+  - Golang-migrate schema_migrations version (when DB is reachable)
+
+Each check is tagged required or optional. A required check failing
+returns a non-zero exit code so the command is scriptable in CI.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDoctor()
 	},
@@ -46,7 +59,7 @@ func runDoctor() error {
 		{"swag", false, checkGoTool("swag")},
 	}
 
-	fmt.Println("Required:")
+	termcolor.PrintHeader("Required:")
 	for _, c := range required {
 		info, ok := c.checkFn()
 		printCheck(c.name, info, ok)
@@ -55,7 +68,8 @@ func runDoctor() error {
 		}
 	}
 
-	fmt.Println("\nOptional:")
+	fmt.Println()
+	termcolor.PrintHeader("Optional:")
 	for _, c := range optional {
 		info, ok := c.checkFn()
 		printCheck(c.name, info, ok)
@@ -63,7 +77,8 @@ func runDoctor() error {
 
 	// Project health checks — only when inside a project directory
 	if _, err := os.Stat("config.yaml"); err == nil {
-		fmt.Println("\nProject:")
+		fmt.Println()
+		termcolor.PrintHeader("Project:")
 		printCheck("config.yaml", "found", true)
 
 		dbURL := configutil.BuildMigrationURL()
@@ -84,11 +99,13 @@ func runDoctor() error {
 }
 
 func printCheck(name, info string, ok bool) {
-	mark := "\033[32m✓\033[0m"
+	mark := termcolor.CGreen("✓")
+	styledInfo := info
 	if !ok {
-		mark = "\033[31m✗\033[0m"
+		mark = termcolor.CRed("✗")
+		styledInfo = termcolor.CDim(info)
 	}
-	fmt.Printf("  %s %-12s %s\n", mark, name, info)
+	fmt.Printf("  %s %-12s %s\n", mark, termcolor.CBold(name), styledInfo)
 }
 
 func checkGoVersion() (string, bool) {

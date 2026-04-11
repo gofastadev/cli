@@ -3,20 +3,57 @@ package generate
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
 // Cmd is the parent "generate" command, registered on rootCmd by the thin stub.
 var Cmd = &cobra.Command{
 	Use:     "generate",
-	Short:   "Generate boilerplate code",
+	Short:   "Scaffold resources, models, DTOs, controllers, jobs, and tasks",
 	Aliases: []string{"g"},
+	Long: `Code generators for every layer of a gofasta project. Every generator
+renders from embedded Go templates, writes files under the conventional
+paths (app/models/, app/repositories/, app/services/, app/dtos/,
+app/rest/controllers/, app/rest/routes/, app/di/providers/, db/migrations/,
+app/jobs/, app/tasks/, app/graphql/, templates/emails/), and patches the
+dependency-injection container, wire.go, route config, and serve.go so the
+new code is wired automatically.
+
+Field syntax is ` + "`name:type`" + `. Supported types: string, text, int, float,
+bool, uuid, time. The underlying SQL type is chosen based on the database
+driver in config.yaml (postgres, mysql, sqlite, sqlserver, clickhouse).
+
+Generators, by layer:
+
+  scaffold        model + migration + repo + service + DTOs + provider +
+                  controller + routes + full auto-wire (optionally GraphQL)
+  model           model struct + matching up/down migration
+  migration       standalone up/down migration files
+  repository      model + migration + repo interface + impl
+  service         repo stack + service interface + impl + DTOs + provider
+  controller      service stack + REST controller + route file + wiring
+  dto             DTO file only
+  route           route file only (assumes controller exists)
+  provider        Wire provider + container + wire.go patches
+  resolver        add a service dependency to an existing GraphQL resolver
+  job             cron job file + scheduler registration + schedule config
+  task            async task handler wired into the asynq queue
+  email-template  HTML email template under templates/emails/
+
+After scaffolding, generators that affect wiring automatically run
+` + "`go tool wire`" + ` (and ` + "`go tool gqlgen`" + ` for --graphql) so the project compiles
+without manual intervention.`,
 }
 
 // WireCmd is a standalone command to regenerate Wire DI code.
 var WireCmd = &cobra.Command{
 	Use:   "wire",
-	Short: "Run Wire to regenerate dependency injection code",
+	Short: "Regenerate Google Wire dependency injection code",
+	Long: `Run ` + "`go tool wire ./app/di/`" + ` to regenerate wire_gen.go from the current
+provider set. Use this after manually editing app/di/wire.go or a provider
+file — ` + "`gofasta g`" + ` commands already run this automatically as their last
+step, so you only need it after hand edits.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunWire(ScaffoldData{})
 	},
@@ -219,17 +256,46 @@ func hasGraphQLFlag(cmd *cobra.Command) bool {
 
 var scaffoldCmd = &cobra.Command{
 	Use:   "scaffold [Name] [field:type ...]",
-	Short: "Generate a full REST resource with auto-wiring. Use --graphql for GraphQL support.",
-	Long: `Generate all files for a new resource domain and auto-wire them into the framework.
-No manual wiring needed — the developer only writes business logic.
+	Short: "Generate a full REST resource (model → controller) with every layer auto-wired",
+	Long: `The one-command shortcut for creating a complete resource domain. Runs
+every file generator in sequence and patches all wiring files so the new
+resource is compilable, routed, and ready for business logic with no
+manual edits.
 
-By default generates REST API resources. Add --graphql to also generate GraphQL schema and resolver.
+Files created (11 per resource):
+
+  app/models/<name>.model.go
+  app/repositories/interfaces/<name>_repository.go
+  app/repositories/<name>.repository.go
+  app/services/interfaces/<name>_service.go
+  app/services/<name>.service.go
+  app/dtos/<name>.dtos.go
+  app/di/providers/<name>.go
+  app/rest/controllers/<name>.controller.go
+  app/rest/routes/<name>.routes.go
+  db/migrations/NNNNNN_create_<names>.up.sql
+  db/migrations/NNNNNN_create_<names>.down.sql
+
+Files patched (4 per resource):
+
+  app/di/container.go
+  app/di/wire.go
+  app/rest/routes/index.routes.go
+  cmd/serve.go
+
+Runs ` + "`go tool wire`" + ` as the final step. Use --graphql (alias --gql) to
+additionally generate a .gql schema fragment and patch the GraphQL
+resolver — both gqlgen and Wire regeneration then run at the end.
+
+Field syntax is ` + "`name:type`" + `. Supported types: string, text, int, float,
+bool, uuid, time.
 
 Examples:
-  gofasta g s Product name:string price:float          (REST only)
-  gofasta g s Product name:string price:float --graphql (REST + GraphQL)
+  gofasta g s Product name:string price:float
+  gofasta g s Post title:string body:text author_id:uuid --graphql
 
-Supported field types: string, text, int, float, bool, uuid, time`,
+After scaffolding, run ` + "`gofasta migrate up`" + ` and write your business
+logic in app/services/<name>.service.go.`,
 	Aliases: []string{"s"},
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -239,17 +305,22 @@ Supported field types: string, text, int, float, bool, uuid, time`,
 		if err := RunSteps(d, scaffoldSteps(d)); err != nil {
 			return err
 		}
-		fmt.Printf("\nScaffold complete for %s. All files generated and wired.\n", d.Name)
-		fmt.Printf("Run migrations: gofasta migrate up\n")
-		fmt.Printf("Write business logic: app/services/%s.service.go\n", d.SnakeName)
+		fmt.Println()
+		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
+		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
+		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
 		return nil
 	},
 }
 
 var modelCmd = &cobra.Command{
 	Use:   "model [Name] [field:type ...]",
-	Short: "Generate model + migration",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Generate a GORM model struct and a matching schema migration",
+	Long: `Generate the smallest useful unit — a model struct under app/models/ plus
+paired .up.sql / .down.sql migration files under db/migrations/. Use this
+when you only need persistence scaffolding and will write the repository
+and service layers by hand.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), modelSteps())
 	},
@@ -257,9 +328,16 @@ var modelCmd = &cobra.Command{
 
 var repositoryCmd = &cobra.Command{
 	Use:     "repository [Name] [field:type ...]",
-	Short:   "Generate model + migration + repository interface + repository",
+	Short:   "Generate model, migration, and repository interface + implementation",
 	Aliases: []string{"repo"},
-	Args:    cobra.MinimumNArgs(1),
+	Long: `Generate everything in ` + "`gofasta g model`" + ` plus the repository layer:
+
+  app/repositories/interfaces/<name>_repository.go  — repository contract
+  app/repositories/<name>.repository.go             — GORM implementation
+
+Use this when you want persistence + data-access but plan to write your
+own service or expose the repository directly.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), repositorySteps())
 	},
@@ -267,9 +345,20 @@ var repositoryCmd = &cobra.Command{
 
 var serviceCmd = &cobra.Command{
 	Use:     "service [Name] [field:type ...]",
-	Short:   "Generate model + repo + service + DTOs + Wire provider, auto-wired. Use --graphql for resolver.",
+	Short:   "Generate the full persistence + service layer (no controller)",
 	Aliases: []string{"svc"},
-	Args:    cobra.MinimumNArgs(1),
+	Long: `Generate everything in ` + "`gofasta g repository`" + ` plus the service layer and
+DTOs, then auto-wire it through the DI container:
+
+  app/services/interfaces/<name>_service.go  — service contract
+  app/services/<name>.service.go              — business-logic skeleton
+  app/dtos/<name>.dtos.go                     — request / response DTOs
+  app/di/providers/<name>.go                  — Wire provider set
+
+Also patches app/di/container.go and app/di/wire.go, then regenerates the
+Wire injector. Use --graphql (or --gql) to additionally patch the GraphQL
+resolver with the new service dependency.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		d := buildFromArgs(args)
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
@@ -279,9 +368,20 @@ var serviceCmd = &cobra.Command{
 
 var controllerCmd = &cobra.Command{
 	Use:     "controller [Name] [field:type ...]",
-	Short:   "Generate everything up to controller + routes, auto-wired. Use --graphql for GraphQL.",
+	Short:   "Generate the full REST stack: service layer + controller + routes",
 	Aliases: []string{"ctrl"},
-	Args:    cobra.MinimumNArgs(1),
+	Long: `Generate everything in ` + "`gofasta g service`" + ` plus the REST layer:
+
+  app/rest/controllers/<name>.controller.go  — CRUD HTTP handlers
+  app/rest/routes/<name>.routes.go           — route registration
+
+Patches app/rest/routes/index.routes.go and cmd/serve.go so the new routes
+are mounted on startup, then regenerates Wire. Use --graphql (or --gql) to
+additionally generate a GraphQL schema fragment and resolver wiring. The
+only difference from ` + "`gofasta g scaffold`" + ` is that ` + "`scaffold`" + ` is the user-
+facing shortcut and this subcommand is the explicit "up through controller"
+step.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		d := buildFromArgs(args)
 		d.IncludeController = true
@@ -292,8 +392,12 @@ var controllerCmd = &cobra.Command{
 
 var dtoCmd = &cobra.Command{
 	Use:   "dto [Name] [field:type ...]",
-	Short: "Generate DTOs only (standalone)",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Generate a standalone DTO file (create / update / response)",
+	Long: `Generate app/dtos/<name>.dtos.go containing Create/Update/Response DTOs
+with go-playground/validator tags derived from the field list. Produces
+no model, repository, or wiring — useful when you already have a model
+and want DTOs for an RPC or GraphQL-only resource.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), dtoSteps())
 	},
@@ -301,8 +405,13 @@ var dtoCmd = &cobra.Command{
 
 var migrationCmd = &cobra.Command{
 	Use:   "migration [Name] [field:type ...]",
-	Short: "Generate SQL migration files only",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Generate a standalone up/down SQL migration pair",
+	Long: `Generate paired .up.sql / .down.sql files under db/migrations/ with a
+sequential version prefix. Column types are selected based on the
+configured database driver (postgres, mysql, sqlite, sqlserver,
+clickhouse). Does not touch any Go code — useful for schema-only changes
+such as indexes, constraints, or data migrations.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), migrationSteps())
 	},
@@ -310,8 +419,12 @@ var migrationCmd = &cobra.Command{
 
 var routeCmd = &cobra.Command{
 	Use:   "route [Name]",
-	Short: "Generate route file only (assumes controller exists)",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Generate a REST route file for an existing controller",
+	Long: `Generate app/rest/routes/<name>.routes.go mapping the standard CRUD
+endpoints onto an existing controller. Does not create the controller or
+patch index.routes.go — use this when you want custom wiring or you have
+already written the controller by hand.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), routeSteps())
 	},
@@ -319,8 +432,12 @@ var routeCmd = &cobra.Command{
 
 var resolverCmd = &cobra.Command{
 	Use:   "resolver [Name]",
-	Short: "Patch GraphQL resolver to add service dependency",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Patch the GraphQL resolver struct to add a service dependency",
+	Long: `Add the named service as a dependency on the project's GraphQL resolver
+struct and regenerate gqlgen bindings. Use this when you have an existing
+GraphQL schema and want the resolver to gain access to a newly-created
+service without running full scaffolding.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), resolverSteps())
 	},
@@ -328,15 +445,20 @@ var resolverCmd = &cobra.Command{
 
 var jobCmd = &cobra.Command{
 	Use:   "job [name] [schedule]",
-	Short: "Generate a cron job, register it in the scheduler, and add schedule to config",
-	Long: `Generate a new cron job file and auto-wire it into the scheduler.
+	Short: "Generate a cron job, register it with the scheduler, and write the schedule to config",
+	Long: `Generate a new cron job under app/jobs/, add it to the scheduler's job
+registry, and append its schedule to the ` + "`jobs:`" + ` section of config.yaml.
 
-Examples:
-  gofasta g job cleanup-tokens "0 0 0 * * *"     (daily at midnight)
-  gofasta g job send-reports "0 0 9 * * 1"        (every Monday at 9am)
-  gofasta g job sync-data                          (defaults to every hour)
+The schedule argument is a 6-field cron expression (with seconds):
 
-Schedule uses 6-field cron (with seconds): second minute hour day month weekday`,
+  second minute hour day month weekday
+
+If omitted, the job defaults to "every hour". Provide the schedule
+quoted so your shell does not expand ` + "`*`" + `:
+
+  gofasta g job cleanup-tokens "0 0 0 * * *"      # daily at midnight
+  gofasta g job send-reports   "0 0 9 * * 1"      # every Monday at 9am
+  gofasta g job sync-data                         # every hour (default)`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		d := buildFromArgs(args)
@@ -353,9 +475,13 @@ Schedule uses 6-field cron (with seconds): second minute hour day month weekday`
 
 var emailTemplateCmd = &cobra.Command{
 	Use:     "email-template [name]",
-	Short:   "Generate an HTML email template in templates/emails/",
+	Short:   "Generate an HTML email template under templates/emails/",
 	Aliases: []string{"email"},
-	Args:    cobra.ExactArgs(1),
+	Long: `Generate templates/emails/<name>.html with a starter layout compatible
+with the framework's mailer package. The template is plain Go HTML
+templating — substitute variables with ` + "`{{.FieldName}}`" + ` and render it via
+mailer.Renderer in your service code.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		d := buildFromArgs(args)
 		return RunSteps(d, []Step{{"email template", GenEmailTemplate}})
@@ -364,8 +490,11 @@ var emailTemplateCmd = &cobra.Command{
 
 var taskCmd = &cobra.Command{
 	Use:   "task [name]",
-	Short: "Generate an async task handler for the queue system",
-	Long: `Generate a new async task file in app/tasks/ with an asynq handler.
+	Short: "Generate an async task handler for the asynq queue",
+	Long: `Generate app/tasks/<name>.go with an asynq handler stub — the queue-
+based equivalent of a job, for fire-and-forget work that should execute
+off the request path. The handler is auto-registered with the task
+registry and picked up by the asynq worker on startup.
 
 Examples:
   gofasta g task send-welcome-email
@@ -379,8 +508,12 @@ Examples:
 
 var providerCmd = &cobra.Command{
 	Use:   "provider [Name]",
-	Short: "Generate Wire provider + auto-wire container and wire.go",
-	Args:  cobra.MinimumNArgs(1),
+	Short: "Generate a Wire provider and patch it into container.go + wire.go",
+	Long: `Generate app/di/providers/<name>.go with a Wire provider set for the
+named resource and patch app/di/container.go + app/di/wire.go to include
+it, then regenerate the Wire injector. Useful when integrating hand-
+written services that were not created through ` + "`gofasta g service`" + `.`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), providerSteps())
 	},

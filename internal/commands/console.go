@@ -11,12 +11,20 @@ import (
 
 var consoleCmd = &cobra.Command{
 	Use:   "console",
-	Short: "Start an interactive Go REPL with the project loaded",
-	Long: `Launch yaegi (Go interpreter) in the current project directory for
-interactive exploration of your application code.
+	Short: "Launch an interactive Go REPL (yaegi) in the project directory",
+	Long: `Start a yaegi-based Go REPL with your project on the import path. Useful
+for poking at services, running ad-hoc queries, or exploring library
+APIs without writing a throwaway main().
 
-Requires yaegi to be installed:
-  go install github.com/traefik/yaegi/cmd/yaegi@latest`,
+Yaegi is a third-party Go interpreter, not a CLI dependency — install it
+once with:
+
+  go install github.com/traefik/yaegi/cmd/yaegi@latest
+
+The command looks up ` + "`yaegi`" + ` on $PATH and fails fast if it is missing.
+Because yaegi is an interpreter (not a compiler), some features (cgo,
+generics in older releases, unsafe) may not work — use ` + "`go run`" + ` for
+anything yaegi can't handle.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runConsole()
 	},

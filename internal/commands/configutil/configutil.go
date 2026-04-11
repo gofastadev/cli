@@ -13,13 +13,8 @@ import (
 )
 
 // BuildMigrationURL reads config.yaml and env vars to build a database migration URL.
-// Returns empty string if config cannot be loaded.
 func BuildMigrationURL() string {
 	k := loadConfig()
-	if k == nil {
-		return ""
-	}
-
 	driver := k.String("database.driver")
 	if driver == "" {
 		driver = "postgres"
@@ -59,22 +54,15 @@ func GetPort() string {
 	if p := os.Getenv("PORT"); p != "" {
 		return p
 	}
-	k := loadConfig()
-	if k != nil {
-		if port := k.String("server.port"); port != "" {
-			return port
-		}
+	if port := loadConfig().String("server.port"); port != "" {
+		return port
 	}
 	return "8080"
 }
 
 // ReadDBDriver reads the database.driver from config.yaml.
 func ReadDBDriver() string {
-	k := loadConfig()
-	if k == nil {
-		return "postgres"
-	}
-	driver := k.String("database.driver")
+	driver := loadConfig().String("database.driver")
 	if driver == "" {
 		return "postgres"
 	}
