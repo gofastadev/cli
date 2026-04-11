@@ -95,14 +95,7 @@ func TestFetchLatestVersion_HTTPError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- isHomebrew / isGoInstall ---
-
-func TestIsHomebrew(t *testing.T) {
-	assert.True(t, isHomebrew("/opt/homebrew/bin/gofasta"))
-	assert.True(t, isHomebrew("/usr/local/Cellar/gofasta/1.0/bin/gofasta"))
-	assert.True(t, isHomebrew("/home/linuxbrew/.linuxbrew/bin/gofasta"))
-	assert.False(t, isHomebrew("/usr/local/bin/gofasta"))
-}
+// --- isGoInstall ---
 
 func TestIsGoInstall(t *testing.T) {
 	t.Setenv("GOPATH", "/my/go")
@@ -114,20 +107,6 @@ func TestIsGoInstall_DefaultGopath(t *testing.T) {
 	t.Setenv("GOPATH", "")
 	home, _ := os.UserHomeDir()
 	assert.True(t, isGoInstall(home+"/go/bin/gofasta"))
-}
-
-// --- upgradeViaHomebrew ---
-
-func TestUpgradeViaHomebrew_Success(t *testing.T) {
-	withFakeExec(t, 0)
-	assert.NoError(t, upgradeViaHomebrew())
-}
-
-func TestUpgradeViaHomebrew_Failure(t *testing.T) {
-	withFakeExec(t, 1)
-	err := upgradeViaHomebrew()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "brew upgrade failed")
 }
 
 // --- upgradeViaGoInstall ---
@@ -268,22 +247,6 @@ func swapExecutable(t *testing.T, path string, err error) {
 	t.Cleanup(func() { osExecutable = orig })
 }
 
-func TestRunUpgrade_DispatchHomebrew(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"tag_name":"v2.0.0"}`))
-	}))
-	t.Cleanup(srv.Close)
-	swapAPIURL(t, srv.URL)
-	swapExecutable(t, "/opt/homebrew/bin/gofasta", nil)
-	withFakeExec(t, 0)
-
-	orig := rootCmd.Version
-	rootCmd.Version = "1.0.0"
-	t.Cleanup(func() { rootCmd.Version = orig })
-
-	assert.NoError(t, runUpgrade())
-}
-
 func TestRunUpgrade_DispatchGoInstall(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(`{"tag_name":"v2.0.0"}`))
@@ -326,19 +289,8 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	t.Cleanup(apiSrv.Close)
 	swapAPIURL(t, apiSrv.URL)
 
-	// Serve the binary download
-	binSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("newbinary"))
-	}))
-	t.Cleanup(binSrv.Close)
-	swapDownloadURL(t, binSrv.URL+"/%s/%s")
-
-	// Override the running exec path so isHomebrew/isGoInstall both return false
-	// We can't easily swap os.Executable, but we can verify the dispatch by
-	// checking runUpgrade takes the binary branch when the exec path doesn't
-	// match either pattern. The real os.Executable() in tests points at the
-	// go-test binary — that's usually not in homebrew nor gopath so this works.
-	// Force GOPATH to a nonexistent place to guarantee isGoInstall=false.
+	// Force isGoInstall to return false so runUpgrade falls through to the
+	// binary-replacement path.
 	t.Setenv("GOPATH", "/definitely/not/a/real/path")
 
 	orig := rootCmd.Version
@@ -346,15 +298,8 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	t.Cleanup(func() { rootCmd.Version = orig })
 
 	// runUpgrade will call upgradeViaBinary with the test binary path as execPath.
-	// We don't want to actually overwrite the test binary! upgradeViaBinary will
-	// attempt os.Rename(tmpPath, execPath). That would corrupt the test binary.
-	// Avoid this by pointing execPath target via a copy-safe indirection:
-	// since we can't override os.Executable easily, we accept that this test
-	// exercises the dispatch logic through upgradeViaBinary's HTTP call and
-	// temp-file creation — but not the final rename. Make the HTTP server
-	// return a 500 so we hit the dispatch + download error branches without
-	// touching the real binary.
-	binSrv.Close()
+	// To avoid actually overwriting the test binary, make the download fail with
+	// HTTP 500 — we only need to verify runUpgrade reached the binary branch.
 	failSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 	}))
@@ -362,11 +307,6 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	swapDownloadURL(t, failSrv.URL+"/%s/%s")
 
 	err := runUpgrade()
-	// If we ended up in Homebrew/GoInstall branches the exec fake isn't set,
-	// so those would try real brew/go commands. Since we seeded GOPATH to a
-	// bogus path, and the test binary is unlikely to contain "homebrew" in the
-	// path, we should land in upgradeViaBinary and get an HTTP 500 error.
-	// If it ends up in homebrew/goinstall on this host, just assert the error.
 	assert.Error(t, err)
 	_ = strings.Contains // keep import
 }

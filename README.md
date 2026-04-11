@@ -8,23 +8,21 @@ The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go
 
 The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` at `cmd/gofasta/`. It is not the same as the `github.com/gofastadev/gofasta` library, which your generated projects import as a dependency. You install one, you import the other.
 
-**Option A — Go install (requires Go 1.25.8+):**
+**Option A — `go install` (recommended for Go developers, requires Go 1.25.8+):**
 
 ```bash
 go install github.com/gofastadev/cli/cmd/gofasta@latest
 ```
 
-**Option B — Shell script:**
+Compiles the CLI from source using your local Go toolchain and drops the `gofasta` binary into `$GOBIN` (usually `~/go/bin`). Make sure `~/go/bin` is on your `PATH`.
+
+**Option B — Pre-built binary via shell script (no Go toolchain needed):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
 ```
 
-**Option C — Homebrew (macOS/Linux):**
-
-```bash
-brew install gofastadev/tap/gofasta
-```
+Downloads the latest pre-built binary for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) and installs it to `/usr/local/bin/gofasta`. Works on macOS and Linux for both `amd64` and `arm64`.
 
 Verify the installation:
 
@@ -306,8 +304,7 @@ cli/
 │       ├── embed.go              # //go:embed all:project
 │       └── project/              # ~78 files that become a new project
 ├── dist/                          # CLI distribution files
-│   ├── install.sh                # curl-pipe-sh installer
-│   └── homebrew/gofasta.rb       # Homebrew formula
+│   └── install.sh                # curl-pipe-sh installer
 ├── go.mod
 └── README.md
 ```

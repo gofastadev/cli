@@ -60,11 +60,6 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
-        with:
-          # Fetch full history so the post-release step can switch to the
-          # main branch. The default shallow clone of a tag-triggered
-          # workflow does not include any branch refs.
-          fetch-depth: 0
 
       - uses: actions/download-artifact@v4
         with:
@@ -76,47 +71,3 @@ jobs:
         with:
           generate_release_notes: true
           files: dist/gofasta-*
-
-      - name: Update Homebrew formula
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          FORMULA="dist/homebrew/gofasta.rb"
-
-          for PAIR in "darwin-arm64" "darwin-amd64" "linux-arm64" "linux-amd64"; do
-            BINARY="dist/gofasta-${PAIR}"
-            if [ -f "$BINARY" ]; then
-              SHA=$(sha256sum "$BINARY" | awk '{print $1}')
-              # Replace the placeholder or existing SHA for this binary
-              sed -i "/$PAIR/{ n; s/sha256 \".*\"/sha256 \"$SHA\"/; }" "$FORMULA"
-            fi
-          done
-
-          sed -i "s/version \".*\"/version \"$VERSION\"/" "$FORMULA"
-
-      - name: Commit Homebrew formula to main
-        run: |
-          set -e
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Save the updated formula outside the git tree before switching
-          # branches — the tag's tree may differ from main's tip, and we
-          # don't want git to complain or silently merge the working copy.
-          UPDATED_FORMULA="$(mktemp)"
-          cp dist/homebrew/gofasta.rb "$UPDATED_FORMULA"
-
-          # Switch to the main branch (fetched via fetch-depth: 0 above).
-          git checkout main
-
-          # Drop the updated formula onto main's tree.
-          cp "$UPDATED_FORMULA" dist/homebrew/gofasta.rb
-          rm -f "$UPDATED_FORMULA"
-
-          git add dist/homebrew/gofasta.rb
-          if git diff --cached --quiet; then
-            echo "Homebrew formula already up to date on main — nothing to commit."
-            exit 0
-          fi
-
-          git commit -m "chore: update Homebrew formula for ${GITHUB_REF_NAME}"
-          git push origin main

@@ -63,7 +63,7 @@ cli/
 │   │   └── ...
 │   └── skeleton/                  # Embedded project templates
 │       └── project/              # Files that become a new project
-├── dist/                          # Distribution files (install script, Homebrew)
+├── dist/                          # Distribution files (shell-script installer)
 └── go.mod
 ```
 
