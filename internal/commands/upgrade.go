@@ -96,7 +96,7 @@ func runUpgrade() error {
 	}
 
 	if isGoInstall(execPath) {
-		return upgradeViaGoInstall(latestClean)
+		return upgradeViaGoInstall(latest, latestClean)
 	}
 	return upgradeViaBinary(execPath, latest)
 }
@@ -168,9 +168,21 @@ func readBinaryVersion(binPath string) (string, error) {
 	return fields[len(fields)-1], nil
 }
 
-func upgradeViaGoInstall(expectedVersion string) error {
-	termcolor.PrintStep("Detected `go install`. Running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
-	cmd := execCommand("go", "install", "github.com/gofastadev/cli/cmd/gofasta@latest")
+// upgradeViaGoInstall runs `go install` pinned to a specific version instead
+// of @latest. Pinning matters because fetchLatestVersion queries the GitHub
+// Releases API directly, but `go install @latest` goes through the Go module
+// proxy, which has its own indexing lag — when a fresh tag is pushed the
+// proxy can continue returning the previous version as "latest" for minutes
+// to hours. Pinning to `@<rawTag>` (e.g. `@v0.1.5`) tells Go to fetch that
+// exact version on demand, sidestepping the race entirely.
+//
+// rawTag is the version string as it appears on the release (with the "v"
+// prefix, e.g. "v0.1.5"). expectedVersion is the normalized form (no "v",
+// e.g. "0.1.5") used for the post-install version-match assertion.
+func upgradeViaGoInstall(rawTag, expectedVersion string) error {
+	modulePath := "github.com/gofastadev/cli/cmd/gofasta@" + rawTag
+	termcolor.PrintStep("Detected `go install`. Running: go install %s", modulePath)
+	cmd := execCommand("go", "install", modulePath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
@@ -197,9 +209,8 @@ func upgradeViaGoInstall(expectedVersion string) error {
 		return fmt.Errorf(
 			"go install reported success but %s reports version %s, expected v%s — "+
 				"this usually means $GOBIN or $GOPATH is set differently than expected. "+
-				"Try running `go install github.com/gofastadev/cli/cmd/gofasta@latest` manually "+
-				"and check `which gofasta`",
-			target, installed, expectedVersion,
+				"Try running `go install %s` manually and check `which gofasta`",
+			target, installed, expectedVersion, modulePath,
 		)
 	}
 
