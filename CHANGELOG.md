@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-04-09
+
 ### Added
 - Initial public release of the Gofasta CLI
 - `gofasta new` — scaffold a complete, ready-to-run Go web project
@@ -28,4 +30,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 - `gofasta init` — initialize a cloned project (env, deps, codegen, migrations)
 - `gofasta swagger` — generate OpenAPI/Swagger documentation
 - `gofasta wire` — regenerate Wire dependency injection code
+- `gofasta upgrade` — self-update to the latest version (detects Homebrew, go install, or binary)
+- `gofasta version` — print detailed version, Go, and OS/arch information
+- `gofasta --version` — print the installed CLI version
+- `gofasta doctor` — check system prerequisites and project health
+- `gofasta routes` — display all registered API routes
+- `gofasta db reset` — drop all tables, re-migrate, and seed
+- `gofasta console` — start an interactive Go REPL (via yaegi)
 - Homebrew formula and shell installer for distribution

@@ -4,12 +4,12 @@ package configutil
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/knadh/koanf/parsers/yaml"
 	"github.com/knadh/koanf/providers/env"
 	"github.com/knadh/koanf/providers/file"
 	"github.com/knadh/koanf/v2"
-	"strings"
 )
 
 // BuildMigrationURL reads config.yaml and env vars to build a database migration URL.
@@ -84,13 +84,13 @@ func ReadDBDriver() string {
 func loadConfig() *koanf.Koanf {
 	k := koanf.New(".")
 	if _, err := os.Stat("config.yaml"); err == nil {
-		k.Load(file.Provider("config.yaml"), yaml.Parser())
+		_ = k.Load(file.Provider("config.yaml"), yaml.Parser())
 	}
 	// Overlay with GOFASTA_ prefixed env vars
-	k.Load(env.Provider("GOFASTA_", ".", func(s string) string {
-		return strings.Replace(
+	_ = k.Load(env.Provider("GOFASTA_", ".", func(s string) string {
+		return strings.ReplaceAll(
 			strings.ToLower(strings.TrimPrefix(s, "GOFASTA_")),
-			"_", ".", -1,
+			"_", ".",
 		)
 	}), nil)
 	return k

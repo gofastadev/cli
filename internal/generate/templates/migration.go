@@ -2,6 +2,7 @@ package templates
 
 // --- PostgreSQL ---
 
+// MigUpPostgres is the up-migration template for Postgres.
 var MigUpPostgres = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 {{- range .Fields}}
@@ -24,6 +25,7 @@ CREATE TRIGGER increment_{{.PluralSnake}}_record_version
     FOR EACH ROW EXECUTE FUNCTION increment_record_version();
 `
 
+// MigDownPostgres is the down-migration template for Postgres.
 var MigDownPostgres = `DROP TRIGGER IF EXISTS increment_{{.PluralSnake}}_record_version ON {{.PluralSnake}};
 DROP TRIGGER IF EXISTS update_{{.PluralSnake}}_updated_at ON {{.PluralSnake}};
 DROP TABLE IF EXISTS {{.PluralSnake}};
@@ -31,6 +33,7 @@ DROP TABLE IF EXISTS {{.PluralSnake}};
 
 // --- MySQL / MariaDB ---
 
+// MigUpMySQL is the up-migration template for MySQL / MariaDB.
 var MigUpMySQL = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     id CHAR(36) PRIMARY KEY,
 {{- range .Fields}}
@@ -56,12 +59,14 @@ END//
 DELIMITER ;
 `
 
+// MigDownMySQL is the down-migration template for MySQL / MariaDB.
 var MigDownMySQL = `DROP TRIGGER IF EXISTS increment_{{.PluralSnake}}_record_version;
 DROP TABLE IF EXISTS {{.PluralSnake}};
 `
 
 // --- SQLite ---
 
+// MigUpSQLite is the up-migration template for SQLite.
 var MigUpSQLite = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     id TEXT PRIMARY KEY,
 {{- range .Fields}}
@@ -92,6 +97,7 @@ BEGIN
 END;
 `
 
+// MigDownSQLite is the down-migration template for SQLite.
 var MigDownSQLite = `DROP TRIGGER IF EXISTS increment_{{.PluralSnake}}_record_version;
 DROP TRIGGER IF EXISTS update_{{.PluralSnake}}_updated_at;
 DROP TABLE IF EXISTS {{.PluralSnake}};
@@ -99,6 +105,7 @@ DROP TABLE IF EXISTS {{.PluralSnake}};
 
 // --- SQL Server ---
 
+// MigUpSQLServer is the up-migration template for Microsoft SQL Server.
 var MigUpSQLServer = `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{{.PluralSnake}}' AND xtype='U')
 CREATE TABLE {{.PluralSnake}} (
     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
@@ -130,12 +137,14 @@ END;
 GO
 `
 
+// MigDownSQLServer is the down-migration template for Microsoft SQL Server.
 var MigDownSQLServer = `DROP TRIGGER IF EXISTS trg_{{.PluralSnake}}_before_update;
 DROP TABLE IF EXISTS {{.PluralSnake}};
 `
 
 // --- ClickHouse ---
 
+// MigUpClickHouse is the up-migration template for ClickHouse.
 var MigUpClickHouse = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     id UUID DEFAULT generateUUIDv4(),
 {{- range .Fields}}
@@ -151,5 +160,6 @@ var MigUpClickHouse = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
 ORDER BY id;
 `
 
+// MigDownClickHouse is the down-migration template for ClickHouse.
 var MigDownClickHouse = `DROP TABLE IF EXISTS {{.PluralSnake}};
 `

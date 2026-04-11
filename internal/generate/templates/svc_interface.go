@@ -1,5 +1,6 @@
 package templates
 
+// SvcInterface is the Go template for generating a service interface.
 var SvcInterface = `package interfaces
 
 import (

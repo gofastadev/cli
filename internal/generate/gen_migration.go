@@ -6,6 +6,7 @@ import (
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
+// GenMigration writes up + down SQL migration files for the scaffolded resource.
 func GenMigration(d ScaffoldData) error {
 	up := fmt.Sprintf("db/migrations/%s_create_%s.up.sql", d.MigrationNum, d.PluralSnake)
 	down := fmt.Sprintf("db/migrations/%s_create_%s.down.sql", d.MigrationNum, d.PluralSnake)

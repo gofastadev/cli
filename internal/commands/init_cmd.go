@@ -3,7 +3,6 @@ package commands
 import (
 	"fmt"
 	"os"
-	"os/exec"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/spf13/cobra"
@@ -38,10 +37,10 @@ func runInit() error {
 		if _, err := os.Stat(".env.example"); err == nil {
 			fmt.Println("📋 Creating .env from .env.example...")
 			input, _ := os.ReadFile(".env.example")
-			os.WriteFile(".env", input, 0644)
+			_ = os.WriteFile(".env", input, 0o644)
 		} else {
 			fmt.Println("📋 Creating empty .env file...")
-			os.WriteFile(".env", []byte("# Environment config\n"), 0644)
+			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
 		}
 	} else {
 		fmt.Println("✓  .env already exists")
@@ -73,7 +72,7 @@ func runInit() error {
 	fmt.Println("\n🗄  Running database migrations...")
 	dbURL := configutil.BuildMigrationURL()
 	if dbURL != "" {
-		migrateCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
@@ -98,8 +97,13 @@ func runInit() error {
 	return nil
 }
 
+// runCmd runs an external command and streams stdout/stderr to the user. The
+// first argument is the program name; it is kept as a parameter (rather than
+// hard-coded to "go") so tests and future callers can target other binaries.
+//
+//nolint:unparam // name parameter kept for future flexibility.
 func runCmd(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := execCommand(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

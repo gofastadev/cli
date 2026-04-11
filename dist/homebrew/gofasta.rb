@@ -1,5 +1,5 @@
 class Gofasta < Formula
-  desc "CLI tool for the gofasta Go web framework"
+  desc "CLI for Gofasta, a Go backend toolkit"
   homepage "https://github.com/gofastadev/cli"
   version "0.1.0"
   license "MIT"

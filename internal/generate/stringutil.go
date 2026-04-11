@@ -5,7 +5,7 @@ import "strings"
 func toPascalCase(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
 	for i, p := range parts {
-		if len(p) > 0 {
+		if p != "" {
 			parts[i] = strings.ToUpper(p[:1]) + p[1:]
 		}
 	}
@@ -14,7 +14,7 @@ func toPascalCase(s string) string {
 
 func toCamelCase(s string) string {
 	p := toPascalCase(s)
-	if len(p) == 0 {
+	if p == "" {
 		return p
 	}
 	return strings.ToLower(p[:1]) + p[1:]

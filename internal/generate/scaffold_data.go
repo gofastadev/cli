@@ -35,17 +35,17 @@ func BuildScaffoldData(name string, fields []Field) ScaffoldData {
 
 func nextMigrationNumber() string {
 	entries, _ := os.ReadDir("db/migrations")
-	max := 0
+	highest := 0
 	for _, e := range entries {
 		if len(e.Name()) >= 6 {
 			var num int
-			fmt.Sscanf(e.Name()[:6], "%d", &num)
-			if num > max {
-				max = num
+			_, _ = fmt.Sscanf(e.Name()[:6], "%d", &num)
+			if num > highest {
+				highest = num
 			}
 		}
 	}
-	return fmt.Sprintf("%06d", max+1)
+	return fmt.Sprintf("%06d", highest+1)
 }
 
 // readModulePath reads the module path from go.mod in the current directory.

@@ -1,10 +1,12 @@
 # Gofasta CLI
 
-[![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![Coverage Status](https://coveralls.io/repos/github/gofastadev/cli/badge.svg?branch=main)](https://coveralls.io/github/gofastadev/cli?branch=main) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
+[![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![CodeQL](https://github.com/gofastadev/cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/codeql.yml) [![codecov](https://codecov.io/gh/gofastadev/cli/branch/main/graph/badge.svg)](https://codecov.io/gh/gofastadev/cli) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
 
-The command-line tool for the [Gofasta](https://github.com/gofastadev/gofasta) Go web framework. It creates new projects, generates code, and runs common development tasks.
+The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go backend toolkit. The CLI is a standalone binary that creates new projects, generates code, and runs common development tasks. It does not import the gofasta library — it only manipulates files on disk.
 
-## Install
+## Install the CLI
+
+The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` at `cmd/gofasta/`. It is not the same as the `github.com/gofastadev/gofasta` library, which your generated projects import as a dependency. You install one, you import the other.
 
 **Option A — Go install (requires Go 1.25.8+):**
 
@@ -79,14 +81,14 @@ myapp/
 └── gqlgen.yml              # GraphQL code generation config
 ```
 
-The project imports `github.com/gofastadev/gofasta` as a library dependency. It does **not** contain any CLI or framework internals — only your application code.
+The project imports `github.com/gofastadev/gofasta` as a library dependency. It does **not** contain any CLI or gofasta library internals — only your application code.
 
 ### What Happens During `gofasta new`
 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
 3. Copies ~78 template files, replacing placeholders with your project name
-4. Installs the gofasta framework and tool dependencies (Wire, gqlgen, Air)
+4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies (Wire, gqlgen, Air, swag)
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
 7. Generates GraphQL resolver code
@@ -263,7 +265,7 @@ Regenerates the Wire dependency injection code after manual changes to providers
 
 ## How It Works
 
-The CLI is a standalone Go binary. It does **not** import the gofasta framework library — it only manipulates files on disk.
+The CLI is a standalone Go binary. It does **not** import the gofasta library — it only manipulates files on disk.
 
 - `gofasta new` uses Go's `embed.FS` to carry project template files inside the binary. Templates are rendered with `text/template`, replacing `{{.ModulePath}}` with your project's module path and `{{.ProjectNameLower}}` with your project name.
 

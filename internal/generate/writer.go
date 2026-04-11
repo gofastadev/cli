@@ -14,7 +14,7 @@ func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 		fmt.Printf("  skip (exists): %s\n", path)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	funcMap := template.FuncMap{
@@ -30,7 +30,7 @@ func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if err := t.Execute(f, data); err != nil {
 		return err
 	}

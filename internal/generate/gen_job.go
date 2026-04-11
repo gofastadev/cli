@@ -14,7 +14,7 @@ func GenJob(d ScaffoldData) error {
 		fmt.Printf("  skip (exists): %s\n", path)
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 
@@ -23,7 +23,7 @@ func GenJob(d ScaffoldData) error {
 	content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
 	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
 
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
 	fmt.Printf("  create: %s\n", path)
@@ -40,14 +40,14 @@ func PatchJobRegistry(d ScaffoldData) error {
 	s := string(content)
 
 	// Check for uncommented registry line (tab-indented, not //-prefixed)
-	uncommentedRegistry := fmt.Sprintf("\t\t\"%s\": jobs.New%sJob(", d.SnakeName, d.Name)
+	uncommentedRegistry := fmt.Sprintf("\t\t%q: jobs.New%sJob(", d.SnakeName, d.Name)
 	if strings.Contains(s, uncommentedRegistry) {
 		fmt.Printf("  skip (already registered): %s\n", path)
 		return nil
 	}
 
 	// Add to registry map
-	insertLine := fmt.Sprintf("\t\t\"%s\": jobs.New%sJob(container.DB, logger),\n", d.SnakeName, d.Name)
+	insertLine := fmt.Sprintf("\t\t%q: jobs.New%sJob(container.DB, logger),\n", d.SnakeName, d.Name)
 	s = strings.Replace(s,
 		"// \"cleanup-tokens\":",
 		insertLine+"// \"cleanup-tokens\":",
@@ -64,7 +64,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 	}
 
 	fmt.Printf("  patch: %s (job registry)\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // PatchJobConfig adds the job schedule to config.yaml.
@@ -88,7 +88,7 @@ func PatchJobConfig(d ScaffoldData) error {
 		schedule = "0 0 * * * *" // default: every hour
 	}
 
-	entry := fmt.Sprintf("  - name: %s\n    schedule: \"%s\"\n    enabled: true\n", d.SnakeName, schedule)
+	entry := fmt.Sprintf("  - name: %s\n    schedule: %q\n    enabled: true\n", d.SnakeName, schedule)
 
 	// Append after the jobs: section
 	if strings.Contains(s, "jobs:") {
@@ -99,7 +99,7 @@ func PatchJobConfig(d ScaffoldData) error {
 	}
 
 	fmt.Printf("  patch: %s (job schedule)\n", path)
-	return os.WriteFile(path, []byte(s), 0644)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 const jobTemplate = `package jobs
@@ -120,14 +120,17 @@ type __NAME__Job struct {
 	Logger *slog.Logger
 }
 
+// New__NAME__Job constructs the job.
 func New__NAME__Job(db *gorm.DB, logger *slog.Logger) *__NAME__Job {
 	return &__NAME__Job{DB: db, Logger: logger}
 }
 
+// Name returns the scheduler-visible job name.
 func (j *__NAME__Job) Name() string {
 	return "__SNAKE_NAME__"
 }
 
+// Run executes the job.
 func (j *__NAME__Job) Run() {
 	// TODO: Implement your job logic here
 	j.Logger.Info("__SNAKE_NAME__ job executed")

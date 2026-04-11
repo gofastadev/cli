@@ -1,5 +1,6 @@
 package templates
 
+// GraphQL is the Go template for generating a GraphQL schema fragment.
 var GraphQL = `type {{.Name}} {
   id: ID!
   recordVersion: Int!

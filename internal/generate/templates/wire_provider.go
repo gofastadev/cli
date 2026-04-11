@@ -1,5 +1,6 @@
 package templates
 
+// WireProvider is the Go template for generating a Wire provider.
 var WireProvider = `package providers
 
 import (

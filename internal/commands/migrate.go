@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/spf13/cobra"
@@ -43,7 +42,7 @@ func runMigration(direction string) error {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")
 	}
 
-	migrateCmd := exec.Command("migrate",
+	migrateCmd := execCommand("migrate",
 		"-path", "db/migrations",
 		"-database", dbURL,
 		direction,

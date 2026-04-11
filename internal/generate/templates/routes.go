@@ -1,5 +1,6 @@
 package templates
 
+// Routes is the Go template for generating route registration for a resource.
 var Routes = `package routes
 
 import (

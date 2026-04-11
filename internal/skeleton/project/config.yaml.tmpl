@@ -121,3 +121,14 @@ jobs:
   - name: example
     schedule: "0 0 */6 * * *"
     enabled: false
+
+# ── Deployment ──
+deploy:
+  host: ""              # user@server.com (required for gofasta deploy)
+  method: docker        # docker or binary
+  port: 22              # SSH port
+  path: ""              # remote directory (default: /opt/{{.ProjectNameLower}})
+  arch: amd64           # target architecture: amd64 or arm64
+  health_path: /health  # health check endpoint
+  health_timeout: 30    # seconds to wait for health check
+  keep_releases: 3      # number of old releases to keep for rollback

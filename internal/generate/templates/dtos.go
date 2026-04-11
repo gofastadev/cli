@@ -1,5 +1,6 @@
 package templates
 
+// DTOs is the Go template for generating DTO structs for a resource.
 var DTOs = `package dtos
 
 import (

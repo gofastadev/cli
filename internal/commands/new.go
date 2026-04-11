@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"text/template"
@@ -83,6 +82,7 @@ func resolveProjectPaths(nameOrPath string) (projectDir, projectName, modulePath
 	return
 }
 
+//nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
 func runNew(nameOrPath string, includeGraphQL bool) error {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
 
@@ -102,7 +102,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	// Create project directory
 	fmt.Printf("📁 Creating directory %s/\n", projectDir)
-	if err := os.MkdirAll(projectDir, 0755); err != nil {
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
 
@@ -111,7 +111,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	if err := os.Chdir(projectDir); err != nil {
 		return err
 	}
-	defer os.Chdir(origDir)
+	defer func() { _ = os.Chdir(origDir) }()
 
 	// Initialize go module
 	fmt.Printf("📦 Initializing Go module: %s\n", modulePath)
@@ -146,7 +146,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		}
 
 		if d.IsDir() {
-			return os.MkdirAll(relPath, 0755)
+			return os.MkdirAll(relPath, 0o755)
 		}
 
 		// Read the embedded file
@@ -170,7 +170,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 		// Ensure parent directory exists
 		if dir := filepath.Dir(outputPath); dir != "." {
-			os.MkdirAll(dir, 0755)
+			_ = os.MkdirAll(dir, 0o755)
 		}
 
 		var output []byte
@@ -189,7 +189,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		}
 
 		fmt.Printf("   %s\n", outputPath)
-		return os.WriteFile(outputPath, output, 0644)
+		return os.WriteFile(outputPath, output, 0o644)
 	})
 	if err != nil {
 		return fmt.Errorf("generating project files: %w", err)
@@ -197,14 +197,14 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	// Copy .env from .env.example
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
-		os.WriteFile(".env", envExample, 0644)
+		_ = os.WriteFile(".env", envExample, 0o644)
 		fmt.Println("   .env")
 	}
 
-	// Install gofasta framework as dependency
-	fmt.Println("\n📦 Installing gofasta framework...")
+	// Install gofasta library as a project dependency.
+	fmt.Println("\n📦 Installing gofasta library...")
 	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
-		fmt.Println("   ⚠ Could not install gofasta (you may need to add it manually)")
+		fmt.Println("   ⚠ Could not install gofasta library (you may need to add it manually)")
 	}
 
 	// Install cobra for project commands
@@ -215,22 +215,22 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	// Add tool dependencies
 	fmt.Println("📦 Installing tool dependencies...")
 	if includeGraphQL {
-		runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
 	}
-	runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
-	runCmdSilent("go", "get", "github.com/air-verse/air@latest")
-	runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
+	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
+	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
+	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
 	// Register as Go tools
 	if includeGraphQL {
-		runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
+		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
 	}
-	runCmdSilent("go", "mod", "edit", "-tool", "github.com/google/wire/cmd/wire")
-	runCmdSilent("go", "mod", "edit", "-tool", "github.com/air-verse/air")
-	runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
+	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/google/wire/cmd/wire")
+	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/air-verse/air")
+	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
 
 	// Tidy
 	fmt.Println("📦 Running go mod tidy...")
-	runCmdSilent("go", "mod", "tidy")
+	_ = runCmdSilent("go", "mod", "tidy")
 
 	// Generate code
 	fmt.Println("\n🔌 Generating Wire DI code...")
@@ -247,9 +247,9 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	// Initialize git
 	fmt.Println("\n🔧 Initializing git repository...")
-	runCmdSilent("git", "init")
-	runCmdSilent("git", "add", ".")
-	runCmdSilent("git", "commit", "-m", "Initial commit: gofasta project scaffold")
+	_ = runCmdSilent("git", "init")
+	_ = runCmdSilent("git", "add", ".")
+	_ = runCmdSilent("git", "commit", "-m", "Initial commit: gofasta project scaffold")
 
 	fmt.Printf("\n✅ Project %s created successfully!\n", projectName)
 	fmt.Printf("\nGet started:\n")
@@ -264,7 +264,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 }
 
 func runCmdSilent(name string, args ...string) error {
-	cmd := exec.Command(name, args...)
+	cmd := execCommand(name, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

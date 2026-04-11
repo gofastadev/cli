@@ -132,6 +132,7 @@ func controllerSteps(d ScaffoldData) []Step {
 	if d.IncludeGraphQL {
 		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
 	}
+	//nolint:gocritic // split intentionally around optional resolver step above.
 	steps = append(steps,
 		Step{"auto-wire: route config", PatchRouteConfig},
 		Step{"auto-wire: serve.go", PatchServeFile},
@@ -169,6 +170,7 @@ func scaffoldSteps(d ScaffoldData) []Step {
 	if d.IncludeGraphQL {
 		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
 	}
+	//nolint:gocritic // split intentionally around optional resolver step above.
 	steps = append(steps,
 		Step{"auto-wire: route config", PatchRouteConfig},
 		Step{"auto-wire: serve.go", PatchServeFile},

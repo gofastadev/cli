@@ -10,8 +10,12 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "gofasta",
-	Short: "Gofasta - A scalable Go web framework CLI",
+	Short: "Gofasta - CLI for the Gofasta Go backend toolkit",
 	Long:  "Gofasta CLI tool for scaffolding, generating code, and managing gofasta projects.",
+	Run: func(cmd *cobra.Command, _ []string) {
+		printBanner()
+		_ = cmd.Help()
+	},
 }
 
 func init() {
@@ -19,9 +23,16 @@ func init() {
 	rootCmd.AddCommand(generate.WireCmd)
 }
 
-// Execute runs the root command.
-func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+// runExecute is the testable core: runs the root command with the given
+// version and returns any error instead of calling os.Exit.
+func runExecute(version string) error {
+	rootCmd.Version = version
+	return rootCmd.Execute()
+}
+
+// Execute runs the root command with the given version string.
+func Execute(version string) {
+	if err := runExecute(version); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
