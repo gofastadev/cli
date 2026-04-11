@@ -26,7 +26,6 @@ var upgradeCmd = &cobra.Command{
 	Long: `Check for a newer version of the gofasta CLI and install it.
 
 The upgrade method depends on how gofasta was originally installed:
-  - Homebrew: runs "brew upgrade gofasta"
   - Go install: runs "go install github.com/gofastadev/cli/cmd/gofasta@latest"
   - Binary: downloads the latest release from GitHub and replaces the current binary`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -66,14 +65,10 @@ func runUpgrade() error {
 		return fmt.Errorf("cannot determine executable path: %w", err)
 	}
 
-	switch {
-	case isHomebrew(execPath):
-		return upgradeViaHomebrew()
-	case isGoInstall(execPath):
+	if isGoInstall(execPath) {
 		return upgradeViaGoInstall()
-	default:
-		return upgradeViaBinary(execPath, latest)
 	}
+	return upgradeViaBinary(execPath, latest)
 }
 
 func fetchLatestVersion() (string, error) {
@@ -99,10 +94,6 @@ func fetchLatestVersion() (string, error) {
 	return release.TagName, nil
 }
 
-func isHomebrew(execPath string) bool {
-	return strings.Contains(execPath, "Cellar") || strings.Contains(execPath, "homebrew") || strings.Contains(execPath, "linuxbrew")
-}
-
 func isGoInstall(execPath string) bool {
 	gopath := os.Getenv("GOPATH")
 	if gopath == "" {
@@ -110,18 +101,6 @@ func isGoInstall(execPath string) bool {
 		gopath = home + "/go"
 	}
 	return strings.HasPrefix(execPath, gopath)
-}
-
-func upgradeViaHomebrew() error {
-	fmt.Println("Detected Homebrew installation, running: brew upgrade gofasta")
-	cmd := execCommand("brew", "upgrade", "gofasta")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("brew upgrade failed: %w", err)
-	}
-	fmt.Println("Upgrade complete.")
-	return nil
 }
 
 func upgradeViaGoInstall() error {
