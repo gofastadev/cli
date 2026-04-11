@@ -28,7 +28,7 @@ func init() {
 }
 
 func runSeed(fresh bool) error {
-	cfg, err := config.LoadConfig()
+	cfg, err := config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
 	if err != nil {
 		return err
 	}

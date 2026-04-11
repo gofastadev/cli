@@ -20,10 +20,19 @@ import (
 	"gorm.io/gorm"
 )
 
+// LoadConfig reads configuration for this project. It calls the framework's
+// LoadConfigWithPrefix with the project-specific env var prefix so variables
+// like {{.ProjectNameUpper}}_DATABASE_HOST are honored instead of the default
+// GOFASTA_* prefix. This lets multiple gofasta projects coexist on the same
+// host without clobbering each other's env vars.
+func LoadConfig() (*config.AppConfig, error) {
+	return config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
+}
+
 // CoreSet provides all core infrastructure.
 var CoreSet = wire.NewSet(
 	// Config
-	config.LoadConfig,
+	LoadConfig,
 	ProvideDBConfig,
 	ProvideLogConfig,
 	ProvideEmailConfig,

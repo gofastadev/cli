@@ -74,12 +74,76 @@ func loadConfig() *koanf.Koanf {
 	if _, err := os.Stat("config.yaml"); err == nil {
 		_ = k.Load(file.Provider("config.yaml"), yaml.Parser())
 	}
-	// Overlay with GOFASTA_ prefixed env vars
-	_ = k.Load(env.Provider("GOFASTA_", ".", func(s string) string {
-		return strings.ReplaceAll(
-			strings.ToLower(strings.TrimPrefix(s, "GOFASTA_")),
-			"_", ".",
-		)
-	}), nil)
+	// Overlay with env vars from both the generic GOFASTA_ prefix AND the
+	// project-specific prefix derived from go.mod. A project scaffolded as
+	// "mylearn" will have its .env set MYLEARN_DATABASE_HOST — the CLI must
+	// read that too or `gofasta migrate up` / `gofasta dev` preflight can't
+	// find the database when it differs from config.yaml defaults.
+	for _, prefix := range envPrefixes() {
+		_ = k.Load(env.Provider(prefix, ".", func(s string) string {
+			return strings.ReplaceAll(
+				strings.ToLower(strings.TrimPrefix(s, prefix)),
+				"_", ".",
+			)
+		}), nil)
+	}
 	return k
+}
+
+// envPrefixes returns the list of env var prefixes to consult when reading
+// database connection details. GOFASTA_ is always included for backwards
+// compatibility; if a go.mod file exists in cwd we also append the
+// project-specific prefix derived from its module path (the last segment,
+// uppercased, with an underscore suffix). Duplicates are collapsed so a
+// project whose last segment IS "gofasta" doesn't have its env vars loaded
+// twice (koanf overlay order still works, but the duplicate pass is wasted
+// work).
+func envPrefixes() []string {
+	prefixes := []string{"GOFASTA_"}
+	if name := projectPrefix(); name != "" && name != "GOFASTA_" {
+		prefixes = append(prefixes, name)
+	}
+	return prefixes
+}
+
+// projectPrefix reads go.mod in cwd and returns the project's env var prefix
+// (uppercased module-last-segment + "_"). Returns an empty string if go.mod
+// is missing, malformed, or the last segment can't be extracted.
+func projectPrefix() string {
+	content, err := os.ReadFile("go.mod")
+	if err != nil {
+		return ""
+	}
+	// Minimal parser: find the first line starting with "module " and take
+	// the rest as the module path. This is cheaper than importing
+	// golang.org/x/mod/modfile and sufficient for well-formed go.mod files.
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "module ") {
+			continue
+		}
+		path := strings.TrimSpace(strings.TrimPrefix(line, "module"))
+		path = strings.Trim(path, `"`)
+		if path == "" {
+			return ""
+		}
+		segments := strings.Split(path, "/")
+		last := segments[len(segments)-1]
+		// Strip illegal env-var characters (dashes, dots) so a module named
+		// "my-learn" maps to MYLEARN_ rather than MY-LEARN_ (which isn't a
+		// valid shell variable name anyway).
+		cleaned := strings.Map(func(r rune) rune {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+				return r
+			default:
+				return -1
+			}
+		}, last)
+		if cleaned == "" {
+			return ""
+		}
+		return strings.ToUpper(cleaned) + "_"
+	}
+	return ""
 }

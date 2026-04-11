@@ -120,7 +120,14 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	data := ProjectData{
 		ProjectName:      projectName,
 		ProjectNameLower: strings.ToLower(projectName),
-		ProjectNameUpper: strings.ToUpper(projectName),
+		// Upper variant is used as an env-var prefix in compose.yaml,
+		// .env.example, k8s deployment.yaml, CI workflows, and the
+		// generated LoadConfig wrapper. Shell variable names only allow
+		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
+		// otherwise a project named "my-app" would produce invalid env
+		// vars like "MY-APP_DATABASE_HOST" and the framework would never
+		// read them.
+		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
 	}
@@ -376,6 +383,22 @@ func printGetStarted(projectName string) {
 	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
 	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
 	fmt.Println()
+}
+
+// envVarSafeUpper returns name uppercased with every non-[A-Z0-9_] character
+// stripped. Used to derive a shell-variable-safe prefix from a project name
+// that may contain dashes, dots, or other characters legal in go.mod paths
+// but illegal in shell env var names.
+func envVarSafeUpper(name string) string {
+	upper := strings.ToUpper(name)
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			return r
+		default:
+			return -1
+		}
+	}, upper)
 }
 
 func runCmdSilent(name string, args ...string) error {

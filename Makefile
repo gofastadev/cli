@@ -50,9 +50,23 @@ build:
 	go build -o bin/gofasta ./cmd/gofasta/
 
 ## Run integration test (build + scaffold + compile)
+##
+## The scaffold runs `go get github.com/gofastadev/gofasta@latest` which pulls
+## whatever is published on the framework repo. During local development the
+## skeleton may depend on an unreleased framework symbol — if GOFASTA_LOCAL is
+## set to a filesystem path, inject a `replace` directive pointing at that
+## checkout so the integration compile uses your local framework tree instead
+## of the published one. CI leaves GOFASTA_LOCAL unset and tests the real
+## scaffold path against @latest.
 integration: build
 	rm -rf /tmp/gofasta-integration-test
 	./bin/gofasta new /tmp/gofasta-integration-test
+	@if [ -n "$$GOFASTA_LOCAL" ]; then \
+		echo "  → using local framework replace: $$GOFASTA_LOCAL"; \
+		cd /tmp/gofasta-integration-test && \
+			go mod edit -replace github.com/gofastadev/gofasta=$$GOFASTA_LOCAL && \
+			go mod tidy; \
+	fi
 	cd /tmp/gofasta-integration-test && go build ./...
 
 ## Remove build artifacts

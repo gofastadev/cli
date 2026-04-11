@@ -5,8 +5,23 @@
 # Server
 PORT=8080
 
-# Database (used by Docker Compose and the app)
+# Database — shared between host-run and docker-run flows.
+#
+# DEFAULTS ARE SET UP FOR OPTION B (`gofasta dev` on the host, db in Docker):
+#   HOST=localhost and PORT=5433 match the port the docker-compose db service
+#   publishes to the host via DB_HOST_PORT. `gofasta dev` loads this .env
+#   before launching Air, so the host-running app connects to the dockerized
+#   db on localhost:5433 out of the box.
+#
+# For OPTION A (`docker compose up -d` — everything in Docker), compose.yaml
+# overrides HOST and PORT in the app container to `db:5432` (the Docker
+# network address), so these values are ignored inside the container.
+#
+# For OPTION C (everything on host with your own postgres), change HOST/PORT
+# below to wherever your db lives — typically `localhost:5432`.
 {{.ProjectNameUpper}}_DATABASE_DRIVER=postgres
+{{.ProjectNameUpper}}_DATABASE_HOST=localhost
+{{.ProjectNameUpper}}_DATABASE_PORT=5433
 {{.ProjectNameUpper}}_DATABASE_USER={{.ProjectNameLower}}
 {{.ProjectNameUpper}}_DATABASE_PASSWORD={{.ProjectNameLower}}
 {{.ProjectNameUpper}}_DATABASE_NAME={{.ProjectNameLower}}_dev
