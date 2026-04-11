@@ -39,7 +39,7 @@ func init() {
 }
 
 func runMigration(direction string) error {
-	cfg, err := config.LoadConfig()
+	cfg, err := config.LoadConfigWithPrefix("{{.ProjectNameUpper}}_")
 	if err != nil {
 		return fmt.Errorf("failed to load config: %w", err)
 	}

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupConfigDir(t *testing.T, configContent string) {
@@ -163,4 +164,105 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	t.Setenv("GOFASTA_DATABASE_DRIVER", "mysql")
 	k := loadConfig()
 	assert.Equal(t, "mysql", k.String("database.driver"))
+}
+
+// --- Project-prefix env var support ---
+//
+// When a go.mod exists in cwd, env vars prefixed with the project name
+// (uppercase last-segment + "_") must override config.yaml the same way
+// GOFASTA_* does. Critical for `gofasta dev` / `gofasta migrate up` to
+// pick up DB connection overrides from a project's .env file.
+
+func TestLoadConfig_ProjectPrefixOverride(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: postgres
+  name: yamldb
+  host: localhost
+  port: "5432"
+`)
+	writeGoMod(t, "github.com/acme/mylearn")
+	t.Setenv("MYLEARN_DATABASE_HOST", "docker-host")
+	t.Setenv("MYLEARN_DATABASE_PORT", "5433")
+	t.Setenv("MYLEARN_DATABASE_NAME", "mylearn_dev")
+
+	url := BuildMigrationURL()
+	assert.Contains(t, url, "docker-host")
+	assert.Contains(t, url, "5433")
+	assert.Contains(t, url, "mylearn_dev")
+}
+
+func TestLoadConfig_ProjectPrefixOverridesGofasta(t *testing.T) {
+	// When both prefixes are set, the project prefix takes precedence
+	// because it's loaded second (koanf overlay order).
+	setupConfigDir(t, `database:
+  name: yamldb
+`)
+	writeGoMod(t, "github.com/acme/mylearn")
+	t.Setenv("GOFASTA_DATABASE_NAME", "gofasta-wins")
+	t.Setenv("MYLEARN_DATABASE_NAME", "project-wins")
+
+	url := BuildMigrationURL()
+	assert.Contains(t, url, "project-wins",
+		"project-specific prefix should override the generic GOFASTA_ prefix")
+}
+
+func TestProjectPrefix_StandardPath(t *testing.T) {
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/acme/mylearn")
+	assert.Equal(t, "MYLEARN_", projectPrefix())
+}
+
+func TestProjectPrefix_ModuleWithDash(t *testing.T) {
+	// "my-learn" must be normalized to MYLEARN_ (shell var names can't
+	// contain dashes).
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/acme/my-learn")
+	assert.Equal(t, "MYLEARN_", projectPrefix())
+}
+
+func TestProjectPrefix_NoGoMod(t *testing.T) {
+	setupConfigDir(t, "")
+	assert.Equal(t, "", projectPrefix())
+}
+
+func TestProjectPrefix_MalformedGoMod(t *testing.T) {
+	setupConfigDir(t, "")
+	require.NoError(t, os.WriteFile("go.mod", []byte("not a real go.mod\n"), 0o644))
+	assert.Equal(t, "", projectPrefix())
+}
+
+func TestProjectPrefix_SingleWordModule(t *testing.T) {
+	setupConfigDir(t, "")
+	writeGoMod(t, "foo")
+	assert.Equal(t, "FOO_", projectPrefix())
+}
+
+func TestProjectPrefix_OnlyIllegalChars(t *testing.T) {
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/acme/---")
+	assert.Equal(t, "", projectPrefix())
+}
+
+func TestProjectPrefix_EmptyModulePath(t *testing.T) {
+	setupConfigDir(t, "")
+	require.NoError(t, os.WriteFile("go.mod", []byte("module \"\"\n"), 0o644))
+	assert.Equal(t, "", projectPrefix())
+}
+
+func TestEnvPrefixes_DeDupesGofasta(t *testing.T) {
+	// A go.mod whose last segment is "gofasta" would produce GOFASTA_ as
+	// both the generic and project-specific prefix. envPrefixes should
+	// not double-add.
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/gofastadev/gofasta")
+	assert.Equal(t, []string{"GOFASTA_"}, envPrefixes(),
+		"duplicate prefixes should be collapsed")
+}
+
+// writeGoMod writes a minimal go.mod in the current working directory
+// (which setupConfigDir has already set to a fresh tempdir).
+func writeGoMod(t *testing.T, modulePath string) {
+	t.Helper()
+	content := "module " + modulePath + "\n\ngo 1.25.8\n"
+	require.NoError(t, os.WriteFile("go.mod", []byte(content), 0o644))
 }

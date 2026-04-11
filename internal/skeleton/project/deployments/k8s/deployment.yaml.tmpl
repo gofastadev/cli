@@ -33,11 +33,11 @@ spec:
             - secretRef:
                 name: {{.ProjectNameLower}}-secrets
           env:
-            - name: GOFASTA_DATABASE_HOST
+            - name: {{.ProjectNameUpper}}_DATABASE_HOST
               value: {{.ProjectNameLower}}-db     # Points to the DB service below
-            - name: GOFASTA_DATABASE_PORT
+            - name: {{.ProjectNameUpper}}_DATABASE_PORT
               value: "5432"
-            - name: GOFASTA_LOG_FORMAT
+            - name: {{.ProjectNameUpper}}_LOG_FORMAT
               value: json
           resources:
             requests:
