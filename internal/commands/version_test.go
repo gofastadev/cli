@@ -26,3 +26,19 @@ func TestRunVersion_NoError(t *testing.T) {
 	err := runVersion()
 	assert.NoError(t, err)
 }
+
+func TestDisplayVersion(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"v0.1.4", "v0.1.4"}, // already prefixed — pass through
+		{"0.1.4", "v0.1.4"},  // bare semver — add leading v
+		{"v1.2.3-rc.1", "v1.2.3-rc.1"},
+		{"dev", "dev"},         // unversioned dev build — no v
+		{"(devel)", "(devel)"}, // go build output — pass through
+		{"", ""},               // empty — pass through
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, displayVersion(tc.in), "input=%q", tc.in)
+	}
+}
