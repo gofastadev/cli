@@ -12,14 +12,25 @@ import (
 
 var devCmd = &cobra.Command{
 	Use:   "dev",
-	Short: "Start development server with hot reload, auto-migration",
-	Long: `Start the gofasta development server on your host machine.
-This command:
-  1. Runs database migrations (if DB is reachable)
-  2. Starts air for hot reload
-  3. Rebuilds on every file change
+	Short: "Run the project in development mode with Air hot reload",
+	Long: `Start the development loop against the current project on the host
+machine (not inside Docker). The command does three things:
 
-Prerequisites: Go installed, database running (use 'docker compose up db -d' for Docker DB)`,
+  1. Builds the migration URL from config.yaml and applies every pending
+     migration via ` + "`migrate up`" + ` (skipped gracefully if the database is
+     unreachable — useful before the DB container is up)
+  2. Launches Air (` + "`go tool air`" + `) against the project's .air.toml, which
+     rebuilds and restarts the binary on every source change
+  3. Wires SIGINT/SIGTERM through to Air so Ctrl+C shuts down cleanly
+
+Assumes the database is reachable — if you use the Docker dev loop,
+start the DB first with ` + "`docker compose up db -d`" + `. If you want a fully
+containerised dev loop, use ` + "`make up`" + ` instead (runs the app and DB in
+Compose).
+
+Prerequisites: Go toolchain, Air registered in go.mod (` + "`gofasta new`" + ` and
+` + "`gofasta init`" + ` do this automatically), and ` + "`migrate`" + ` on $PATH if you want
+auto-migration.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDev()
 	},

@@ -54,7 +54,15 @@ Run this once before your first deployment.`,
 
 var deployStatusCmd = &cobra.Command{
 	Use:   "status",
-	Short: "Check the status of the deployed application",
+	Short: "Show the current release and service status on the remote server",
+	Long: `Resolve the current release symlink on the remote host and show service
+status for whichever deploy method is configured:
+
+  docker   — ` + "`docker compose ps`" + ` against the deployed compose file
+  binary   — ` + "`systemctl status <appname>`" + `
+
+Read-only — makes no changes on the remote host. Config is loaded from
+config.yaml and can be overridden with the same flags as ` + "`gofasta deploy`" + `.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployStatus(cmd)
 	},
@@ -62,7 +70,14 @@ var deployStatusCmd = &cobra.Command{
 
 var deployLogsCmd = &cobra.Command{
 	Use:   "logs",
-	Short: "Tail application logs from the remote server",
+	Short: "Tail the application log stream from the remote server",
+	Long: `Stream the last 100 lines of application logs and follow new output
+until interrupted. Source depends on deploy method:
+
+  docker   — ` + "`docker compose logs -f`" + ` for the current release
+  binary   — ` + "`journalctl -u <appname> -f`" + `
+
+Read-only — makes no changes. Press Ctrl+C to stop tailing.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployLogs(cmd)
 	},
@@ -70,7 +85,14 @@ var deployLogsCmd = &cobra.Command{
 
 var deployRollbackCmd = &cobra.Command{
 	Use:   "rollback",
-	Short: "Rollback to the previous release",
+	Short: "Atomically swap the current release back to the previous version",
+	Long: `Roll the remote service back to the previous release by repointing the
+current symlink and restarting the service. Fails gracefully if no
+previous release exists. Use this when a deploy has caused a regression
+and you need to revert without re-running the full deploy pipeline.
+
+This only swaps atoms on the remote host — it does not touch any local
+state or revert git.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployRollback(cmd)
 	},

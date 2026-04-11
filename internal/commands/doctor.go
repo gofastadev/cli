@@ -11,10 +11,22 @@ import (
 
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
-	Short: "Check system prerequisites and project health",
-	Long: `Verify that required and optional tools are installed, check project
-configuration, and test database connectivity. Useful for diagnosing setup
-issues and for including in bug reports.`,
+	Short: "Audit system prerequisites, required tools, and project health",
+	Long: `Run a diagnostic sweep and print a table of checks with status icons.
+Useful as the first thing to run after installing the CLI, after cloning
+a project, and when filing bug reports — the output is designed to be
+pasted into an issue.
+
+Checks include:
+
+  - Go toolchain (version, GOPATH/GOBIN)
+  - Required tools: git, docker, migrate, air, wire, gqlgen, swag
+  - Project state: presence of config.yaml, .env, go.mod, db/migrations/
+  - Database connectivity: builds the migration URL and attempts a ping
+  - Golang-migrate schema_migrations version (when DB is reachable)
+
+Each check is tagged required or optional. A required check failing
+returns a non-zero exit code so the command is scriptable in CI.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDoctor()
 	},

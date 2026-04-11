@@ -12,9 +12,16 @@ import (
 
 var routesCmd = &cobra.Command{
 	Use:   "routes",
-	Short: "Display all registered API routes",
-	Long: `Parse route files in app/rest/routes/ and display a formatted table of all
-registered routes, including HTTP method, path, and source file.`,
+	Short: "List every registered REST route in a table (method, path, source)",
+	Long: `Statically parse every file under app/rest/routes/ for ` + "`router.GET`" + ` /
+` + "`router.POST`" + ` / ` + "`router.PUT`" + ` / ` + "`router.DELETE`" + ` / ` + "`router.PATCH`" + ` calls and print
+a formatted table showing HTTP method, full path (including router group
+prefixes), and source file. Does not import or run your project code —
+purely a grep-and-format pass.
+
+Useful for debugging route conflicts, documenting the public API, and
+spotting unregistered handlers. For GraphQL schema introspection use
+the standard ` + "`/graphql-playground`" + ` endpoint instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRoutes()
 	},

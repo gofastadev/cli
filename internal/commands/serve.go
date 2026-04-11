@@ -8,8 +8,15 @@ import (
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the HTTP server (delegates to project binary)",
-	Long:  "Start the gofasta HTTP server. This delegates to the project's own serve command.",
+	Short: "Run the project's HTTP server (production-mode, no hot reload)",
+	Long: `Start the HTTP server by delegating to the project's own binary via
+` + "`go run ./app/main serve`" + `. This is the production-mode server — it does
+not use Air and does not reload on file changes. For the development
+loop with hot reload, use ` + "`gofasta dev`" + ` instead.
+
+The command must be run from the project root. Because it shells out to
+the project binary, any cobra flags registered on the project's ` + "`serve`" + `
+subcommand are forwarded through unchanged.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c := execCommand("go", "run", "./app/main", "serve")
 		c.Stdout = os.Stdout

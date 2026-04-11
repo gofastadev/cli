@@ -30,15 +30,41 @@ var graphqlOnlyPaths = []string{
 }
 
 var newCmd = &cobra.Command{
-	Use:   "new [project-name]",
-	Short: "Create a new gofasta project",
-	Long: `Bootstrap a new gofasta project from scratch. Creates the directory,
-initializes Go modules, sets up the full project structure, and prepares
-everything for development.
+	Use:   "new [name-or-module-path]",
+	Short: "Scaffold a complete, ready-to-run Go backend project",
+	Long: `Create a new gofasta project from the embedded template. Generates ~78 files
+covering models, services, repositories, REST controllers, routes, DTOs,
+database migrations, Docker/Compose setup, CI configs, Wire dependency
+injection, and a Makefile — the full production layout described in the
+project README.
 
-Examples:
-  gofasta new myapp
-  gofasta new github.com/myorg/myapp`,
+The single argument is either a bare project name (used as the directory
+name and module path) or a fully-qualified Go module path. When given a
+module path, the directory is named after the last segment:
+
+  gofasta new myapp                      # module: myapp, dir: myapp/
+  gofasta new github.com/acme/myapp      # module: github.com/acme/myapp, dir: myapp/
+
+What the command does, in order:
+  1. Creates the project directory (fails if it already exists)
+  2. Runs ` + "`go mod init`" + ` with the resolved module path
+  3. Renders every template file from the embedded skeleton, replacing
+     {{.ModulePath}} / {{.ProjectNameLower}} / {{.ProjectNameUpper}}
+  4. Copies .env from the generated .env.example
+  5. Runs ` + "`go get`" + ` for github.com/gofastadev/gofasta and the tool deps
+     (Wire, Air, swag — and gqlgen if --graphql is set)
+  6. Registers those tools via ` + "`go mod edit -tool`" + ` so ` + "`go tool wire`" + ` works
+  7. Runs ` + "`go mod tidy`" + `
+  8. Generates Wire DI code and (if --graphql) the gqlgen resolver stubs
+  9. Initializes a git repository with an initial commit
+
+Use --graphql (or the shorthand --gql) to additionally scaffold an
+app/graphql/ directory with gqlgen, a GraphQL provider, and the generated
+resolver stubs. Without the flag, the project is REST-only.
+
+After the command finishes, ` + "`cd`" + ` into the new directory and run
+` + "`make up`" + ` (Docker-based dev loop) or ` + "`docker compose up db -d && make dev`" + `
+(host-based with hot reload via Air).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gql, _ := cmd.Flags().GetBool("graphql")

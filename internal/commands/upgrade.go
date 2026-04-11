@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -22,13 +23,34 @@ var (
 
 var upgradeCmd = &cobra.Command{
 	Use:   "upgrade",
-	Short: "Upgrade gofasta to the latest version",
-	Long: `Check for a newer version of the gofasta CLI and install it.
+	Short: "Self-update the CLI to the latest GitHub release (auto-detects install method)",
+	Long: `Check GitHub for a newer release of the gofasta CLI and install it in
+place. The upgrade method is auto-detected based on how the running
+binary was originally installed:
 
-The upgrade method depends on how gofasta was originally installed:
-  - Go install: runs "go install github.com/gofastadev/cli/cmd/gofasta@latest"
-  - Binary: downloads the latest release from GitHub and replaces the current binary`,
-	RunE: func(cmd *cobra.Command, args []string) error {
+  • Go install — re-runs ` + "`go install github.com/gofastadev/cli/cmd/gofasta@latest`" + `
+                 if the running binary lives under $GOBIN, $GOPATH/bin,
+                 or ~/go/bin
+  • Pre-built  — downloads the platform-matched asset from the latest
+                 GitHub release and atomically replaces the running
+                 binary with ` + "`os.Rename`" + ` (falling back to a read/write
+                 copy if rename crosses filesystems)
+
+Version comparison strips any leading "v" from both the installed and
+latest tags, so ` + "`v1.2.3`" + ` and ` + "`1.2.3`" + ` compare equal. Pseudo-versions like
+` + "`v0.1.3-0.20260411-abcdef`" + ` (typical of ` + "`go install`" + ` from a branch) always
+compare unequal and will trigger an upgrade.
+
+After installation the new binary's version is read back by executing
+` + "`<new-binary> --version`" + ` and compared against the expected release tag. A
+mismatch is reported as an error along with a hint to check $GOBIN /
+$GOPATH, because it almost always means ` + "`go install`" + ` wrote the binary to
+a different directory than the one on $PATH.
+
+If the upgrade succeeds but ` + "`gofasta --version`" + ` still reports the old
+version in your current shell, run ` + "`hash -r`" + ` (bash / zsh) or open a new
+terminal — your shell has cached the old executable's inode.`,
+	RunE: func(_ *cobra.Command, _ []string) error {
 		return runUpgrade()
 	},
 }
@@ -42,31 +64,38 @@ type githubRelease struct {
 	TagName string `json:"tag_name"`
 }
 
-func runUpgrade() error {
-	currentVersion := rootCmd.Version
+// normalizeVersion returns a version string without a leading "v" so that
+// runtime/debug-style "v0.1.2" and GitHub-tag-style "v0.1.2" both compare to
+// "0.1.2". Pseudo-versions like "v0.1.3-0.20260411-abcdef" are returned with
+// only the leading v stripped — they will compare unequal to release tags,
+// which is exactly what we want (a dev build should always be "upgradeable").
+func normalizeVersion(v string) string {
+	return strings.TrimPrefix(v, "v")
+}
 
-	// Fetch the latest version from GitHub
+func runUpgrade() error {
+	current := normalizeVersion(rootCmd.Version)
+
 	latest, err := fetchLatestVersion()
 	if err != nil {
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
+	latestClean := normalizeVersion(latest)
 
-	latestClean := strings.TrimPrefix(latest, "v")
-	if currentVersion == latestClean {
-		fmt.Printf("gofasta is already up to date (v%s)\n", currentVersion)
+	if current == latestClean {
+		fmt.Printf("gofasta is already up to date (v%s)\n", current)
 		return nil
 	}
 
-	fmt.Printf("Upgrading gofasta: v%s → v%s\n", currentVersion, latestClean)
+	fmt.Printf("Upgrading gofasta: v%s → v%s\n", current, latestClean)
 
-	// Detect installation method and upgrade accordingly
 	execPath, err := osExecutable()
 	if err != nil {
 		return fmt.Errorf("cannot determine executable path: %w", err)
 	}
 
 	if isGoInstall(execPath) {
-		return upgradeViaGoInstall()
+		return upgradeViaGoInstall(latestClean)
 	}
 	return upgradeViaBinary(execPath, latest)
 }
@@ -103,15 +132,78 @@ func isGoInstall(execPath string) bool {
 	return strings.HasPrefix(execPath, gopath)
 }
 
-func upgradeViaGoInstall() error {
-	fmt.Println("Detected go install, running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
+// goInstallTargetPath returns the absolute path where `go install` will write
+// the gofasta binary, honoring $GOBIN > $GOPATH/bin > $HOME/go/bin in order.
+func goInstallTargetPath() (string, error) {
+	if v := os.Getenv("GOBIN"); v != "" {
+		return filepath.Join(v, "gofasta"), nil
+	}
+	if v := os.Getenv("GOPATH"); v != "" {
+		return filepath.Join(v, "bin", "gofasta"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "go", "bin", "gofasta"), nil
+}
+
+// readBinaryVersion runs `<binPath> --version` and parses the version string
+// out of the output. Returns the raw version (with leading v).
+func readBinaryVersion(binPath string) (string, error) {
+	cmd := execCommand(binPath, "--version")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	// Cobra's --version prints lines like:
+	//   gofasta version v0.1.2
+	// We want the last whitespace-separated token of the first line.
+	first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
+	fields := strings.Fields(first)
+	if len(fields) == 0 {
+		return "", fmt.Errorf("could not parse version from %q", first)
+	}
+	return fields[len(fields)-1], nil
+}
+
+func upgradeViaGoInstall(expectedVersion string) error {
+	fmt.Println("Detected `go install`. Running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
 	cmd := execCommand("go", "install", "github.com/gofastadev/cli/cmd/gofasta@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("go install failed: %w", err)
 	}
-	fmt.Println("Upgrade complete.")
+
+	// Verify the install actually placed a new binary at the expected version.
+	target, err := goInstallTargetPath()
+	if err != nil {
+		fmt.Println("Upgrade complete (could not determine install path for verification).")
+		printShellHashHint()
+		return nil
+	}
+
+	installed, err := readBinaryVersion(target)
+	if err != nil {
+		fmt.Printf("Upgrade complete. Installed to %s\n", target)
+		fmt.Println("(Could not verify the version of the new binary — it may still be correct.)")
+		printShellHashHint()
+		return nil
+	}
+
+	if normalizeVersion(installed) != expectedVersion {
+		return fmt.Errorf(
+			"go install reported success but %s reports version %s, expected v%s — "+
+				"this usually means $GOBIN or $GOPATH is set differently than expected. "+
+				"Try running `go install github.com/gofastadev/cli/cmd/gofasta@latest` manually "+
+				"and check `which gofasta`",
+			target, installed, expectedVersion,
+		)
+	}
+
+	fmt.Printf("✓ Upgraded to %s at %s\n", installed, target)
+	printShellHashHint()
 	return nil
 }
 
@@ -161,7 +253,8 @@ func upgradeViaBinary(execPath, version string) error {
 		return replaceViaCopy(tmpPath, execPath)
 	}
 
-	fmt.Printf("Upgrade complete. Installed to %s\n", execPath)
+	fmt.Printf("✓ Installed %s to %s\n", version, execPath)
+	printShellHashHint()
 	return nil
 }
 
@@ -175,6 +268,20 @@ func replaceViaCopy(src, dst string) error {
 		return fmt.Errorf("failed to write binary (you may need sudo): %w", err)
 	}
 
-	fmt.Printf("Upgrade complete. Installed to %s\n", dst)
+	fmt.Printf("✓ Installed to %s\n", dst)
+	printShellHashHint()
 	return nil
+}
+
+// printShellHashHint reminds the user that their current shell session may
+// still resolve `gofasta` to the old binary's cached inode.
+func printShellHashHint() {
+	fmt.Println()
+	fmt.Println("If `gofasta --version` still reports the old version in this shell,")
+	fmt.Println("your shell has cached the old executable. Refresh it with:")
+	fmt.Println()
+	fmt.Println("    hash -r        # bash / zsh")
+	fmt.Println("    rehash         # zsh (alternative)")
+	fmt.Println()
+	fmt.Println("…or just open a new terminal.")
 }
