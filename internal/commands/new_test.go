@@ -157,6 +157,84 @@ func TestRunNew_ChdirError(t *testing.T) {
 	assert.Error(t, err)
 }
 
+// installGofastaFromLocal needs an absolute-or-relative path that exists
+// and contains a go.mod. Every error branch (missing path, file instead of
+// dir, dir without go.mod) must produce a clear error so mis-set
+// GOFASTA_REPLACE values are caught at scaffold time instead of failing
+// deep inside `go mod tidy`.
+
+func TestInstallGofastaFromLocal_PathDoesNotExist(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	err := installGofastaFromLocal("/nonexistent/path/xyz")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "stat")
+}
+
+func TestInstallGofastaFromLocal_PathIsFile(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	fakeFile := filepath.Join(t.TempDir(), "notadir")
+	require.NoError(t, os.WriteFile(fakeFile, []byte("x"), 0o644))
+	err := installGofastaFromLocal(fakeFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not a directory")
+}
+
+func TestInstallGofastaFromLocal_DirWithoutGoMod(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	dir := t.TempDir()
+	err := installGofastaFromLocal(dir)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "go.mod")
+}
+
+func TestInstallGofastaFromLocal_HappyPath(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	// Create a fake "gofasta checkout" — a directory with a go.mod inside.
+	fakeFramework := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+	// Mock execCommand so the `go mod edit` calls "succeed" without
+	// actually hitting the real go binary.
+	withFakeExec(t, 0)
+
+	err := installGofastaFromLocal(fakeFramework)
+	assert.NoError(t, err)
+}
+
+func TestInstallGofastaFromLocal_EditRequireFails(t *testing.T) {
+	chdirTemp(t)
+	setupGoMod(t)
+	fakeFramework := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+	withFakeExec(t, 1) // every exec fails
+
+	err := installGofastaFromLocal(fakeFramework)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "go mod edit")
+}
+
+// setupGoMod writes a minimal go.mod in the current directory so
+// subsequent `go mod edit` calls have something to operate on. Used by
+// the installGofastaFromLocal tests which need a project-like working
+// directory to run against.
+func setupGoMod(t *testing.T) {
+	t.Helper()
+	require.NoError(t, os.WriteFile("go.mod",
+		[]byte("module testproject\n\ngo 1.25.8\n"), 0o644))
+}
+
+// chdirTemp is a lightweight helper that pins the test to a fresh temp
+// dir and restores the original cwd on cleanup. It's already defined in
+// commands_exec_test.go but re-declaring it in this file is a compile
+// error — tests that need it rely on the one in commands_exec_test.go.
+// No function here — this comment exists so future readers don't
+// accidentally add a duplicate.
+
 func TestProjectData_Fields(t *testing.T) {
 	data := ProjectData{
 		ProjectName:      "MyApp",

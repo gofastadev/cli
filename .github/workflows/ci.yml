@@ -56,17 +56,44 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out CLI repo
+        uses: actions/checkout@v4
+        with:
+          path: cli
+
+      # Also check out the framework repo so the integration step can
+      # compile the scaffolded project against framework tip-of-main rather
+      # than the latest published tag on the Go module proxy. This catches
+      # cross-repo API regressions before either repo is released, and
+      # eliminates the "framework must be released first" ordering problem
+      # when the skeleton depends on a new framework symbol.
+      - name: Check out framework repo (main branch)
+        uses: actions/checkout@v4
+        with:
+          repository: gofastadev/gofasta
+          path: gofasta
+          ref: main
 
       - uses: actions/setup-go@v5
         with:
           go-version: "1.25.8"
 
       - name: Build CLI
+        working-directory: cli
         run: go build -o /tmp/gofasta ./cmd/gofasta/
 
-      - name: Scaffold a new project
+      - name: Scaffold a new project against framework checkout
+        # GOFASTA_REPLACE tells `gofasta new` to skip `go get gofasta@latest`
+        # and instead wire the library in via a `replace` directive pointing
+        # at the locally checked-out framework. This bypasses the Go module
+        # proxy and checksum database entirely for gofasta — so CI is
+        # immune to the "sum.golang.org hasn't indexed the latest release
+        # yet" class of failures that otherwise break the scaffold step
+        # during the window right after publishing a new framework version.
+        env:
+          GOFASTA_REPLACE: ${{ github.workspace }}/gofasta
         run: /tmp/gofasta new /tmp/testproject
 
       - name: Verify generated project compiles
-        run: cd /tmp/testproject && go build ./...
+        working-directory: /tmp/testproject
+        run: go build ./...
