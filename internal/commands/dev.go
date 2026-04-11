@@ -7,6 +7,7 @@ import (
 	"syscall"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -41,26 +42,27 @@ func init() {
 }
 
 func runDev() error {
-	fmt.Println("Starting gofasta development server...")
+	termcolor.PrintHeader("Starting gofasta development server...")
 
 	// Try running migrations
-	fmt.Println("🗄  Running migrations...")
+	termcolor.PrintStep("🗄  Running migrations...")
 	dbURL := configutil.BuildMigrationURL()
 	if dbURL != "" {
 		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
-			fmt.Println("   ⚠ Migrations skipped (database may not be running)")
+			termcolor.PrintWarn("Migrations skipped (database may not be running)")
 		}
 	}
 
 	port := configutil.GetPort()
-	fmt.Println("\n🚀 Starting air (hot reload)...")
-	fmt.Printf("   REST API:    http://localhost:%s\n", port)
+	fmt.Println()
+	termcolor.PrintStep("🚀 Starting air (hot reload)...")
+	fmt.Printf("   %s    %s\n", termcolor.CDim("REST API:"), termcolor.CBlue("http://localhost:"+port))
 	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		fmt.Printf("   GraphQL:     http://localhost:%s/graphql\n", port)
-		fmt.Printf("   Playground:  http://localhost:%s/graphql-playground\n", port)
+		fmt.Printf("   %s     %s\n", termcolor.CDim("GraphQL:"), termcolor.CBlue("http://localhost:"+port+"/graphql"))
+		fmt.Printf("   %s  %s\n", termcolor.CDim("Playground:"), termcolor.CBlue("http://localhost:"+port+"/graphql-playground"))
 	}
 	fmt.Println()
 

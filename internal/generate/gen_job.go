@@ -5,13 +5,15 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // GenJob generates a cron job file in app/jobs/.
 func GenJob(d ScaffoldData) error {
 	path := fmt.Sprintf("app/jobs/%s.go", d.SnakeName)
 	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("  skip (exists): %s\n", path)
+		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -26,7 +28,7 @@ func GenJob(d ScaffoldData) error {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("  create: %s\n", path)
+	termcolor.PrintCreate(path)
 	return nil
 }
 
@@ -42,7 +44,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 	// Check for uncommented registry line (tab-indented, not //-prefixed)
 	uncommentedRegistry := fmt.Sprintf("\t\t%q: jobs.New%sJob(", d.SnakeName, d.Name)
 	if strings.Contains(s, uncommentedRegistry) {
-		fmt.Printf("  skip (already registered): %s\n", path)
+		termcolor.PrintSkip(path, "already registered")
 		return nil
 	}
 
@@ -63,7 +65,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 		)
 	}
 
-	fmt.Printf("  patch: %s (job registry)\n", path)
+	termcolor.PrintPatch(path, "job registry")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
@@ -79,7 +81,7 @@ func PatchJobConfig(d ScaffoldData) error {
 	// Check for an active (uncommented) entry with this job name
 	activeEntry := fmt.Sprintf("  - name: %s\n", d.SnakeName)
 	if strings.Contains(s, activeEntry) {
-		fmt.Printf("  skip (already in config): %s\n", path)
+		termcolor.PrintSkip(path, "already in config")
 		return nil
 	}
 
@@ -98,7 +100,7 @@ func PatchJobConfig(d ScaffoldData) error {
 		s += "\njobs:\n" + entry
 	}
 
-	fmt.Printf("  patch: %s (job schedule)\n", path)
+	termcolor.PrintPatch(path, "job schedule")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -58,7 +59,7 @@ func runDoctor() error {
 		{"swag", false, checkGoTool("swag")},
 	}
 
-	fmt.Println("Required:")
+	termcolor.PrintHeader("Required:")
 	for _, c := range required {
 		info, ok := c.checkFn()
 		printCheck(c.name, info, ok)
@@ -67,7 +68,8 @@ func runDoctor() error {
 		}
 	}
 
-	fmt.Println("\nOptional:")
+	fmt.Println()
+	termcolor.PrintHeader("Optional:")
 	for _, c := range optional {
 		info, ok := c.checkFn()
 		printCheck(c.name, info, ok)
@@ -75,7 +77,8 @@ func runDoctor() error {
 
 	// Project health checks — only when inside a project directory
 	if _, err := os.Stat("config.yaml"); err == nil {
-		fmt.Println("\nProject:")
+		fmt.Println()
+		termcolor.PrintHeader("Project:")
 		printCheck("config.yaml", "found", true)
 
 		dbURL := configutil.BuildMigrationURL()
@@ -96,11 +99,13 @@ func runDoctor() error {
 }
 
 func printCheck(name, info string, ok bool) {
-	mark := "\033[32m✓\033[0m"
+	mark := termcolor.CGreen("✓")
+	styledInfo := info
 	if !ok {
-		mark = "\033[31m✗\033[0m"
+		mark = termcolor.CRed("✗")
+		styledInfo = termcolor.CDim(info)
 	}
-	fmt.Printf("  %s %-12s %s\n", mark, name, info)
+	fmt.Printf("  %s %-12s %s\n", mark, termcolor.CBold(name), styledInfo)
 }
 
 func checkGoVersion() (string, bool) {

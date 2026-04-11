@@ -9,6 +9,7 @@ import (
 	"text/template"
 
 	"github.com/gofastadev/cli/internal/skeleton"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -124,10 +125,11 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		GraphQL:          includeGraphQL,
 	}
 
-	fmt.Printf("🚀 Creating new gofasta project: %s\n\n", projectName)
+	termcolor.PrintHeader("🚀 Creating new gofasta project: %s", projectName)
+	fmt.Println()
 
 	// Create project directory
-	fmt.Printf("📁 Creating directory %s/\n", projectDir)
+	termcolor.PrintStep("📁 Creating directory %s/", projectDir)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
@@ -140,13 +142,13 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	defer func() { _ = os.Chdir(origDir) }()
 
 	// Initialize go module
-	fmt.Printf("📦 Initializing Go module: %s\n", modulePath)
+	termcolor.PrintStep("📦 Initializing Go module: %s", modulePath)
 	if err := runCmdSilent("go", "mod", "init", modulePath); err != nil {
 		return fmt.Errorf("go mod init failed: %w", err)
 	}
 
 	// Walk embedded skeleton and generate files
-	fmt.Println("🏗  Creating project structure...")
+	termcolor.PrintStep("🏗  Creating project structure...")
 	projectFS := skeleton.ProjectFS
 	err := fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -214,7 +216,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 			output = content
 		}
 
-		fmt.Printf("   %s\n", outputPath)
+		termcolor.PrintPath(outputPath)
 		return os.WriteFile(outputPath, output, 0o644)
 	})
 	if err != nil {
@@ -224,22 +226,23 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	// Copy .env from .env.example
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
 		_ = os.WriteFile(".env", envExample, 0o644)
-		fmt.Println("   .env")
+		termcolor.PrintPath(".env")
 	}
 
 	// Install gofasta library as a project dependency.
-	fmt.Println("\n📦 Installing gofasta library...")
+	fmt.Println()
+	termcolor.PrintStep("📦 Installing gofasta library...")
 	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
-		fmt.Println("   ⚠ Could not install gofasta library (you may need to add it manually)")
+		termcolor.PrintWarn("Could not install gofasta library (you may need to add it manually)")
 	}
 
 	// Install cobra for project commands
 	if err := runCmdSilent("go", "get", "github.com/spf13/cobra@latest"); err != nil {
-		fmt.Println("   ⚠ Could not install cobra")
+		termcolor.PrintWarn("Could not install cobra")
 	}
 
 	// Add tool dependencies
-	fmt.Println("📦 Installing tool dependencies...")
+	termcolor.PrintStep("📦 Installing tool dependencies...")
 	if includeGraphQL {
 		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
 	}
@@ -255,37 +258,42 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
 
 	// Tidy
-	fmt.Println("📦 Running go mod tidy...")
+	termcolor.PrintStep("📦 Running go mod tidy...")
 	_ = runCmdSilent("go", "mod", "tidy")
 
 	// Generate code
-	fmt.Println("\n🔌 Generating Wire DI code...")
+	fmt.Println()
+	termcolor.PrintStep("🔌 Generating Wire DI code...")
 	if err := runCmdSilent("go", "tool", "wire", "./app/di/"); err != nil {
-		fmt.Println("   ⚠ Wire generation skipped (can be run later with: make wire)")
+		termcolor.PrintWarn("Wire generation skipped (can be run later with: make wire)")
 	}
 
 	if includeGraphQL {
-		fmt.Println("📊 Generating GraphQL code...")
+		termcolor.PrintStep("📊 Generating GraphQL code...")
 		if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
-			fmt.Println("   ⚠ gqlgen generation skipped (can be run later with: make gqlgen)")
+			termcolor.PrintWarn("gqlgen generation skipped (can be run later with: make gqlgen)")
 		}
 	}
 
 	// Initialize git
-	fmt.Println("\n🔧 Initializing git repository...")
+	fmt.Println()
+	termcolor.PrintStep("🔧 Initializing git repository...")
 	_ = runCmdSilent("git", "init")
 	_ = runCmdSilent("git", "add", ".")
 	_ = runCmdSilent("git", "commit", "-m", "Initial commit: gofasta project scaffold")
 
-	fmt.Printf("\n✅ Project %s created successfully!\n", projectName)
-	fmt.Printf("\nGet started:\n")
+	fmt.Println()
+	termcolor.PrintSuccess("Project %s created successfully!", termcolor.CBold(projectName))
+	fmt.Println()
+	termcolor.PrintHeader("Get started:")
 	fmt.Printf("  cd %s\n", projectName)
-	fmt.Printf("  make up                        # Start with Docker (recommended)\n")
-	fmt.Printf("  # or\n")
-	fmt.Printf("  docker compose up db -d        # Start DB only\n")
-	fmt.Printf("  make dev                       # Run on host with hot reload\n")
-	fmt.Printf("\nGenerate resources:\n")
-	fmt.Printf("  gofasta g s Product name:string price:float\n")
+	fmt.Printf("  %s                        %s\n", termcolor.CBold("make up"), termcolor.CDim("# Start with Docker (recommended)"))
+	fmt.Println("  # or")
+	fmt.Printf("  %s        %s\n", termcolor.CBold("docker compose up db -d"), termcolor.CDim("# Start DB only"))
+	fmt.Printf("  %s                       %s\n", termcolor.CBold("make dev"), termcolor.CDim("# Run on host with hot reload"))
+	fmt.Println()
+	termcolor.PrintHeader("Generate resources:")
+	fmt.Printf("  %s\n", termcolor.CBold("gofasta g s Product name:string price:float"))
 	return nil
 }
 

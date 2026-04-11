@@ -1,17 +1,18 @@
 package generate
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"text/template"
 	"time"
+
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // WriteTemplate renders a Go template to a file. Skips if the file already exists.
 func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("  skip (exists): %s\n", path)
+		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -34,6 +35,6 @@ func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if err := t.Execute(f, data); err != nil {
 		return err
 	}
-	fmt.Printf("  create: %s\n", path)
+	termcolor.PrintCreate(path)
 	return nil
 }

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // GenEmailTemplate generates an HTML email template file in templates/emails/.
@@ -13,7 +15,7 @@ import (
 func GenEmailTemplate(d ScaffoldData) error {
 	path := fmt.Sprintf("templates/emails/%s.html", d.SnakeName)
 	if _, err := os.Stat(path); err == nil {
-		fmt.Printf("  skip (exists): %s\n", path)
+		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -29,7 +31,7 @@ func GenEmailTemplate(d ScaffoldData) error {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("  create: %s\n", path)
+	termcolor.PrintCreate(path)
 	return nil
 }
 

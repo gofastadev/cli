@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -30,70 +31,77 @@ func init() {
 }
 
 func runInit() error {
-	fmt.Println("Initializing gofasta project...")
+	termcolor.PrintHeader("Initializing gofasta project...")
 
 	// Step 1: Create .env if missing
 	if _, err := os.Stat(".env"); os.IsNotExist(err) {
 		if _, err := os.Stat(".env.example"); err == nil {
-			fmt.Println("📋 Creating .env from .env.example...")
+			termcolor.PrintStep("📋 Creating .env from .env.example...")
 			input, _ := os.ReadFile(".env.example")
 			_ = os.WriteFile(".env", input, 0o644)
 		} else {
-			fmt.Println("📋 Creating empty .env file...")
+			termcolor.PrintStep("📋 Creating empty .env file...")
 			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
 		}
 	} else {
-		fmt.Println("✓  .env already exists")
+		termcolor.PrintSuccess(".env already exists")
 	}
 
 	// Step 2: Install dependencies
-	fmt.Println("\n📦 Installing dependencies...")
+	fmt.Println()
+	termcolor.PrintStep("📦 Installing dependencies...")
 	if err := runCmd("go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy failed: %w", err)
 	}
 
 	// Step 3: Generate Wire DI
-	fmt.Println("\n🔌 Generating Wire DI code...")
+	fmt.Println()
+	termcolor.PrintStep("🔌 Generating Wire DI code...")
 	if err := runCmd("go", "tool", "wire", "./app/di/"); err != nil {
-		fmt.Println("   ⚠ Wire generation failed (you may need to fix compilation errors first)")
+		termcolor.PrintWarn("Wire generation failed (you may need to fix compilation errors first)")
 	}
 
 	// Step 4: Generate GraphQL (only if project has GraphQL support)
+	fmt.Println()
 	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		fmt.Println("\n📊 Generating GraphQL code...")
+		termcolor.PrintStep("📊 Generating GraphQL code...")
 		if err := runCmd("go", "tool", "gqlgen", "generate"); err != nil {
-			fmt.Println("   ⚠ gqlgen generation failed (you may need to fix schema errors first)")
+			termcolor.PrintWarn("gqlgen generation failed (you may need to fix schema errors first)")
 		}
 	} else {
-		fmt.Println("\n📊 Skipping GraphQL (no gqlgen.yml found)")
+		termcolor.PrintStep("📊 Skipping GraphQL (no gqlgen.yml found)")
 	}
 
 	// Step 5: Run migrations
-	fmt.Println("\n🗄  Running database migrations...")
+	fmt.Println()
+	termcolor.PrintStep("🗄  Running database migrations...")
 	dbURL := configutil.BuildMigrationURL()
 	if dbURL != "" {
 		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
-			fmt.Println("   ⚠ Migrations failed (is the database running?)")
-			fmt.Printf("   Hint: run 'docker compose up db -d' to start the database\n")
+			termcolor.PrintWarn("Migrations failed (is the database running?)")
+			termcolor.PrintHint("Hint: run 'docker compose up db -d' to start the database")
 		}
 	} else {
-		fmt.Println("   ⚠ Could not load config (skipping migrations)")
+		termcolor.PrintWarn("Could not load config (skipping migrations)")
 	}
 
 	// Step 6: Verify build
-	fmt.Println("\n🔨 Verifying build...")
+	fmt.Println()
+	termcolor.PrintStep("🔨 Verifying build...")
 	if err := runCmd("go", "build", "./..."); err != nil {
 		return fmt.Errorf("build verification failed: %w", err)
 	}
 
-	fmt.Println("\n✅ Project initialized successfully!")
-	fmt.Println("\nNext steps:")
-	fmt.Println("  make dev              # Run on host with hot reload")
-	fmt.Println("  make up               # Run in Docker")
-	fmt.Println("  gofasta g s Product   # Scaffold a new resource")
+	fmt.Println()
+	termcolor.PrintSuccess("Project initialized successfully!")
+	fmt.Println()
+	termcolor.PrintHeader("Next steps:")
+	fmt.Printf("  %s              %s\n", termcolor.CBold("make dev"), termcolor.CDim("# Run on host with hot reload"))
+	fmt.Printf("  %s               %s\n", termcolor.CBold("make up"), termcolor.CDim("# Run in Docker"))
+	fmt.Printf("  %s   %s\n", termcolor.CBold("gofasta g s Product"), termcolor.CDim("# Scaffold a new resource"))
 	return nil
 }
 

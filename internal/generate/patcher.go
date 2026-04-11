@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
@@ -16,7 +18,7 @@ func PatchContainer(d ScaffoldData) error {
 	s := string(content)
 
 	if strings.Contains(s, d.Name+"Service ") {
-		fmt.Printf("  skip (already wired): %s\n", path)
+		termcolor.PrintSkip(path, "already wired")
 		return nil
 	}
 
@@ -33,7 +35,7 @@ func PatchContainer(d ScaffoldData) error {
 	}
 	s = strings.Replace(s, "\tResolver       *resolvers.Resolver", fields+"\tResolver       *resolvers.Resolver", 1)
 
-	fmt.Printf("  patch: %s\n", path)
+	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
@@ -48,13 +50,13 @@ func PatchWireFile(d ScaffoldData) error {
 
 	providerRef := fmt.Sprintf("providers.%sSet", d.Name)
 	if strings.Contains(s, providerRef) {
-		fmt.Printf("  skip (already wired): %s\n", path)
+		termcolor.PrintSkip(path, "already wired")
 		return nil
 	}
 
 	s = strings.Replace(s, "\t\tproviders.GraphQLSet,", fmt.Sprintf("\t\t%s,\n\t\tproviders.GraphQLSet,", providerRef), 1)
 
-	fmt.Printf("  patch: %s\n", path)
+	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
@@ -69,7 +71,7 @@ func PatchResolver(d ScaffoldData) error {
 
 	fieldName := d.Name + "Service"
 	if strings.Contains(s, fieldName) {
-		fmt.Printf("  skip (already wired): %s\n", path)
+		termcolor.PrintSkip(path, "already wired")
 		return nil
 	}
 
@@ -100,7 +102,7 @@ func PatchResolver(d ScaffoldData) error {
 	afterClose := s[retIdx+closingBrace:]
 	s = beforeClose + ", " + fieldName + ": " + paramName + afterClose
 
-	fmt.Printf("  patch: %s\n", path)
+	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
@@ -115,7 +117,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 
 	controllerField := d.Name + "Controller"
 	if strings.Contains(s, controllerField) {
-		fmt.Printf("  skip (already wired): %s\n", path)
+		termcolor.PrintSkip(path, "already wired")
 		return nil
 	}
 
@@ -127,7 +129,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)\n", d.Name, controllerField)
 	s = strings.Replace(s, "\n\treturn r", routeCall+"\n\treturn r", 1)
 
-	fmt.Printf("  patch: %s\n", path)
+	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)
 }
 
@@ -142,7 +144,7 @@ func PatchServeFile(d ScaffoldData) error {
 
 	controllerField := d.Name + "Controller"
 	if strings.Contains(s, controllerField) {
-		fmt.Printf("  skip (already wired): %s\n", path)
+		termcolor.PrintSkip(path, "already wired")
 		return nil
 	}
 
@@ -151,6 +153,6 @@ func PatchServeFile(d ScaffoldData) error {
 		fmt.Sprintf("%s:   container.%s,\n\t\tHealthController: healthController,", controllerField, controllerField),
 		1)
 
-	fmt.Printf("  patch: %s\n", path)
+	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)
 }

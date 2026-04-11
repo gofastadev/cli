@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -83,11 +84,11 @@ func runUpgrade() error {
 	latestClean := normalizeVersion(latest)
 
 	if current == latestClean {
-		fmt.Printf("gofasta is already up to date (v%s)\n", current)
+		termcolor.PrintSuccess("gofasta is already up to date (v%s)", current)
 		return nil
 	}
 
-	fmt.Printf("Upgrading gofasta: v%s → v%s\n", current, latestClean)
+	termcolor.PrintHeader("Upgrading gofasta: v%s → v%s", current, latestClean)
 
 	execPath, err := osExecutable()
 	if err != nil {
@@ -168,7 +169,7 @@ func readBinaryVersion(binPath string) (string, error) {
 }
 
 func upgradeViaGoInstall(expectedVersion string) error {
-	fmt.Println("Detected `go install`. Running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
+	termcolor.PrintStep("Detected `go install`. Running: go install github.com/gofastadev/cli/cmd/gofasta@latest")
 	cmd := execCommand("go", "install", "github.com/gofastadev/cli/cmd/gofasta@latest")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -179,15 +180,15 @@ func upgradeViaGoInstall(expectedVersion string) error {
 	// Verify the install actually placed a new binary at the expected version.
 	target, err := goInstallTargetPath()
 	if err != nil {
-		fmt.Println("Upgrade complete (could not determine install path for verification).")
+		termcolor.PrintWarn("Upgrade complete (could not determine install path for verification).")
 		printShellHashHint()
 		return nil
 	}
 
 	installed, err := readBinaryVersion(target)
 	if err != nil {
-		fmt.Printf("Upgrade complete. Installed to %s\n", target)
-		fmt.Println("(Could not verify the version of the new binary — it may still be correct.)")
+		termcolor.PrintSuccess("Upgrade complete. Installed to %s", target)
+		termcolor.PrintWarn("Could not verify the version of the new binary — it may still be correct.")
 		printShellHashHint()
 		return nil
 	}
@@ -202,7 +203,7 @@ func upgradeViaGoInstall(expectedVersion string) error {
 		)
 	}
 
-	fmt.Printf("✓ Upgraded to %s at %s\n", installed, target)
+	termcolor.PrintSuccess("Upgraded to %s at %s", installed, target)
 	printShellHashHint()
 	return nil
 }
@@ -217,7 +218,7 @@ func upgradeViaBinary(execPath, version string) error {
 	}
 
 	url := fmt.Sprintf(githubDownloadURLFmt, version, binary)
-	fmt.Printf("Downloading %s...\n", url)
+	termcolor.PrintStep("Downloading %s...", url)
 
 	resp, err := httpGet(url)
 	if err != nil {
@@ -253,7 +254,7 @@ func upgradeViaBinary(execPath, version string) error {
 		return replaceViaCopy(tmpPath, execPath)
 	}
 
-	fmt.Printf("✓ Installed %s to %s\n", version, execPath)
+	termcolor.PrintSuccess("Installed %s to %s", version, execPath)
 	printShellHashHint()
 	return nil
 }
@@ -268,7 +269,7 @@ func replaceViaCopy(src, dst string) error {
 		return fmt.Errorf("failed to write binary (you may need sudo): %w", err)
 	}
 
-	fmt.Printf("✓ Installed to %s\n", dst)
+	termcolor.PrintSuccess("Installed to %s", dst)
 	printShellHashHint()
 	return nil
 }

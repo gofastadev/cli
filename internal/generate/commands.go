@@ -3,6 +3,7 @@ package generate
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -304,9 +305,10 @@ logic in app/services/<name>.service.go.`,
 		if err := RunSteps(d, scaffoldSteps(d)); err != nil {
 			return err
 		}
-		fmt.Printf("\nScaffold complete for %s. All files generated and wired.\n", d.Name)
-		fmt.Printf("Run migrations: gofasta migrate up\n")
-		fmt.Printf("Write business logic: app/services/%s.service.go\n", d.SnakeName)
+		fmt.Println()
+		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
+		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
+		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
 		return nil
 	},
 }
