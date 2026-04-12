@@ -77,6 +77,7 @@ func startServer() error {
 	mux.Handle(cfg.GraphQL.PlaygroundRoute, playground.Handler("GraphQL playground", cfg.GraphQL.GeneralRoute))
 	mux.Handle(cfg.GraphQL.GeneralRoute, graphqlHandler)
 {{- end}}
+
 	mux.Handle("/", apiRouter)
 
 	// Prometheus metrics endpoint

@@ -66,6 +66,32 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 	assert.Equal(t, "/health/ready", routes[2].path)
 }
 
+func TestExtractRoutes_PathPrefixHandler(t *testing.T) {
+	content := `package routes
+
+func InitApiRoutes(config *RouteConfig) *mux.Router {
+	r.HandleFunc("/health", httputil.Handle(config.HealthController.Check)).Methods("GET")
+	r.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+}`
+
+	routes := extractRoutes(content, "", "index.routes.go")
+
+	assert.Len(t, routes, 2)
+	assert.Equal(t, "GET", routes[0].method)
+	assert.Equal(t, "/health", routes[0].path)
+	// PathPrefix-mounted handlers show as GET with a trailing wildcard
+	assert.Equal(t, "GET", routes[1].method)
+	assert.Equal(t, "/swagger/*", routes[1].path)
+}
+
+func TestExtractRoutes_PathPrefixSkipsAPIPrefix(t *testing.T) {
+	// The API subrouter prefix (/api/v1) is used by the route extraction
+	// as a prefix for child routes — it should not appear as its own entry.
+	content := `api := r.PathPrefix("/api/v1").Subrouter()`
+	routes := extractRoutes(content, "/api/v1", "index.routes.go")
+	assert.Empty(t, routes, "API subrouter prefix should not produce a route entry")
+}
+
 func TestExtractRoutes_EmptyContent(t *testing.T) {
 	routes := extractRoutes("package routes", "/api/v1", "empty.routes.go")
 	assert.Empty(t, routes)

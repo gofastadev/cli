@@ -38,8 +38,9 @@ type routeEntry struct {
 }
 
 var (
-	handleFuncRe = regexp.MustCompile(`\.HandleFunc\("([^"]+)",.+\.Methods\("([^"]+)"\)`)
-	prefixRe     = regexp.MustCompile(`\.PathPrefix\("([^"]+)"\)`)
+	handleFuncRe  = regexp.MustCompile(`\.HandleFunc\("([^"]+)",.+\.Methods\("([^"]+)"\)`)
+	prefixRe      = regexp.MustCompile(`\.PathPrefix\("([^"]+)"\)\.Subrouter\(\)`)
+	pathHandlerRe = regexp.MustCompile(`\.PathPrefix\("([^"]+)"\)\.Handler\(`)
 )
 
 func runRoutes() error {
@@ -97,16 +98,32 @@ func runRoutes() error {
 }
 
 func extractRoutes(content, prefix, filename string) []routeEntry {
-	matches := handleFuncRe.FindAllStringSubmatch(content, -1)
-	routes := make([]routeEntry, 0, len(matches))
-	for _, m := range matches {
-		path := prefix + m[1]
-		method := m[2]
+	var routes []routeEntry
+
+	// Match .HandleFunc("path", ...).Methods("METHOD")
+	for _, m := range handleFuncRe.FindAllStringSubmatch(content, -1) {
 		routes = append(routes, routeEntry{
-			method:   method,
-			path:     path,
+			method:   m[2],
+			path:     prefix + m[1],
 			filename: filename,
 		})
 	}
+
+	// Match .PathPrefix("path").Handler(...) — used by swagger UI and
+	// other prefix-mounted handlers. Shown as GET since they serve content.
+	for _, m := range pathHandlerRe.FindAllStringSubmatch(content, -1) {
+		path := m[1]
+		// Don't pick up the API subrouter prefix (e.g. /api/v1) — that's
+		// already handled by prefixRe and used as a prefix for child routes.
+		if path == prefix || path == prefix+"/" {
+			continue
+		}
+		routes = append(routes, routeEntry{
+			method:   "GET",
+			path:     path + "*",
+			filename: filename,
+		})
+	}
+
 	return routes
 }

@@ -301,6 +301,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
 	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
 	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
+	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@latest")
 	// Register as Go tools
 	if includeGraphQL {
 		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
@@ -325,6 +326,11 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
 			termcolor.PrintWarn("gqlgen generation skipped (can be run later with: make gqlgen)")
 		}
+	}
+
+	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
+	if err := runCmdSilent("go", "tool", "swag", "init", "-g", "app/main/main.go", "-o", "docs/"); err != nil {
+		termcolor.PrintWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
 	}
 
 	// Initialize git
