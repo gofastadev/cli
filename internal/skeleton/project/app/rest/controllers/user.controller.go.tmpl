@@ -37,7 +37,8 @@ func NewUserControllerInstance(userService svcInterfaces.UserServiceInterface) *
 //	@Produce		json
 //	@Param			sortByField	query		string	true	"Field to sort by"
 //	@Success		200			{object}	dtos.TUsersResponseDto
-//	@Failure		400			{object}	map[string]string
+//	@Failure		400			{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500			{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users [get]
 func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
 	if err := r.ParseForm(); err != nil {
@@ -84,7 +85,8 @@ func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) erro
 //	@Produce		json
 //	@Param			user	body		dtos.TCreateUserDto	true	"User data"
 //	@Success		201		{object}	dtos.TUserResponseDto
-//	@Failure		400		{object}	map[string]string
+//	@Failure		400		{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500		{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users [post]
 func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) error {
 	var user dtos.TCreateUserDto
@@ -109,7 +111,8 @@ func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) err
 //	@Param			id		path		string						true	"User ID"
 //	@Param			user	body		dtos.TUserFieldsForUpdateDto	true	"Fields to update"
 //	@Success		200		{object}	dtos.TUserResponseDto
-//	@Failure		400		{object}	map[string]string
+//	@Failure		400		{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500		{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [put]
 func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
 	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
@@ -138,7 +141,9 @@ func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) err
 //	@Produce		json
 //	@Param			id	path		string	true	"User ID"
 //	@Success		200	{object}	dtos.TUserResponseDto
-//	@Failure		400	{object}	map[string]string
+//	@Failure		400	{object}	dtos.TCommonAPIErrorDto
+//	@Failure		404	{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500	{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [get]
 func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
 	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
@@ -161,7 +166,9 @@ func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error 
 //	@Produce		json
 //	@Param			id	path		string	true	"User ID"
 //	@Success		200	{object}	dtos.TCommonResponseDto
-//	@Failure		400	{object}	map[string]string
+//	@Failure		400	{object}	dtos.TCommonAPIErrorDto
+//	@Failure		404	{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500	{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [delete]
 func (uc *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
 	userId, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])

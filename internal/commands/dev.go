@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/termcolor"
@@ -55,16 +56,15 @@ func runDev() error {
 		termcolor.PrintStep("📋 Loaded %d variables from .env", loaded)
 	}
 
-	// Try running migrations
+	// Try running migrations. The database container may still be starting
+	// (docker compose up db -d takes 1-3 seconds to accept connections), so
+	// we retry once after a short pause before giving up. The error from the
+	// migrate CLI is printed verbatim so the developer can see what actually
+	// went wrong instead of guessing from a generic warning.
 	termcolor.PrintStep("🗄  Running migrations...")
-	dbURL := configutil.BuildMigrationURL()
-	if dbURL != "" {
-		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
-		migrateCmd.Stdout = os.Stdout
-		migrateCmd.Stderr = os.Stderr
-		if err := migrateCmd.Run(); err != nil {
-			termcolor.PrintWarn("Migrations skipped (database may not be running)")
-		}
+	if migErr := runMigrations(); migErr != nil {
+		termcolor.PrintWarn("Migrations skipped: %v", migErr)
+		termcolor.PrintHint("If the database is still starting, migrations will be applied on the next file save (Air rebuild).")
 	}
 
 	port := configutil.GetPort()
@@ -92,4 +92,40 @@ func runDev() error {
 	}()
 
 	return airCmd.Run()
+}
+
+// runMigrations checks for the `migrate` CLI, builds the database URL from
+// config, and applies pending migrations. If the first attempt fails (common
+// when the database container is still starting), it waits briefly and
+// retries once. Returns nil on success (including "no change"), or the
+// underlying error on failure so the caller can print it verbatim.
+func runMigrations() error {
+	if _, err := execLookPath("migrate"); err != nil {
+		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
+			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
+	}
+
+	// configutil always builds a URL from defaults (at minimum
+	// postgres://:@localhost:5432/?sslmode=disable), so a "" return is
+	// not expected and not checked. If the URL is structurally wrong,
+	// the migrate CLI will surface the error on the first attempt below.
+	dbURL := configutil.BuildMigrationURL()
+
+	// First attempt.
+	if err := runMigrateUp(dbURL); err == nil {
+		return nil
+	}
+
+	// Retry once after a short pause — gives the database container time
+	// to finish accepting connections after `docker compose up db -d`.
+	termcolor.PrintHint("Database not ready, retrying in 2 seconds...")
+	time.Sleep(2 * time.Second)
+	return runMigrateUp(dbURL)
+}
+
+func runMigrateUp(dbURL string) error {
+	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }

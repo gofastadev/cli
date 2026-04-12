@@ -81,13 +81,14 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 }
 `), 0644))
 
-	// serve.go (for PatchServeFile)
-	require.NoError(t, os.MkdirAll("app/commands", 0755))
-	require.NoError(t, os.WriteFile("app/commands/serve.go", []byte(`package commands
+	// serve.go (for PatchServeFile) — must be at cmd/serve.go with the
+	// exact marker string PatchServeFile looks for.
+	require.NoError(t, os.MkdirAll("cmd", 0755))
+	require.NoError(t, os.WriteFile("cmd/serve.go", []byte(`package cmd
 
-func Serve() {
+func startServer() {
 	cfg := &routes.RouteConfig{
-		// controllers
+		HealthController: healthController,
 	}
 	_ = cfg
 }
@@ -210,7 +211,28 @@ func TestControllerCmd_RunE(t *testing.T) {
 func TestScaffoldCmd_RunE(t *testing.T) {
 	setupFullProject(t)
 	fakeExecOK(t)
-	_ = scaffoldCmd.RunE(scaffoldCmd, []string{"Widget", "name:string"})
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"Widget", "name:string"})
+	assert.NoError(t, err)
+}
+
+func TestScaffoldCmd_RunE_Failure(t *testing.T) {
+	// Don't call setupFullProject — use a bare temp dir so the first
+	// patcher (PatchContainer) fails when it can't read app/di/container.go.
+	// This exercises the `if err := RunSteps(...); err != nil { return err }`
+	// error branch in scaffold's RunE.
+	setupTempProject(t)
+	fakeExecOK(t)
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"Broken", "x:string"})
+	assert.Error(t, err)
+}
+
+func TestScaffoldCmd_RunE_WithSwagger(t *testing.T) {
+	setupFullProject(t)
+	fakeExecOK(t)
+	require.NoError(t, scaffoldCmd.Flags().Set("swagger", "true"))
+	t.Cleanup(func() { _ = scaffoldCmd.Flags().Set("swagger", "false") })
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"Order", "total:float"})
+	assert.NoError(t, err)
 }
 
 func TestWireCmd_RunE(t *testing.T) {
@@ -236,4 +258,12 @@ func TestHasGraphQLFlag(t *testing.T) {
 	scaffoldCmd.Flags().Set("gql", "true")
 	assert.True(t, hasGraphQLFlag(scaffoldCmd))
 	scaffoldCmd.Flags().Set("gql", "false")
+}
+
+// hasSwaggerFlag branches
+func TestHasSwaggerFlag(t *testing.T) {
+	assert.False(t, hasSwaggerFlag(scaffoldCmd))
+	scaffoldCmd.Flags().Set("swagger", "true")
+	assert.True(t, hasSwaggerFlag(scaffoldCmd))
+	scaffoldCmd.Flags().Set("swagger", "false")
 }

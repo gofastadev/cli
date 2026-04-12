@@ -66,6 +66,38 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 	assert.Equal(t, "/health/ready", routes[2].path)
 }
 
+func TestExtractRoutes_PathPrefixHandler(t *testing.T) {
+	content := `package routes
+
+func InitApiRoutes(config *RouteConfig) *mux.Router {
+	r.HandleFunc("/health", httputil.Handle(config.HealthController.Check)).Methods("GET")
+	r.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+}`
+
+	routes := extractRoutes(content, "", "index.routes.go")
+
+	assert.Len(t, routes, 2)
+	assert.Equal(t, "GET", routes[0].method)
+	assert.Equal(t, "/health", routes[0].path)
+	// PathPrefix-mounted handlers show as GET with a trailing wildcard
+	assert.Equal(t, "GET", routes[1].method)
+	assert.Equal(t, "/swagger/*", routes[1].path)
+}
+
+func TestExtractRoutes_PathPrefixSkipsAPIPrefix(t *testing.T) {
+	// When a .PathPrefix("...").Handler(...) call uses the same path as the
+	// API prefix passed to extractRoutes, it should be skipped — it's the
+	// subrouter setup, not a user-facing endpoint. Test both exact match
+	// and trailing-slash match.
+	content := `r.PathPrefix("/api/v1").Handler(someHandler)`
+	routes := extractRoutes(content, "/api/v1", "index.routes.go")
+	assert.Empty(t, routes, "exact prefix match should be skipped")
+
+	content2 := `r.PathPrefix("/api/v1/").Handler(someHandler)`
+	routes2 := extractRoutes(content2, "/api/v1", "index.routes.go")
+	assert.Empty(t, routes2, "prefix+slash match should be skipped")
+}
+
 func TestExtractRoutes_EmptyContent(t *testing.T) {
 	routes := extractRoutes("package routes", "/api/v1", "empty.routes.go")
 	assert.Empty(t, routes)

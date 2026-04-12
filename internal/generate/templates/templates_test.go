@@ -21,6 +21,7 @@ type testScaffoldData struct {
 	MigrationNum      string
 	IncludeController bool
 	IncludeGraphQL    bool
+	IncludeSwagger    bool
 	DBDriver          string
 	ModulePath        string
 }

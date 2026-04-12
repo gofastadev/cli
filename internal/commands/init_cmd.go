@@ -72,7 +72,16 @@ func runInit() error {
 		termcolor.PrintStep("📊 Skipping GraphQL (no gqlgen.yml found)")
 	}
 
-	// Step 5: Run migrations
+	// Step 5: Generate Swagger docs
+	fmt.Println()
+	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
+	if err := runCmd("go", "tool", "swag", "init",
+		"-g", "app/main/main.go", "-o", "docs/",
+		"--parseDependency", "--parseInternal"); err != nil {
+		termcolor.PrintWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
+	}
+
+	// Step 6: Run migrations
 	fmt.Println()
 	termcolor.PrintStep("🗄  Running database migrations...")
 	dbURL := configutil.BuildMigrationURL()

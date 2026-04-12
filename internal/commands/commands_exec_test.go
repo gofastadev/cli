@@ -567,10 +567,14 @@ func TestRunRoutes_SampleProject(t *testing.T) {
 	routesDir := "app/rest/routes"
 	require.NoError(t, os.MkdirAll(routesDir, 0755))
 
+	// Index file includes a .PathPrefix("...").Subrouter() call so the
+	// prefix extraction regex matches and apiPrefix gets set to "/api/v1".
 	index := `package routes
 func InitApi(r *mux.Router) {
-	r.PathPrefix("/api/v1")
+	api := r.PathPrefix("/api/v1").Subrouter()
 	r.HandleFunc("/health", httputil.Handle(c.Ok)).Methods("GET")
+	r.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+	_ = api
 }`
 	require.NoError(t, os.WriteFile(routesDir+"/index.routes.go", []byte(index), 0644))
 
@@ -597,6 +601,40 @@ func TestRunRoutes_NoIndexFile(t *testing.T) {
 	// Only a non-index file — apiPrefix will stay empty
 	user := `r.HandleFunc("/a", x).Methods("GET")`
 	require.NoError(t, os.WriteFile(routesDir+"/a.routes.go", []byte(user), 0644))
+	assert.NoError(t, runRoutes())
+}
+
+func TestRunRoutes_ReadDirError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based access denial")
+	}
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// os.Stat passes (dir exists), but drop read permission so ReadDir fails.
+	require.NoError(t, os.Chmod(routesDir, 0o111))
+	t.Cleanup(func() { _ = os.Chmod(routesDir, 0o755) })
+
+	err := runRoutes()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read routes directory")
+}
+
+func TestRunRoutes_UnreadableRouteFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based access denial")
+	}
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// Write a valid route file, then revoke read permission. ReadDir can
+	// list the file (only needs execute on the parent dir), but ReadFile
+	// fails with EACCES. The file should be silently skipped.
+	require.NoError(t, os.WriteFile(routesDir+"/blocked.routes.go",
+		[]byte(`r.HandleFunc("/x", h).Methods("GET")`), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(routesDir+"/blocked.routes.go", 0o644) })
+
+	// Should not error — unreadable files are skipped (continue branch).
 	assert.NoError(t, runRoutes())
 }
 
