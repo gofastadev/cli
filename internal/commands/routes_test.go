@@ -85,11 +85,17 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 }
 
 func TestExtractRoutes_PathPrefixSkipsAPIPrefix(t *testing.T) {
-	// The API subrouter prefix (/api/v1) is used by the route extraction
-	// as a prefix for child routes — it should not appear as its own entry.
-	content := `api := r.PathPrefix("/api/v1").Subrouter()`
+	// When a .PathPrefix("...").Handler(...) call uses the same path as the
+	// API prefix passed to extractRoutes, it should be skipped — it's the
+	// subrouter setup, not a user-facing endpoint. Test both exact match
+	// and trailing-slash match.
+	content := `r.PathPrefix("/api/v1").Handler(someHandler)`
 	routes := extractRoutes(content, "/api/v1", "index.routes.go")
-	assert.Empty(t, routes, "API subrouter prefix should not produce a route entry")
+	assert.Empty(t, routes, "exact prefix match should be skipped")
+
+	content2 := `r.PathPrefix("/api/v1/").Handler(someHandler)`
+	routes2 := extractRoutes(content2, "/api/v1", "index.routes.go")
+	assert.Empty(t, routes2, "prefix+slash match should be skipped")
 }
 
 func TestExtractRoutes_EmptyContent(t *testing.T) {
