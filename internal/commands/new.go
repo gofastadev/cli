@@ -329,7 +329,9 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	}
 
 	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
-	if err := runCmdSilent("go", "tool", "swag", "init", "-g", "app/main/main.go", "-o", "docs/"); err != nil {
+	if err := runCmdSilent("go", "tool", "swag", "init",
+		"-g", "app/main/main.go", "-o", "docs/",
+		"--parseDependency", "--parseInternal"); err != nil {
 		termcolor.PrintWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
 	}
 

@@ -19,7 +19,11 @@ Entry point is hard-coded to app/main/main.go and output to docs/; run
 be registered in go.mod — ` + "`gofasta new`" + ` and ` + "`gofasta init`" + ` do this
 automatically.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		swag := execCommand("go", "tool", "swag", "init", "-g", "app/main/main.go", "-o", "docs/")
+		swag := execCommand("go", "tool", "swag", "init",
+			"-g", "app/main/main.go",
+			"-o", "docs/",
+			"--parseDependency", "--parseInternal",
+		)
 		swag.Stdout = os.Stdout
 		swag.Stderr = os.Stderr
 		return swag.Run()
