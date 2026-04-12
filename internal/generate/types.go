@@ -29,6 +29,7 @@ type ScaffoldData struct {
 	MigrationNum      string
 	IncludeController bool
 	IncludeGraphQL    bool
+	IncludeSwagger    bool
 	Schedule          string // cron expression for job generator
 	DBDriver          string // database driver from config (postgres, mysql, sqlite, sqlserver, clickhouse)
 	ModulePath        string // Go module path read from go.mod (e.g., "github.com/myorg/myapp")

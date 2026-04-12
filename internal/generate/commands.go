@@ -79,6 +79,11 @@ func init() {
 		cmd.Flags().Bool("graphql", false, "Also generate GraphQL schema and wire resolver")
 		cmd.Flags().Bool("gql", false, "Shorthand for --graphql")
 	}
+
+	// Register --swagger flag on commands that produce controllers
+	for _, cmd := range []*cobra.Command{scaffoldCmd, controllerCmd} {
+		cmd.Flags().Bool("swagger", false, "Add Swagger/OpenAPI annotations to the generated controller")
+	}
 }
 
 // --- Step chain builders ---
@@ -252,6 +257,11 @@ func hasGraphQLFlag(cmd *cobra.Command) bool {
 	return gql || gqlShort
 }
 
+func hasSwaggerFlag(cmd *cobra.Command) bool {
+	swagger, _ := cmd.Flags().GetBool("swagger")
+	return swagger
+}
+
 // --- Cobra command definitions ---
 
 var scaffoldCmd = &cobra.Command{
@@ -302,6 +312,7 @@ logic in app/services/<name>.service.go.`,
 		d := buildFromArgs(args)
 		d.IncludeController = true
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
+		d.IncludeSwagger = hasSwaggerFlag(cmd)
 		if err := RunSteps(d, scaffoldSteps(d)); err != nil {
 			return err
 		}
@@ -309,6 +320,9 @@ logic in app/services/<name>.service.go.`,
 		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
 		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
 		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
+		if d.IncludeSwagger {
+			fmt.Printf("  %s  %s\n", termcolor.CDim("Regenerate docs:"), termcolor.CBold("gofasta swagger"))
+		}
 		return nil
 	},
 }
@@ -386,6 +400,7 @@ step.`,
 		d := buildFromArgs(args)
 		d.IncludeController = true
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
+		d.IncludeSwagger = hasSwaggerFlag(cmd)
 		return RunSteps(d, controllerSteps(d))
 	},
 }
