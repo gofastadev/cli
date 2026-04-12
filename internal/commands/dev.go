@@ -101,7 +101,8 @@ func runDev() error {
 // underlying error on failure so the caller can print it verbatim.
 func runMigrations() error {
 	if _, err := execLookPath("migrate"); err != nil {
-		return fmt.Errorf("migrate CLI not found on $PATH — install with: go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
+		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
+			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
 	}
 
 	// configutil always builds a URL from defaults (at minimum
