@@ -121,8 +121,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		ProjectName:      projectName,
 		ProjectNameLower: strings.ToLower(projectName),
 		// Upper variant is used as an env-var prefix in compose.yaml,
-		// .env.example, k8s deployment.yaml, CI workflows, and the
-		// generated LoadConfig wrapper. Shell variable names only allow
+		// .env.example, CI workflows, and the generated LoadConfig wrapper. Shell variable names only allow
 		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
 		// otherwise a project named "my-app" would produce invalid env
 		// vars like "MY-APP_DATABASE_HOST" and the framework would never
