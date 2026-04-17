@@ -513,14 +513,15 @@ func TestRunNew_GoModInitFails(t *testing.T) {
 // branches we need the first two exec calls to succeed.
 func TestRunNew_WarningBranches(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 0, 1) // mod init ok, gofasta install ok, everything else fails
+	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
+	stagedFakeExec(t, 0, 0, 0, 1)
 	err := runNew("warnapp", false)
 	assert.NoError(t, err)
 }
 
 func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 0, 1)
+	stagedFakeExec(t, 0, 0, 0, 1)
 	err := runNew("warnapp", true)
 	assert.NoError(t, err)
 }
@@ -549,7 +550,7 @@ func TestRunNew_GofastaReplaceHappyPath(t *testing.T) {
 	// Fake framework checkout — absolute path with a go.mod inside.
 	fakeFramework := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
 	t.Setenv("GOFASTA_REPLACE", fakeFramework)
 	withFakeExec(t, 0)
 

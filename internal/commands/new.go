@@ -153,6 +153,16 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	if err := runCmdSilent("go", "mod", "init", modulePath); err != nil {
 		return fmt.Errorf("go mod init failed: %w", err)
 	}
+	// `go mod init` writes the current toolchain version as the `go` directive
+	// — so a developer running Go 1.27 would get `go 1.27` in their scaffold
+	// even though we only require 1.25.0. Normalise to the declared minimum so
+	// generated projects match our stated support floor regardless of the
+	// developer's local toolchain. Best-effort: if this fails, the scaffold
+	// still works, it just ships with the developer's toolchain version
+	// instead of the declared minimum.
+	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
+		termcolor.PrintWarn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
+	}
 
 	// Walk embedded skeleton and generate files
 	termcolor.PrintStep("🏗  Creating project structure...")

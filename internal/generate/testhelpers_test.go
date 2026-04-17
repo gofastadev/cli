@@ -18,7 +18,7 @@ func setupTempProject(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(origDir) })
 
 	os.MkdirAll(filepath.Join(dir, "db", "migrations"), 0755)
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/testorg/testapp\n\ngo 1.25.8\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/testorg/testapp\n\ngo 1.25.0\n"), 0644)
 	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("database:\n  driver: postgres\n"), 0644)
 
 	if err := os.Chdir(dir); err != nil {

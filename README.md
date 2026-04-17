@@ -8,7 +8,7 @@ The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go
 
 The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` at `cmd/gofasta/`. It is not the same as the `github.com/gofastadev/gofasta` library, which your generated projects import as a dependency. You install one, you import the other.
 
-**Option A — `go install` (recommended for Go developers, requires Go 1.25.8+):**
+**Option A — `go install` (recommended for Go developers, requires Go 1.25.0+):**
 
 ```bash
 go install github.com/gofastadev/cli/cmd/gofasta@latest
