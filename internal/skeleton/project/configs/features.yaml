@@ -1,14 +1,17 @@
-# Feature Flags Configuration
-# See: https://docs.gofeatureflag.org/
+# Feature flag bootstrap data.
 #
-# Example:
-# new-dashboard:
-#   variations:
-#     enabled: true
-#     disabled: false
-#   defaultRule:
-#     variation: disabled
-#   targeting:
-#     - name: beta-users
-#       query: userID eq "admin"
-#       variation: enabled
+# gofasta ships `pkg/featureflag` as a thin wrapper around the OpenFeature Go
+# SDK (https://openfeature.dev). OpenFeature evaluates flags through a
+# *provider* — a swappable adapter that can be:
+#
+#   • in-memory    — flags defined in Go code, zero network, good for dev
+#   • Flagd        — CNCF-standard sidecar (gRPC)
+#   • LaunchDarkly — commercial SaaS
+#   • go-feature-flag — file-driven rules + AB testing, self-hosted
+#   • any custom provider that implements openfeature.FeatureProvider
+#
+# This file is intentionally empty — the default scaffold does not register a
+# provider, so every flag resolves to the default value its caller supplies.
+# To opt in, register a provider during startup with
+# `openfeature.SetProvider(...)` and shape this file to match its config
+# format (if the provider you pick is file-driven).
