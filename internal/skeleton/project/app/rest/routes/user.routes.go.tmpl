@@ -1,15 +1,15 @@
 package routes
 
 import (
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 	"{{.ModulePath}}/app/rest/controllers"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 )
 
-func UserRoutes(r *mux.Router, uc *controllers.UserController) {
-	r.HandleFunc("/users", httputil.Handle(uc.ListUsers)).Methods("GET")
-	r.HandleFunc("/users", httputil.Handle(uc.CreateUser)).Methods("POST")
-	r.HandleFunc("/users/{id}", httputil.Handle(uc.GetUser)).Methods("GET")
-	r.HandleFunc("/users/{id}", httputil.Handle(uc.UpdateUser)).Methods("PUT")
-	r.HandleFunc("/users/{id}", httputil.Handle(uc.ArchiveUser)).Methods("DELETE")
+func UserRoutes(r chi.Router, uc *controllers.UserController) {
+	r.Get("/users", httputil.Handle(uc.ListUsers))
+	r.Post("/users", httputil.Handle(uc.CreateUser))
+	r.Get("/users/{id}", httputil.Handle(uc.GetUser))
+	r.Put("/users/{id}", httputil.Handle(uc.UpdateUser))
+	r.Delete("/users/{id}", httputil.Handle(uc.ArchiveUser))
 }

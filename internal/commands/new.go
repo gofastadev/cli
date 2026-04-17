@@ -302,6 +302,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
 	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
 	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@latest")
+	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@latest")
 	// Register as Go tools
 	if includeGraphQL {
 		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")

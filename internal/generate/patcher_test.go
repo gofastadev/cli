@@ -205,8 +205,10 @@ type RouteConfig struct {
 	HealthController *health.Controller
 }
 
-func InitApiRoutes(config *RouteConfig) *mux.Router {
-	r := mux.NewRouter()
+func InitApiRoutes(config *RouteConfig) *chi.Mux {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	r.Mount("/api/v1", api)
 	return r
 }
 `

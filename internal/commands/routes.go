@@ -13,11 +13,11 @@ import (
 var routesCmd = &cobra.Command{
 	Use:   "routes",
 	Short: "List every registered REST route in a table (method, path, source)",
-	Long: `Statically parse every file under app/rest/routes/ for ` + "`router.GET`" + ` /
-` + "`router.POST`" + ` / ` + "`router.PUT`" + ` / ` + "`router.DELETE`" + ` / ` + "`router.PATCH`" + ` calls and print
-a formatted table showing HTTP method, full path (including router group
-prefixes), and source file. Does not import or run your project code —
-purely a grep-and-format pass.
+	Long: `Statically parse every file under app/rest/routes/ for chi router
+method calls (` + "`r.Get`" + `, ` + "`r.Post`" + `, ` + "`r.Put`" + `, ` + "`r.Delete`" + `, ` + "`r.Patch`" + `) and print
+a formatted table showing HTTP method, full path (including mounted
+subrouter prefixes), and source file. Does not import or run your project
+code — purely a grep-and-format pass.
 
 Useful for debugging route conflicts, documenting the public API, and
 spotting unregistered handlers. For GraphQL schema introspection use
@@ -38,9 +38,9 @@ type routeEntry struct {
 }
 
 var (
-	handleFuncRe  = regexp.MustCompile(`\.HandleFunc\("([^"]+)",.+\.Methods\("([^"]+)"\)`)
-	prefixRe      = regexp.MustCompile(`\.PathPrefix\("([^"]+)"\)\.Subrouter\(\)`)
-	pathHandlerRe = regexp.MustCompile(`\.PathPrefix\("([^"]+)"\)\.Handler\(`)
+	routeMethodRe = regexp.MustCompile(`\.(Get|Post|Put|Delete|Patch|Head|Options)\("([^"]+)",`)
+	mountRe       = regexp.MustCompile(`\.Mount\("([^"]+)",`)
+	wildcardRe    = regexp.MustCompile(`\.Handle\("([^"]+\*)",`)
 )
 
 func runRoutes() error {
@@ -54,11 +54,11 @@ func runRoutes() error {
 		return fmt.Errorf("failed to read routes directory: %w", err)
 	}
 
-	// Extract API prefix from index file
+	// Extract API prefix from index file via the chi Mount call.
 	apiPrefix := ""
 	indexPath := routesDir + "/index.routes.go"
 	if indexContent, err := os.ReadFile(indexPath); err == nil {
-		if matches := prefixRe.FindSubmatch(indexContent); len(matches) > 1 {
+		if matches := mountRe.FindSubmatch(indexContent); len(matches) > 1 {
 			apiPrefix = string(matches[1])
 		}
 	}
@@ -98,29 +98,28 @@ func runRoutes() error {
 }
 
 func extractRoutes(content, prefix, filename string) []routeEntry {
-	var routes []routeEntry
+	methodMatches := routeMethodRe.FindAllStringSubmatch(content, -1)
+	wildcardMatches := wildcardRe.FindAllStringSubmatch(content, -1)
+	routes := make([]routeEntry, 0, len(methodMatches)+len(wildcardMatches))
 
-	// Match .HandleFunc("path", ...).Methods("METHOD")
-	for _, m := range handleFuncRe.FindAllStringSubmatch(content, -1) {
+	// Match r.Get("path", ...) / r.Post / r.Put / r.Delete / r.Patch — chi's
+	// method-based API. The captured method name is already uppercase-first,
+	// so convert to HTTP verb with ToUpper.
+	for _, m := range methodMatches {
 		routes = append(routes, routeEntry{
-			method:   m[2],
-			path:     prefix + m[1],
+			method:   strings.ToUpper(m[1]),
+			path:     prefix + m[2],
 			filename: filename,
 		})
 	}
 
-	// Match .PathPrefix("path").Handler(...) — used by swagger UI and
-	// other prefix-mounted handlers. Shown as GET since they serve content.
-	for _, m := range pathHandlerRe.FindAllStringSubmatch(content, -1) {
-		path := m[1]
-		// Don't pick up the API subrouter prefix (e.g. /api/v1) — that's
-		// already handled by prefixRe and used as a prefix for child routes.
-		if path == prefix || path == prefix+"/" {
-			continue
-		}
+	// Match r.Handle("path/*", ...) — used by swagger UI and other
+	// wildcard-mounted handlers. Shown as GET since they serve content.
+	// chi patterns already include the trailing wildcard, so display as-is.
+	for _, m := range wildcardMatches {
 		routes = append(routes, routeEntry{
 			method:   "GET",
-			path:     path + "*",
+			path:     m[1],
 			filename: filename,
 		})
 	}

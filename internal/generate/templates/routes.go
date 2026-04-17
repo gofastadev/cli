@@ -4,16 +4,16 @@ package templates
 var Routes = `package routes
 
 import (
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 	"{{.ModulePath}}/app/rest/controllers"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 )
 
-func {{.Name}}Routes(r *mux.Router, c *controllers.{{.Name}}Controller) {
-	r.HandleFunc("/{{.PluralSnake}}", httputil.Handle(c.List)).Methods("GET")
-	r.HandleFunc("/{{.PluralSnake}}", httputil.Handle(c.Create)).Methods("POST")
-	r.HandleFunc("/{{.PluralSnake}}/{id}", httputil.Handle(c.GetByID)).Methods("GET")
-	r.HandleFunc("/{{.PluralSnake}}/{id}", httputil.Handle(c.Update)).Methods("PUT")
-	r.HandleFunc("/{{.PluralSnake}}/{id}", httputil.Handle(c.Archive)).Methods("DELETE")
+func {{.Name}}Routes(r chi.Router, c *controllers.{{.Name}}Controller) {
+	r.Get("/{{.PluralSnake}}", httputil.Handle(c.List))
+	r.Post("/{{.PluralSnake}}", httputil.Handle(c.Create))
+	r.Get("/{{.PluralSnake}}/{id}", httputil.Handle(c.GetByID))
+	r.Put("/{{.PluralSnake}}/{id}", httputil.Handle(c.Update))
+	r.Delete("/{{.PluralSnake}}/{id}", httputil.Handle(c.Archive))
 }
 `
