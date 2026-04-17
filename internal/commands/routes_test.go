@@ -26,12 +26,12 @@ func TestRoutesCmd_HasDescription(t *testing.T) {
 func TestExtractRoutes_BasicRouteFile(t *testing.T) {
 	content := `package routes
 
-func UserRoutes(r *mux.Router, c *controllers.UserController) {
-	r.HandleFunc("/users", httputil.Handle(c.List)).Methods("GET")
-	r.HandleFunc("/users", httputil.Handle(c.Create)).Methods("POST")
-	r.HandleFunc("/users/{id}", httputil.Handle(c.GetByID)).Methods("GET")
-	r.HandleFunc("/users/{id}", httputil.Handle(c.Update)).Methods("PUT")
-	r.HandleFunc("/users/{id}", httputil.Handle(c.Archive)).Methods("DELETE")
+func UserRoutes(r chi.Router, c *controllers.UserController) {
+	r.Get("/users", httputil.Handle(c.List))
+	r.Post("/users", httputil.Handle(c.Create))
+	r.Get("/users/{id}", httputil.Handle(c.GetByID))
+	r.Put("/users/{id}", httputil.Handle(c.Update))
+	r.Delete("/users/{id}", httputil.Handle(c.Archive))
 }`
 
 	routes := extractRoutes(content, "/api/v1", "user.routes.go")
@@ -51,10 +51,10 @@ func UserRoutes(r *mux.Router, c *controllers.UserController) {
 func TestExtractRoutes_IndexFile(t *testing.T) {
 	content := `package routes
 
-func InitApiRoutes(config *RouteConfig) *mux.Router {
-	r.HandleFunc("/health", httputil.Handle(config.HealthController.Check)).Methods("GET")
-	r.HandleFunc("/health/live", httputil.Handle(config.HealthController.Live)).Methods("GET")
-	r.HandleFunc("/health/ready", httputil.Handle(config.HealthController.Ready)).Methods("GET")
+func InitApiRoutes(config *RouteConfig) *chi.Mux {
+	r.Get("/health", httputil.Handle(config.HealthController.Check))
+	r.Get("/health/live", httputil.Handle(config.HealthController.Live))
+	r.Get("/health/ready", httputil.Handle(config.HealthController.Ready))
 }`
 
 	routes := extractRoutes(content, "", "index.routes.go")
@@ -66,12 +66,12 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 	assert.Equal(t, "/health/ready", routes[2].path)
 }
 
-func TestExtractRoutes_PathPrefixHandler(t *testing.T) {
+func TestExtractRoutes_WildcardHandler(t *testing.T) {
 	content := `package routes
 
-func InitApiRoutes(config *RouteConfig) *mux.Router {
-	r.HandleFunc("/health", httputil.Handle(config.HealthController.Check)).Methods("GET")
-	r.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
+func InitApiRoutes(config *RouteConfig) *chi.Mux {
+	r.Get("/health", httputil.Handle(config.HealthController.Check))
+	r.Handle("/swagger/*", httpSwagger.WrapHandler)
 }`
 
 	routes := extractRoutes(content, "", "index.routes.go")
@@ -79,23 +79,9 @@ func InitApiRoutes(config *RouteConfig) *mux.Router {
 	assert.Len(t, routes, 2)
 	assert.Equal(t, "GET", routes[0].method)
 	assert.Equal(t, "/health", routes[0].path)
-	// PathPrefix-mounted handlers show as GET with a trailing wildcard
+	// Wildcard-mounted handlers show as GET with the pattern as-is.
 	assert.Equal(t, "GET", routes[1].method)
 	assert.Equal(t, "/swagger/*", routes[1].path)
-}
-
-func TestExtractRoutes_PathPrefixSkipsAPIPrefix(t *testing.T) {
-	// When a .PathPrefix("...").Handler(...) call uses the same path as the
-	// API prefix passed to extractRoutes, it should be skipped — it's the
-	// subrouter setup, not a user-facing endpoint. Test both exact match
-	// and trailing-slash match.
-	content := `r.PathPrefix("/api/v1").Handler(someHandler)`
-	routes := extractRoutes(content, "/api/v1", "index.routes.go")
-	assert.Empty(t, routes, "exact prefix match should be skipped")
-
-	content2 := `r.PathPrefix("/api/v1/").Handler(someHandler)`
-	routes2 := extractRoutes(content2, "/api/v1", "index.routes.go")
-	assert.Empty(t, routes2, "prefix+slash match should be skipped")
 }
 
 func TestExtractRoutes_EmptyContent(t *testing.T) {
@@ -104,7 +90,7 @@ func TestExtractRoutes_EmptyContent(t *testing.T) {
 }
 
 func TestExtractRoutes_NoPrefix(t *testing.T) {
-	content := `r.HandleFunc("/test", httputil.Handle(c.Test)).Methods("GET")`
+	content := `r.Get("/test", httputil.Handle(c.Test))`
 	routes := extractRoutes(content, "", "test.routes.go")
 
 	assert.Len(t, routes, 1)

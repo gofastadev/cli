@@ -69,14 +69,16 @@ var ProviderSet = wire.NewSet(
 	require.NoError(t, os.MkdirAll("app/rest/routes", 0755))
 	require.NoError(t, os.WriteFile("app/rest/routes/index.routes.go", []byte(`package routes
 
-import "github.com/gorilla/mux"
+import "github.com/go-chi/chi/v5"
 
 type RouteConfig struct {
 	// controllers
 }
 
-func InitApiRoutes(config *RouteConfig) *mux.Router {
-	r := mux.NewRouter()
+func InitApiRoutes(config *RouteConfig) *chi.Mux {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	r.Mount("/api/v1", api)
 	return r
 }
 `), 0644))

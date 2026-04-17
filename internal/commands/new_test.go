@@ -197,7 +197,7 @@ func TestInstallGofastaFromLocal_HappyPath(t *testing.T) {
 	// Create a fake "gofasta checkout" — a directory with a go.mod inside.
 	fakeFramework := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
 	// Mock execCommand so the `go mod edit` calls "succeed" without
 	// actually hitting the real go binary.
 	withFakeExec(t, 0)
@@ -211,7 +211,7 @@ func TestInstallGofastaFromLocal_EditRequireFails(t *testing.T) {
 	setupGoMod(t)
 	fakeFramework := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
 	withFakeExec(t, 1) // every exec fails
 
 	err := installGofastaFromLocal(fakeFramework)
@@ -226,7 +226,7 @@ func TestInstallGofastaFromLocal_EditReplaceFails(t *testing.T) {
 	setupGoMod(t)
 	fakeFramework := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
 	stagedFakeExec(t, 0, 1) // require ok, replace fails
 
 	err := installGofastaFromLocal(fakeFramework)
@@ -253,7 +253,7 @@ func TestRunNew_GofastaReplaceBadPath(t *testing.T) {
 func setupGoMod(t *testing.T) {
 	t.Helper()
 	require.NoError(t, os.WriteFile("go.mod",
-		[]byte("module testproject\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module testproject\n\ngo 1.25.0\n"), 0o644))
 }
 
 // chdirTemp is a lightweight helper that pins the test to a fresh temp

@@ -1,6 +1,6 @@
 module github.com/gofastadev/cli
 
-go 1.25.8
+go 1.25.0
 
 require (
 	github.com/knadh/koanf/parsers/yaml v1.1.0

@@ -121,8 +121,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		ProjectName:      projectName,
 		ProjectNameLower: strings.ToLower(projectName),
 		// Upper variant is used as an env-var prefix in compose.yaml,
-		// .env.example, k8s deployment.yaml, CI workflows, and the
-		// generated LoadConfig wrapper. Shell variable names only allow
+		// .env.example, CI workflows, and the generated LoadConfig wrapper. Shell variable names only allow
 		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
 		// otherwise a project named "my-app" would produce invalid env
 		// vars like "MY-APP_DATABASE_HOST" and the framework would never
@@ -152,6 +151,16 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	termcolor.PrintStep("📦 Initializing Go module: %s", modulePath)
 	if err := runCmdSilent("go", "mod", "init", modulePath); err != nil {
 		return fmt.Errorf("go mod init failed: %w", err)
+	}
+	// `go mod init` writes the current toolchain version as the `go` directive
+	// — so a developer running Go 1.27 would get `go 1.27` in their scaffold
+	// even though we only require 1.25.0. Normalise to the declared minimum so
+	// generated projects match our stated support floor regardless of the
+	// developer's local toolchain. Best-effort: if this fails, the scaffold
+	// still works, it just ships with the developer's toolchain version
+	// instead of the declared minimum.
+	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
+		termcolor.PrintWarn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
 	}
 
 	// Walk embedded skeleton and generate files
@@ -302,6 +311,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
 	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
 	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@latest")
+	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@latest")
 	// Register as Go tools
 	if includeGraphQL {
 		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")

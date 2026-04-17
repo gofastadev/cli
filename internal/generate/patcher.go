@@ -127,7 +127,8 @@ func PatchRouteConfig(d ScaffoldData) error {
 		1)
 
 	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)\n", d.Name, controllerField)
-	s = strings.Replace(s, "\n\treturn r", routeCall+"\n\treturn r", 1)
+	mountLine := "\tr.Mount(\"/api/v1\", api)"
+	s = strings.Replace(s, mountLine, routeCall+mountLine, 1)
 
 	termcolor.PrintPatch(path, "")
 	return os.WriteFile(path, []byte(s), 0o644)

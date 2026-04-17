@@ -71,7 +71,7 @@ func TestReadModulePath_NoModuleLine(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() { os.Chdir(origDir) })
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("go 1.25.8\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("go 1.25.0\n"), 0644)
 	os.Chdir(dir)
 	assert.Equal(t, "", readModulePath())
 }
@@ -142,7 +142,7 @@ func TestBuildScaffoldData_NoConfig(t *testing.T) {
 	origDir, _ := os.Getwd()
 	t.Cleanup(func() { os.Chdir(origDir) })
 	os.MkdirAll(filepath.Join(dir, "db", "migrations"), 0755)
-	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testmod\n\ngo 1.25.8\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testmod\n\ngo 1.25.0\n"), 0644)
 	os.Chdir(dir)
 
 	d := BuildScaffoldData("item", nil)

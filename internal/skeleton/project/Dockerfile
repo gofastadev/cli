@@ -1,12 +1,13 @@
 # Production Dockerfile
 # Multi-stage build: compiles a static binary, runs on minimal Alpine.
-# Works with: AWS ECS/ECR, GCP Cloud Run/GCR, Azure Container Apps/ACR, any VPS with Docker.
+# Designed for VPS deployment with Docker — paired with `gofasta deploy`
+# (which ships the built image over SSH and starts it via Docker Compose).
 #
 # Build:  docker build -t myapp .
 # Run:    docker run -p 8080:8080 --env-file .env myapp
 
 # ── Stage 1: Build ──
-FROM golang:1.25.8-alpine AS builder
+FROM golang:1.25.0-alpine AS builder
 
 RUN apk add --no-cache git
 

@@ -7,7 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/gorilla/mux"
+	"github.com/go-chi/chi/v5"
 	"{{.ModulePath}}/app/dtos"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 	"github.com/gofastadev/gofasta/pkg/utils"
@@ -62,7 +62,7 @@ func (c *{{.Name}}Controller) List(w http.ResponseWriter, r *http.Request) error
 //	@Router			/{{.PluralLower}}/{id} [get]
 {{- end}}
 func (c *{{.Name}}Controller) GetByID(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -115,7 +115,7 @@ func (c *{{.Name}}Controller) Create(w http.ResponseWriter, r *http.Request) err
 //	@Router			/{{.PluralLower}}/{id} [put]
 {{- end}}
 func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -146,7 +146,7 @@ func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) err
 //	@Router			/{{.PluralLower}}/{id} [delete]
 {{- end}}
 func (c *{{.Name}}Controller) Archive(w http.ResponseWriter, r *http.Request) error {
-	id, err := utils.ParseIDStringIsValidUUID(mux.Vars(r)["id"])
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}

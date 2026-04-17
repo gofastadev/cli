@@ -99,6 +99,11 @@ i18n:
   locales_dir: locales
 
 feature_flag:
+  # Master switch consumed by `pkg/featureflag`. When false the service is a
+  # no-op and every flag resolves to its caller-supplied default. When true
+  # the service evaluates through whichever OpenFeature provider the app
+  # registered at startup (in-memory, Flagd, LaunchDarkly, go-feature-flag,
+  # etc.). See `configs/features.yaml` for notes.
   enabled: false
   config_path: configs/features.yaml
 

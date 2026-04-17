@@ -513,14 +513,15 @@ func TestRunNew_GoModInitFails(t *testing.T) {
 // branches we need the first two exec calls to succeed.
 func TestRunNew_WarningBranches(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 0, 1) // mod init ok, gofasta install ok, everything else fails
+	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
+	stagedFakeExec(t, 0, 0, 0, 1)
 	err := runNew("warnapp", false)
 	assert.NoError(t, err)
 }
 
 func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 0, 1)
+	stagedFakeExec(t, 0, 0, 0, 1)
 	err := runNew("warnapp", true)
 	assert.NoError(t, err)
 }
@@ -549,7 +550,7 @@ func TestRunNew_GofastaReplaceHappyPath(t *testing.T) {
 	// Fake framework checkout — absolute path with a go.mod inside.
 	fakeFramework := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.8\n"), 0o644))
+		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
 	t.Setenv("GOFASTA_REPLACE", fakeFramework)
 	withFakeExec(t, 0)
 
@@ -567,21 +568,21 @@ func TestRunRoutes_SampleProject(t *testing.T) {
 	routesDir := "app/rest/routes"
 	require.NoError(t, os.MkdirAll(routesDir, 0755))
 
-	// Index file includes a .PathPrefix("...").Subrouter() call so the
+	// Index file includes a chi r.Mount("...", ...) call so the
 	// prefix extraction regex matches and apiPrefix gets set to "/api/v1".
 	index := `package routes
-func InitApi(r *mux.Router) {
-	api := r.PathPrefix("/api/v1").Subrouter()
-	r.HandleFunc("/health", httputil.Handle(c.Ok)).Methods("GET")
-	r.PathPrefix("/swagger/").Handler(httpSwagger.WrapHandler)
-	_ = api
+func InitApi(r *chi.Mux) {
+	api := chi.NewRouter()
+	r.Get("/health", httputil.Handle(c.Ok))
+	r.Handle("/swagger/*", httpSwagger.WrapHandler)
+	r.Mount("/api/v1", api)
 }`
 	require.NoError(t, os.WriteFile(routesDir+"/index.routes.go", []byte(index), 0644))
 
 	user := `package routes
-func UserRoutes(r *mux.Router) {
-	r.HandleFunc("/users", httputil.Handle(c.List)).Methods("GET")
-	r.HandleFunc("/users/{id}", httputil.Handle(c.Get)).Methods("GET")
+func UserRoutes(r chi.Router) {
+	r.Get("/users", httputil.Handle(c.List))
+	r.Get("/users/{id}", httputil.Handle(c.Get))
 }`
 	require.NoError(t, os.WriteFile(routesDir+"/user.routes.go", []byte(user), 0644))
 
@@ -599,7 +600,7 @@ func TestRunRoutes_NoIndexFile(t *testing.T) {
 	routesDir := "app/rest/routes"
 	require.NoError(t, os.MkdirAll(routesDir, 0755))
 	// Only a non-index file — apiPrefix will stay empty
-	user := `r.HandleFunc("/a", x).Methods("GET")`
+	user := `r.Get("/a", x)`
 	require.NoError(t, os.WriteFile(routesDir+"/a.routes.go", []byte(user), 0644))
 	assert.NoError(t, runRoutes())
 }
@@ -631,7 +632,7 @@ func TestRunRoutes_UnreadableRouteFile(t *testing.T) {
 	// list the file (only needs execute on the parent dir), but ReadFile
 	// fails with EACCES. The file should be silently skipped.
 	require.NoError(t, os.WriteFile(routesDir+"/blocked.routes.go",
-		[]byte(`r.HandleFunc("/x", h).Methods("GET")`), 0o000))
+		[]byte(`r.Get("/x", h)`), 0o000))
 	t.Cleanup(func() { _ = os.Chmod(routesDir+"/blocked.routes.go", 0o644) })
 
 	// Should not error — unreadable files are skipped (continue branch).

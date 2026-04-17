@@ -263,6 +263,6 @@ func TestEnvPrefixes_DeDupesGofasta(t *testing.T) {
 // (which setupConfigDir has already set to a fresh tempdir).
 func writeGoMod(t *testing.T, modulePath string) {
 	t.Helper()
-	content := "module " + modulePath + "\n\ngo 1.25.8\n"
+	content := "module " + modulePath + "\n\ngo 1.25.0\n"
 	require.NoError(t, os.WriteFile("go.mod", []byte(content), 0o644))
 }
