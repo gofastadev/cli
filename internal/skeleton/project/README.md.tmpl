@@ -79,10 +79,19 @@ entry point you prefer.
 | Run seeders | `make seed` |
 | List every REST route | `gofasta routes` |
 | Regenerate OpenAPI docs | `gofasta swagger` |
+| **Run full preflight check** | `gofasta verify` |
+| **Report project drift** | `gofasta status` |
+| **Inspect a resource** | `gofasta inspect User` |
+| **Emit `config.yaml` JSON Schema** | `gofasta config schema` |
+| **Run a named workflow** | `gofasta do new-rest-endpoint Invoice total:float` |
+| **Install AI agent config** | `gofasta ai claude` (or `cursor`, `codex`, `aider`, `windsurf`) |
 | Lint | `make lint` |
 | Diagnose setup | `make doctor` or `gofasta doctor` |
 
-Full CLI reference: https://gofasta.dev/docs/cli-reference
+Every command that emits structured output honors the global `--json`
+flag for machine-parseable consumption by agents and CI.
+
+Full CLI reference: https://gofasta.dev/docs/cli-reference/new
 
 ## Configuration
 
@@ -154,6 +163,43 @@ MCP-aware agents. It covers the directory layout, every command, the
 conventions each layer must follow, common failure modes (especially
 around Wire), and a pre-commit self-check list. If an agent is working
 on this codebase, point it there first.
+
+To install per-agent configuration (permission allowlists, pre-commit
+hooks, slash commands, conventions files), run:
+
+```bash
+gofasta ai claude       # Claude Code: .claude/ settings + hooks + slash commands
+gofasta ai cursor       # Cursor: .cursor/rules/gofasta.mdc
+gofasta ai codex        # OpenAI Codex: .codex/config.toml
+gofasta ai aider        # Aider: .aider.conf.yml + .aider/CONVENTIONS.md
+gofasta ai windsurf     # Windsurf: .windsurfrules
+
+gofasta ai list         # every supported agent
+gofasta ai status       # what's currently installed
+```
+
+Every installer is idempotent — re-run after a gofasta update to pick up
+improved configs. See [the docs](https://gofasta.dev/docs/cli-reference/ai)
+for full details.
+
+### Agent-friendly commands built into the CLI
+
+- `gofasta verify` — full preflight gauntlet in one command (gofmt, vet,
+  lint, test with race, build, Wire drift, routes). Every step reported
+  with `--json`.
+- `gofasta status` — offline drift detection (Wire stale, Swagger stale,
+  pending migrations, uncommitted generated files, `go.sum` freshness).
+- `gofasta inspect <Resource>` — single AST-parsed structured report of a
+  resource's model, DTOs, service interface, controller, and routes.
+- `gofasta config schema` — JSON Schema for `config.yaml`, emitted by a
+  project-local helper so it always matches the pinned gofasta version.
+  Feed to VS Code YAML / JetBrains for autocomplete.
+- `gofasta do <workflow>` — named command chains (`new-rest-endpoint`,
+  `rebuild`, `fresh-start`, `clean-slate`, `health-check`).
+
+Every CLI error carries a stable `{code, message, hint, docs}` payload
+when emitted in `--json` mode — agents pattern-match on the code
+instead of regex-parsing strings.
 
 ## Documentation
 

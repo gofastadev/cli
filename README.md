@@ -304,6 +304,104 @@ gofasta wire
 
 Regenerates the Wire dependency injection code after manual changes to providers.
 
+## Agent-friendly commands
+
+Gofasta ships first-class integration with AI coding agents. Every command below honors the global `--json` flag for machine-parseable output, and every error carries a stable code + remediation hint + docs link.
+
+### `gofasta verify` — one "am I done?" check
+
+Runs the full preflight gauntlet (gofmt, vet, golangci-lint, tests with the race detector, build, Wire drift, routes) in one command. Fails fast on the first failing step; pass `--keep-going` to report every result.
+
+```bash
+gofasta verify               # human table
+gofasta verify --json        # structured per-check JSON
+gofasta verify --no-lint     # skip golangci-lint on machines that don't have it
+```
+
+### `gofasta status` — project drift report
+
+Reports whether derived artifacts (Wire, Swagger), generated files, and module state are in sync with their inputs. Complementary to `verify` — `verify` is about quality gates; `status` is about drift.
+
+```bash
+gofasta status               # text table
+gofasta status --json        # one JSON object per check
+```
+
+### `gofasta inspect <Resource>` — resource composition at a glance
+
+AST-parses a resource's model, DTOs, service interface, controller, and routes; emits a single structured report. Replaces opening six files by hand.
+
+```bash
+gofasta inspect User
+gofasta inspect User --json | jq '.service_methods[].name'
+```
+
+### `gofasta config schema` — JSON Schema for `config.yaml`
+
+Emits a Draft-7 JSON Schema describing `config.yaml`. Feed it to VS Code / JetBrains YAML extensions for autocomplete and inline validation, or to CI for pre-deploy checks. Shells out to a project-local `cmd/schema` helper so the schema always matches the `gofasta` version pinned in your `go.mod`.
+
+```bash
+gofasta config schema > config.schema.json
+
+# Then, at the top of config.yaml:
+#   # yaml-language-server: $schema=./config.schema.json
+```
+
+### `gofasta do <workflow>` — named command chains
+
+Pre-defined sequences of gofasta commands that together accomplish one higher-level task. Transparent (no hidden logic, each step is a command you could run by hand) but save agent round-trips and keystrokes:
+
+```bash
+gofasta do new-rest-endpoint Invoice total:float    # scaffold + migrate up + swagger
+gofasta do rebuild                                  # wire + swagger
+gofasta do fresh-start                              # init + migrate up + seed
+gofasta do clean-slate                              # db reset + seed
+gofasta do health-check                             # verify + status
+gofasta do list                                     # every supported workflow
+```
+
+Pass `--dry-run` to preview the chain.
+
+### `gofasta ai <agent>` — install agent-specific configuration
+
+Every scaffolded project ships `AGENTS.md` at the root by default (the universal file every modern agent reads). For agent-specific configuration — permission allowlists, pre-commit hooks, slash commands, conventions files — opt in with one command:
+
+```bash
+gofasta ai claude       # .claude/ settings + hooks + slash commands
+gofasta ai cursor       # .cursor/rules/gofasta.mdc
+gofasta ai codex        # .codex/config.toml
+gofasta ai aider        # .aider.conf.yml + .aider/CONVENTIONS.md
+gofasta ai windsurf     # .windsurfrules
+gofasta ai list         # supported agents
+gofasta ai status       # what's currently installed in this project
+```
+
+Installs are idempotent, support `--dry-run`, and are tracked in `.gofasta/ai.json`.
+
+### `--json` on every command
+
+Every command that emits structured output honors the global `--json` flag, producing a single-line JSON document suitable for agent parsing, `jq` filtering, or CI consumption.
+
+```bash
+gofasta routes --json | jq '.[] | select(.method == "POST")'
+gofasta --json verify | jq '.checks[] | select(.status == "fail")'
+gofasta ai list --json
+```
+
+### Structured errors
+
+Every CLI error carries `{code, message, hint, docs}` — agents pattern-match on the stable code and read the hint for the remediation. No regex-parsing English error strings.
+
+```bash
+$ gofasta --json g scaffold 2>&1 >/dev/null | jq .
+{
+  "code": "INVALID_NAME",
+  "message": "missing resource name",
+  "hint": "pass a PascalCase resource name — e.g. `gofasta g scaffold Product`",
+  "docs": "https://gofasta.dev/docs/cli-reference/generate/scaffold"
+}
+```
+
 ## How It Works
 
 The CLI is a standalone Go binary. It does **not** import the gofasta library — it only manipulates files on disk.
