@@ -1,0 +1,202 @@
+# AGENTS.md — Guidance for AI coding agents
+
+This file tells AI coding agents (Claude Code, OpenAI Codex, Cursor, Aider,
+Devin, and other MCP-compatible agents) everything they need to work
+productively in this codebase. Agents read it automatically at startup.
+Humans onboarding to the project should read it too.
+
+## Project overview
+
+- **Name:** {{.ProjectName}}
+- **Go module:** `{{.ModulePath}}`
+- **Scaffolded from:** [gofasta](https://gofasta.dev) — a Go backend
+  toolkit that generates standard Go code (no runtime framework, no
+  custom compiler, no reflection-based DI).
+
+A gofasta-scaffolded project is **plain Go**. Every file here is code the
+developer owns. The gofasta library (`github.com/gofastadev/gofasta`) is
+imported as an opt-out default; individual `pkg/*` packages can be
+replaced or deleted without touching the rest of the project.
+
+## Tech stack
+
+| Concern | Library | Notes |
+|---|---|---|
+| Go version | 1.25.0 (see `.go-version`) | Toolchain auto-downloads if needed |
+| HTTP router | `github.com/go-chi/chi/v5` | Swap-friendly; see docs below |
+| ORM | `gorm.io/gorm` | PostgreSQL by default; 5 drivers supported |
+| Dependency injection | `github.com/google/wire` | Compile-time, no reflection |
+| Config | `github.com/knadh/koanf` | YAML + env var overrides |
+| Logging | `log/slog` (stdlib) | Structured JSON or text |
+| Migrations | `golang-migrate/migrate/v4` | SQL files in `db/migrations/` |
+| Validation | `go-playground/validator/v10` | Struct-tag driven |
+| Tests | `stretchr/testify` + `testcontainers-go` | Real Postgres in containers |
+| Feature flags | OpenFeature Go SDK (via `pkg/featureflag`) | Any OpenFeature provider |
+
+{{if .GraphQL}}GraphQL support is enabled: `github.com/99designs/gqlgen` is the codegen tool.{{end}}
+
+## Directory structure (layered architecture)
+
+```
+{{.ProjectNameLower}}/
+├── app/                       # Application code
+│   ├── main/main.go          # Entry point
+│   ├── models/                # GORM models (one file per resource)
+│   ├── dtos/                  # Request/response types (API shape)
+│   ├── repositories/          # Data access layer
+│   │   └── interfaces/        # Repository contracts
+│   ├── services/              # Business logic
+│   │   └── interfaces/        # Service contracts
+│   ├── rest/
+│   │   ├── controllers/       # HTTP handlers (one file per resource)
+│   │   └── routes/            # chi.Router registration (one file per resource)
+│   ├── validators/            # Custom validation rules
+│   ├── di/                    # Google Wire dependency injection
+│   │   ├── container.go       # Service container struct
+│   │   ├── wire.go            # Wire build config (edit this)
+│   │   ├── wire_gen.go        # GENERATED — do not edit
+│   │   └── providers/         # Wire provider sets
+│   ├── jobs/                  # Cron jobs
+│   └── tasks/                 # Async task handlers (asynq)
+├── cmd/                       # Cobra CLI commands (serve, migrate, seed)
+├── db/
+│   ├── migrations/            # SQL migration pairs (up + down)
+│   └── seeds/                 # Database seed functions
+├── configs/                   # RBAC policies, feature-flag config
+├── deployments/               # Docker, CI/CD workflows, nginx, systemd
+├── templates/emails/          # HTML email templates
+├── locales/                   # i18n translation YAML
+├── testutil/mocks/            # Test mocks
+├── config.yaml                # Application config (env-overridable)
+├── compose.yaml               # Local dev Docker Compose
+├── Dockerfile                 # Production container image
+└── Makefile                   # Common tasks
+```
+
+**Layer rule:** Request → Controller → Service → Repository → Database.
+Controllers never touch the DB directly. Services never parse HTTP.
+Repositories never contain business logic.
+
+## Commands to run
+
+### Development
+
+| Command | What it does |
+|---|---|
+| `make up` | Start app + PostgreSQL in Docker (production-like) |
+| `make dev` | Start with Air hot reload (needs DB running separately) |
+| `make down` | Stop everything |
+| `gofasta dev` | CLI equivalent of `make dev` — hot reload + auto-migrate |
+
+### Testing
+
+| Command | What it does |
+|---|---|
+| `go test ./...` | Run all tests |
+| `go test -race ./...` | Run with the race detector (required before commit) |
+| `make test` | Project's configured test target |
+
+### Code generation
+
+These are the workhorse commands. Prefer them over writing CRUD by hand:
+
+| Command | What it generates |
+|---|---|
+| `gofasta g scaffold Product name:string price:float` | Full REST resource — model, migration, repository, service, DTOs, controller, routes, Wire provider. Auto-wires into the DI container, routes index, and `cmd/serve.go`. |
+| `gofasta g model Product name:string` | Model + migration only |
+| `gofasta g service Product name:string` | Model + repository + service + DTOs |
+| `gofasta g controller Product name:string` | Full REST stack for existing service |
+| `gofasta g migration AddIndexToUsers` | Empty migration pair |
+| `gofasta g job cleanup-tokens "0 0 * * *"` | Scheduled cron job |
+| `gofasta g task send-welcome-email` | Async task handler (asynq) |
+| `gofasta wire` | Regenerate `app/di/wire_gen.go` from Wire's sources |
+| `gofasta swagger` | Regenerate OpenAPI docs from code annotations |
+| `gofasta routes` | Print every registered REST route (static grep of route files) |
+
+Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
+
+### Database
+
+| Command | What it does |
+|---|---|
+| `gofasta migrate up` | Apply all pending migrations |
+| `gofasta migrate down` | Roll back the most recent migration |
+| `gofasta seed` | Run seed functions (`--fresh` drops + re-migrates first) |
+
+### Deployment (VPS)
+
+| Command | What it does |
+|---|---|
+| `gofasta deploy setup --host user@server` | One-time server prep (Docker, nginx, directories) |
+| `gofasta deploy` | Build + ship + migrate + health-check + swap symlink |
+| `gofasta deploy status` | Show current release + service status |
+| `gofasta deploy logs` | Tail remote logs |
+| `gofasta deploy rollback` | Revert to previous release |
+
+## Conventions the agent must follow
+
+- **Layered architecture** — honor the Request → Controller → Service → Repository → Database pipeline. A new dependency that skips a layer (e.g., controller calling the repo directly) is a code smell and usually a mistake.
+- **Interface at each boundary** — repositories and services expose Go interfaces in their `interfaces/` subdirectory. Higher layers depend on the interface, not the concrete type. This is what makes the layer swappable.
+- **DTOs for the API, models for the DB** — never expose a GORM model in a response body or accept one as a request body. Always translate through `app/dtos/`.
+- **Error handling** — controllers return `error`. Wrap with `httputil.Handle(...)` from `github.com/gofastadev/gofasta/pkg/httputil` to adapt to `http.HandlerFunc`. Use typed errors from `github.com/gofastadev/gofasta/pkg/errors` (`NewBadRequest`, `NewNotFound`, etc.) so the middleware can map to the right HTTP status.
+- **Context propagation** — `ctx context.Context` is the first parameter through every layer. Never call a repository without passing the request context.
+- **Validation at the boundary** — `validator:"required,email"` style tags on DTOs; validators run at the controller before the service is called. Services assume input is already validated.
+- **Config over constants** — read from `config.yaml` via `pkg/config`, not hardcoded values. Environment variables override with the `{{.ProjectNameUpper}}_` prefix (e.g., `{{.ProjectNameUpper}}_DATABASE_HOST`).
+- **Swagger annotations on controller methods** — `@Summary`, `@Tags`, `@Param`, `@Success`, `@Router` comments drive OpenAPI generation. Add them when you add endpoints.
+
+## Things the agent must NOT do
+
+1. **Do not edit `app/di/wire_gen.go`.** It's generated. Edit `app/di/wire.go` (or add a new file in `app/di/providers/`), then run `gofasta wire` to regenerate. Commit both.
+2. **Do not skip migrations.** If you add a field to a model, write a migration pair in `db/migrations/`. Never rely on `AutoMigrate` in production code.
+3. **Do not put GORM tags on DTOs.** DTOs describe the API contract, not the database schema. GORM tags belong on `app/models/*` types only.
+4. **Do not reorganize the directory layout** (`controllers/`, `services/`, `repositories/`, etc.). The scaffold's generators assume this layered shape. If the team wants feature-module layout, that's a dedicated migration — see the project-structure docs.
+5. **Do not add business logic to controllers.** Parse the request, call the service, format the response. Nothing else.
+6. **Do not call the database from a service.** Call the repository interface. The service depends on the abstraction, not the implementation.
+7. **Do not commit generated files that aren't already committed** (e.g., don't add `docs/swagger.json` if it's already being regenerated by CI). Check `.gitignore` first.
+8. **Do not swap or remove `pkg/*` imports speculatively.** Each `pkg/*` is an opt-out default; if replacing it is part of the actual task, do it. If not, leave it alone — the user chose these defaults for a reason.
+
+## Wire gotcha (the most common agent failure mode)
+
+Google Wire is compile-time DI. The flow is:
+
+1. Add a new service/controller struct.
+2. Add a `New<Thing>` constructor.
+3. Add the constructor to a provider set in `app/di/providers/`.
+4. Add the provider set to `app/di/wire.go`.
+5. Add the field to `app/di/container.go`.
+6. **Run `gofasta wire`** to regenerate `app/di/wire_gen.go`.
+7. Update `cmd/serve.go` to pass the new controller into `routes.RouteConfig`.
+
+If you forget step 6, `go build` will fail with "undefined: someProvider". If
+you forget step 7, the route handler panics at startup. Always run
+`gofasta wire` after adding a provider. `gofasta g scaffold` automates all
+seven steps; prefer the generator over manual wiring.
+
+## Feature flags
+
+`pkg/featureflag` wraps the OpenFeature Go SDK. The scaffold does not
+register a provider by default — flag evaluations resolve to the
+caller-supplied default. To opt in, call `openfeature.SetProvider(...)` at
+startup with any OpenFeature-compatible provider (in-memory for dev,
+Flagd, LaunchDarkly, go-feature-flag, or custom). See
+`configs/features.yaml` for notes.
+
+## Where to read more
+
+- **Documentation site:** https://gofasta.dev
+- **CLI reference:** https://gofasta.dev/docs/cli-reference
+- **`pkg/*` API reference:** https://gofasta.dev/docs/api-reference
+- **Guides** (REST, GraphQL, auth, testing, deployment): https://gofasta.dev/docs/guides
+- **White paper** (architecture + design philosophy): https://gofasta.dev/docs/white-paper
+
+## Quick agent self-check before finishing a task
+
+- [ ] `go build ./...` compiles
+- [ ] `go test -race ./...` passes
+- [ ] `gofasta routes` shows any new endpoints you added
+- [ ] If you added a Wire provider: `gofasta wire` was run and `wire_gen.go` is up to date
+- [ ] If you added a model field: a migration exists in `db/migrations/`
+- [ ] If you added a controller endpoint: Swagger annotations are present
+- [ ] No edits to `app/di/wire_gen.go`
+
+If any item fails, fix it before reporting the task complete.
