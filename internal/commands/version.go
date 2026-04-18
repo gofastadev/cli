@@ -2,11 +2,22 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"runtime"
 	"strings"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
+
+// versionInfo is the --json payload. Struct fields are stable API — AI
+// agents and scripts consume this, so renaming means a breaking change.
+type versionInfo struct {
+	Gofasta string `json:"gofasta"`
+	Go      string `json:"go"`
+	OS      string `json:"os"`
+	Arch    string `json:"arch"`
+}
 
 var versionCmd = &cobra.Command{
 	Use:   "version",
@@ -31,9 +42,17 @@ func init() {
 }
 
 func runVersion() error {
-	fmt.Printf("gofasta %s\n", displayVersion(rootCmd.Version))
-	fmt.Printf("Go:      %s\n", runtime.Version())
-	fmt.Printf("OS/Arch: %s/%s\n", runtime.GOOS, runtime.GOARCH)
+	info := versionInfo{
+		Gofasta: displayVersion(rootCmd.Version),
+		Go:      runtime.Version(),
+		OS:      runtime.GOOS,
+		Arch:    runtime.GOARCH,
+	}
+	cliout.Print(info, func(w io.Writer) {
+		_, _ = fmt.Fprintf(w, "gofasta %s\n", info.Gofasta)
+		_, _ = fmt.Fprintf(w, "Go:      %s\n", info.Go)
+		_, _ = fmt.Fprintf(w, "OS/Arch: %s/%s\n", info.OS, info.Arch)
+	})
 	return nil
 }
 

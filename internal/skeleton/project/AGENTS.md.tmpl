@@ -5,6 +5,26 @@ Devin, and other MCP-compatible agents) everything they need to work
 productively in this codebase. Agents read it automatically at startup.
 Humans onboarding to the project should read it too.
 
+## Setting up your agent
+
+For per-agent configuration (permission allowlists, slash commands, rules,
+conventions files), run the installer for whichever agent you use:
+
+| Command | What it installs |
+|---|---|
+| `gofasta ai claude` | `.claude/` — settings, hooks, slash commands (`/verify`, `/scaffold`, `/inspect`) |
+| `gofasta ai cursor` | `.cursor/rules/gofasta.mdc` — project rules referencing this file |
+| `gofasta ai codex` | `.codex/config.toml` — command allowlist pointing at AGENTS.md |
+| `gofasta ai aider` | `.aider.conf.yml` + `.aider/CONVENTIONS.md` — auto-test + auto-lint |
+| `gofasta ai windsurf` | `.windsurfrules` — rules file |
+
+Run `gofasta ai list` to see every supported agent, or `gofasta ai status`
+to see which ones are currently installed. Every installer is idempotent
+— re-run after a gofasta update to pick up improved configs.
+
+This file alone covers 80% of what any agent needs. Running the installer
+for your agent fills in the last 20% (permissions, hooks, slash commands).
+
 ## Project overview
 
 - **Name:** {{.ProjectName}}

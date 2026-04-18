@@ -37,15 +37,15 @@ func UserRoutes(r chi.Router, c *controllers.UserController) {
 	routes := extractRoutes(content, "/api/v1", "user.routes.go")
 
 	assert.Len(t, routes, 5)
-	assert.Equal(t, "GET", routes[0].method)
-	assert.Equal(t, "/api/v1/users", routes[0].path)
-	assert.Equal(t, "user.routes.go", routes[0].filename)
+	assert.Equal(t, "GET", routes[0].Method)
+	assert.Equal(t, "/api/v1/users", routes[0].Path)
+	assert.Equal(t, "user.routes.go", routes[0].Filename)
 
-	assert.Equal(t, "POST", routes[1].method)
-	assert.Equal(t, "/api/v1/users", routes[1].path)
+	assert.Equal(t, "POST", routes[1].Method)
+	assert.Equal(t, "/api/v1/users", routes[1].Path)
 
-	assert.Equal(t, "DELETE", routes[4].method)
-	assert.Equal(t, "/api/v1/users/{id}", routes[4].path)
+	assert.Equal(t, "DELETE", routes[4].Method)
+	assert.Equal(t, "/api/v1/users/{id}", routes[4].Path)
 }
 
 func TestExtractRoutes_IndexFile(t *testing.T) {
@@ -60,10 +60,10 @@ func InitApiRoutes(config *RouteConfig) *chi.Mux {
 	routes := extractRoutes(content, "", "index.routes.go")
 
 	assert.Len(t, routes, 3)
-	assert.Equal(t, "GET", routes[0].method)
-	assert.Equal(t, "/health", routes[0].path)
-	assert.Equal(t, "/health/live", routes[1].path)
-	assert.Equal(t, "/health/ready", routes[2].path)
+	assert.Equal(t, "GET", routes[0].Method)
+	assert.Equal(t, "/health", routes[0].Path)
+	assert.Equal(t, "/health/live", routes[1].Path)
+	assert.Equal(t, "/health/ready", routes[2].Path)
 }
 
 func TestExtractRoutes_WildcardHandler(t *testing.T) {
@@ -77,11 +77,11 @@ func InitApiRoutes(config *RouteConfig) *chi.Mux {
 	routes := extractRoutes(content, "", "index.routes.go")
 
 	assert.Len(t, routes, 2)
-	assert.Equal(t, "GET", routes[0].method)
-	assert.Equal(t, "/health", routes[0].path)
+	assert.Equal(t, "GET", routes[0].Method)
+	assert.Equal(t, "/health", routes[0].Path)
 	// Wildcard-mounted handlers show as GET with the pattern as-is.
-	assert.Equal(t, "GET", routes[1].method)
-	assert.Equal(t, "/swagger/*", routes[1].path)
+	assert.Equal(t, "GET", routes[1].Method)
+	assert.Equal(t, "/swagger/*", routes[1].Path)
 }
 
 func TestExtractRoutes_EmptyContent(t *testing.T) {
@@ -94,7 +94,7 @@ func TestExtractRoutes_NoPrefix(t *testing.T) {
 	routes := extractRoutes(content, "", "test.routes.go")
 
 	assert.Len(t, routes, 1)
-	assert.Equal(t, "/test", routes[0].path)
+	assert.Equal(t, "/test", routes[0].Path)
 }
 
 func TestRunRoutes_NoRoutesDir(t *testing.T) {

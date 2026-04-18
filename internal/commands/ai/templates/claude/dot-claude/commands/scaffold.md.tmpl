@@ -1,0 +1,14 @@
+---
+description: Generate a full REST resource via `gofasta g scaffold`. Arguments: <ResourceName> [field:type ...] (e.g. Product name:string price:float).
+allowed-tools: Bash(gofasta g scaffold*), Bash(gofasta wire), Bash(gofasta swagger)
+argument-hint: <ResourceName> [field:type ...]
+---
+
+Run `gofasta g scaffold $ARGUMENTS` to generate a full REST resource —
+model, migration, repository, service, DTOs, controller, routes, and the
+Wire provider.
+
+Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
+
+After the generator completes, run `gofasta verify` to confirm the
+project still compiles and tests still pass.

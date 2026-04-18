@@ -1,0 +1,10 @@
+---
+description: Run the full gofasta verify gauntlet — gofmt, vet, lint, tests, build, Wire drift, routes. Use before claiming a task done.
+allowed-tools: Bash(gofasta verify*)
+---
+
+Run `gofasta verify --json` and report the result.
+
+If any check fails, explain the specific failure and propose a fix. Do not
+attempt to apply the fix unless the user asks — surface the failure so
+the user can decide.

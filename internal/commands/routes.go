@@ -2,11 +2,14 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"regexp"
 	"strings"
 	"text/tabwriter"
 
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
 
@@ -20,8 +23,11 @@ subrouter prefixes), and source file. Does not import or run your project
 code — purely a grep-and-format pass.
 
 Useful for debugging route conflicts, documenting the public API, and
-spotting unregistered handlers. For GraphQL schema introspection use
-the standard ` + "`/graphql-playground`" + ` endpoint instead.`,
+spotting unregistered handlers. Pass --json (inherited from the root
+command) to emit machine-parseable output suitable for agents and CI.
+
+For GraphQL schema introspection use the standard ` + "`/graphql-playground`" + `
+endpoint instead.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runRoutes()
 	},
@@ -31,10 +37,13 @@ func init() {
 	rootCmd.AddCommand(routesCmd)
 }
 
+// routeEntry is the internal record produced by extractRoutes. The JSON
+// tags drive --json output; the struct is also rendered as a text table
+// by the default formatter in runRoutes.
 type routeEntry struct {
-	method   string
-	path     string
-	filename string
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	Filename string `json:"file"`
 }
 
 var (
@@ -46,12 +55,14 @@ var (
 func runRoutes() error {
 	routesDir := "app/rest/routes"
 	if _, err := os.Stat(routesDir); os.IsNotExist(err) {
-		return fmt.Errorf("routes directory not found: %s — are you in a gofasta project?", routesDir)
+		return clierr.Newf(clierr.CodeRoutesDirMissing,
+			"routes directory not found: %s", routesDir)
 	}
 
 	entries, err := os.ReadDir(routesDir)
 	if err != nil {
-		return fmt.Errorf("failed to read routes directory: %w", err)
+		return clierr.Wrapf(clierr.CodeFileIO, err,
+			"failed to read routes directory %s", routesDir)
 	}
 
 	// Extract API prefix from index file via the chi Mount call.
@@ -84,17 +95,22 @@ func runRoutes() error {
 		allRoutes = append(allRoutes, extractRoutes(string(content), prefix, name)...)
 	}
 
-	if len(allRoutes) == 0 {
-		fmt.Println("No routes found.")
-		return nil
-	}
-
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	_, _ = fmt.Fprintln(w, "METHOD\tPATH\tFILE")
-	for _, r := range allRoutes {
-		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", r.method, r.path, r.filename)
-	}
-	return w.Flush()
+	// Render: JSON (array, always — empty list for no routes) or a
+	// human-formatted table. The JSON contract is the stable one agents
+	// read; the text form can evolve freely.
+	cliout.Print(allRoutes, func(w io.Writer) {
+		if len(allRoutes) == 0 {
+			_, _ = fmt.Fprintln(w, "No routes found.")
+			return
+		}
+		tw := tabwriter.NewWriter(w, 0, 0, 3, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "METHOD\tPATH\tFILE")
+		for _, r := range allRoutes {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", r.Method, r.Path, r.Filename)
+		}
+		_ = tw.Flush()
+	})
+	return nil
 }
 
 func extractRoutes(content, prefix, filename string) []routeEntry {
@@ -107,9 +123,9 @@ func extractRoutes(content, prefix, filename string) []routeEntry {
 	// so convert to HTTP verb with ToUpper.
 	for _, m := range methodMatches {
 		routes = append(routes, routeEntry{
-			method:   strings.ToUpper(m[1]),
-			path:     prefix + m[2],
-			filename: filename,
+			Method:   strings.ToUpper(m[1]),
+			Path:     prefix + m[2],
+			Filename: filename,
 		})
 	}
 
@@ -118,9 +134,9 @@ func extractRoutes(content, prefix, filename string) []routeEntry {
 	// chi patterns already include the trailing wildcard, so display as-is.
 	for _, m := range wildcardMatches {
 		routes = append(routes, routeEntry{
-			method:   "GET",
-			path:     m[1],
-			filename: filename,
+			Method:   "GET",
+			Path:     m[1],
+			Filename: filename,
 		})
 	}
 
