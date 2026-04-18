@@ -97,6 +97,152 @@ replaced or deleted without touching the rest of the project.
 Controllers never touch the DB directly. Services never parse HTTP.
 Repositories never contain business logic.
 
+## How to work in this codebase as an agent
+
+Gofasta ships a set of commands and conventions specifically designed to
+make AI agents effective here. Read this section before doing any work —
+using these tools cuts round-trips, eliminates guessing, and prevents the
+most common failure modes.
+
+### Always prefer structured output
+
+Every command that emits structured output honors a global `--json`
+flag. **Use it.** Text output is for humans; JSON output is the stable
+machine contract. Pass `--json` to any command whose result you need to
+reason about programmatically.
+
+```bash
+gofasta routes --json | jq '.[] | select(.method == "POST") | .path'
+gofasta --json verify | jq '.checks[] | select(.status == "fail")'
+gofasta inspect User --json | jq '.service_methods[].name'
+gofasta ai list --json
+```
+
+Every structured JSON shape in the CLI is stable API — agents and CI
+pipelines consume them.
+
+### Parse error codes, not error text
+
+Every CLI error carries four fields when emitted in `--json` mode:
+
+```json
+{
+  "code": "WIRE_MISSING_PROVIDER",
+  "message": "undefined: NewOrderProvider",
+  "hint": "add NewOrderProvider to app/di/providers/order.go and run `gofasta wire`",
+  "docs": "https://gofasta.dev/docs/cli-reference/wire"
+}
+```
+
+Pattern-match on the **`code`** (stable across releases) rather than
+regex-parsing the message. The **`hint`** tells you the exact
+remediation; the **`docs`** URL is the most relevant reference page. 38
+stable codes exist — full list at
+https://gofasta.dev/docs/cli-reference/verify and related pages.
+
+### Understand a resource before modifying it
+
+When asked to change an existing resource (e.g. "add a `SoftArchive`
+method to `Order`"), **run `gofasta inspect <Resource>` first**. It
+AST-parses the model, DTOs, service interface, controller methods, and
+routes, emitting the whole resource shape as one structured document.
+Replaces opening six files and guessing.
+
+```bash
+gofasta inspect Order --json
+```
+
+Reveals:
+- Every field in the model
+- Every DTO type declared for the resource
+- Every service-interface method signature
+- Every controller method signature
+- Every registered route
+
+Equivalent to reading `app/models/order.model.go` + `app/dtos/order.dtos.go`
++ `app/services/interfaces/order_service.go` + `app/rest/controllers/order.controller.go`
++ `app/rest/routes/order.routes.go` — but in one call, in a shape that
+parses cleanly.
+
+### Check for drift before making changes
+
+`gofasta status` is the offline "is this project in a clean state?"
+check. It reports when derived artifacts (Wire, Swagger) are out of
+sync with their inputs, when migrations are pending, and when
+regenerated files show up as uncommitted in git. Run it when entering
+the project cold — if anything reports `drift`, fix it before starting
+work so your own changes don't mix with unrelated staleness.
+
+```bash
+gofasta status            # one-glance drift report
+gofasta status --json     # structured consumption
+```
+
+### Use workflows to avoid multi-round-trip command chains
+
+When a task requires multiple gofasta commands in sequence, use
+`gofasta do <workflow>` instead of invoking each command separately.
+Fewer tool calls, stable atomic contract, transparent step list.
+
+```bash
+gofasta do list                                            # every workflow
+gofasta do new-rest-endpoint Invoice total:float           # scaffold + migrate up + swagger
+gofasta do rebuild                                         # wire + swagger
+gofasta do clean-slate                                     # db reset + seed
+gofasta do health-check                                    # verify + status
+```
+
+Pass `--dry-run` to preview the chain without executing. Use
+`--json` to get a structured `{workflow, steps[], status, duration_ms}`
+result.
+
+### Validate config edits against the schema
+
+When editing `config.yaml`, generate the schema first to know what keys
+and values are valid — don't guess from memory, and don't trust training
+data (it may be stale):
+
+```bash
+gofasta config schema > /tmp/config.schema.json
+# validate your proposed config edit against the schema before writing
+ajv validate -s /tmp/config.schema.json -d config.yaml
+```
+
+The schema is emitted by a project-local helper (`./cmd/schema`) so it
+always matches the exact `gofasta` version pinned in `go.mod` — no
+version skew between the CLI and the library your project uses.
+
+### Use the right generator, not hand-written CRUD
+
+Before writing any CRUD code by hand, check whether a `gofasta g *`
+generator produces the right starting point. The scaffold auto-wires
+every layer (DI container, routes index, `cmd/serve.go`) and runs
+`go build ./...` after generation to catch template regressions
+immediately. See the "Code generation" table below.
+
+If unsure what a generator would produce, run it with `--dry-run` —
+every file it would create and every patch it would apply is printed
+without touching disk.
+
+```bash
+gofasta g scaffold Invoice total:float --dry-run
+```
+
+### One command to verify your work
+
+The single most important command for agents: **`gofasta verify`**.
+Runs gofmt, `go vet`, `golangci-lint`, `go test -race`, `go build`,
+Wire drift check, and routes sanity — in one invocation. Run it
+**before** claiming any task is done. `--json` output gives
+per-check status so you can pinpoint failures:
+
+```bash
+gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+```
+
+Wrap in `gofasta do health-check` to also run `gofasta status`
+(drift detection) at the same time.
+
 ## Commands to run
 
 ### Development
@@ -153,6 +299,21 @@ Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
 | `gofasta deploy status` | Show current release + service status |
 | `gofasta deploy logs` | Tail remote logs |
 | `gofasta deploy rollback` | Revert to previous release |
+
+### Agent-first helpers
+
+These commands exist specifically to support AI-agent workflows — always
+prefer them over hand-running the underlying checks. They honor `--json`.
+
+| Command | What it does |
+|---|---|
+| `gofasta verify` | Full preflight gauntlet — gofmt, vet, golangci-lint, tests with the race detector, build, Wire drift, routes. The single "am I done?" check. |
+| `gofasta status` | Offline drift report — stale Wire, stale Swagger, pending migrations, uncommitted generated files, `go.sum` freshness. |
+| `gofasta inspect <Resource>` | AST-parsed structured report of a resource's model, DTOs, service methods, controller methods, and routes. |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml`. Validates edits before writing; powers editor autocomplete. |
+| `gofasta do <workflow>` | Named workflow chains: `new-rest-endpoint`, `rebuild`, `fresh-start`, `clean-slate`, `health-check`. |
+| `gofasta do list` | List every registered workflow. |
+| `gofasta ai <agent>` | Install per-agent configuration (Claude, Cursor, Codex, Aider, Windsurf). Idempotent. |
 
 ## Conventions the agent must follow
 
@@ -323,12 +484,31 @@ URL maps to one `.mdx` page on https://gofasta.dev/docs.
 
 ## Quick agent self-check before finishing a task
 
-- [ ] `go build ./...` compiles
-- [ ] `go test -race ./...` passes
-- [ ] `gofasta routes` shows any new endpoints you added
+The fast path — run these two, confirm both green:
+
+```bash
+gofasta verify --json    # full quality-gate gauntlet
+gofasta status --json    # drift detection
+```
+
+Or in one call:
+
+```bash
+gofasta do health-check --json
+```
+
+If anything fails, the JSON output tells you precisely which check
+broke and what the remediation is (via the `hint` and `docs` fields).
+
+The detailed checklist, for reference:
+
+- [ ] `gofasta verify` passes (covers build, tests, lint, fmt, vet, Wire drift, routes)
+- [ ] `gofasta status` reports no drift (Wire, Swagger, migrations, generated files)
+- [ ] `gofasta routes --json` shows any new endpoints you added
 - [ ] If you added a Wire provider: `gofasta wire` was run and `wire_gen.go` is up to date
 - [ ] If you added a model field: a migration exists in `db/migrations/`
 - [ ] If you added a controller endpoint: Swagger annotations are present
+- [ ] If you edited `config.yaml`: it validates against `gofasta config schema`
 - [ ] No edits to `app/di/wire_gen.go`
 
 If any item fails, fix it before reporting the task complete.
