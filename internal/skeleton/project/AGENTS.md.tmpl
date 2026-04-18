@@ -132,6 +132,7 @@ These are the workhorse commands. Prefer them over writing CRUD by hand:
 | `gofasta wire` | Regenerate `app/di/wire_gen.go` from Wire's sources |
 | `gofasta swagger` | Regenerate OpenAPI docs from code annotations |
 | `gofasta routes` | Print every registered REST route (static grep of route files) |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml` — feed to a YAML language server or validate edits before writing |
 
 Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
 
