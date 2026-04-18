@@ -84,6 +84,13 @@ func init() {
 	for _, cmd := range []*cobra.Command{scaffoldCmd, controllerCmd} {
 		cmd.Flags().Bool("swagger", false, "Add Swagger/OpenAPI annotations to the generated controller")
 	}
+
+	// Register --no-verify flag on commands that produce a full
+	// compilable unit and auto-run `go build ./...` afterwards. Used
+	// intentionally when scaffolding into a known-broken state that
+	// won't compile until subsequent changes land.
+	scaffoldCmd.Flags().BoolVar(&scaffoldNoVerify, "no-verify", false,
+		"Skip the post-generation `go build ./...` check")
 }
 
 // --- Step chain builders ---
@@ -161,6 +168,7 @@ func controllerSteps(d ScaffoldData) []Step {
 		{"DTOs", GenDTOs},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
+		{"controller test", GenControllerTestFile},
 		{"routes", GenRoutes},
 	}
 	if d.IncludeGraphQL {
@@ -199,6 +207,7 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		{"DTOs", GenDTOs},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
+		{"controller test", GenControllerTestFile},
 		{"routes", GenRoutes},
 	}
 	if d.IncludeGraphQL {
@@ -316,6 +325,11 @@ logic in app/services/<name>.service.go.`,
 		if err := RunSteps(d, scaffoldSteps(d)); err != nil {
 			return err
 		}
+		if !scaffoldNoVerify {
+			if err := AutoVerify(); err != nil {
+				return err
+			}
+		}
 		fmt.Println()
 		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
 		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
@@ -326,6 +340,11 @@ logic in app/services/<name>.service.go.`,
 		return nil
 	},
 }
+
+// scaffoldNoVerify disables the post-generation `go build ./...` check.
+// Use it when intentionally scaffolding into a broken state that won't
+// compile until subsequent changes are made (rare, but legitimate).
+var scaffoldNoVerify bool
 
 var modelCmd = &cobra.Command{
 	Use:   "model [Name] [field:type ...]",

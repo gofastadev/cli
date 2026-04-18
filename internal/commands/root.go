@@ -177,6 +177,8 @@ var commandGroupAssignments = map[string]string{
 	"routes":  groupWorkflow,
 	"swagger": groupWorkflow,
 	"wire":    groupWorkflow,
+	"verify":  groupWorkflow,
+	"status":  groupWorkflow,
 	// Database
 	"migrate": groupDatabase,
 	"seed":    groupDatabase,

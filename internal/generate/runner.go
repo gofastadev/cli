@@ -1,10 +1,12 @@
 package generate
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
@@ -17,6 +19,32 @@ func RunSteps(d ScaffoldData, steps []Step) error {
 		if err := s.Fn(d); err != nil {
 			return fmt.Errorf("failed at %s: %w", s.Label, err)
 		}
+	}
+	return nil
+}
+
+// AutoVerify runs `go build ./...` in the project root to confirm the
+// just-generated code compiles. Intended as a post-hook after a generator
+// that produces a full compilable unit (scaffold, service, controller).
+// Kept small and shell-based so it is cheap to run; callers that need
+// the full preflight gauntlet should invoke `gofasta verify` instead.
+//
+// When the build succeeds, returns nil silently. When it fails, returns
+// a structured clierr.Error whose Hint points at common causes agents
+// can act on programmatically (template regression, missing Wire rerun,
+// outdated deps).
+func AutoVerify() error {
+	fmt.Printf("  %s go build ./...\n", termcolor.CBrand("verifying:"))
+	cmd := execCommand("go", "build", "./...")
+	var buf bytes.Buffer
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		if output := buf.String(); output != "" {
+			_, _ = os.Stderr.WriteString(output)
+		}
+		return clierr.Wrap(clierr.CodeGoBuildFailed, err,
+			"the generated code does not compile")
 	}
 	return nil
 }
