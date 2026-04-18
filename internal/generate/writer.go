@@ -1,22 +1,22 @@
 package generate
 
 import (
+	"bytes"
 	"os"
-	"path/filepath"
 	"text/template"
 	"time"
 
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
-// WriteTemplate renders a Go template to a file. Skips if the file already exists.
+// WriteTemplate renders a Go template and writes it to path. Skips when
+// the file already exists. In dry-run mode (see planner.go) the render
+// still happens — so template errors surface identically — but the file
+// is recorded in the plan instead of written to disk.
 func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if _, err := os.Stat(path); err == nil {
 		termcolor.PrintSkip(path, "exists")
 		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
 	}
 	funcMap := template.FuncMap{
 		"timestamp": func() string { return time.Now().Format(time.RFC3339) },
@@ -27,14 +27,9 @@ func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Create(path)
-	if err != nil {
+	var buf bytes.Buffer
+	if err := t.Execute(&buf, data); err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
-	if err := t.Execute(f, data); err != nil {
-		return err
-	}
-	termcolor.PrintCreate(path)
-	return nil
+	return writeOrRecordCreate(path, buf.Bytes())
 }
