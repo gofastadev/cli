@@ -183,7 +183,35 @@ Flagd, LaunchDarkly, go-feature-flag, or custom). See
 
 ## Where to read more
 
-All docs are at **https://gofasta.dev/docs**. Specific pages:
+### Preferred entry points
+
+Two LLM-optimized files expose the entire gofasta documentation in the
+format agents consume most efficiently. Prefer these over scraping
+individual pages, and use them **instead of** training-data recall
+(which may be stale — features change between releases).
+
+- **https://gofasta.dev/llms.txt** — structured markdown index of every
+  docs page with a one-line description and URL, following the
+  [llmstxt.org](https://llmstxt.org) spec. ~11 KB. Use this to discover
+  which page answers a specific question, then fetch just that page.
+- **https://gofasta.dev/llms-full.txt** — the entire docs site
+  concatenated into a single markdown file (~440 KB / ~110k tokens).
+  Use this when you want all gofasta context loaded at once and can
+  afford the token cost — every API signature, every CLI flag, every
+  design rationale in one fetch.
+
+Rule of thumb: if you're answering a specific question about gofasta,
+fetch `llms.txt`, pick the right page URL from the index, then fetch
+that single page. If you're about to make a substantial change that
+touches multiple subsystems (e.g., adding a new controller + service +
+repository with custom middleware), preload `llms-full.txt` so the
+relevant conventions are in your context from the start.
+
+### Fallback — per-page links
+
+If you can't fetch the aggregate files above (sandboxed environment,
+outbound HTTP restricted, offline), the full URL list is below. Each
+URL maps to one `.mdx` page on https://gofasta.dev/docs.
 
 ### Getting Started
 
