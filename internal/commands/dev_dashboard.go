@@ -1,9 +1,12 @@
 package commands
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
+	"html/template"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,6 +14,36 @@ import (
 	"sync"
 	"time"
 )
+
+// dashboardTemplateSource is the full HTML template served at /. Lives
+// in a sibling .html file so editors treat it as HTML (syntax
+// highlighting, linting) and so the Go source of this file stays free
+// of inline markup. Parsed once lazily via html/template — auto-
+// escaping protects any server-rendered string that lands in the DOM.
+//
+//go:embed dev_dashboard.html
+var dashboardTemplateSource string
+
+// dashboardTemplate is the parsed template. Resolved lazily on first
+// request so a malformed template surfaces as a 500 at runtime rather
+// than blowing up package init.
+var (
+	dashboardTemplate     *template.Template
+	dashboardTemplateOnce sync.Once
+	dashboardTemplateErr  error
+)
+
+// loadDashboardTemplate parses the embedded HTML template once and
+// caches the result. Subsequent calls are lock-free reads of the
+// package-level pointer.
+func loadDashboardTemplate() (*template.Template, error) {
+	dashboardTemplateOnce.Do(func() {
+		dashboardTemplate, dashboardTemplateErr = template.
+			New("dashboard").
+			Parse(dashboardTemplateSource)
+	})
+	return dashboardTemplate, dashboardTemplateErr
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Dev dashboard — Phase 6 of the gofasta dev enhancement.
@@ -232,11 +265,34 @@ func readRouteEntries() []dashboardRoute {
 	return entries
 }
 
-// handleIndex serves the static dashboard HTML. Small enough to
-// template inline so there's no filesystem dependency.
+// handleIndex renders the dashboard HTML with the current state as the
+// template context. Server-side rendering means first paint shows live
+// data immediately (no "loading" flash before the SSE stream connects).
+// html/template auto-escapes every interpolated string, so untrusted
+// values (route paths scraped from swagger, service names from compose)
+// can never break out of their tags.
 func (s *dashboardServer) handleIndex(w http.ResponseWriter, _ *http.Request) {
+	tmpl, err := loadDashboardTemplate()
+	if err != nil {
+		http.Error(w, "dashboard template error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	s.mu.RLock()
+	snapshot := s.state
+	s.mu.RUnlock()
+
+	// Execute into an in-memory buffer first so a render error doesn't
+	// leave the response half-written with a partial page visible to
+	// the client.
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, snapshot); err != nil {
+		http.Error(w, "dashboard render error: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = w.Write([]byte(dashboardHTML))
+	_, _ = w.Write(buf.Bytes())
 }
 
 // handleState serves the current state snapshot as JSON. Cheap to call;
@@ -294,119 +350,3 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, st dashboardState) {
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 	flusher.Flush()
 }
-
-// dashboardHTML is the single-file HTML page served at /. Uses the SSE
-// endpoint for live updates and the snapshot endpoint for first paint
-// fallback. Zero external assets — the page is fully self-contained so
-// the dashboard works offline.
-const dashboardHTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>Gofasta dev dashboard</title>
-<style>
-  :root {
-    --bg: #0a1c24;
-    --surface: #172b34;
-    --primary: #4fd1e5;
-    --fg: #d9eaee;
-    --muted: #8a9ba0;
-    --ok: #22c55e;
-    --warn: #f59e0b;
-    --err: #ef4444;
-  }
-  * { box-sizing: border-box; }
-  body {
-    background: var(--bg); color: var(--fg);
-    font-family: system-ui, -apple-system, sans-serif;
-    margin: 0; padding: 24px;
-  }
-  h1 { color: var(--primary); margin: 0 0 4px 0; font-size: 20px; }
-  h2 { color: var(--fg); margin: 24px 0 12px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; }
-  .sub { color: var(--muted); font-size: 13px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-  .card {
-    background: var(--surface); border-radius: 8px;
-    padding: 16px; border: 1px solid rgba(79,209,229,0.15);
-  }
-  .card .label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-  .card .value { font-size: 18px; margin-top: 4px; font-family: ui-monospace, Menlo, monospace; }
-  a { color: var(--primary); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  table { width: 100%; border-collapse: collapse; background: var(--surface); border-radius: 8px; overflow: hidden; }
-  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid rgba(138,155,160,0.15); font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
-  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
-  .method { display: inline-block; padding: 2px 6px; border-radius: 4px; background: rgba(79,209,229,0.15); color: var(--primary); font-size: 11px; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-family: ui-monospace, Menlo, monospace; }
-  .pill.ok { background: rgba(34,197,94,0.15); color: var(--ok); }
-  .pill.warn { background: rgba(245,158,11,0.15); color: var(--warn); }
-  .pill.err { background: rgba(239,68,68,0.15); color: var(--err); }
-  .empty { color: var(--muted); font-style: italic; padding: 16px; text-align: center; }
-  .footer { color: var(--muted); font-size: 11px; margin-top: 24px; }
-</style>
-</head>
-<body>
-<h1>Gofasta dev dashboard</h1>
-<div class="sub">Live debug view for the project running on <span id="app-url"></span></div>
-
-<h2>App</h2>
-<div class="grid">
-  <div class="card"><div class="label">Health</div><div class="value" id="health"><span class="pill">loading</span></div></div>
-  <div class="card"><div class="label">Port</div><div class="value" id="port">—</div></div>
-  <div class="card"><div class="label">Swagger</div><div class="value" id="swagger">—</div></div>
-  <div class="card"><div class="label">GraphQL</div><div class="value" id="graphql">—</div></div>
-</div>
-
-<h2>Services</h2>
-<div id="services"><div class="empty">No compose services attached.</div></div>
-
-<h2>Routes</h2>
-<div id="routes"><div class="empty">No routes scraped yet (regenerate swagger to populate).</div></div>
-
-<div class="footer">Updated <span id="updated">—</span> · refreshes every 5s</div>
-
-<script>
-function renderHealth(h) {
-  const cls = h === 'ok' ? 'ok' : (h === 'unhealthy' ? 'warn' : 'err');
-  return '<span class="pill ' + cls + '">' + h + '</span>';
-}
-function renderLink(url) {
-  if (!url) return '—';
-  return '<a href="' + url + '" target="_blank">' + url + '</a>';
-}
-function renderServices(services) {
-  if (!services || services.length === 0) {
-    return '<div class="empty">No compose services attached.</div>';
-  }
-  let rows = services.map(s => {
-    const status = (s.Health || s.State || '').toLowerCase();
-    const cls = status === 'healthy' || status === 'running' ? 'ok' : 'warn';
-    return '<tr><td>' + s.Service + '</td><td><span class="pill ' + cls + '">' + (s.Health || s.State) + '</span></td></tr>';
-  }).join('');
-  return '<table><thead><tr><th>Service</th><th>State</th></tr></thead><tbody>' + rows + '</tbody></table>';
-}
-function renderRoutes(routes) {
-  if (!routes || routes.length === 0) {
-    return '<div class="empty">No routes scraped yet (regenerate swagger to populate).</div>';
-  }
-  let rows = routes.map(r =>
-    '<tr><td><span class="method">' + r.method + '</span></td><td>' + r.path + '</td></tr>'
-  ).join('');
-  return '<table><thead><tr><th>Method</th><th>Path</th></tr></thead><tbody>' + rows + '</tbody></table>';
-}
-function apply(state) {
-  document.getElementById('app-url').textContent = state.app_url;
-  document.getElementById('health').innerHTML = renderHealth(state.health);
-  document.getElementById('port').textContent = state.app_port;
-  document.getElementById('swagger').innerHTML = renderLink(state.swagger_url);
-  document.getElementById('graphql').innerHTML = renderLink(state.graphql_url);
-  document.getElementById('services').innerHTML = renderServices(state.services);
-  document.getElementById('routes').innerHTML = renderRoutes(state.routes);
-  document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
-}
-fetch('/api/state').then(r => r.json()).then(apply);
-const es = new EventSource('/api/stream');
-es.onmessage = e => apply(JSON.parse(e.data));
-</script>
-</body>
-</html>`
