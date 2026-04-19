@@ -179,6 +179,7 @@ var commandGroupAssignments = map[string]string{
 	"wire":    groupWorkflow,
 	"verify":  groupWorkflow,
 	"status":  groupWorkflow,
+	"debug":   groupWorkflow,
 	// Database
 	"migrate": groupDatabase,
 	"seed":    groupDatabase,

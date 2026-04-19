@@ -348,43 +348,115 @@ Wrap in `gofasta do health-check` to also run `gofasta status`
 
 When a test fails, an endpoint returns the wrong status, or a request
 is slow and you can't tell why, **do not grep through logs**. The
-scaffold ships a devtools package (`app/devtools/`) that, when the
-app is built with the `devtools` build tag, exposes structured
-`/debug/*` endpoints you can scrape directly.
+scaffold ships a devtools package that captures structured runtime
+state (requests, SQL with bound vars, trace spans with call-stack
+snapshots, slog records, cache ops, panics), and the CLI exposes
+every surface as a first-class `gofasta debug <subcommand>` —
+agent-friendly, `--json`-native, no port or URL guessing required.
 
-`gofasta dev` sets the build tag automatically; running `gofasta dev
---dashboard` also starts a human-readable HTML inspector on `:9090`,
-but every data source it renders is available as JSON for agent
-consumption. In production builds the same package compiles to
-no-ops — zero debug surface.
+`gofasta dev` sets the `devtools` build tag automatically so the
+endpoints are live. In production builds the same package compiles
+to no-ops — zero debug surface.
 
-Endpoints on the running app (devtools tag only):
+#### The `gofasta debug` command family
 
-| Endpoint | What you get |
+Every command below honors `--json` (stable API) and the global
+`--app-url` override. Run `gofasta debug <cmd> --help` for flag
+details. Exit codes are meaningful: `DEBUG_APP_UNREACHABLE` (app not
+running), `DEBUG_DEVTOOLS_OFF` (production build — rebuild under
+`gofasta dev`), `DEBUG_TRACE_NOT_FOUND`, `DEBUG_BAD_FILTER`,
+`DEBUG_BAD_DURATION`.
+
+| Command | Purpose |
 |---|---|
-| `GET /debug/requests` | The last 200 requests: method, path, status, duration, **trace_id**, request body, response body |
-| `GET /debug/sql` | The last 200 SQL statements: SQL template, bound vars, rows affected, duration, trace_id |
-| `GET /debug/traces` | Summary list of completed trace waterfalls |
-| `GET /debug/traces/{id}` | One full trace — every span, its kind, its OTel attributes, its events, and a 20-frame call-stack snapshot captured at span start |
-| `GET /debug/logs?trace_id=<id>&level=<INFO>` | Every slog record for that trace, with structured attrs |
-| `GET /debug/errors` | Recent panics — recovered value, stack, method, path, trace_id |
-| `GET /debug/cache` | Recent cache ops — op, key, hit/miss, duration, trace_id |
-| `POST /debug/explain` | Run `EXPLAIN` against a captured SELECT. Body: `{"sql": "...", "vars": ["..."]}` |
-| `GET /debug/pprof/*` | Full set of Go runtime profiles (CPU, heap, goroutine, mutex, block, allocs, threadcreate, execution trace) |
+| `gofasta debug health` | Probe the app + every `/debug/*` surface; reports reachability + devtools state. First call after `gofasta dev`. |
+| `gofasta debug requests` | List captured requests. Filters: `--trace`, `--method`, `--status=2xx\|5xx\|400-499`, `--path`, `--slower-than=100ms`, `--limit`. |
+| `gofasta debug sql` | List captured SQL. Filters: `--trace`, `--slower-than`, `--contains`, `--errors-only`, `--limit`. |
+| `gofasta debug traces` | List completed trace summaries. Filters: `--slower-than`, `--status=ok\|error`, `--limit`. |
+| `gofasta debug trace <id>` | Full waterfall for one trace — spans, durations, parent-child nesting. Add `--with-stacks` for the captured call frames. |
+| `gofasta debug logs --trace=<id>` | Slog records for a specific trace. Filters: `--level`, `--contains`. |
+| `gofasta debug errors` | Recent recovered panics with stacks and originating requests. |
+| `gofasta debug cache` | Cache ops with hit/miss status and a hit-rate footer. Filters: `--trace`, `--op`, `--miss-only`. |
+| `gofasta debug goroutines` | Live goroutines grouped by top-of-stack. Filters: `--filter=<substr>`, `--min-count`. |
+| `gofasta debug n-plus-one` | Detected N+1 patterns in the recent SQL ring — one row per `(trace, template)` with ≥3 hits. |
+| `gofasta debug explain <sql>` | Run EXPLAIN against a captured SELECT via the app's registered GORM handle. Takes `--vars`. |
+| `gofasta debug last-slow-request` | **Composed**: latest request ≥ `--threshold=200ms` + its trace + logs + SQL + N+1 findings, bundled as one JSON payload. |
+| `gofasta debug last-error` | **Composed**: most recent panic + its trace + logs in one call. |
+| `gofasta debug watch` | NDJSON stream of new events. Channels: `--requests` + `--errors` by default, `--sql`, `--cache`, `--trace` opt-in. |
+| `gofasta debug profile <kind>` | Download a pprof profile. Kinds: cpu, heap, goroutine, mutex, block, allocs, threadcreate, trace. |
+| `gofasta debug har` | Export the request ring as HAR 1.2 JSON (import into Chrome DevTools / Insomnia / Postman). |
 
-**Typical agent workflow for a slow or broken endpoint:**
+#### Typical agent workflows
 
-1. `curl localhost:8080/debug/requests | jq '.[0]'` — grab the latest captured request with its `trace_id`.
-2. `curl localhost:8080/debug/traces/<trace_id>` — see the whole span tree with offsets, durations, and per-span stacks. Nested SELECTs surface as siblings of the same parent span — that's an N+1.
-3. `curl "localhost:8080/debug/logs?trace_id=<trace_id>"` — every slog line this request emitted, filtered.
-4. `curl -X POST localhost:8080/debug/explain -d '{"sql":"SELECT ...","vars":[]}'` — EXPLAIN any SELECT in the trace.
-5. `curl localhost:8080/debug/pprof/goroutine?debug=2` — goroutine dump if you suspect a leak.
+**A slow endpoint.** One call returns everything:
 
-The dashboard does all this visually at `localhost:9090`, but the
-endpoints are the stable contract for agent automation. The
-debugging guide documents the full flow end-to-end:
+```bash
+gofasta debug last-slow-request --threshold=200ms --json
+```
+
+The bundled JSON has `request`, `trace` (waterfall), `logs`, `sql`,
+and `n_plus_one`. Parse with `jq` — no follow-up fetches needed.
+
+**A failing endpoint.** Same shape, for the most recent panic:
+
+```bash
+gofasta debug last-error --json
+```
+
+**Live triage.** Stream new requests + errors as they happen:
+
+```bash
+gofasta debug watch --requests --errors --json | jq -c 'select(.status >= 500)'
+```
+
+**Targeted inspection.** When you know the trace ID:
+
+```bash
+gofasta debug trace <id>                  # waterfall
+gofasta debug logs --trace=<id>           # request logs
+gofasta debug sql --trace=<id>            # request SQL
+gofasta debug cache --trace=<id>          # request cache ops
+```
+
+**N+1 hunt.** After reproducing the slow request:
+
+```bash
+gofasta debug n-plus-one --json
+```
+
+**EXPLAIN on demand.** Once you've found a suspect SELECT:
+
+```bash
+sql=$(gofasta debug sql --limit=1 --json | jq -r '.[0].sql')
+vars=$(gofasta debug sql --limit=1 --json | jq -r '.[0].vars[]?')
+gofasta debug explain "$sql" --vars "$vars"
+```
+
+**Leak investigation.** Goroutines grouped by function:
+
+```bash
+gofasta debug goroutines --min-count=10
+```
+
+**Deeper profiling.** Capture a 30s CPU profile and open with pprof:
+
+```bash
+gofasta debug profile cpu --duration=30s -o cpu.pprof
+go tool pprof -http=:8090 cpu.pprof
+```
+
+**Share a repro.** Export HAR and attach to a bug report:
+
+```bash
+gofasta debug har -o bug.har
+```
+
+The dashboard at `localhost:9090` renders all of this visually, but
+the `gofasta debug` commands are the stable, scriptable interface
+agents should prefer. See the guides for the full walkthrough:
 
 - **https://gofasta.dev/docs/guides/debugging** — guided tour + every debug surface + architecture walkthrough
+- **https://gofasta.dev/docs/cli-reference/debug** — per-command flag reference
 - **https://gofasta.dev/docs/cli-reference/dev** — `gofasta dev` flags + event stream
 
 ## Commands to run
@@ -483,6 +555,7 @@ prefer them over hand-running the underlying checks. They honor `--json`.
 | `gofasta verify` | Full preflight gauntlet — gofmt, vet, golangci-lint, tests with the race detector, build, Wire drift, routes. The single "am I done?" check. |
 | `gofasta status` | Offline drift report — stale Wire, stale Swagger, pending migrations, uncommitted generated files, `go.sum` freshness. |
 | `gofasta inspect <Resource>` | AST-parsed structured report of a resource's model, DTOs, service methods, controller methods, and routes. |
+| `gofasta debug <...>` | Query a running dev app's `/debug/*` surface — requests, SQL, traces, logs, errors, goroutines, pprof, HAR. See the dedicated Debug section above for the full command list. |
 | `gofasta config schema` | Emit the JSON Schema for `config.yaml`. Validates edits before writing; powers editor autocomplete. |
 | `gofasta do <workflow>` | Named workflow chains: `new-rest-endpoint`, `rebuild`, `fresh-start`, `clean-slate`, `health-check`. |
 | `gofasta do list` | List every registered workflow. |
@@ -594,6 +667,7 @@ URL maps to one `.mdx` page on https://gofasta.dev/docs.
 - `gofasta new`: https://gofasta.dev/docs/cli-reference/new
 - `gofasta init`: https://gofasta.dev/docs/cli-reference/init
 - `gofasta dev`: https://gofasta.dev/docs/cli-reference/dev
+- `gofasta debug`: https://gofasta.dev/docs/cli-reference/debug
 - `gofasta serve`: https://gofasta.dev/docs/cli-reference/serve
 - `gofasta migrate`: https://gofasta.dev/docs/cli-reference/migrate
 - `gofasta seed`: https://gofasta.dev/docs/cli-reference/seed

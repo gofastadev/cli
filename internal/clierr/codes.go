@@ -74,6 +74,19 @@ const (
 	CodeAIManifestIO    Code = "AI_MANIFEST_IO"
 	CodeAIInstallFailed Code = "AI_INSTALL_FAILED"
 
+	// --- Debug (gofasta debug) ---
+	//
+	// The debug command family talks to a running app's /debug/* JSON
+	// endpoints. Failures split into reachability (app not running) and
+	// capability (devtools tag off) so agents can branch cleanly.
+	CodeDebugAppUnreachable     Code = "DEBUG_APP_UNREACHABLE"
+	CodeDebugDevtoolsOff        Code = "DEBUG_DEVTOOLS_OFF"
+	CodeDebugTraceNotFound      Code = "DEBUG_TRACE_NOT_FOUND"
+	CodeDebugBadFilter          Code = "DEBUG_BAD_FILTER"
+	CodeDebugBadDuration        Code = "DEBUG_BAD_DURATION"
+	CodeDebugProfileUnsupported Code = "DEBUG_PROFILE_UNSUPPORTED"
+	CodeDebugExplainFailed      Code = "DEBUG_EXPLAIN_FAILED"
+
 	// --- Dev server (gofasta dev) ---
 	//
 	// The dev orchestrator is a multi-step pipeline (preflight → service
@@ -280,6 +293,35 @@ var registry = map[Code]meta{
 	CodeDevPortInUse: {
 		Hint: "another process is already bound to the configured PORT; stop it, pick a different port with `--port`, or update `server.port` in config.yaml",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+
+	CodeDebugAppUnreachable: {
+		Hint: "the target app is not reachable at the resolved URL — start it with `gofasta dev` or pass `--app-url=http://host:port` if it runs on a different address",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugDevtoolsOff: {
+		Hint: "the app is running without the `devtools` build tag — rebuild under `gofasta dev` (which sets GOFLAGS=-tags=devtools) so /debug/* endpoints become available",
+		Docs: "https://gofasta.dev/docs/guides/debugging",
+	},
+	CodeDebugTraceNotFound: {
+		Hint: "the requested trace is not in the ring — it may have been evicted (rings hold at most 50 traces); re-issue the request you want to inspect and try again",
+		Docs: "https://gofasta.dev/docs/guides/debugging",
+	},
+	CodeDebugBadFilter: {
+		Hint: "a filter value was rejected; see the command's --help for accepted syntax",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugBadDuration: {
+		Hint: "duration values use Go's time.ParseDuration syntax — e.g. `100ms`, `2s`, `1m30s`",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugProfileUnsupported: {
+		Hint: "supported profile kinds: cpu, heap, goroutine, mutex, block, allocs, threadcreate, trace",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugExplainFailed: {
+		Hint: "EXPLAIN is SELECT-only and requires the app to have registered its *gorm.DB via devtools.RegisterDB — verify the app was built with the devtools tag",
+		Docs: "https://gofasta.dev/docs/guides/debugging",
 	},
 }
 
