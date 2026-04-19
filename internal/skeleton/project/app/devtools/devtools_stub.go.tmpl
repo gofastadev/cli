@@ -36,6 +36,11 @@ func handlerImpl() http.Handler {
 	})
 }
 
+// registerTraceProcessorImpl is a no-op in stub builds. Callers
+// (cmd/serve.go) invoke it unconditionally after InitTracer; in
+// production the compiler elides the call entirely.
+func registerTraceProcessorImpl() {}
+
 // GormPlugin returns a plugin whose Initialize is a no-op. Calling
 // `db.Use(devtools.GormPlugin())` unconditionally in the DB setup is
 // therefore safe: it costs one allocation at startup and nothing per

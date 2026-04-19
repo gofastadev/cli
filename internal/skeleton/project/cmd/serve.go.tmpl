@@ -52,6 +52,10 @@ func startServer() error {
 	if cfg.Observability.TracingEnabled {
 		shutdown := observability.InitTracer(cfg.Observability.ServiceName)
 		defer shutdown()
+		// Devtools trace capture — hooks into the global tracer provider
+		// so every span also lands in the in-memory ring the dashboard
+		// scrapes. No-op in production builds (no `devtools` build tag).
+		devtools.RegisterTraceProcessor()
 	}
 
 	// Start WebSocket hub

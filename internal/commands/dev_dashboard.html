@@ -101,6 +101,95 @@
     text-align: center;
   }
   .footer { color: var(--muted); font-size: 11px; margin-top: 24px; }
+  /* ── Trace waterfall ──────────────────────────────────────────── */
+  .trace-row { cursor: pointer; }
+  .trace-row:hover { background: rgba(79, 209, 229, 0.05); }
+  .trace-detail {
+    background: rgba(10, 28, 36, 0.6);
+    padding: 16px;
+    border-left: 2px solid var(--primary);
+    margin: 0;
+  }
+  .span-row {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 12px;
+    align-items: center;
+    padding: 4px 0;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+  }
+  .span-row.kid { padding-left: 16px; }
+  .span-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .span-bar-track {
+    position: relative;
+    height: 16px;
+    background: rgba(138, 155, 160, 0.12);
+    border-radius: 3px;
+  }
+  .span-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--primary);
+    border-radius: 3px;
+    min-width: 2px;
+  }
+  .span-bar.err { background: var(--err); }
+  .span-duration {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    color: var(--fg);
+    font-size: 10px;
+    mix-blend-mode: difference;
+  }
+  .stack-toggle {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .stack-toggle:hover { color: var(--primary); }
+  .stack-frames {
+    margin-top: 4px;
+    padding: 8px;
+    background: rgba(10, 28, 36, 0.9);
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: pre;
+    max-height: 240px;
+    overflow: auto;
+  }
+  .replay-btn {
+    background: rgba(79, 209, 229, 0.12);
+    border: 1px solid rgba(79, 209, 229, 0.3);
+    color: var(--primary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .replay-btn:hover { background: rgba(79, 209, 229, 0.2); }
+  .replay-result {
+    margin-top: 8px;
+    padding: 12px;
+    background: rgba(10, 28, 36, 0.9);
+    border-radius: 6px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    max-height: 320px;
+    overflow: auto;
+  }
 </style>
 </head>
 <body>
@@ -175,6 +264,16 @@
   {{- template "queriesTable" .RecentQueries -}}
 </div>
 
+<h2>
+  Traces
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="traces">
+  {{- template "tracesTable" .RecentTraces -}}
+</div>
+
 <div class="footer">
   Updated
   <span id="updated" data-ts="{{.LastUpdatedMS}}">—</span>
@@ -214,6 +313,36 @@
     }).join('');
     return '<table><thead><tr><th>Method</th><th>Path</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function fmtTime(iso) {
+    try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false }) + '.' + (new Date(iso).getMilliseconds() + '').padStart(3, '0'); }
+    catch (e) { return iso; }
+  }
+  function renderTraces(traces) {
+    if (!traces || traces.length === 0) {
+      return '<div class="empty">No traces captured yet.</div>';
+    }
+    var rows = traces.map(function (t) {
+      var pill = t.status === 'error'
+        ? '<span class="pill err">error</span>'
+        : '<span class="pill ok">ok</span>';
+      return (
+        '<tr class="trace-row" data-trace-id="' + esc(t.trace_id) + '">' +
+          '<td>' + fmtTime(t.time) + '</td>' +
+          '<td>' + esc(t.root_name) + '</td>' +
+          '<td>' + t.span_count + '</td>' +
+          '<td>' + t.duration_ms + ' ms</td>' +
+          '<td>' + pill + '</td>' +
+          '<td style="color: var(--muted); font-size: 10px;">' + esc(t.trace_id) + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+    return '<table><thead><tr><th>Time</th><th>Root span</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
   function apply(state) {
     document.getElementById('app-url').textContent = state.app_url;
     document.getElementById('health').innerHTML = renderHealth(state.health);
@@ -222,7 +351,159 @@
     document.getElementById('graphql').innerHTML = renderLink(state.graphql_url);
     document.getElementById('services').innerHTML = renderServices(state.services);
     document.getElementById('routes').innerHTML = renderRoutes(state.routes);
+    var tracesEl = document.getElementById('traces');
+    if (tracesEl) tracesEl.innerHTML = renderTraces(state.recent_traces);
     document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
+  }
+
+  // ── Trace waterfall drill-down ────────────────────────────────────
+  // Clicking a trace row toggles an expanded section below it that
+  // fetches the full trace (every span, every stack frame) from
+  // /api/trace/{id} — cached after the first fetch so repeated
+  // clicks are free. Span bars are positioned by offset_ms and
+  // width-scaled by duration_ms.
+  var traceCache = {};
+  function renderWaterfall(trace) {
+    if (!trace || !trace.spans || trace.spans.length === 0) {
+      return '<div class="empty">This trace carries no spans yet.</div>';
+    }
+    var maxDuration = Math.max(1, trace.duration_ms);
+    var lines = trace.spans.map(function (sp, i) {
+      var left = (sp.offset_ms / maxDuration) * 100;
+      var width = (sp.duration_ms / maxDuration) * 100;
+      var barCls = sp.status === 'error' ? 'span-bar err' : 'span-bar';
+      var stack = '';
+      if (sp.stack && sp.stack.length > 0) {
+        stack =
+          '<span class="stack-toggle" data-stack-idx="' + i + '">▸ stack (' + sp.stack.length + ' frames)</span>' +
+          '<pre class="stack-frames" id="stack-' + i + '" style="display:none;">' + esc(sp.stack.join('\n')) + '</pre>';
+      }
+      return (
+        '<div class="span-row' + (sp.parent_id ? ' kid' : '') + '">' +
+          '<div class="span-name" title="' + esc(sp.name) + '">' +
+            esc(sp.name) +
+            (sp.kind ? ' <span style="color: var(--muted);">(' + esc(sp.kind) + ')</span>' : '') +
+            stack +
+          '</div>' +
+          '<div class="span-bar-track">' +
+            '<div class="' + barCls + '" style="left:' + left + '%; width:' + Math.max(width, 0.5) + '%;"></div>' +
+            '<div class="span-duration">' + sp.duration_ms + ' ms</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+    return '<div>' + lines + '</div>';
+  }
+  function toggleTrace(id, row) {
+    var existing = row.nextElementSibling;
+    if (existing && existing.classList && existing.classList.contains('trace-expanded')) {
+      existing.remove();
+      return;
+    }
+    var holder = document.createElement('tr');
+    holder.className = 'trace-expanded';
+    var cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'trace-detail';
+    cell.innerHTML = '<div class="empty">loading trace…</div>';
+    holder.appendChild(cell);
+    row.parentNode.insertBefore(holder, row.nextSibling);
+    var finalize = function (trace) {
+      cell.innerHTML = renderWaterfall(trace);
+    };
+    if (traceCache[id]) {
+      finalize(traceCache[id]);
+      return;
+    }
+    fetch('/api/trace/' + encodeURIComponent(id))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (t) {
+        if (!t) { cell.innerHTML = '<div class="empty">trace no longer available</div>'; return; }
+        traceCache[id] = t;
+        finalize(t);
+      })
+      .catch(function () {
+        cell.innerHTML = '<div class="empty">fetch failed</div>';
+      });
+  }
+
+  // Delegated click handler — works for both the server-rendered
+  // initial rows and any rows swapped in by the SSE apply().
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    // Stack toggle inside a trace detail
+    if (t && t.classList && t.classList.contains('stack-toggle')) {
+      var idx = t.getAttribute('data-stack-idx');
+      var frames = document.getElementById('stack-' + idx);
+      if (frames) {
+        frames.style.display = frames.style.display === 'none' ? 'block' : 'none';
+        t.textContent = (frames.style.display === 'none' ? '▸' : '▾') + t.textContent.slice(1);
+      }
+      return;
+    }
+    // Jump from a request row's trace link into the traces section.
+    if (t && t.classList && t.classList.contains('trace-jump')) {
+      e.preventDefault();
+      var tid = t.getAttribute('data-trace-id');
+      var row = document.querySelector('.trace-row[data-trace-id="' + tid + '"]');
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toggleTrace(tid, row);
+      }
+      return;
+    }
+    // Replay button in the requests table.
+    if (t && t.classList && t.classList.contains('replay-btn')) {
+      var method = t.getAttribute('data-method');
+      var path = t.getAttribute('data-path');
+      var body = t.getAttribute('data-body') || '';
+      var mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(method);
+      if (mutating && !confirm('Re-send ' + method + ' ' + path + '? This will execute the request again against the live app.')) {
+        return;
+      }
+      replay(t, method, path, body);
+      return;
+    }
+    // Expand / collapse the full trace waterfall.
+    var row = t && (t.closest ? t.closest('.trace-row') : null);
+    if (row && !t.classList.contains('trace-jump')) {
+      toggleTrace(row.getAttribute('data-trace-id'), row);
+    }
+  });
+
+  function replay(btn, method, path, body) {
+    btn.disabled = true;
+    btn.textContent = '…';
+    fetch('/api/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: method, path: path, body: body }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        btn.disabled = false;
+        btn.textContent = 'replay';
+        var cell = btn.parentNode;
+        var prev = cell.querySelector('.replay-result');
+        if (prev) prev.remove();
+        if (!res.ok) {
+          var err = document.createElement('div');
+          err.className = 'replay-result';
+          err.textContent = 'error: ' + (res.j && res.j.error ? res.j.error : 'unknown');
+          cell.appendChild(err);
+          return;
+        }
+        var box = document.createElement('div');
+        box.className = 'replay-result';
+        box.innerHTML =
+          '<div><strong>status:</strong> ' + res.j.status + '</div>' +
+          '<pre style="margin: 4px 0 0 0; white-space: pre-wrap;">' + esc(res.j.body) + '</pre>';
+        cell.appendChild(box);
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = 'replay';
+      });
   }
 
   // Seed the "updated" label from the server-rendered timestamp so the
@@ -345,7 +626,7 @@
   {{- if . -}}
     <table>
       <thead>
-        <tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th></tr>
+        <tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr>
       </thead>
       <tbody>
         {{- range . -}}
@@ -363,6 +644,17 @@
               {{- end -}}
             </td>
             <td>{{.DurationMS}} ms</td>
+            <td style="color: var(--muted); font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+            <td>
+              <button class="replay-btn"
+                      data-method="{{.Method}}"
+                      data-path="{{.Path}}"
+                      data-body="{{.Body}}">replay</button>
+            </td>
           </tr>
         {{- end -}}
       </tbody>
@@ -372,6 +664,47 @@
       No captured requests yet — hit your app and they will appear here
       (requires the <code>devtools</code> build tag, which
       <code>gofasta dev</code> sets automatically).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "tracesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Root span</th>
+          <th>Spans</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Trace ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr class="trace-row" data-trace-id="{{.TraceID}}">
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td>{{.RootName}}</td>
+            <td>{{.SpanCount}}</td>
+            <td>{{.DurationMS}} ms</td>
+            <td>
+              {{- if eq .Status "error" -}}
+                <span class="pill err">error</span>
+              {{- else -}}
+                <span class="pill ok">ok</span>
+              {{- end -}}
+            </td>
+            <td style="color: var(--muted); font-size: 10px;">{{.TraceID}}</td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No traces captured yet — traces land here once
+      <code>cfg.Observability.TracingEnabled</code> is true and a
+      request flows through the app.
     </div>
   {{- end -}}
 {{end}}

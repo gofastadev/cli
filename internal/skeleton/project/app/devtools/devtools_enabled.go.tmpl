@@ -6,10 +6,17 @@ package devtools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
 	"gorm.io/gorm"
 )
 
@@ -18,6 +25,21 @@ import (
 // development traffic; bigger would start to matter on a long-running
 // dev session. Mutate here if you want more retention.
 const ringCapacity = 200
+
+// traceRingCapacity is separate — traces hold whole span trees so
+// each entry is heavier. 50 retained traces covers the last few
+// minutes of interesting requests.
+const traceRingCapacity = 50
+
+// maxBodyCapture is the upper bound on how much of a request body we
+// stash for replay. 64KiB covers JSON payloads; anything larger is
+// usually an upload and we'd rather not duplicate it in memory.
+const maxBodyCapture = 64 * 1024
+
+// stackDepth caps how many call frames we snapshot per span. 20 frames
+// is deep enough to show controller → service → repository → GORM
+// without wasting memory on runtime internals.
+const stackDepth = 20
 
 // ── Request ring ──────────────────────────────────────────────────────
 
@@ -110,8 +132,45 @@ func middlewareImpl(next http.Handler) http.Handler {
 		}
 
 		start := time.Now()
+
+		// Capture the request body up to maxBodyCapture. Re-wrap r.Body
+		// with a fresh ReadCloser over the captured bytes so downstream
+		// handlers read the same content we saved. Anything larger than
+		// the cap gets discarded from the capture (the real handler
+		// still sees the full stream via the teeing io.MultiReader).
+		var capturedBody string
+		if r.Body != nil && r.ContentLength != 0 {
+			limited := io.LimitReader(r.Body, maxBodyCapture+1)
+			buf, _ := io.ReadAll(limited)
+			remainder := r.Body
+			if len(buf) > maxBodyCapture {
+				capturedBody = string(buf[:maxBodyCapture])
+			} else {
+				capturedBody = string(buf)
+			}
+			// The original r.Body has been consumed up to the cap; feed
+			// the handler the captured bytes followed by whatever's left
+			// on the original stream.
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.MultiReader(strings.NewReader(string(buf)), remainder),
+				Closer: remainder,
+			}
+		}
+
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(rec, r)
+
+		// Extract the trace ID (if any) so the dashboard can link the
+		// request row to its trace. SpanContextFromContext returns a
+		// zero-value context when no tracer is configured, so TraceID()
+		// returns an all-zero ID in that case — skip it.
+		traceID := ""
+		if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+			traceID = sc.TraceID().String()
+		}
 
 		requests.push(RequestEntry{
 			Time:       start,
@@ -120,6 +179,8 @@ func middlewareImpl(next http.Handler) http.Handler {
 			Status:     rec.status,
 			DurationMS: time.Since(start).Milliseconds(),
 			RemoteAddr: r.RemoteAddr,
+			TraceID:    traceID,
+			Body:       capturedBody,
 		})
 	})
 }
@@ -135,6 +196,27 @@ func handlerImpl() http.Handler {
 	mux.HandleFunc("/debug/sql", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(queries.snapshot())
+	})
+	mux.HandleFunc("/debug/traces", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(traces.snapshotSummaries())
+	})
+	// /debug/traces/{id} — one full trace by TraceID, including every
+	// span, its stack snapshot, and attached events. Path-prefix routing
+	// keeps us off any third-party path-parameter router.
+	mux.HandleFunc("/debug/traces/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/debug/traces/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		entry, ok := traces.byID(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(entry)
 	})
 	mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -204,3 +286,280 @@ func (g *gormDevtools) Initialize(db *gorm.DB) error {
 }
 
 type gormStartKey struct{}
+
+// ── Trace ring ────────────────────────────────────────────────────────
+//
+// The trace ring stores whole TraceEntries keyed by TraceID. Insertion
+// is O(1) (push into a fixed-size circular buffer + write into the
+// index map); lookup by ID is O(1) (map read); newest-first snapshot is
+// O(n) bounded by traceRingCapacity.
+//
+// The ring is intentionally small (traceRingCapacity = 50) because each
+// entry may hold dozens of spans with stacks — a long-running dev
+// session would otherwise grow unbounded. Overwriting old traces
+// evicts them from the index map too so we don't leak references.
+
+type traceRing struct {
+	mu      sync.RWMutex
+	entries [traceRingCapacity]TraceEntry
+	ids     [traceRingCapacity]string // parallel to entries, for eviction bookkeeping
+	head    int
+	count   int
+	index   map[string]*TraceEntry // trace_id → pointer into entries
+}
+
+var traces = &traceRing{index: make(map[string]*TraceEntry)}
+
+// push inserts a completed trace. If the ring is full it evicts the
+// oldest slot and removes its ID from the index.
+func (r *traceRing) push(e TraceEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Evict whatever's about to be overwritten.
+	if r.count == traceRingCapacity {
+		if oldID := r.ids[r.head]; oldID != "" {
+			delete(r.index, oldID)
+		}
+	}
+
+	r.entries[r.head] = e
+	r.ids[r.head] = e.TraceID
+	r.index[e.TraceID] = &r.entries[r.head]
+	r.head = (r.head + 1) % traceRingCapacity
+	if r.count < traceRingCapacity {
+		r.count++
+	}
+}
+
+// snapshotSummaries returns trace summaries in newest-first order.
+// Spans are stripped so /debug/traces stays cheap to poll; the
+// dashboard drills into one full trace via /debug/traces/{id}.
+func (r *traceRing) snapshotSummaries() []TraceEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]TraceEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + traceRingCapacity) % traceRingCapacity
+		e := r.entries[idx]
+		e.Spans = nil
+		out[i] = e
+	}
+	return out
+}
+
+// byID returns a copy of the trace with the given ID, including spans.
+func (r *traceRing) byID(id string) (TraceEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ptr, ok := r.index[id]
+	if !ok {
+		return TraceEntry{}, false
+	}
+	return *ptr, true
+}
+
+// ── TraceRecorder (OpenTelemetry SpanProcessor) ──────────────────────
+//
+// TraceRecorder implements sdktrace.SpanProcessor. It batches
+// completed spans by trace ID, snapshots a Go call stack at OnStart,
+// and flushes the full trace to the ring once every span has ended.
+//
+// Buffering per-trace rather than per-span keeps the ring honest: the
+// dashboard always shows complete traces, never partial ones, and the
+// order in the ring matches the order traces completed (by root-span
+// end time).
+//
+// Thread safety: every exported SpanProcessor method takes the mutex.
+// The hot path (OnStart / OnEnd) is short-lived and contended only by
+// concurrent in-flight requests, which is the expected dev workload.
+
+type traceBuffer struct {
+	root  *TraceSpan
+	spans map[trace.SpanID]*TraceSpan
+	// openCount tracks how many spans in this trace are still live.
+	// The trace flushes to the ring when openCount returns to 0.
+	openCount int
+	// rootStart captures the root span's wall-clock start time so we
+	// can compute per-span offsets in milliseconds relative to it.
+	rootStart time.Time
+}
+
+type traceRecorder struct {
+	mu     sync.Mutex
+	buffer map[trace.TraceID]*traceBuffer
+}
+
+func newTraceRecorder() *traceRecorder {
+	return &traceRecorder{buffer: make(map[trace.TraceID]*traceBuffer)}
+}
+
+// OnStart captures a call-stack snapshot the moment the span opens.
+// This is the "where in the code did this span come from?" signal the
+// dashboard renders when a developer clicks a span. Skip the first few
+// frames so the displayed stack starts at user code, not OTel plumbing.
+func (tr *traceRecorder) OnStart(_ context.Context, s sdktrace.ReadWriteSpan) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	sc := s.SpanContext()
+	tid := sc.TraceID()
+	buf, ok := tr.buffer[tid]
+	if !ok {
+		buf = &traceBuffer{spans: make(map[trace.SpanID]*TraceSpan)}
+		tr.buffer[tid] = buf
+	}
+
+	span := &TraceSpan{
+		SpanID: sc.SpanID().String(),
+		Name:   s.Name(),
+		Kind:   s.SpanKind().String(),
+		Stack:  captureStack(3, stackDepth),
+	}
+	if parent := s.Parent(); parent.IsValid() {
+		span.ParentID = parent.SpanID().String()
+	} else {
+		// First span we see for this trace becomes the root.
+		buf.root = span
+		buf.rootStart = s.StartTime()
+	}
+	buf.spans[sc.SpanID()] = span
+	buf.openCount++
+}
+
+// OnEnd finishes out a span's metadata (duration, status, attributes,
+// events) and, when the last open span in a trace closes, hands the
+// whole TraceEntry off to the ring.
+func (tr *traceRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	sc := s.SpanContext()
+	tid := sc.TraceID()
+	buf, ok := tr.buffer[tid]
+	if !ok {
+		return
+	}
+	span, ok := buf.spans[sc.SpanID()]
+	if !ok {
+		return
+	}
+
+	span.OffsetMS = s.StartTime().Sub(buf.rootStart).Milliseconds()
+	span.DurationMS = s.EndTime().Sub(s.StartTime()).Milliseconds()
+
+	// Span status — OTel reports an enum; stringify to "ok" / "error"
+	// for the dashboard. Unset counts as ok.
+	switch s.Status().Code.String() {
+	case "Error":
+		span.Status = "error"
+	default:
+		span.Status = "ok"
+	}
+
+	if attrs := s.Attributes(); len(attrs) > 0 {
+		span.Attributes = make(map[string]string, len(attrs))
+		for _, kv := range attrs {
+			span.Attributes[string(kv.Key)] = kv.Value.Emit()
+		}
+	}
+
+	if events := s.Events(); len(events) > 0 {
+		span.Events = make([]TraceEvent, 0, len(events))
+		for _, ev := range events {
+			te := TraceEvent{
+				Name:     ev.Name,
+				OffsetMS: ev.Time.Sub(buf.rootStart).Milliseconds(),
+			}
+			if len(ev.Attributes) > 0 {
+				te.Attributes = make(map[string]string, len(ev.Attributes))
+				for _, kv := range ev.Attributes {
+					te.Attributes[string(kv.Key)] = kv.Value.Emit()
+				}
+			}
+			span.Events = append(span.Events, te)
+		}
+	}
+
+	buf.openCount--
+	if buf.openCount > 0 {
+		return
+	}
+
+	// Last span closed — flush. Pull all spans (root first) into an
+	// ordered slice and build the TraceEntry.
+	delete(tr.buffer, tid)
+	if buf.root == nil {
+		return
+	}
+
+	ordered := make([]TraceSpan, 0, len(buf.spans))
+	ordered = append(ordered, *buf.root)
+	for id, sp := range buf.spans {
+		if id == s.SpanContext().SpanID() && sp == buf.root {
+			continue
+		}
+		if sp == buf.root {
+			continue
+		}
+		ordered = append(ordered, *sp)
+	}
+
+	status := "ok"
+	for _, sp := range ordered {
+		if sp.Status == "error" {
+			status = "error"
+			break
+		}
+	}
+
+	traces.push(TraceEntry{
+		TraceID:    tid.String(),
+		RootName:   buf.root.Name,
+		Time:       buf.rootStart,
+		DurationMS: s.EndTime().Sub(buf.rootStart).Milliseconds(),
+		Status:     status,
+		SpanCount:  len(ordered),
+		Spans:      ordered,
+	})
+}
+
+// Shutdown and ForceFlush satisfy sdktrace.SpanProcessor. No external
+// resources to release — the ring lives in process memory and dies
+// with it.
+func (tr *traceRecorder) Shutdown(_ context.Context) error   { return nil }
+func (tr *traceRecorder) ForceFlush(_ context.Context) error { return nil }
+
+// captureStack returns file:line:function strings for the current
+// goroutine's stack, skipping the first `skip` frames (to hide OTel
+// plumbing) and capping at `max` frames. Used by OnStart to snapshot
+// where each span was opened.
+func captureStack(skip, max int) []string {
+	pcs := make([]uintptr, max)
+	n := runtime.Callers(skip+1, pcs)
+	if n == 0 {
+		return nil
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	out := make([]string, 0, n)
+	for {
+		f, more := frames.Next()
+		out = append(out, fmt.Sprintf("%s:%d %s", f.File, f.Line, f.Function))
+		if !more {
+			break
+		}
+	}
+	return out
+}
+
+// registerTraceProcessorImpl hooks the TraceRecorder into the global
+// tracer provider. The type assertion protects against no-op providers
+// (e.g. when observability is disabled entirely); a missing provider
+// resolves to a silent skip rather than a panic.
+func registerTraceProcessorImpl() {
+	tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+	if !ok {
+		return
+	}
+	tp.RegisterSpanProcessor(newTraceRecorder())
+}

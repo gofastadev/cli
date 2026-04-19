@@ -28,6 +28,12 @@ import (
 // RequestEntry is a single captured request in the in-memory ring buffer.
 // JSON tags are stable API — the dashboard reads this shape from
 // /debug/requests and any dashboard-compatible tooling relies on it.
+//
+// TraceID links the request to the corresponding TraceEntry in the
+// trace ring (via /debug/traces/{id}). When OpenTelemetry tracing is
+// enabled in config.yaml, every captured request carries the TraceID
+// of the root span its middleware chain opened, so the dashboard can
+// render a "drill into trace" link per request row.
 type RequestEntry struct {
 	Time       time.Time `json:"time"`
 	Method     string    `json:"method"`
@@ -35,6 +41,11 @@ type RequestEntry struct {
 	Status     int       `json:"status"`
 	DurationMS int64     `json:"duration_ms"`
 	RemoteAddr string    `json:"remote_addr,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	// Body is the captured request body (capped at 64KiB). Used by the
+	// /api/replay endpoint in the dashboard to re-fire the exact same
+	// request. Only populated for requests with a body ≤ cap.
+	Body string `json:"body,omitempty"`
 }
 
 // QueryEntry is a single captured SQL query. Populated by the GORM
@@ -65,13 +76,80 @@ func Middleware(next http.Handler) http.Handler {
 // Handler returns an http.Handler that serves the devtools debug
 // endpoints:
 //
-//	GET /debug/requests   — JSON array of the most recent RequestEntries
-//	GET /debug/sql        — JSON array of the most recent QueryEntries
-//	GET /debug/health     — {"devtools":"enabled"} | {"devtools":"stub"}
+//	GET /debug/requests       — most recent RequestEntries
+//	GET /debug/sql            — most recent QueryEntries
+//	GET /debug/traces         — most recent completed TraceEntries
+//	GET /debug/traces/{id}    — one full trace by ID
+//	GET /debug/health         — {"devtools":"enabled"} | {"devtools":"stub"}
 //
 // In stub builds Handler returns a tiny handler that responds with
 // `{"devtools":"stub"}` to /debug/health and 404 to everything else —
 // so the dashboard can probe for availability without confusing errors.
 func Handler() http.Handler {
 	return handlerImpl()
+}
+
+// TraceEntry is one completed request trace captured by the OpenTelemetry
+// span processor. The dashboard renders this as an expandable waterfall:
+// span durations + nesting show the developer exactly which middleware,
+// service, and repository methods the request traversed, and how much
+// time each consumed.
+//
+// TraceID matches RequestEntry.TraceID for requests that flowed through
+// the devtools middleware chain — click a request row to drill into
+// the corresponding trace.
+type TraceEntry struct {
+	TraceID    string      `json:"trace_id"`
+	RootName   string      `json:"root_name"`
+	Time       time.Time   `json:"time"`
+	DurationMS int64       `json:"duration_ms"`
+	Status     string      `json:"status"` // "ok" | "error"
+	SpanCount  int         `json:"span_count"`
+	Spans      []TraceSpan `json:"spans,omitempty"`
+}
+
+// TraceSpan is one span inside a TraceEntry. OffsetMS is the span's
+// start time relative to the trace's root span start — the dashboard
+// uses it to position the span bar horizontally; DurationMS controls
+// the bar's width.
+//
+// Stack is a captured snapshot of the Go call stack at span start —
+// file:line:function, outermost frame first. Lets developers click a
+// span and see exactly where in the source it was opened.
+type TraceSpan struct {
+	SpanID     string            `json:"span_id"`
+	ParentID   string            `json:"parent_id,omitempty"`
+	Name       string            `json:"name"`
+	Kind       string            `json:"kind,omitempty"`
+	OffsetMS   int64             `json:"offset_ms"`
+	DurationMS int64             `json:"duration_ms"`
+	Status     string            `json:"status,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Events     []TraceEvent      `json:"events,omitempty"`
+	Stack      []string          `json:"stack,omitempty"`
+}
+
+// TraceEvent is an OpenTelemetry span event — usually an error or an
+// informational log point.
+type TraceEvent struct {
+	Name       string            `json:"name"`
+	OffsetMS   int64             `json:"offset_ms"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// RegisterTraceProcessor hooks the devtools span processor into the
+// global OpenTelemetry tracer provider. Call it from cmd/serve.go after
+// observability.InitTracer() has set up the provider:
+//
+//	if cfg.Observability.TracingEnabled {
+//	    shutdown := observability.InitTracer(cfg.Observability.ServiceName)
+//	    defer shutdown()
+//	    devtools.RegisterTraceProcessor()
+//	}
+//
+// Calling RegisterTraceProcessor in a production build (no `devtools`
+// tag) is a no-op. Calling it before InitTracer is safe but useless —
+// the type assertion against the no-op provider falls through silently.
+func RegisterTraceProcessor() {
+	registerTraceProcessorImpl()
 }

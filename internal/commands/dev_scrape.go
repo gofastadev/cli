@@ -178,6 +178,8 @@ type scrapedRequest struct {
 	Status     int       `json:"status"`
 	DurationMS int64     `json:"duration_ms"`
 	RemoteAddr string    `json:"remote_addr,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	Body       string    `json:"body,omitempty"`
 }
 
 // scrapedQuery mirrors devtools.QueryEntry from the scaffold.
@@ -187,6 +189,75 @@ type scrapedQuery struct {
 	Rows       int64     `json:"rows"`
 	DurationMS int64     `json:"duration_ms"`
 	Error      string    `json:"error,omitempty"`
+}
+
+// scrapedTrace mirrors devtools.TraceEntry. Spans are omitted from
+// summary list responses and populated only when the dashboard fetches
+// a single trace by ID.
+type scrapedTrace struct {
+	TraceID    string        `json:"trace_id"`
+	RootName   string        `json:"root_name"`
+	Time       time.Time     `json:"time"`
+	DurationMS int64         `json:"duration_ms"`
+	Status     string        `json:"status"`
+	SpanCount  int           `json:"span_count"`
+	Spans      []scrapedSpan `json:"spans,omitempty"`
+}
+
+// scrapedSpan mirrors devtools.TraceSpan.
+type scrapedSpan struct {
+	SpanID     string            `json:"span_id"`
+	ParentID   string            `json:"parent_id,omitempty"`
+	Name       string            `json:"name"`
+	Kind       string            `json:"kind,omitempty"`
+	OffsetMS   int64             `json:"offset_ms"`
+	DurationMS int64             `json:"duration_ms"`
+	Status     string            `json:"status,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Events     []scrapedEvent    `json:"events,omitempty"`
+	Stack      []string          `json:"stack,omitempty"`
+}
+
+// scrapedEvent mirrors devtools.TraceEvent.
+type scrapedEvent struct {
+	Name       string            `json:"name"`
+	OffsetMS   int64             `json:"offset_ms"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// scrapeTraces fetches summary list of recent traces. Spans are
+// stripped server-side so this stays cheap to poll (5s cadence).
+func scrapeTraces(appURL string) []scrapedTrace {
+	resp, err := scrapeClient.Get(appURL + "/debug/traces")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var entries []scrapedTrace
+	_ = json.NewDecoder(resp.Body).Decode(&entries)
+	return entries
+}
+
+// scrapeTraceDetail fetches one full trace including every span and
+// stack. Returns (nil, false) when the trace is missing or the app
+// isn't reachable.
+func scrapeTraceDetail(appURL, id string) (*scrapedTrace, bool) {
+	resp, err := scrapeClient.Get(appURL + "/debug/traces/" + id)
+	if err != nil {
+		return nil, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	var entry scrapedTrace
+	if err := json.NewDecoder(resp.Body).Decode(&entry); err != nil {
+		return nil, false
+	}
+	return &entry, true
 }
 
 // devtoolsAvailable reports whether the running app was built with the

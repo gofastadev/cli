@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,6 +82,7 @@ type dashboardState struct {
 	DevtoolsEnabled bool             `json:"devtools_enabled"`
 	RecentRequests  []scrapedRequest `json:"recent_requests,omitempty"`
 	RecentQueries   []scrapedQuery   `json:"recent_queries,omitempty"`
+	RecentTraces    []scrapedTrace   `json:"recent_traces,omitempty"`
 	LastUpdatedMS   int64            `json:"last_updated_ms"`
 }
 
@@ -189,6 +191,8 @@ func startDashboard(port, appPort int, svc *devServices, emitter devEmitter) fun
 	mux.HandleFunc("/", srv.handleIndex)
 	mux.HandleFunc("/api/state", srv.handleState)
 	mux.HandleFunc("/api/stream", srv.handleStream)
+	mux.HandleFunc("/api/trace/", srv.handleTraceDetail)
+	mux.HandleFunc("/api/replay", srv.handleReplay)
 
 	srv.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
@@ -259,9 +263,11 @@ func (s *dashboardServer) refresh() {
 	devtoolsOn := devtoolsAvailable(s.appURL)
 	var recentReqs []scrapedRequest
 	var recentQueries []scrapedQuery
+	var recentTraces []scrapedTrace
 	if devtoolsOn {
 		recentReqs = scrapeRequestLog(s.appURL)
 		recentQueries = scrapeSQLLog(s.appURL)
+		recentTraces = scrapeTraces(s.appURL)
 	}
 
 	s.mu.Lock()
@@ -271,6 +277,7 @@ func (s *dashboardServer) refresh() {
 	s.state.DevtoolsEnabled = devtoolsOn
 	s.state.RecentRequests = recentReqs
 	s.state.RecentQueries = recentQueries
+	s.state.RecentTraces = recentTraces
 	s.state.LastUpdatedMS = time.Now().UnixMilli()
 	snapshot := s.state
 	s.mu.Unlock()
@@ -520,4 +527,112 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, st dashboardState) {
 	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 	flusher.Flush()
+}
+
+// handleTraceDetail proxies to the app's /debug/traces/{id} endpoint
+// and returns the full TraceEntry (every span, stack, attribute,
+// event). The dashboard calls this on demand when the developer
+// expands a trace row — keeping trace bodies out of the SSE stream
+// keeps polling cheap.
+func (s *dashboardServer) handleTraceDetail(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/api/trace/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	entry, ok := scrapeTraceDetail(s.appURL, id)
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entry)
+}
+
+// handleReplay re-fires a captured request against the app. The
+// dashboard POSTs the original method + path + body here (scraped
+// from the /debug/requests ring) rather than the dashboard opening a
+// direct connection to the app, because browsers won't let us
+// round-trip custom methods from the same-origin SSE client without
+// CORS preflight headaches.
+//
+// Mutation methods (POST/PUT/PATCH/DELETE) round-trip the body
+// verbatim so the app sees the exact same payload it saw before. The
+// dashboard UI prompts the developer before replaying those.
+func (s *dashboardServer) handleReplay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	var req replayRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Method == "" || req.Path == "" {
+		http.Error(w, "method and path are required", http.StatusBadRequest)
+		return
+	}
+	// Build the upstream request against the live app. Re-send the
+	// captured body as-is for non-GET methods.
+	var body io.Reader
+	if req.Body != "" {
+		body = strings.NewReader(req.Body)
+	}
+	upstream, err := http.NewRequestWithContext(r.Context(), strings.ToUpper(req.Method), s.appURL+req.Path, body)
+	if err != nil {
+		http.Error(w, "build upstream: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if req.Body != "" {
+		upstream.Header.Set("Content-Type", "application/json")
+	}
+	upstream.Header.Set("X-Gofasta-Replay", "1")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(upstream)
+	if err != nil {
+		http.Error(w, "upstream error: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxReplayResponse))
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(replayResult{
+		Status:  resp.StatusCode,
+		Body:    string(respBody),
+		Headers: flattenHeaders(resp.Header),
+	})
+}
+
+// maxReplayResponse caps the response body the dashboard shows after
+// a replay. Bodies past this size are truncated so an accidental
+// replay against a large-list endpoint doesn't stuff the dashboard
+// tab with MB of JSON.
+const maxReplayResponse = 256 * 1024
+
+type replayRequest struct {
+	Method string `json:"method"`
+	Path   string `json:"path"`
+	Body   string `json:"body,omitempty"`
+}
+
+type replayResult struct {
+	Status  int               `json:"status"`
+	Body    string            `json:"body"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// flattenHeaders picks the first value of each response header — the
+// dashboard displays only a flat key/value list, multi-value headers
+// (Set-Cookie) aren't useful in a replay context.
+func flattenHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, v := range h {
+		if len(v) > 0 {
+			out[k] = v[0]
+		}
+	}
+	return out
 }
