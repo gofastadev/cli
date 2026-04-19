@@ -9,6 +9,7 @@ import (
 	"html/template"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -338,8 +339,8 @@ func (s *dashboardServer) resolveServices() (states []serviceState, asynqmonURL 
 				states = append(states, st)
 			}
 		}
-		if url := asynqmonURLFor(st); url != "" {
-			asynqmonURL = url
+		if u := asynqmonURLFor(st); u != "" {
+			asynqmonURL = u
 		}
 	}
 	return states, asynqmonURL
@@ -365,10 +366,10 @@ func asynqmonURLFor(st serviceState) string {
 
 // probeHealth does a 2-second-timeout GET against the app's /health
 // endpoint. Doesn't care about the body — any 2xx counts as healthy.
-func probeHealth(url string) string {
+func probeHealth(healthURL string) string {
 	client := &http.Client{Timeout: 2 * time.Second}
 	//nolint:noctx // Short-lived single-purpose client; no context threading needed.
-	resp, err := client.Get(url)
+	resp, err := client.Get(healthURL)
 	if err != nil {
 		return "unreachable"
 	}
@@ -802,6 +803,15 @@ func (s *dashboardServer) handleTraceDetail(w http.ResponseWriter, r *http.Reque
 // Mutation methods (POST/PUT/PATCH/DELETE) round-trip the body
 // verbatim so the app sees the exact same payload it saw before. The
 // dashboard UI prompts the developer before replaying those.
+//
+// Security note: `req.Path` is attacker-controlled data. Naively
+// concatenating it with s.appURL opens an SSRF window — e.g.
+// `"@evil.com/x"` turns `http://localhost:8080` into a URL whose
+// `localhost:8080` becomes userinfo and `evil.com` becomes the host.
+// We parse the request path as a URL reference and explicitly pin
+// the scheme+host+user to the resolved app URL before issuing the
+// upstream request, so the user-supplied value can only influence
+// the path + query portion.
 func (s *dashboardServer) handleReplay(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -816,13 +826,22 @@ func (s *dashboardServer) handleReplay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method and path are required", http.StatusBadRequest)
 		return
 	}
-	// Build the upstream request against the live app. Re-send the
-	// captured body as-is for non-GET methods.
+	method, err := validateReplayMethod(req.Method)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	target, err := buildReplayURL(s.appURL, req.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
 	var body io.Reader
 	if req.Body != "" {
 		body = strings.NewReader(req.Body)
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), strings.ToUpper(req.Method), s.appURL+req.Path, body)
+	upstream, err := http.NewRequestWithContext(r.Context(), method, target, body)
 	if err != nil {
 		http.Error(w, "build upstream: "+err.Error(), http.StatusBadRequest)
 		return
@@ -847,6 +866,68 @@ func (s *dashboardServer) handleReplay(w http.ResponseWriter, r *http.Request) {
 		Body:    string(respBody),
 		Headers: flattenHeaders(resp.Header),
 	})
+}
+
+// replayAllowedMethods is the closed set of HTTP methods that can be
+// replayed. Anything else (TRACE, CONNECT, custom verbs) is rejected
+// so an attacker can't probe weird behaviors in the app via the
+// replay endpoint.
+var replayAllowedMethods = map[string]struct{}{
+	http.MethodGet:     {},
+	http.MethodPost:    {},
+	http.MethodPut:     {},
+	http.MethodPatch:   {},
+	http.MethodDelete:  {},
+	http.MethodHead:    {},
+	http.MethodOptions: {},
+}
+
+// validateReplayMethod returns the canonical upper-case method name
+// if it's in the allowlist; otherwise returns an error suitable for
+// an HTTP 400 response.
+func validateReplayMethod(method string) (string, error) {
+	m := strings.ToUpper(strings.TrimSpace(method))
+	if _, ok := replayAllowedMethods[m]; !ok {
+		return "", fmt.Errorf("method %q is not allowed for replay", method)
+	}
+	return m, nil
+}
+
+// buildReplayURL safely combines the resolved app URL with the
+// attacker-controlled path. It rejects any reference that carries a
+// scheme, host, or userinfo, then explicitly pins the scheme, host,
+// and user to the app URL's values — so the user's supplied input can
+// influence only the path + query. Returns the fully-assembled URL
+// string, ready for http.NewRequestWithContext.
+func buildReplayURL(appURL, rawPath string) (string, error) {
+	base, err := url.Parse(appURL)
+	if err != nil || base.Scheme == "" || base.Host == "" {
+		return "", fmt.Errorf("internal: resolved app URL %q is malformed", appURL)
+	}
+	ref, err := url.Parse(rawPath)
+	if err != nil {
+		return "", fmt.Errorf("path is not a valid URL reference")
+	}
+	if ref.Scheme != "" || ref.Host != "" || ref.User != nil || ref.Opaque != "" {
+		// Reject anything that could redirect the request to a
+		// different host. Explicit error message — the dashboard UI
+		// surfaces it to the developer.
+		return "", fmt.Errorf("path must be relative (no scheme, host, or userinfo)")
+	}
+	// Require a leading slash. Rejects `//evil.com/x` (network-path
+	// reference, which some URL parsers treat as scheme-relative) and
+	// any path that would resolve relative to an unknown base.
+	if !strings.HasPrefix(ref.Path, "/") {
+		return "", fmt.Errorf("path must start with /")
+	}
+	// Reassemble: base's scheme+host+user, ref's path+query. Copy
+	// the base rather than mutating so concurrent handlers don't
+	// race on s.appURL derivatives.
+	out := *base
+	out.Path = ref.Path
+	out.RawQuery = ref.RawQuery
+	out.Fragment = ""
+	return out.String(), nil
 }
 
 // maxReplayResponse caps the response body the dashboard shows after
