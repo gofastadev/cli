@@ -126,3 +126,22 @@ func TestRunVerify_ReturnsVerifyFailedCode(t *testing.T) {
 	}
 	assert.Equal(t, string(clierr.CodeVerifyFailed), structured.Code)
 }
+
+// TestStepRoutes_Skip — no app/rest/routes/ → "skip".
+func TestStepRoutes_Skip(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	msg, _, err := stepRoutes()
+	require.NoError(t, err)
+	assert.Equal(t, "skip", msg)
+}
+
+// TestStepGolangciLint_Invokes — smoke test. Behavior depends on
+// whether golangci-lint is on $PATH (CI installs it, dev boxes
+// vary), so we only confirm the function doesn't panic. Both the
+// skip branch and the error branch are valid outcomes.
+func TestStepGolangciLint_Invokes(t *testing.T) {
+	_, _, _ = stepGolangciLint()
+}

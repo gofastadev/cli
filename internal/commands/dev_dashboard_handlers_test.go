@@ -309,3 +309,79 @@ func TestFlattenHeaders(t *testing.T) {
 // ensure the fixture file's imports stay used if some tests are
 // pruned later — keeping bytes.Buffer satisfied.
 var _ bytes.Buffer
+
+// TestHandleExplain_UpstreamUnreachable — handler forwards to app's
+// /debug/explain; when the app is down we get 502.
+func TestHandleExplain_UpstreamUnreachable(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://127.0.0.1:1"}
+	req := httptest.NewRequest(http.MethodPost, "/api/explain",
+		strings.NewReader(`{"sql":"SELECT 1"}`))
+	rec := httptest.NewRecorder()
+	srv.handleExplain(rec, req)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+// TestHandleReplay_BadJSON — malformed body → 400.
+func TestHandleReplay_BadJSON(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader("{not-json"))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleReplay_MissingFields — method / path empty → 400.
+func TestHandleReplay_MissingFields(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"","path":""}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleReplay_UpstreamUnreachable — validator accepts but the
+// upstream app is down → 502.
+func TestHandleReplay_UpstreamUnreachable(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://127.0.0.1:1"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"GET","path":"/x"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+// TestHandleIndex_EmptyStateStillRenders — a bare dashboardState
+// renders the page without errors.
+func TestHandleIndex_EmptyStateStillRenders(t *testing.T) {
+	srv := &dashboardServer{state: dashboardState{AppURL: "x", Health: "ok"}}
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}
+
+// TestExtractResponseType_NoResponses — empty map returns "".
+func TestExtractResponseType_NoResponses(t *testing.T) {
+	assert.Empty(t, extractResponseType(nil))
+	assert.Empty(t, extractResponseType(map[string]responseSpec{}))
+}
+
+// TestExtractResponseType_SchemaNil — primary code picked but its
+// responseSpec has no schema → "".
+func TestExtractResponseType_SchemaNil(t *testing.T) {
+	assert.Empty(t, extractResponseType(map[string]responseSpec{
+		"200": {},
+	}))
+}
+
+// TestResolveServices_QueueSurfacesAsynqmonURL — a healthy queue
+// service in compose produces a non-empty asynqmon URL.
+func TestResolveServices_QueueSurfacesAsynqmonURL(t *testing.T) {
+	out := `[{"Service":"queue","State":"running","Health":"healthy"}]`
+	fakeExecOutput(t, out, 0)
+	srv := &dashboardServer{svc: &devServices{selected: []string{"queue"}}}
+	states, asynqmonURL := srv.resolveServices()
+	assert.NotEmpty(t, states)
+	assert.NotEmpty(t, asynqmonURL)
+}

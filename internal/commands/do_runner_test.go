@@ -102,3 +102,37 @@ func captureStdoutCli(t *testing.T, fn func()) string {
 	fn()
 	return ""
 }
+
+// TestPrintWorkflowText_DryRun — dry-run branch produces the
+// "Dry run — workflow X would execute" block.
+func TestPrintWorkflowText_DryRun(t *testing.T) {
+	r := &workflowResult{
+		Workflow:   "health-check",
+		Status:     "planned",
+		DryRun:     true,
+		DurationMS: 0,
+		Steps: []workflowStepResult{
+			{Description: "verify", Command: []string{"gofasta", "verify"}, Status: "planned"},
+		},
+	}
+	var buf bytes.Buffer
+	printWorkflowText(&buf, r)
+	assert.Contains(t, buf.String(), "Dry run")
+}
+
+// TestFindWorkflow_Known — returns a non-nil pointer for every
+// registered workflow key.
+func TestFindWorkflow_Known(t *testing.T) {
+	for _, key := range []string{"health-check", "rebuild", "fresh-start", "clean-slate"} {
+		t.Run(key, func(t *testing.T) {
+			wf := findWorkflow(key)
+			require.NotNil(t, wf)
+			assert.Equal(t, key, wf.Key)
+		})
+	}
+}
+
+// TestFindWorkflow_Unknown — returns nil for an unknown key.
+func TestFindWorkflow_Unknown(t *testing.T) {
+	assert.Nil(t, findWorkflow("nonexistent-workflow"))
+}

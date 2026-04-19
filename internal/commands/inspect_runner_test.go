@@ -224,3 +224,9 @@ func TestFindStructFields_MissingStruct(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, findStructFields(f, "Missing"))
 }
+
+// TestExprToString_NilNode — nil input returns the "?" sentinel
+// rather than panicking. Confirms the default-branch path.
+func TestExprToString_NilNode(t *testing.T) {
+	assert.Equal(t, "?", exprToString(nil))
+}
