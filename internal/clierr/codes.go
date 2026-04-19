@@ -73,6 +73,19 @@ const (
 	CodeUnknownAgent    Code = "UNKNOWN_AGENT"
 	CodeAIManifestIO    Code = "AI_MANIFEST_IO"
 	CodeAIInstallFailed Code = "AI_INSTALL_FAILED"
+
+	// --- Dev server (gofasta dev) ---
+	//
+	// The dev orchestrator is a multi-step pipeline (preflight → service
+	// orchestration → migrations → Air) so each failure class gets its
+	// own code. Agents can branch on the exact step that broke without
+	// string-matching log output.
+	CodeDevDockerUnavailable Code = "DEV_DOCKER_UNAVAILABLE"
+	CodeDevComposeNotFound   Code = "DEV_COMPOSE_NOT_FOUND"
+	CodeDevServiceUnhealthy  Code = "DEV_SERVICE_UNHEALTHY"
+	CodeDevMigrationFailed   Code = "DEV_MIGRATION_FAILED"
+	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
+	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -242,6 +255,31 @@ var registry = map[Code]meta{
 	CodeAIInstallFailed: {
 		Hint: "one or more agent configuration files could not be written; inspect the error above",
 		Docs: "",
+	},
+
+	CodeDevDockerUnavailable: {
+		Hint: "install Docker Desktop (or Docker Engine + docker compose plugin) and make sure the daemon is running — test with `docker info`",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevComposeNotFound: {
+		Hint: "a compose.yaml is required for service orchestration; re-run with `--no-services` to skip Docker and run Air against an externally-managed database",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevServiceUnhealthy: {
+		Hint: "a compose service did not become healthy within the timeout; tail its logs with `docker compose logs <service>`, or raise `--wait-timeout`",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevMigrationFailed: {
+		Hint: "`migrate up` returned a non-zero exit; inspect the SQL error above or re-run with `--no-migrate` to skip and investigate the DB state manually",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevAirNotInstalled: {
+		Hint: "Air is not registered on the project toolchain; run `go get github.com/air-verse/air@latest && go mod edit -tool github.com/air-verse/air`",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevPortInUse: {
+		Hint: "another process is already bound to the configured PORT; stop it, pick a different port with `--port`, or update `server.port` in config.yaml",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 }
 

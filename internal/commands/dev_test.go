@@ -53,7 +53,7 @@ func TestRunDev_HappyPathWithEnv(t *testing.T) {
 
 	withFakeExec(t, 0)
 
-	err := runDev()
+	err := runDev(devFlags{envFile: ".env", noServices: true})
 	assert.NoError(t, err)
 	// The .env was loaded — value now in process env.
 	assert.Equal(t, "loaded", os.Getenv("DEV_TEST_RUN_HAPPY_VAR"))
@@ -65,7 +65,7 @@ func TestRunDev_NoDotEnv(t *testing.T) {
 	setupDevTempdir(t)
 	withFakeExec(t, 0)
 
-	err := runDev()
+	err := runDev(devFlags{envFile: ".env", noServices: true})
 	assert.NoError(t, err)
 }
 
@@ -82,7 +82,7 @@ func TestRunDev_UnreadableDotEnv(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(".env", 0o644) })
 
 	withFakeExec(t, 0)
-	err := runDev()
+	err := runDev(devFlags{envFile: ".env", noServices: true})
 	// runDev treats the load error as non-fatal — it prints a warning and
 	// carries on. No error is returned.
 	assert.NoError(t, err)
@@ -100,7 +100,7 @@ func TestRunDev_MigrationFails(t *testing.T) {
 	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
 	t.Cleanup(func() { execLookPath = origLookPath })
 
-	err := runDev()
+	err := runDev(devFlags{envFile: ".env", noServices: true})
 	// Air also fails (same fakeExec) — runDev returns the air error.
 	assert.Error(t, err)
 }
