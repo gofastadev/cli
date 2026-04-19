@@ -47,7 +47,7 @@ var CoreSet = wire.NewSet(
 	ProvideQueueConfig,
 	// Infrastructure
 	ProvideDB,
-	logger.NewLogger,
+	ProvideLogger,
 	validators.NewAppValidator,
 	ProvideTemplateRenderer,
 	mailer.NewEmailSender,
@@ -77,6 +77,19 @@ func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
 		slog.Warn("failed to install devtools GORM plugin", "error", err)
 	}
 	return db
+}
+
+// ProvideLogger wraps logger.NewLogger with the devtools slog
+// decorator. Every log record continues to flow to stdout through the
+// framework's handler (text or JSON, level from config) AND is teed
+// into the dev-dashboard's log ring keyed by trace ID. In production
+// builds (no `devtools` build tag) the wrapper is identity, so the
+// cost is zero.
+func ProvideLogger(cfg *config.LogConfig) *slog.Logger {
+	base := logger.NewLogger(cfg)
+	wrapped := slog.New(devtools.WrapLogger(base.Handler()))
+	slog.SetDefault(wrapped)
+	return wrapped
 }
 
 func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }

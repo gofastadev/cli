@@ -162,3 +162,164 @@ func TestScrapeRequestLog_404(t *testing.T) {
 	defer srv.Close()
 	assert.Nil(t, scrapeRequestLog(srv.URL))
 }
+
+// ── Goroutine dump parser ─────────────────────────────────────────────
+
+// TestParseGoroutineDump_GroupsByTop — exercises the happy path: two
+// goroutines parked in the same top function get grouped; a third
+// goroutine in a different function lives in its own group.
+func TestParseGoroutineDump_GroupsByTop(t *testing.T) {
+	text := `goroutine 1 [running]:
+main.run(0xdeadbeef)
+	/app/main.go:42 +0x1
+
+goroutine 2 [IO wait]:
+net/http.(*conn).serve(0x123)
+	/sdk/net/http/server.go:1 +0x10
+
+goroutine 3 [IO wait]:
+net/http.(*conn).serve(0x456)
+	/sdk/net/http/server.go:1 +0x10
+`
+	snap := parseGoroutineDump(text)
+	assert.Equal(t, 3, snap.Total)
+	// The first (biggest) group should be net/http (count=2), not main.run (count=1).
+	if assert.Len(t, snap.Groups, 2) {
+		assert.Equal(t, "net/http.(*conn).serve", snap.Groups[0].Top)
+		assert.Equal(t, 2, snap.Groups[0].Count)
+		assert.Contains(t, snap.Groups[0].States, "IO wait")
+		assert.Equal(t, "main.run", snap.Groups[1].Top)
+		assert.Equal(t, 1, snap.Groups[1].Count)
+	}
+}
+
+// TestParseGoroutineDump_Empty — empty input returns a zero snapshot.
+func TestParseGoroutineDump_Empty(t *testing.T) {
+	snap := parseGoroutineDump("")
+	assert.Equal(t, 0, snap.Total)
+	assert.Empty(t, snap.Groups)
+}
+
+// TestParseGoroutineDump_MalformedHeaderIsSkipped — a line that doesn't
+// start with `goroutine ` is ignored. No crash, no false positives.
+func TestParseGoroutineDump_MalformedHeaderIsSkipped(t *testing.T) {
+	text := `not a goroutine
+also junk
+`
+	snap := parseGoroutineDump(text)
+	assert.Equal(t, 0, snap.Total)
+}
+
+// TestParseGoroutineDump_MissingState — a header without [state] still
+// produces a group; State list stays empty.
+func TestParseGoroutineDump_MissingState(t *testing.T) {
+	text := `goroutine 42
+foo.bar()
+	/app/x.go:1 +0x2
+`
+	snap := parseGoroutineDump(text)
+	assert.Equal(t, 1, snap.Total)
+	if assert.Len(t, snap.Groups, 1) {
+		assert.Equal(t, "foo.bar", snap.Groups[0].Top)
+		assert.Empty(t, snap.Groups[0].States)
+	}
+}
+
+// TestScrapeGoroutines_200 — integration-level path hitting a stub
+// pprof server.
+func TestScrapeGoroutines_200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/debug/pprof/goroutine", r.URL.Path)
+		_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n\n"))
+	}))
+	defer srv.Close()
+	snap := scrapeGoroutines(srv.URL)
+	assert.Equal(t, 1, snap.Total)
+}
+
+// TestScrapeGoroutines_404 — devtools tag off: scraper returns a zero
+// snapshot rather than erroring out.
+func TestScrapeGoroutines_404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.NotFound(w, nil)
+	}))
+	defer srv.Close()
+	assert.Zero(t, scrapeGoroutines(srv.URL).Total)
+}
+
+// ── N+1 detector ──────────────────────────────────────────────────────
+
+// TestNormalizeSQL — quoted strings, numeric literals, and
+// whitespace all collapse so two queries differing only in params
+// produce the same template.
+func TestNormalizeSQL(t *testing.T) {
+	cases := map[string]string{
+		"SELECT * FROM users WHERE id = 42":                      "SELECT * FROM users WHERE id = ?",
+		"SELECT * FROM users WHERE id = 15":                      "SELECT * FROM users WHERE id = ?",
+		"SELECT * FROM users WHERE email = 'alice@example.com'":  "SELECT * FROM users WHERE email = ?",
+		"SELECT\n  *\n  FROM users\n  WHERE id = 1":              "SELECT * FROM users WHERE id = ?",
+		`SELECT * FROM users WHERE name = "Bob"`:                  "SELECT * FROM users WHERE name = ?",
+		"SELECT COUNT(*) FROM orders WHERE total > 100.50":       "SELECT COUNT(*) FROM orders WHERE total > ?",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, normalizeSQL(in), "input: %q", in)
+	}
+}
+
+// TestDetectNPlusOne_FlagsRepeatedTemplate — three or more queries
+// sharing (trace_id, template) trigger a finding.
+func TestDetectNPlusOne_FlagsRepeatedTemplate(t *testing.T) {
+	queries := []scrapedQuery{
+		{TraceID: "t1", SQL: "SELECT * FROM perms WHERE user_id = 1"},
+		{TraceID: "t1", SQL: "SELECT * FROM perms WHERE user_id = 2"},
+		{TraceID: "t1", SQL: "SELECT * FROM perms WHERE user_id = 3"},
+		{TraceID: "t1", SQL: "SELECT * FROM users"},
+	}
+	findings := detectNPlusOne(queries)
+	if assert.Len(t, findings, 1) {
+		assert.Equal(t, "t1", findings[0].TraceID)
+		assert.Equal(t, 3, findings[0].Count)
+		assert.Equal(t, "SELECT * FROM perms WHERE user_id = ?", findings[0].Template)
+	}
+}
+
+// TestDetectNPlusOne_RespectsThreshold — two repeats don't trip the
+// detector. (The threshold is 3.)
+func TestDetectNPlusOne_RespectsThreshold(t *testing.T) {
+	queries := []scrapedQuery{
+		{TraceID: "t1", SQL: "SELECT * FROM a WHERE id = 1"},
+		{TraceID: "t1", SQL: "SELECT * FROM a WHERE id = 2"},
+	}
+	assert.Empty(t, detectNPlusOne(queries))
+}
+
+// TestDetectNPlusOne_IgnoresQueriesWithoutTraceID — queries captured
+// before trace propagation (or from non-request contexts) can't be
+// attributed to a request so they're excluded.
+func TestDetectNPlusOne_IgnoresQueriesWithoutTraceID(t *testing.T) {
+	queries := []scrapedQuery{
+		{TraceID: "", SQL: "SELECT 1"},
+		{TraceID: "", SQL: "SELECT 2"},
+		{TraceID: "", SQL: "SELECT 3"},
+	}
+	assert.Empty(t, detectNPlusOne(queries))
+}
+
+// TestDetectNPlusOne_SortsByCountDesc — the worst offender renders
+// first so the dashboard's first row is the highest-priority fix.
+func TestDetectNPlusOne_SortsByCountDesc(t *testing.T) {
+	queries := []scrapedQuery{
+		{TraceID: "t1", SQL: "A WHERE id = 1"},
+		{TraceID: "t1", SQL: "A WHERE id = 2"},
+		{TraceID: "t1", SQL: "A WHERE id = 3"},
+		{TraceID: "t2", SQL: "B WHERE id = 1"},
+		{TraceID: "t2", SQL: "B WHERE id = 2"},
+		{TraceID: "t2", SQL: "B WHERE id = 3"},
+		{TraceID: "t2", SQL: "B WHERE id = 4"},
+	}
+	findings := detectNPlusOne(queries)
+	if assert.Len(t, findings, 2) {
+		assert.Equal(t, 4, findings[0].Count) // t2/B first
+		assert.Equal(t, 3, findings[1].Count)
+	}
+}

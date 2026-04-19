@@ -190,6 +190,56 @@
     max-height: 320px;
     overflow: auto;
   }
+  .replay-editor {
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(10, 28, 36, 0.6);
+    border: 1px solid rgba(79, 209, 229, 0.2);
+    border-radius: 6px;
+  }
+  .replay-editor-header {
+    margin-bottom: 8px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+  }
+  .replay-editor textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid rgba(138, 155, 160, 0.2);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    resize: vertical;
+  }
+  .replay-editor textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+  }
+  .replay-editor-footer {
+    margin-top: 6px;
+  }
+  .replay-send, .replay-cancel {
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .replay-send {
+    background: var(--primary);
+    border: none;
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .replay-send:hover { opacity: 0.9; }
+  .replay-cancel {
+    background: transparent;
+    border: 1px solid rgba(138, 155, 160, 0.3);
+    color: var(--muted);
+  }
+  .replay-cancel:hover { color: var(--fg); }
 </style>
 </head>
 <body>
@@ -227,11 +277,39 @@
       {{- else -}}—{{- end -}}
     </div>
   </div>
+  <div class="card">
+    <div class="label">Queue (asynqmon)</div>
+    <div class="value" id="asynqmon">
+      {{- if .AsynqmonURL -}}
+        <a href="{{.AsynqmonURL}}" target="_blank" rel="noopener noreferrer">{{.AsynqmonURL}}</a>
+      {{- else -}}—{{- end -}}
+    </div>
+  </div>
 </div>
 
 <h2>Metrics</h2>
 <div id="metrics">
   {{- template "metricsCards" .Metrics -}}
+</div>
+
+<h2>
+  Profiles
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="profiles">
+  {{- template "profilesBar" . -}}
+</div>
+
+<h2>
+  Goroutines
+  {{- if .Goroutines.Total }}
+    <span class="pill ok" style="margin-left: 8px;">{{.Goroutines.Total}}</span>
+  {{- end -}}
+</h2>
+<div id="goroutines">
+  {{- template "goroutinesTable" .Goroutines -}}
 </div>
 
 <h2>Services</h2>
@@ -252,6 +330,16 @@
 </h2>
 <div id="requests">
   {{- template "requestsTable" .RecentRequests -}}
+</div>
+
+<h2>
+  N+1 findings
+  {{- if .NPlusOne }}
+    <span class="pill err" style="margin-left: 8px;">{{len .NPlusOne}}</span>
+  {{- end -}}
+</h2>
+<div id="nplusone">
+  {{- template "nPlusOneTable" .NPlusOne -}}
 </div>
 
 <h2>
@@ -394,6 +482,33 @@
     }).join('');
     return '<div>' + lines + '</div>';
   }
+  function renderLogs(logs) {
+    if (!logs || logs.length === 0) {
+      return '<div class="empty" style="padding: 8px;">No logs captured for this trace.</div>';
+    }
+    var rows = logs.map(function (l) {
+      var levelCls = (l.level === 'ERROR') ? 'err'
+                   : (l.level === 'WARN') ? 'warn'
+                   : 'ok';
+      var attrs = '';
+      if (l.attrs) {
+        var keys = Object.keys(l.attrs);
+        if (keys.length > 0) {
+          attrs = ' <span style="color: var(--muted); font-size: 10px;">{' +
+            keys.map(function (k) { return esc(k) + '=' + esc(l.attrs[k]); }).join(', ') +
+          '}</span>';
+        }
+      }
+      return (
+        '<div style="padding: 3px 0; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;">' +
+          '<span style="color: var(--muted);">' + fmtTime(l.time) + '</span> ' +
+          '<span class="pill ' + levelCls + '" style="font-size: 9px;">' + esc(l.level) + '</span> ' +
+          esc(l.message) + attrs +
+        '</div>'
+      );
+    }).join('');
+    return rows;
+  }
   function toggleTrace(id, row) {
     var existing = row.nextElementSibling;
     if (existing && existing.classList && existing.classList.contains('trace-expanded')) {
@@ -409,7 +524,18 @@
     holder.appendChild(cell);
     row.parentNode.insertBefore(holder, row.nextSibling);
     var finalize = function (trace) {
-      cell.innerHTML = renderWaterfall(trace);
+      var tabsHTML =
+        '<div class="trace-tabs">' +
+          '<button class="trace-tab active" data-tab="waterfall">Waterfall</button>' +
+          '<button class="trace-tab" data-tab="logs">Logs</button>' +
+        '</div>' +
+        '<div class="trace-tab-body" data-tab-body="waterfall">' +
+          renderWaterfall(trace) +
+        '</div>' +
+        '<div class="trace-tab-body" data-tab-body="logs" style="display:none;">' +
+          '<div class="empty" style="padding: 8px;">loading logs…</div>' +
+        '</div>';
+      cell.innerHTML = tabsHTML;
     };
     if (traceCache[id]) {
       finalize(traceCache[id]);
@@ -452,16 +578,32 @@
       }
       return;
     }
-    // Replay button in the requests table.
+    // Replay button in the requests table — open the inline editor.
     if (t && t.classList && t.classList.contains('replay-btn')) {
       var method = t.getAttribute('data-method');
       var path = t.getAttribute('data-path');
       var body = t.getAttribute('data-body') || '';
+      openReplayEditor(t, method, path, body);
+      return;
+    }
+    // Send button inside an open editor.
+    if (t && t.classList && t.classList.contains('replay-send')) {
+      var editor = t.closest('.replay-editor');
+      if (!editor) return;
+      var method = editor.getAttribute('data-method');
+      var path = editor.getAttribute('data-path');
+      var body = editor.querySelector('textarea').value;
       var mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(method);
       if (mutating && !confirm('Re-send ' + method + ' ' + path + '? This will execute the request again against the live app.')) {
         return;
       }
-      replay(t, method, path, body);
+      replay(t, method, path, body, editor);
+      return;
+    }
+    // Cancel / close button inside an open editor.
+    if (t && t.classList && t.classList.contains('replay-cancel')) {
+      var editor = t.closest('.replay-editor');
+      if (editor) editor.remove();
       return;
     }
     // Expand / collapse the full trace waterfall.
@@ -471,9 +613,46 @@
     }
   });
 
-  function replay(btn, method, path, body) {
-    btn.disabled = true;
-    btn.textContent = '…';
+  // openReplayEditor renders a small form below the requests table so
+  // developers can tweak the body before re-firing. The textarea is
+  // prefilled with the captured request body, so "hit Send" gives
+  // exactly the original behavior — editing is opt-in.
+  function openReplayEditor(btn, method, path, body) {
+    // Remove any already-open editor: one-at-a-time keeps the UI calm.
+    var existing = document.querySelector('.replay-editor');
+    if (existing) existing.remove();
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'replay-editor';
+    wrapper.setAttribute('data-method', method);
+    wrapper.setAttribute('data-path', path);
+    wrapper.innerHTML =
+      '<div class="replay-editor-header">' +
+        '<span class="method">' + esc(method) + '</span> ' +
+        '<span style="color: var(--fg);">' + esc(path) + '</span>' +
+        '<span style="float: right;">' +
+          '<button class="replay-send">send</button>' +
+          '<button class="replay-cancel" style="margin-left: 6px;">cancel</button>' +
+        '</span>' +
+      '</div>' +
+      '<textarea rows="6" spellcheck="false">' + esc(body) + '</textarea>' +
+      '<div class="replay-editor-footer">' +
+        '<span style="color: var(--muted); font-size: 10px;">' +
+          'content-type defaults to application/json — responses appear inline' +
+        '</span>' +
+      '</div>';
+
+    // Insert just after the requests section so it stays visible.
+    var host = document.getElementById('requests');
+    host.appendChild(wrapper);
+    var ta = wrapper.querySelector('textarea');
+    if (ta) ta.focus();
+  }
+
+  function replay(sendBtn, method, path, body, editor) {
+    sendBtn.disabled = true;
+    var originalLabel = sendBtn.textContent;
+    sendBtn.textContent = '…';
     fetch('/api/replay', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -481,28 +660,24 @@
     })
       .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
       .then(function (res) {
-        btn.disabled = false;
-        btn.textContent = 'replay';
-        var cell = btn.parentNode;
-        var prev = cell.querySelector('.replay-result');
+        sendBtn.disabled = false;
+        sendBtn.textContent = originalLabel;
+        var prev = editor.querySelector('.replay-result');
         if (prev) prev.remove();
-        if (!res.ok) {
-          var err = document.createElement('div');
-          err.className = 'replay-result';
-          err.textContent = 'error: ' + (res.j && res.j.error ? res.j.error : 'unknown');
-          cell.appendChild(err);
-          return;
-        }
         var box = document.createElement('div');
         box.className = 'replay-result';
-        box.innerHTML =
-          '<div><strong>status:</strong> ' + res.j.status + '</div>' +
-          '<pre style="margin: 4px 0 0 0; white-space: pre-wrap;">' + esc(res.j.body) + '</pre>';
-        cell.appendChild(box);
+        if (!res.ok) {
+          box.textContent = 'error: ' + (res.j && res.j.error ? res.j.error : 'unknown');
+        } else {
+          box.innerHTML =
+            '<div><strong>status:</strong> ' + res.j.status + '</div>' +
+            '<pre style="margin: 4px 0 0 0; white-space: pre-wrap;">' + esc(res.j.body) + '</pre>';
+        }
+        editor.appendChild(box);
       })
-      .catch(function (e) {
-        btn.disabled = false;
-        btn.textContent = 'replay';
+      .catch(function () {
+        sendBtn.disabled = false;
+        sendBtn.textContent = originalLabel;
       });
   }
 
@@ -664,6 +839,114 @@
       No captured requests yet — hit your app and they will appear here
       (requires the <code>devtools</code> build tag, which
       <code>gofasta dev</code> sets automatically).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "nPlusOneTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Count</th>
+          <th>SQL template</th>
+          <th style="width: 25%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td><span class="pill err">{{.Count}}×</span></td>
+            <td style="font-size: 11px; color: var(--fg);">{{.Template}}</td>
+            <td style="font-size: 10px;">
+              <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No N+1 patterns detected in recent traces.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "goroutinesTable"}}
+  {{- if .Groups -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Count</th>
+          <th>Top-of-stack</th>
+          <th style="width: 25%;">States</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range .Groups -}}
+          <tr>
+            <td>
+              <span class="pill ok">{{.Count}}</span>
+            </td>
+            <td style="font-size: 11px; color: var(--fg);">{{.Top}}</td>
+            <td>
+              {{- range .States -}}
+                <span class="pill warn" style="margin-right: 4px;">{{.}}</span>
+              {{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      Goroutines require the <code>devtools</code> build tag
+      (<code>/debug/pprof/goroutine</code>) — start the app via
+      <code>gofasta dev</code>.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "profilesBar"}}
+  {{- if .PprofURL -}}
+    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+      <a class="card" href="{{.PprofURL}}heap?debug=1" target="_blank" rel="noopener">
+        <div class="label">Heap</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ snapshot</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}goroutine?debug=2" target="_blank" rel="noopener">
+        <div class="label">Goroutines</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ dump</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}profile?seconds=30" target="_blank" rel="noopener">
+        <div class="label">CPU (30s)</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ .pprof</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}allocs?debug=1" target="_blank" rel="noopener">
+        <div class="label">Allocations</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ snapshot</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}mutex?debug=1" target="_blank" rel="noopener">
+        <div class="label">Mutex</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ contention</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}block?debug=1" target="_blank" rel="noopener">
+        <div class="label">Block</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ blocking ops</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}trace?seconds=5" target="_blank" rel="noopener">
+        <div class="label">Trace (5s)</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ .trace</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}" target="_blank" rel="noopener">
+        <div class="label">Index</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ all profiles</div>
+      </a>
+    </div>
+  {{- else -}}
+    <div class="empty">
+      pprof endpoints require the <code>devtools</code> build tag —
+      start the app via <code>gofasta dev</code> to enable.
     </div>
   {{- end -}}
 {{end}}

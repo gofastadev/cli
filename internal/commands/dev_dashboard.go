@@ -79,11 +79,15 @@ type dashboardState struct {
 	GraphQLURL      string           `json:"graphql_url,omitempty"`
 	MetricsURL      string           `json:"metrics_url,omitempty"`
 	Metrics         metricsSnapshot  `json:"metrics"`
-	DevtoolsEnabled bool             `json:"devtools_enabled"`
-	RecentRequests  []scrapedRequest `json:"recent_requests,omitempty"`
-	RecentQueries   []scrapedQuery   `json:"recent_queries,omitempty"`
-	RecentTraces    []scrapedTrace   `json:"recent_traces,omitempty"`
-	LastUpdatedMS   int64            `json:"last_updated_ms"`
+	DevtoolsEnabled bool              `json:"devtools_enabled"`
+	PprofURL        string            `json:"pprof_url,omitempty"`
+	AsynqmonURL     string            `json:"asynqmon_url,omitempty"`
+	Goroutines      goroutineSnapshot `json:"goroutines"`
+	RecentRequests  []scrapedRequest  `json:"recent_requests,omitempty"`
+	RecentQueries   []scrapedQuery    `json:"recent_queries,omitempty"`
+	RecentTraces    []scrapedTrace    `json:"recent_traces,omitempty"`
+	NPlusOne        []nPlusOneFinding `json:"n_plus_one,omitempty"`
+	LastUpdatedMS   int64             `json:"last_updated_ms"`
 }
 
 // dashboardRoute is a single REST route scraped from the scaffold's
@@ -192,6 +196,7 @@ func startDashboard(port, appPort int, svc *devServices, emitter devEmitter) fun
 	mux.HandleFunc("/api/state", srv.handleState)
 	mux.HandleFunc("/api/stream", srv.handleStream)
 	mux.HandleFunc("/api/trace/", srv.handleTraceDetail)
+	mux.HandleFunc("/api/logs", srv.handleLogs)
 	mux.HandleFunc("/api/replay", srv.handleReplay)
 
 	srv.httpSrv = &http.Server{
@@ -245,12 +250,28 @@ func (s *dashboardServer) refresh() {
 	health := probeHealth(s.appURL + "/health")
 
 	var states []serviceState
+	asynqmonURL := ""
 	if s.svc != nil && len(s.svc.selected) > 0 {
 		if live, err := queryServiceStates(); err == nil {
 			for _, st := range live {
 				for _, sel := range s.svc.selected {
 					if st.Name == sel {
 						states = append(states, st)
+					}
+				}
+				// Detect asynqmon and publish its URL if it's running. The
+				// scaffold's compose.yaml names this service `queue` (or
+				// `<project>_queue`) and exposes it on
+				// ${ASYNQMON_HOST_PORT:-8081}. Name match is sufficient;
+				// projects using a different queue viewer can override
+				// the env var without the dashboard caring.
+				if strings.Contains(strings.ToLower(st.Name), "queue") {
+					if strings.EqualFold(st.Health, "healthy") || strings.EqualFold(st.State, "running") {
+						port := os.Getenv("ASYNQMON_HOST_PORT")
+						if port == "" {
+							port = "8081"
+						}
+						asynqmonURL = "http://localhost:" + port
 					}
 				}
 			}
@@ -275,6 +296,15 @@ func (s *dashboardServer) refresh() {
 	s.state.Services = states
 	s.state.Metrics = metrics
 	s.state.DevtoolsEnabled = devtoolsOn
+	if devtoolsOn {
+		s.state.PprofURL = s.appURL + "/debug/pprof/"
+		s.state.Goroutines = scrapeGoroutines(s.appURL)
+	} else {
+		s.state.PprofURL = ""
+		s.state.Goroutines = goroutineSnapshot{}
+	}
+	s.state.AsynqmonURL = asynqmonURL
+	s.state.NPlusOne = detectNPlusOne(recentQueries)
 	s.state.RecentRequests = recentReqs
 	s.state.RecentQueries = recentQueries
 	s.state.RecentTraces = recentTraces
@@ -527,6 +557,16 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, st dashboardState) {
 	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 	flusher.Flush()
+}
+
+// handleLogs proxies to the app's /debug/logs, forwarding the
+// trace_id and level query parameters. Keeps the dashboard same-origin
+// (no CORS) and lets the CLI inject other filtering later without
+// the browser learning about the app's port layout.
+func (s *dashboardServer) handleLogs(w http.ResponseWriter, r *http.Request) {
+	entries := scrapeLogs(s.appURL, r.URL.Query().Get("trace_id"), r.URL.Query().Get("level"))
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(entries)
 }
 
 // handleTraceDetail proxies to the app's /debug/traces/{id} endpoint

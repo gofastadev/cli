@@ -21,6 +21,7 @@
 package devtools
 
 import (
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -46,17 +47,39 @@ type RequestEntry struct {
 	// /api/replay endpoint in the dashboard to re-fire the exact same
 	// request. Only populated for requests with a body ≤ cap.
 	Body string `json:"body,omitempty"`
+	// ResponseBody is the captured response body (capped at 64KiB). Fed
+	// by a teeing ResponseWriter around the real one; large responses
+	// stream through but only the first 64KiB are retained. Drives
+	// HAR export and side-by-side replay diffs in the dashboard.
+	ResponseBody string `json:"response_body,omitempty"`
+	// ResponseContentType is copied verbatim from the outgoing headers
+	// so the dashboard can render JSON / plain text bodies correctly
+	// and the HAR export carries the right MIME type.
+	ResponseContentType string `json:"response_content_type,omitempty"`
 }
 
 // QueryEntry is a single captured SQL query. Populated by the GORM
 // callback the devtools package registers when the `devtools` build tag
 // is active. Stable API.
+//
+// TraceID links the query back to the RequestEntry (and TraceEntry)
+// whose root span was active when GORM ran this statement. Enables
+// per-request SQL filters and N+1 detection (clustering queries that
+// share a trace ID and template).
+//
+// Vars carries the parameter values bound to the query — without them
+// the dashboard's EXPLAIN button would have to render plans for
+// placeholder-only SQL, which Postgres rejects. Values are coerced to
+// strings (fmt.Sprint) so the JSON payload stays cheap; loss of the
+// original Go type is acceptable for a debug surface.
 type QueryEntry struct {
 	Time       time.Time `json:"time"`
 	SQL        string    `json:"sql"`
 	Rows       int64     `json:"rows"`
 	DurationMS int64     `json:"duration_ms"`
 	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	Vars       []string  `json:"vars,omitempty"`
 }
 
 // Middleware returns an HTTP middleware that captures request metadata
@@ -152,4 +175,31 @@ type TraceEvent struct {
 // the type assertion against the no-op provider falls through silently.
 func RegisterTraceProcessor() {
 	registerTraceProcessorImpl()
+}
+
+// LogEntry is one captured slog record. Attrs is a flat string→string
+// map so the dashboard can render it without a JSON editor; complex
+// values are stringified via slog's built-in value formatting.
+//
+// TraceID is extracted from the record's context at capture time (if
+// a valid span context is present) so the Logs tab in the dashboard
+// can filter to "only logs from this request".
+type LogEntry struct {
+	Time    time.Time         `json:"time"`
+	Level   string            `json:"level"`
+	Message string            `json:"message"`
+	Attrs   map[string]string `json:"attrs,omitempty"`
+	TraceID string            `json:"trace_id,omitempty"`
+}
+
+// WrapLogger wraps an existing slog.Handler so that every log record
+// passing through it is ALSO teed into the devtools log ring with its
+// originating trace ID attached. Call it once during startup:
+//
+//	logger := slog.New(devtools.WrapLogger(baseHandler))
+//
+// In stub builds WrapLogger returns its argument unchanged, so this
+// call is safe in production — zero overhead, no behavior change.
+func WrapLogger(h slog.Handler) slog.Handler {
+	return wrapLoggerImpl(h)
 }

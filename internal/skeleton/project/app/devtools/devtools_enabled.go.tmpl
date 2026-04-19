@@ -8,7 +8,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	// Importing net/http/pprof for its side-effect: init() registers
+	// the profiler endpoints on http.DefaultServeMux. We then forward
+	// /debug/pprof/ paths to that mux from handlerImpl so they're only
+	// reachable under the devtools build tag — production binaries
+	// (no tag) don't pay the init cost or expose the endpoints.
+	_ "net/http/pprof"
 	"runtime"
 	"strings"
 	"sync"
@@ -40,6 +47,11 @@ const maxBodyCapture = 64 * 1024
 // is deep enough to show controller → service → repository → GORM
 // without wasting memory on runtime internals.
 const stackDepth = 20
+
+// logRingCapacity bounds the slog ring. 500 entries covers the last
+// handful of requests at verbose levels without letting a chatty dev
+// session balloon memory.
+const logRingCapacity = 500
 
 // ── Request ring ──────────────────────────────────────────────────────
 
@@ -109,17 +121,42 @@ func (r *queryRing) snapshot() []QueryEntry {
 // ── Middleware implementation ─────────────────────────────────────────
 
 // statusRecorder wraps a ResponseWriter so we can observe the status
-// code the handler wrote. Recording only the status (not the body) keeps
-// the middleware light and avoids accidentally double-buffering
-// potentially-large response bodies.
+// code the handler wrote and tee the response body into a capped
+// buffer. The tee is size-limited (maxBodyCapture) so streaming
+// endpoints (file downloads, SSE) don't quietly duplicate MB of bytes
+// into the devtools ring. Anything beyond the cap passes through
+// untouched — the client still sees the full stream.
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status  int
+	body    []byte
+	skipped bool
 }
 
 func (sr *statusRecorder) WriteHeader(code int) {
 	sr.status = code
 	sr.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures up to maxBodyCapture bytes of the response body while
+// always delegating the full payload to the underlying writer. The
+// `skipped` flag short-circuits repeated capacity checks on large
+// payloads so the hot path stays branch-predictable.
+func (sr *statusRecorder) Write(p []byte) (int, error) {
+	if !sr.skipped {
+		remaining := maxBodyCapture - len(sr.body)
+		if remaining > 0 {
+			n := len(p)
+			if n > remaining {
+				n = remaining
+			}
+			sr.body = append(sr.body, p[:n]...)
+		}
+		if len(sr.body) >= maxBodyCapture {
+			sr.skipped = true
+		}
+	}
+	return sr.ResponseWriter.Write(p)
 }
 
 func middlewareImpl(next http.Handler) http.Handler {
@@ -173,14 +210,16 @@ func middlewareImpl(next http.Handler) http.Handler {
 		}
 
 		requests.push(RequestEntry{
-			Time:       start,
-			Method:     r.Method,
-			Path:       r.URL.Path,
-			Status:     rec.status,
-			DurationMS: time.Since(start).Milliseconds(),
-			RemoteAddr: r.RemoteAddr,
-			TraceID:    traceID,
-			Body:       capturedBody,
+			Time:                start,
+			Method:              r.Method,
+			Path:                r.URL.Path,
+			Status:              rec.status,
+			DurationMS:          time.Since(start).Milliseconds(),
+			RemoteAddr:          r.RemoteAddr,
+			TraceID:             traceID,
+			Body:                capturedBody,
+			ResponseBody:        string(rec.body),
+			ResponseContentType: rec.Header().Get("Content-Type"),
 		})
 	})
 }
@@ -218,6 +257,29 @@ func handlerImpl() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(entry)
 	})
+	// /debug/logs — the slog ring. Supports ?trace_id=<id>&level=<INFO>
+	// so the dashboard can fetch exactly the logs for one expanded
+	// request without dragging the whole buffer across the wire.
+	mux.HandleFunc("/debug/logs", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		traceID := q.Get("trace_id")
+		levelStr := q.Get("level")
+		var minLevel slog.Level
+		hasLevel := false
+		if levelStr != "" {
+			minLevel = parsedLevel(levelStr)
+			hasLevel = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(logs.snapshot(traceID, minLevel, hasLevel))
+	})
+	// /debug/pprof/* — forwarded to http.DefaultServeMux where
+	// net/http/pprof's init() registered Index / Cmdline / Profile /
+	// Symbol / Trace and every named profile (heap, goroutine, mutex,
+	// block, allocs, threadcreate). Delegating rather than re-wiring
+	// those handlers manually means we pick up new profiles for free
+	// whenever the stdlib adds them.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
 	mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
@@ -255,12 +317,32 @@ func (g *gormDevtools) Initialize(db *gorm.DB) error {
 		if tx.Error != nil {
 			errMsg = tx.Error.Error()
 		}
+		// Propagate the trace ID from the request's context so the
+		// dashboard can group queries by request (N+1 detection,
+		// per-request SQL filter, EXPLAIN drill-down).
+		traceID := ""
+		if sc := trace.SpanContextFromContext(tx.Statement.Context); sc.IsValid() {
+			traceID = sc.TraceID().String()
+		}
+		// Stringify vars defensively: GORM hands us a []interface{}
+		// whose element types are driver-dependent. fmt.Sprint collapses
+		// everything to a printable form the dashboard can hand back to
+		// /debug/explain verbatim.
+		var vars []string
+		if n := len(tx.Statement.Vars); n > 0 {
+			vars = make([]string, n)
+			for i, v := range tx.Statement.Vars {
+				vars[i] = fmt.Sprint(v)
+			}
+		}
 		queries.push(QueryEntry{
 			Time:       start,
 			SQL:        tx.Statement.SQL.String(),
 			Rows:       tx.Statement.RowsAffected,
 			DurationMS: time.Since(start).Milliseconds(),
 			Error:      errMsg,
+			TraceID:    traceID,
+			Vars:       vars,
 		})
 	}
 
@@ -562,4 +644,138 @@ func registerTraceProcessorImpl() {
 		return
 	}
 	tp.RegisterSpanProcessor(newTraceRecorder())
+}
+
+// ── Log ring + slog handler ───────────────────────────────────────────
+
+type logRing struct {
+	mu      sync.RWMutex
+	entries [logRingCapacity]LogEntry
+	head    int
+	count   int
+}
+
+var logs = &logRing{}
+
+func (r *logRing) push(e LogEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % logRingCapacity
+	if r.count < logRingCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+// snapshot returns entries newest-first, optionally filtered by trace
+// ID and/or minimum level. An empty traceID or zero level means "no
+// filter on that dimension".
+func (r *logRing) snapshot(traceID string, minLevel slog.Level, includeLevels bool) []LogEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]LogEntry, 0, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + logRingCapacity) % logRingCapacity
+		e := r.entries[idx]
+		if traceID != "" && e.TraceID != traceID {
+			continue
+		}
+		if includeLevels {
+			if parsedLevel(e.Level) < minLevel {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// parsedLevel maps a human level string back to slog.Level. Defaults
+// to slog.LevelInfo on an unrecognized input so a malformed filter
+// never silently discards every record.
+func parsedLevel(s string) slog.Level {
+	switch strings.ToUpper(s) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "INFO":
+		return slog.LevelInfo
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	}
+	return slog.LevelInfo
+}
+
+// devtoolsLogHandler wraps an existing slog.Handler. Every record is
+// delegated to the inner handler unchanged (so slog output on stdout
+// stays identical to production) AND teed into the devtools log ring
+// with its trace ID attached.
+type devtoolsLogHandler struct {
+	inner slog.Handler
+	// attrs + group track the WithAttrs / WithGroup chain so teed
+	// records carry the same context the inner handler sees. We keep
+	// a flat copy of structured attrs for the ring, which doesn't
+	// model groups — the dashboard doesn't need that nuance yet.
+	attrs []slog.Attr
+	group string
+}
+
+func wrapLoggerImpl(h slog.Handler) slog.Handler {
+	if h == nil {
+		return nil
+	}
+	return &devtoolsLogHandler{inner: h}
+}
+
+func (h *devtoolsLogHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
+	return h.inner.Enabled(ctx, lvl)
+}
+
+func (h *devtoolsLogHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Capture into the ring first — doing it before the inner handler
+	// means a broken downstream formatter doesn't swallow debug-visible
+	// records. Errors from the inner handler still propagate to the
+	// caller so production observability stays strict.
+	entry := LogEntry{
+		Time:    r.Time,
+		Level:   r.Level.String(),
+		Message: r.Message,
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		entry.TraceID = sc.TraceID().String()
+	}
+	// Inline attrs from the record itself …
+	if r.NumAttrs() > 0 {
+		entry.Attrs = make(map[string]string, r.NumAttrs())
+		r.Attrs(func(a slog.Attr) bool {
+			entry.Attrs[a.Key] = a.Value.String()
+			return true
+		})
+	}
+	// … merged with any WithAttrs baggage this handler carries.
+	if len(h.attrs) > 0 {
+		if entry.Attrs == nil {
+			entry.Attrs = make(map[string]string, len(h.attrs))
+		}
+		for _, a := range h.attrs {
+			entry.Attrs[a.Key] = a.Value.String()
+		}
+	}
+	logs.push(entry)
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *devtoolsLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := *h
+	next.inner = h.inner.WithAttrs(attrs)
+	next.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return &next
+}
+
+func (h *devtoolsLogHandler) WithGroup(name string) slog.Handler {
+	next := *h
+	next.inner = h.inner.WithGroup(name)
+	next.group = name
+	return &next
 }

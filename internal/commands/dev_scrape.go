@@ -3,9 +3,25 @@ package commands
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
+)
+
+// SQL normalization regexps for N+1 detection. Compiled once at init
+// so detection stays cheap in the refresher loop.
+var (
+	// Single- and double-quoted string literals. Uses non-greedy
+	// matching so a malformed SQL with unbalanced quotes doesn't eat
+	// the rest of the input.
+	reSQLStringLit = regexp.MustCompile(`'[^']*'|"[^"]*"`)
+	// Whole-word numeric literals so `id` and `15` differ but
+	// `WHERE x = 42` normalizes to `WHERE x = ?`.
+	reSQLNumberLit = regexp.MustCompile(`\b\d+(\.\d+)?\b`)
+	// Runs of whitespace (including newlines) collapse to a single space.
+	reSQLWhitespace = regexp.MustCompile(`\s+`)
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -172,14 +188,16 @@ func scrapeSQLLog(appURL string) []scrapedQuery {
 // Duplicated here rather than imported so the CLI doesn't depend on the
 // scaffold (which isn't even a Go package from the CLI's perspective).
 type scrapedRequest struct {
-	Time       time.Time `json:"time"`
-	Method     string    `json:"method"`
-	Path       string    `json:"path"`
-	Status     int       `json:"status"`
-	DurationMS int64     `json:"duration_ms"`
-	RemoteAddr string    `json:"remote_addr,omitempty"`
-	TraceID    string    `json:"trace_id,omitempty"`
-	Body       string    `json:"body,omitempty"`
+	Time                time.Time `json:"time"`
+	Method              string    `json:"method"`
+	Path                string    `json:"path"`
+	Status              int       `json:"status"`
+	DurationMS          int64     `json:"duration_ms"`
+	RemoteAddr          string    `json:"remote_addr,omitempty"`
+	TraceID             string    `json:"trace_id,omitempty"`
+	Body                string    `json:"body,omitempty"`
+	ResponseBody        string    `json:"response_body,omitempty"`
+	ResponseContentType string    `json:"response_content_type,omitempty"`
 }
 
 // scrapedQuery mirrors devtools.QueryEntry from the scaffold.
@@ -189,6 +207,8 @@ type scrapedQuery struct {
 	Rows       int64     `json:"rows"`
 	DurationMS int64     `json:"duration_ms"`
 	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	Vars       []string  `json:"vars,omitempty"`
 }
 
 // scrapedTrace mirrors devtools.TraceEntry. Spans are omitted from
@@ -225,6 +245,44 @@ type scrapedEvent struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+// scrapedLog mirrors devtools.LogEntry — one slog record.
+type scrapedLog struct {
+	Time    time.Time         `json:"time"`
+	Level   string            `json:"level"`
+	Message string            `json:"message"`
+	Attrs   map[string]string `json:"attrs,omitempty"`
+	TraceID string            `json:"trace_id,omitempty"`
+}
+
+// scrapeLogs fetches the devtools log ring, optionally filtered by
+// trace ID and/or minimum level. Empty filters mean "no filter on
+// that dimension" — the app's /debug/logs handler applies the same
+// semantics.
+func scrapeLogs(appURL, traceID, level string) []scrapedLog {
+	u := appURL + "/debug/logs"
+	qs := url.Values{}
+	if traceID != "" {
+		qs.Set("trace_id", traceID)
+	}
+	if level != "" {
+		qs.Set("level", level)
+	}
+	if enc := qs.Encode(); enc != "" {
+		u += "?" + enc
+	}
+	resp, err := scrapeClient.Get(u)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var entries []scrapedLog
+	_ = json.NewDecoder(resp.Body).Decode(&entries)
+	return entries
+}
+
 // scrapeTraces fetches summary list of recent traces. Spans are
 // stripped server-side so this stays cheap to poll (5s cadence).
 func scrapeTraces(appURL string) []scrapedTrace {
@@ -258,6 +316,224 @@ func scrapeTraceDetail(appURL, id string) (*scrapedTrace, bool) {
 		return nil, false
 	}
 	return &entry, true
+}
+
+// ── N+1 detection ─────────────────────────────────────────────────────
+//
+// n+1 is the classic "I loaded 50 users, then ran one SELECT per user
+// to fetch their permissions" problem. The detector groups queries by
+// trace ID and normalized SQL template (literal values replaced with
+// placeholders) and flags any (trace, template) pair with ≥
+// nPlusOneThreshold hits. The threshold defaults to 3: two repeated
+// queries are probably intentional (a lookup + a count), three is
+// usually a smell.
+
+const nPlusOneThreshold = 3
+
+// nPlusOneFinding is one detected N+1 pattern. TraceID points back to
+// the offending request; Template is the normalized SQL (e.g.
+// "SELECT * FROM users WHERE id = ?"); Count is how many times it
+// fired inside the trace.
+type nPlusOneFinding struct {
+	TraceID  string `json:"trace_id"`
+	Template string `json:"template"`
+	Count    int    `json:"count"`
+}
+
+// detectNPlusOne walks the query ring and returns any (trace,
+// template) pair with ≥ nPlusOneThreshold hits. Pure function; no I/O,
+// so unit-testable without a running app.
+func detectNPlusOne(queries []scrapedQuery) []nPlusOneFinding {
+	// trace_id → template → count.
+	buckets := make(map[string]map[string]int)
+	for _, q := range queries {
+		if q.TraceID == "" || q.SQL == "" {
+			continue
+		}
+		tpl := normalizeSQL(q.SQL)
+		inner, ok := buckets[q.TraceID]
+		if !ok {
+			inner = make(map[string]int)
+			buckets[q.TraceID] = inner
+		}
+		inner[tpl]++
+	}
+	var out []nPlusOneFinding
+	for tid, perTpl := range buckets {
+		for tpl, count := range perTpl {
+			if count >= nPlusOneThreshold {
+				out = append(out, nPlusOneFinding{
+					TraceID:  tid,
+					Template: tpl,
+					Count:    count,
+				})
+			}
+		}
+	}
+	// Sort by count desc so the worst offenders render first.
+	for a := 0; a < len(out); a++ {
+		best := a
+		for b := a + 1; b < len(out); b++ {
+			if out[b].Count > out[best].Count {
+				best = b
+			}
+		}
+		if best != a {
+			out[a], out[best] = out[best], out[a]
+		}
+	}
+	return out
+}
+
+// normalizeSQL collapses string / number literals and whitespace so
+// two queries that differ only in their parameters produce the same
+// template. This is intentionally simple — it catches the 90% case
+// (same table, same WHERE columns, varying values) without a full SQL
+// parser. False positives (two differently-shaped queries that
+// happen to normalize to the same string) are rare and harmless: at
+// worst the dashboard misattributes a finding.
+func normalizeSQL(sql string) string {
+	s := sql
+	// Replace quoted strings with a sentinel. Handle both single and
+	// double quotes. Non-greedy match keeps us from swallowing an
+	// entire SQL statement on a malformed literal.
+	s = reSQLStringLit.ReplaceAllString(s, "?")
+	// Replace integer / float literals with the same sentinel so
+	// numeric-only queries group with their string-literal siblings.
+	s = reSQLNumberLit.ReplaceAllString(s, "?")
+	// Collapse runs of whitespace so reformatted queries match.
+	s = reSQLWhitespace.ReplaceAllString(s, " ")
+	return strings.TrimSpace(s)
+}
+
+// goroutineGroup is one bucket of goroutines sharing the same
+// top-of-stack function. The dashboard renders total count per group
+// so a developer can spot (e.g.) "18 goroutines parked in net/http
+// waiting for accept" at a glance, then expand for the full stacks.
+type goroutineGroup struct {
+	Top    string   `json:"top"`
+	Count  int      `json:"count"`
+	States []string `json:"states,omitempty"`
+}
+
+// goroutineSnapshot is a shallow summary of the app's goroutine
+// population. Total is the absolute count; Groups is a sorted (desc
+// by count) slice of aggregates. Zero-valued when /debug/pprof is
+// unavailable so the dashboard quietly renders "0 goroutines".
+type goroutineSnapshot struct {
+	Total  int              `json:"total"`
+	Groups []goroutineGroup `json:"groups,omitempty"`
+}
+
+// scrapeGoroutines fetches /debug/pprof/goroutine?debug=2, parses the
+// text dump, and aggregates by top-of-stack function name. This
+// reuses the pprof endpoint rather than adding a second goroutine
+// dump surface.
+func scrapeGoroutines(appURL string) goroutineSnapshot {
+	var snap goroutineSnapshot
+	resp, err := scrapeClient.Get(appURL + "/debug/pprof/goroutine?debug=2")
+	if err != nil {
+		return snap
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return snap
+	}
+	buf := make([]byte, 1<<20) // 1 MiB ceiling on a dev-time dump
+	n, _ := resp.Body.Read(buf)
+	return parseGoroutineDump(string(buf[:n]))
+}
+
+// parseGoroutineDump walks the debug=2 text format. Each goroutine
+// block starts with `goroutine N [state]:` and the first function
+// line after that header is the top-of-stack. We aggregate by that
+// function and also collect the distinct state strings we saw for
+// each bucket.
+func parseGoroutineDump(text string) goroutineSnapshot {
+	var snap goroutineSnapshot
+	if text == "" {
+		return snap
+	}
+	lines := strings.Split(text, "\n")
+	groups := make(map[string]*goroutineGroup)
+	i := 0
+	for i < len(lines) {
+		line := lines[i]
+		if !strings.HasPrefix(line, "goroutine ") {
+			i++
+			continue
+		}
+		snap.Total++
+		// Pull state from between the [ and ]:
+		state := ""
+		if lb := strings.Index(line, "["); lb >= 0 {
+			if rb := strings.Index(line[lb:], "]"); rb > 0 {
+				state = line[lb+1 : lb+rb]
+			}
+		}
+		// The very next non-blank line is the top-of-stack function
+		// name (followed by a file:line line — we skip the file info).
+		top := ""
+		for j := i + 1; j < len(lines); j++ {
+			cand := strings.TrimSpace(lines[j])
+			if cand == "" {
+				continue
+			}
+			top = cand
+			break
+		}
+		// Trim the argument list. Method receivers look like
+		// `pkg.(*Type).method(args)` — the first `(` belongs to the
+		// type, so we strip from the LAST `(` instead to preserve the
+		// method name.
+		if paren := strings.LastIndex(top, "("); paren > 0 {
+			top = top[:paren]
+		}
+		if top == "" {
+			top = "<unknown>"
+		}
+		g, ok := groups[top]
+		if !ok {
+			g = &goroutineGroup{Top: top}
+			groups[top] = g
+		}
+		g.Count++
+		if state != "" {
+			has := false
+			for _, s := range g.States {
+				if s == state {
+					has = true
+					break
+				}
+			}
+			if !has {
+				g.States = append(g.States, state)
+			}
+		}
+		// Advance past this goroutine block (until the next `goroutine ` or EOF).
+		i++
+		for i < len(lines) && !strings.HasPrefix(lines[i], "goroutine ") {
+			i++
+		}
+	}
+	snap.Groups = make([]goroutineGroup, 0, len(groups))
+	for _, g := range groups {
+		snap.Groups = append(snap.Groups, *g)
+	}
+	// Sort descending by count so the dashboard header reads biggest-first.
+	// Plain sort.Slice-equivalent via a selection loop avoids the sort import.
+	for a := 0; a < len(snap.Groups); a++ {
+		best := a
+		for b := a + 1; b < len(snap.Groups); b++ {
+			if snap.Groups[b].Count > snap.Groups[best].Count {
+				best = b
+			}
+		}
+		if best != a {
+			snap.Groups[a], snap.Groups[best] = snap.Groups[best], snap.Groups[a]
+		}
+	}
+	return snap
 }
 
 // devtoolsAvailable reports whether the running app was built with the

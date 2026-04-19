@@ -4,6 +4,7 @@
 package devtools
 
 import (
+	"log/slog"
 	"net/http"
 
 	"gorm.io/gorm"
@@ -40,6 +41,11 @@ func handlerImpl() http.Handler {
 // (cmd/serve.go) invoke it unconditionally after InitTracer; in
 // production the compiler elides the call entirely.
 func registerTraceProcessorImpl() {}
+
+// wrapLoggerImpl returns the handler unchanged in stub builds. The
+// scaffold calls WrapLogger unconditionally so this keeps slog
+// overhead at zero when devtools is off.
+func wrapLoggerImpl(h slog.Handler) slog.Handler { return h }
 
 // GormPlugin returns a plugin whose Initialize is a no-op. Calling
 // `db.Use(devtools.GormPlugin())` unconditionally in the DB setup is
