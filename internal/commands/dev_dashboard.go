@@ -85,11 +85,59 @@ type dashboardState struct {
 }
 
 // dashboardRoute is a single REST route scraped from the scaffold's
-// `gofasta routes --json` output (if available). Kept minimal so the
-// dashboard remains resilient to routing schema changes.
+// docs/swagger.json. Carries the request body type and the primary
+// 2xx response type so the dashboard can show developers *what shape
+// the endpoint expects and returns* without bouncing them to the
+// Swagger UI. Fields are optional — older swagger docs or handwritten
+// operations without schemas still produce a valid (method, path)
+// row.
 type dashboardRoute struct {
-	Method string `json:"method"`
-	Path   string `json:"path"`
+	Method   string `json:"method"`
+	Path     string `json:"path"`
+	Summary  string `json:"summary,omitempty"`
+	Request  string `json:"request,omitempty"`
+	Response string `json:"response,omitempty"`
+}
+
+// schemaRef represents the slice of an OpenAPI/Swagger schema object
+// the dashboard needs to extract a readable type name. Handles the
+// three shapes swag commonly emits: a bare $ref, an array whose
+// items carry the ref, and a primitive scalar (type=string etc).
+type schemaRef struct {
+	Ref   string     `json:"$ref,omitempty"`
+	Type  string     `json:"type,omitempty"`
+	Items *schemaRef `json:"items,omitempty"`
+}
+
+// operationSpec is the subset of an OpenAPI operation object the
+// dashboard route extractor inspects. Supports OpenAPI 2.0 (swag
+// default) via `parameters[].in=body` and OpenAPI 3.0 via
+// `requestBody.content['application/json'].schema` so hand-authored
+// specs work too.
+type operationSpec struct {
+	Summary     string                  `json:"summary"`
+	Parameters  []parameterSpec         `json:"parameters"`
+	Responses   map[string]responseSpec `json:"responses"`
+	RequestBody *requestBodySpec        `json:"requestBody,omitempty"`
+}
+
+type parameterSpec struct {
+	In     string     `json:"in"`
+	Schema *schemaRef `json:"schema,omitempty"`
+}
+
+type responseSpec struct {
+	Schema *schemaRef `json:"schema,omitempty"`
+	// OpenAPI 3.0 fallback.
+	Content map[string]struct {
+		Schema *schemaRef `json:"schema"`
+	} `json:"content,omitempty"`
+}
+
+type requestBodySpec struct {
+	Content map[string]struct {
+		Schema *schemaRef `json:"schema"`
+	} `json:"content"`
 }
 
 // dashboardServer owns the HTTP server and the cached state. Reads
@@ -255,11 +303,12 @@ func probeHealth(url string) string {
 	return "unhealthy"
 }
 
-// readRouteEntries opens `docs/swagger.json` and extracts a simple
-// (method, path) list. The scaffold regenerates swagger.json on build,
-// so this is usually fresh. If the file is missing (GraphQL-only
-// projects, or before the first build) returns nil and the dashboard
-// renders an empty routes table rather than blocking.
+// readRouteEntries opens `docs/swagger.json` and extracts route
+// metadata: method, path, optional operation summary, request body
+// type, and primary 2xx response type. The scaffold regenerates
+// swagger.json on build so this is usually fresh. Missing file
+// (GraphQL-only projects, pre-first-build) → nil → empty routes
+// table in the dashboard; never blocks the pipeline.
 func readRouteEntries() []dashboardRoute {
 	path := filepath.Join("docs", "swagger.json")
 	data, err := os.ReadFile(path)
@@ -267,21 +316,124 @@ func readRouteEntries() []dashboardRoute {
 		return nil
 	}
 	var doc struct {
-		Paths map[string]map[string]json.RawMessage `json:"paths"`
+		Paths map[string]map[string]operationSpec `json:"paths"`
 	}
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
 	entries := make([]dashboardRoute, 0, len(doc.Paths))
 	for routePath, methods := range doc.Paths {
-		for method := range methods {
+		for method, op := range methods {
 			entries = append(entries, dashboardRoute{
-				Method: strings.ToUpper(method),
-				Path:   routePath,
+				Method:   strings.ToUpper(method),
+				Path:     routePath,
+				Summary:  op.Summary,
+				Request:  extractRequestType(op),
+				Response: extractResponseType(op.Responses),
 			})
 		}
 	}
 	return entries
+}
+
+// extractRequestType returns a readable name for the request body
+// type, handling both OpenAPI 2.0 (parameters[in=body].schema) and
+// OpenAPI 3.0 (requestBody.content[application/json].schema). Returns
+// "" when the operation has no request body.
+func extractRequestType(op operationSpec) string {
+	// OpenAPI 2.0 path — swag's default output.
+	for _, p := range op.Parameters {
+		if p.In == "body" {
+			return typeNameFromSchema(p.Schema)
+		}
+	}
+	// OpenAPI 3.0 fallback — hand-written specs or future swag versions.
+	if op.RequestBody != nil {
+		if body, ok := op.RequestBody.Content["application/json"]; ok {
+			return typeNameFromSchema(body.Schema)
+		}
+	}
+	return ""
+}
+
+// extractResponseType picks the most meaningful response to display.
+// Prefers the lowest-numbered 2xx (200, 201, 202 …); falls back to
+// the lowest-numbered response if no 2xx exists. Lexicographic code
+// ordering is fine here — three-digit status codes sort numerically.
+func extractResponseType(responses map[string]responseSpec) string {
+	if len(responses) == 0 {
+		return ""
+	}
+	best := pickPrimaryResponseCode(responses)
+	if best == "" {
+		return ""
+	}
+	r := responses[best]
+	// OpenAPI 2.0 puts the schema at the response root; 3.0 puts it in
+	// content["application/json"].schema. Try both.
+	if r.Schema != nil {
+		return typeNameFromSchema(r.Schema)
+	}
+	if body, ok := r.Content["application/json"]; ok {
+		return typeNameFromSchema(body.Schema)
+	}
+	return ""
+}
+
+// pickPrimaryResponseCode returns the lowest 2xx status code present in
+// the responses map, or the lowest response code of any tier if no 2xx
+// exists. Used to decide which response's schema to surface on the
+// dashboard.
+func pickPrimaryResponseCode(responses map[string]responseSpec) string {
+	var best2xx, bestAny string
+	for code := range responses {
+		if code == "" {
+			continue
+		}
+		if bestAny == "" || code < bestAny {
+			bestAny = code
+		}
+		if len(code) == 3 && code[0] == '2' {
+			if best2xx == "" || code < best2xx {
+				best2xx = code
+			}
+		}
+	}
+	if best2xx != "" {
+		return best2xx
+	}
+	return bestAny
+}
+
+// typeNameFromSchema turns a Swagger/OpenAPI schema object into a
+// developer-readable Go-ish type name:
+//
+//	{$ref: "#/definitions/User"}          → "User"
+//	{type: "array", items: {$ref: "..."}} → "[]User"
+//	{type: "string"}                      → "string"
+//
+// Returns "" when the schema is nil or too opaque to describe in a
+// single token (anyOf / oneOf / free-form objects etc).
+func typeNameFromSchema(s *schemaRef) string {
+	if s == nil {
+		return ""
+	}
+	if s.Ref != "" {
+		// "#/definitions/User" or "#/components/schemas/User" → "User"
+		if i := strings.LastIndex(s.Ref, "/"); i >= 0 {
+			return s.Ref[i+1:]
+		}
+		return s.Ref
+	}
+	if s.Type == "array" && s.Items != nil {
+		if inner := typeNameFromSchema(s.Items); inner != "" {
+			return "[]" + inner
+		}
+	}
+	if s.Type != "" {
+		return s.Type
+	}
+	return ""
 }
 
 // handleIndex renders the dashboard HTML with the current state as the

@@ -284,13 +284,37 @@
   {{- if . -}}
     <table>
       <thead>
-        <tr><th>Method</th><th>Path</th></tr>
+        <tr>
+          <th>Method</th>
+          <th>Path</th>
+          <th>Request</th>
+          <th>Response</th>
+        </tr>
       </thead>
       <tbody>
         {{- range . -}}
           <tr>
             <td><span class="method">{{.Method}}</span></td>
-            <td>{{.Path}}</td>
+            <td>
+              {{.Path}}
+              {{- if .Summary -}}
+                <div style="font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 2px;">{{.Summary}}</div>
+              {{- end -}}
+            </td>
+            <td>
+              {{- if .Request -}}
+                <code style="color: var(--primary); font-size: 11px;">{{.Request}}</code>
+              {{- else -}}
+                <span style="color: var(--muted);">—</span>
+              {{- end -}}
+            </td>
+            <td>
+              {{- if .Response -}}
+                <code style="color: var(--primary); font-size: 11px;">{{.Response}}</code>
+              {{- else -}}
+                <span style="color: var(--muted);">—</span>
+              {{- end -}}
+            </td>
           </tr>
         {{- end -}}
       </tbody>
