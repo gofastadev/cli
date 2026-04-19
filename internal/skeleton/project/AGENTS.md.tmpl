@@ -104,22 +104,121 @@ make AI agents effective here. Read this section before doing any work —
 using these tools cuts round-trips, eliminates guessing, and prevents the
 most common failure modes.
 
-### Always prefer structured output
+### Always prefer structured output (`--json`)
 
-Every command that emits structured output honors a global `--json`
-flag. **Use it.** Text output is for humans; JSON output is the stable
-machine contract. Pass `--json` to any command whose result you need to
-reason about programmatically.
+`--json` is the contract between agents and the CLI. Every command
+that produces structured output honors it. Text output is for humans;
+JSON is the stable machine-readable shape, versioned as API.
+
+**Flag position.** `--json` is a persistent flag on the root command,
+so both positions are valid:
 
 ```bash
-gofasta routes --json | jq '.[] | select(.method == "POST") | .path'
-gofasta --json verify | jq '.checks[] | select(.status == "fail")'
-gofasta inspect User --json | jq '.service_methods[].name'
-gofasta ai list --json
+gofasta --json verify    # before the subcommand
+gofasta verify --json    # after — equivalent
 ```
 
-Every structured JSON shape in the CLI is stable API — agents and CI
-pipelines consume them.
+**Output modes.** Two shapes, depending on the command:
+
+1. **Single document.** One JSON object or array on stdout, followed
+   by a newline. Parse with `jq`, `json.Unmarshal`, etc. This is the
+   default for every introspection + workflow command.
+
+   ```bash
+   gofasta routes --json | jq '.[] | select(.method == "POST") | .path'
+   gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+   gofasta inspect User --json | jq '.service_methods[].name'
+   gofasta status --json | jq '.checks[] | select(.status == "drift")'
+   gofasta ai list --json
+   gofasta do list --json
+   gofasta g scaffold Invoice total:float --dry-run --json | jq '.planned_files'
+   ```
+
+2. **NDJSON (newline-delimited).** One JSON object per line, emitted
+   as events happen. Used by long-running commands that stream
+   progress. `gofasta dev --json` is the main example — it emits
+   `preflight`, `service`, `migrate`, `air`, and `shutdown` events in
+   sequence:
+
+   ```bash
+   # Watch for the first service to go unhealthy and react immediately:
+   gofasta dev --json | jq -c 'select(.event=="service" and .status=="unhealthy")'
+
+   # Wait until the HTTP server reports ready, then exit the tail:
+   gofasta dev --json | jq -c 'select(.event=="air" and .status=="running")' | head -1
+   ```
+
+**Exit codes.** `--json` does NOT suppress exit codes. A failing
+command still exits non-zero; the JSON on stderr tells you why.
+Always branch on the exit code first, then read the error payload:
+
+```bash
+if ! gofasta verify --json > result.json 2> error.json; then
+  jq -r '.code' error.json   # e.g. "GO_TEST_FAILED"
+  jq -r '.hint' error.json   # remediation in one line
+  exit 1
+fi
+```
+
+**Stream separation.** Success output goes to **stdout**; errors go
+to **stderr**. Never mix them. If you need only the failure payload,
+redirect stdout to `/dev/null`:
+
+```bash
+gofasta verify --json 2> err.json 1> /dev/null || jq -r '.code' err.json
+```
+
+**Error shape.** Every error in `--json` mode serializes as:
+
+```json
+{
+  "code": "WIRE_MISSING_PROVIDER",
+  "message": "undefined: NewOrderProvider",
+  "hint": "add NewOrderProvider to app/di/providers/order.go and run `gofasta wire`",
+  "docs": "https://gofasta.dev/docs/cli-reference/wire"
+}
+```
+
+Pattern-match on `code` (stable API, never renamed). The `hint` is
+the exact remediation. The `docs` URL is the most relevant reference.
+
+**Stable contract.** Field names and types are stable API across
+releases. Adding new fields is a compatible change agents should
+tolerate (parse with `jq` / unmarshal into structs that ignore
+unknown fields). Renaming or removing a field follows a deprecation
+cycle and is called out in release notes.
+
+**`--dry-run` + `--json`.** Destructive commands accept `--dry-run` to
+preview actions without touching disk. Combine with `--json` to get a
+structured preview — extremely useful before scaffolding or workflow
+runs:
+
+```bash
+gofasta g scaffold Invoice total:float --dry-run --json
+  # → { "planned_files": [...], "planned_patches": [...], ... }
+
+gofasta do new-rest-endpoint Invoice total:float --dry-run --json
+  # → { "workflow": "...", "steps": [{command, args, ...}], ... }
+
+gofasta ai claude --dry-run --json
+  # → { "agent": "claude", "files_to_write": [...], ... }
+```
+
+**Which commands support `--json` (non-exhaustive):**
+
+| Category | Commands |
+|---|---|
+| Introspection | `routes`, `inspect <Resource>`, `config schema`, `status`, `version`, `doctor` |
+| Quality gates | `verify`, `do health-check` |
+| Generators (dry-run + result) | `g scaffold`, `g model`, `g service`, `g controller`, `g job`, `g task`, … |
+| Workflows | `do <workflow>`, `do list` |
+| AI installer | `ai list`, `ai status`, `ai <agent>` |
+| Dev server (NDJSON) | `dev` |
+| Deploy | `deploy status`, `deploy` (NDJSON steps) |
+
+Run any command with `--help` to confirm exact semantics. When in
+doubt, pass `--json` — commands without structured output simply
+ignore it.
 
 ### Parse error codes, not error text
 
@@ -136,9 +235,11 @@ Every CLI error carries four fields when emitted in `--json` mode:
 
 Pattern-match on the **`code`** (stable across releases) rather than
 regex-parsing the message. The **`hint`** tells you the exact
-remediation; the **`docs`** URL is the most relevant reference page. 38
-stable codes exist — full list at
-https://gofasta.dev/docs/cli-reference/verify and related pages.
+remediation; the **`docs`** URL is the most relevant reference page.
+Codes are grouped by subsystem — `WIRE_*`, `HEALTH_*`, `DEV_*`,
+`DEPLOY_*`, `SEED_*`, `ROUTES_*`, `INIT_*` — and are never renamed
+once shipped. The full list lives in the error-code registry at
+`https://gofasta.dev/docs/cli-reference/verify` and related pages.
 
 ### Understand a resource before modifying it
 
@@ -242,6 +343,49 @@ gofasta verify --json | jq '.checks[] | select(.status == "fail")'
 
 Wrap in `gofasta do health-check` to also run `gofasta status`
 (drift detection) at the same time.
+
+### Debug a failing request without guesswork
+
+When a test fails, an endpoint returns the wrong status, or a request
+is slow and you can't tell why, **do not grep through logs**. The
+scaffold ships a devtools package (`app/devtools/`) that, when the
+app is built with the `devtools` build tag, exposes structured
+`/debug/*` endpoints you can scrape directly.
+
+`gofasta dev` sets the build tag automatically; running `gofasta dev
+--dashboard` also starts a human-readable HTML inspector on `:9090`,
+but every data source it renders is available as JSON for agent
+consumption. In production builds the same package compiles to
+no-ops — zero debug surface.
+
+Endpoints on the running app (devtools tag only):
+
+| Endpoint | What you get |
+|---|---|
+| `GET /debug/requests` | The last 200 requests: method, path, status, duration, **trace_id**, request body, response body |
+| `GET /debug/sql` | The last 200 SQL statements: SQL template, bound vars, rows affected, duration, trace_id |
+| `GET /debug/traces` | Summary list of completed trace waterfalls |
+| `GET /debug/traces/{id}` | One full trace — every span, its kind, its OTel attributes, its events, and a 20-frame call-stack snapshot captured at span start |
+| `GET /debug/logs?trace_id=<id>&level=<INFO>` | Every slog record for that trace, with structured attrs |
+| `GET /debug/errors` | Recent panics — recovered value, stack, method, path, trace_id |
+| `GET /debug/cache` | Recent cache ops — op, key, hit/miss, duration, trace_id |
+| `POST /debug/explain` | Run `EXPLAIN` against a captured SELECT. Body: `{"sql": "...", "vars": ["..."]}` |
+| `GET /debug/pprof/*` | Full set of Go runtime profiles (CPU, heap, goroutine, mutex, block, allocs, threadcreate, execution trace) |
+
+**Typical agent workflow for a slow or broken endpoint:**
+
+1. `curl localhost:8080/debug/requests | jq '.[0]'` — grab the latest captured request with its `trace_id`.
+2. `curl localhost:8080/debug/traces/<trace_id>` — see the whole span tree with offsets, durations, and per-span stacks. Nested SELECTs surface as siblings of the same parent span — that's an N+1.
+3. `curl "localhost:8080/debug/logs?trace_id=<trace_id>"` — every slog line this request emitted, filtered.
+4. `curl -X POST localhost:8080/debug/explain -d '{"sql":"SELECT ...","vars":[]}'` — EXPLAIN any SELECT in the trace.
+5. `curl localhost:8080/debug/pprof/goroutine?debug=2` — goroutine dump if you suspect a leak.
+
+The dashboard does all this visually at `localhost:9090`, but the
+endpoints are the stable contract for agent automation. The
+debugging guide documents the full flow end-to-end:
+
+- **https://gofasta.dev/docs/guides/debugging** — guided tour + every debug surface + architecture walkthrough
+- **https://gofasta.dev/docs/cli-reference/dev** — `gofasta dev` flags + event stream
 
 ## Commands to run
 
@@ -441,6 +585,7 @@ URL maps to one `.mdx` page on https://gofasta.dev/docs.
 - Background Jobs: https://gofasta.dev/docs/guides/background-jobs
 - Email & Notifications: https://gofasta.dev/docs/guides/email-and-notifications
 - Testing: https://gofasta.dev/docs/guides/testing
+- Debugging: https://gofasta.dev/docs/guides/debugging
 - Deployment: https://gofasta.dev/docs/guides/deployment
 - Configuration: https://gofasta.dev/docs/guides/configuration
 
