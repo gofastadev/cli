@@ -89,6 +89,12 @@ func init() {
 		"run seeders after migrations (equivalent to running `gofasta seed` post-start)")
 	f.BoolVar(&devFlagValues.dryRun, "dry-run", false,
 		"print the resolved plan and exit without touching anything")
+	f.BoolVar(&devFlagValues.attachLogs, "attach-logs", false,
+		"stream `docker compose logs -f` alongside Air (service-prefixed)")
+	f.BoolVar(&devFlagValues.dashboard, "dashboard", false,
+		"start the local dev dashboard — an HTML debug page with routes, health, and live service state")
+	f.IntVar(&devFlagValues.dashboardPort, "dashboard-port", 9090,
+		"port for the dev dashboard HTTP server")
 }
 
 // runDev is the orchestration entrypoint. Broken into clearly-named
@@ -165,6 +171,9 @@ func runDev(flags devFlags) error {
 	}
 
 	// Teardown runs exactly once on exit, unless --no-teardown is set.
+	// `--keep-volumes=false` upgrades the teardown from `stop` (preserve
+	// containers + volumes) to `down -v` (destroy both). The default keeps
+	// volumes so the next `gofasta dev` reuses the primed database.
 	var teardownDone bool
 	runTeardown := func(reason string) {
 		if teardownDone || flags.noTeardown {
@@ -172,10 +181,19 @@ func runDev(flags devFlags) error {
 		}
 		teardownDone = true
 		if plan.orchestrate && len(plan.services.selected) > 0 {
-			if err := stopServices(plan.services.selected); err == nil {
-				emitter.Shutdown("stopped", 0)
+			var err error
+			var mode string
+			if flags.keepVolumes {
+				err = stopServices(plan.services.selected)
+				mode = "stopped"
 			} else {
-				emitter.Shutdown("stop-failed", 1)
+				err = resetVolumes()
+				mode = "destroyed"
+			}
+			if err == nil {
+				emitter.Shutdown(mode, 0)
+			} else {
+				emitter.Shutdown(mode+"-failed", 1)
 			}
 		} else {
 			emitter.Shutdown(reason, 0)
@@ -201,7 +219,16 @@ func runDev(flags devFlags) error {
 		}
 	}
 
-	// --- Stage 7: Air ------------------------------------------------------
+	// --- Stage 7: optional side-processes ----------------------------------
+	// --attach-logs: stream docker compose logs alongside Air output.
+	// --dashboard:   spin up the debug HTTP server on dashboardPort.
+	// Both register shutdown hooks so they stop cleanly with the pipeline.
+	var sideCancels []func()
+	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 {
+		sideCancels = append(sideCancels, startLogStreamer(plan.services.selected))
+	}
+
+	// --- Stage 8: Air ------------------------------------------------------
 	port := configutil.GetPort()
 	if flags.port != "" {
 		port = flags.port
@@ -210,7 +237,15 @@ func runDev(flags devFlags) error {
 	urls := airURLs(port)
 	emitter.Air(portInt, urls)
 
-	return runAir(flags, runTeardown)
+	if flags.dashboard {
+		sideCancels = append(sideCancels, startDashboard(flags.dashboardPort, portInt, &plan.services, emitter))
+	}
+
+	err = runAir(flags, runTeardown)
+	for _, c := range sideCancels {
+		c()
+	}
+	return err
 }
 
 // devPlan is what resolveDevPlan builds before any side effect runs.
@@ -345,12 +380,25 @@ func airURLs(port string) map[string]string {
 
 // runAir execs `go tool air` and wires SIGINT/SIGTERM through so Ctrl+C
 // tears down services before the process exits.
+//
+// If --rebuild is set, the Air build cache directory (tmp/ by default,
+// configured via .air.toml) is deleted first so the next `go tool air`
+// invocation rebuilds from scratch rather than reusing a stale binary.
+// Air has no "force rebuild" flag of its own — deleting the tmp dir is
+// the officially-documented way.
 func runAir(flags devFlags, teardown func(string)) error {
-	args := []string{"tool", "air"}
 	if flags.rebuild {
-		// Air reads args passed after `--` as flags to air itself.
-		args = append(args, "--", "-build.rebuild_all", "true")
+		// tmp/ is Air's default build directory; projects that
+		// customize .air.toml may use a different path, but clearing
+		// the default is a safe best-effort.
+		if err := os.RemoveAll("tmp"); err != nil {
+			// A missing tmp dir is the expected state on first run.
+			// Any other failure is non-fatal: Air will still run; the
+			// developer just won't get the forced-rebuild guarantee.
+			_ = err
+		}
 	}
+	args := []string{"tool", "air"}
 
 	if _, err := execLookPath("go"); err != nil {
 		return clierr.New(clierr.CodeDevAirNotInstalled,

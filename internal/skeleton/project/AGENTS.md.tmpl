@@ -252,7 +252,36 @@ Wrap in `gofasta do health-check` to also run `gofasta status`
 | `make up` | Start app + PostgreSQL in Docker (production-like) |
 | `make dev` | Start with Air hot reload (needs DB running separately) |
 | `make down` | Stop everything |
-| `gofasta dev` | CLI equivalent of `make dev` — hot reload + auto-migrate |
+| `gofasta dev` | Full dev environment: start services → health-wait → migrate → Air hot reload. Ctrl+C tears it all down. |
+
+#### `gofasta dev` flags
+
+`gofasta dev` is the one-command dev loop. Every flag below is additive and orthogonal — combine them freely.
+
+| Flag | Purpose |
+|---|---|
+| `--no-services` | Skip all compose orchestration; just run Air (project has its own DB) |
+| `--no-db` / `--no-cache` / `--no-queue` | Skip individual service classes by name-heuristic |
+| `--services=<list>` | Comma-separated explicit list (overrides `--no-*` flags) |
+| `--profile=<name>` | Pass through to `docker compose --profile` (e.g. `cache`, `queue`) |
+| `--no-migrate` | Skip `migrate up` after services become healthy |
+| `--no-teardown` | Leave compose services running on exit |
+| `--keep-volumes` | Preserve named volumes on teardown (default `true`). Pass `--keep-volumes=false` for `down -v` instead of `stop`. |
+| `--fresh` | Drop every compose volume before starting — forces a clean DB state |
+| `--wait-timeout=<dur>` | Healthcheck wait timeout (default `30s`) |
+| `--env-file=<path>` | Alternate env file (default `.env`) |
+| `--port=<n>` | Override `PORT` env var |
+| `--rebuild` | Delete Air's `tmp/` cache before starting so the next build is fresh |
+| `--seed` | Run seeders after migrations |
+| `--dry-run` | Print the resolved plan and exit (no side effects) |
+| `--attach-logs` | Stream `docker compose logs -f` alongside Air output |
+| `--dashboard` | Start the local dev dashboard (HTML debug page on `:9090` by default) |
+| `--dashboard-port=<n>` | Port for `--dashboard` |
+| `--json` | Structured NDJSON events instead of human log lines (inherited from root) |
+
+**Structured output.** `gofasta dev --json` emits one event per line: `preflight`, `service` (with `starting` / `healthy` / `unhealthy` status), `migrate`, `air`, `shutdown`. Agents and CI pipelines branch on the `event` field rather than string-matching log output.
+
+**Error codes.** Failures during the dev pipeline return one of `DEV_DOCKER_UNAVAILABLE`, `DEV_COMPOSE_NOT_FOUND`, `DEV_SERVICE_UNHEALTHY`, `DEV_MIGRATION_FAILED`, `DEV_AIR_NOT_INSTALLED`, or `DEV_PORT_IN_USE`. Each carries a specific remediation hint in the JSON error payload.
 
 ### Testing
 
