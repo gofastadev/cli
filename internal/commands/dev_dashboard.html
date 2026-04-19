@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Gofasta dev dashboard</title>
+<style>
+  :root {
+    --bg: #0a1c24;
+    --surface: #172b34;
+    --primary: #4fd1e5;
+    --fg: #d9eaee;
+    --muted: #8a9ba0;
+    --ok: #22c55e;
+    --warn: #f59e0b;
+    --err: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
+    padding: 24px;
+  }
+  h1 { color: var(--primary); margin: 0 0 4px 0; font-size: 20px; }
+  h2 {
+    color: var(--fg);
+    margin: 24px 0 12px 0;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .sub { color: var(--muted); font-size: 13px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 16px;
+    border: 1px solid rgba(79, 209, 229, 0.15);
+  }
+  .card .label {
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .card .value {
+    font-size: 18px;
+    margin-top: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td {
+    text-align: left;
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(138, 155, 160, 0.15);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 13px;
+  }
+  th {
+    color: var(--muted);
+    font-weight: 500;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .method {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: rgba(79, 209, 229, 0.15);
+    color: var(--primary);
+    font-size: 11px;
+  }
+  .pill {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .pill.ok { background: rgba(34, 197, 94, 0.15); color: var(--ok); }
+  .pill.warn { background: rgba(245, 158, 11, 0.15); color: var(--warn); }
+  .pill.err { background: rgba(239, 68, 68, 0.15); color: var(--err); }
+  .empty {
+    color: var(--muted);
+    font-style: italic;
+    padding: 16px;
+    text-align: center;
+  }
+  .footer { color: var(--muted); font-size: 11px; margin-top: 24px; }
+  /* ── Trace waterfall ──────────────────────────────────────────── */
+  .trace-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(138, 155, 160, 0.15);
+  }
+  .trace-tab {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .trace-tab:hover { color: var(--fg); }
+  .trace-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+  }
+  .trace-row { cursor: pointer; }
+  .trace-row:hover { background: rgba(79, 209, 229, 0.05); }
+  .trace-detail {
+    background: rgba(10, 28, 36, 0.6);
+    padding: 16px;
+    border-left: 2px solid var(--primary);
+    margin: 0;
+  }
+  .span-row {
+    display: grid;
+    grid-template-columns: 1fr 360px;
+    gap: 12px;
+    align-items: center;
+    padding: 4px 0;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+  }
+  .span-row.kid { padding-left: 16px; }
+  .span-name {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .span-bar-track {
+    position: relative;
+    height: 16px;
+    background: rgba(138, 155, 160, 0.12);
+    border-radius: 3px;
+  }
+  .span-bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    background: var(--primary);
+    border-radius: 3px;
+    min-width: 2px;
+  }
+  .span-bar.err { background: var(--err); }
+  .span-duration {
+    position: absolute;
+    top: 50%;
+    right: 4px;
+    transform: translateY(-50%);
+    color: var(--fg);
+    font-size: 10px;
+    mix-blend-mode: difference;
+  }
+  .stack-toggle {
+    display: block;
+    margin-top: 2px;
+    color: var(--muted);
+    font-size: 10px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .stack-toggle:hover { color: var(--primary); }
+  .stack-frames {
+    margin-top: 4px;
+    padding: 8px;
+    background: rgba(10, 28, 36, 0.9);
+    border-radius: 4px;
+    font-size: 10px;
+    color: var(--muted);
+    white-space: pre;
+    max-height: 240px;
+    overflow: auto;
+  }
+  .replay-btn {
+    background: rgba(79, 209, 229, 0.12);
+    border: 1px solid rgba(79, 209, 229, 0.3);
+    color: var(--primary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .replay-btn:hover { background: rgba(79, 209, 229, 0.2); }
+  .replay-result {
+    margin-top: 8px;
+    padding: 12px;
+    background: rgba(10, 28, 36, 0.9);
+    border-radius: 6px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    max-height: 320px;
+    overflow: auto;
+  }
+  .replay-editor {
+    margin-top: 12px;
+    padding: 12px;
+    background: rgba(10, 28, 36, 0.6);
+    border: 1px solid rgba(79, 209, 229, 0.2);
+    border-radius: 6px;
+  }
+  .replay-editor-header {
+    margin-bottom: 8px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px;
+  }
+  .replay-editor textarea {
+    width: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid rgba(138, 155, 160, 0.2);
+    border-radius: 4px;
+    padding: 8px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    resize: vertical;
+  }
+  .replay-editor textarea:focus {
+    outline: none;
+    border-color: var(--primary);
+  }
+  .replay-editor-footer {
+    margin-top: 6px;
+  }
+  .replay-send, .replay-cancel {
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .replay-send {
+    background: var(--primary);
+    border: none;
+    color: var(--bg);
+    font-weight: 600;
+  }
+  .replay-send:hover { opacity: 0.9; }
+  .replay-cancel {
+    background: transparent;
+    border: 1px solid rgba(138, 155, 160, 0.3);
+    color: var(--muted);
+  }
+  .replay-cancel:hover { color: var(--fg); }
+  .explain-btn {
+    background: rgba(79, 209, 229, 0.1);
+    border: 1px solid rgba(79, 209, 229, 0.2);
+    color: var(--primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+  }
+  .explain-btn:hover { background: rgba(79, 209, 229, 0.2); }
+  .explain-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+  .explain-modal-box {
+    background: var(--surface);
+    border: 1px solid rgba(79, 209, 229, 0.25);
+    border-radius: 8px;
+    padding: 16px;
+    max-width: 800px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: auto;
+  }
+  .explain-modal-header { margin-bottom: 8px; font-size: 13px; }
+  .explain-sql {
+    margin: 8px 0;
+    padding: 8px;
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+  }
+  .explain-plan {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<h1>Gofasta dev dashboard</h1>
+<div class="sub">
+  Live debug view for the project running on
+  <span id="app-url">{{.AppURL}}</span>
+</div>
+
+<h2>App</h2>
+<div class="grid">
+  <div class="card">
+    <div class="label">Health</div>
+    <div class="value" id="health">
+      {{- template "healthPill" .Health -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Port</div>
+    <div class="value" id="port">{{.AppPort}}</div>
+  </div>
+  <div class="card">
+    <div class="label">Swagger</div>
+    <div class="value" id="swagger">
+      {{- if .SwaggerURL -}}
+        <a href="{{.SwaggerURL}}" target="_blank" rel="noopener noreferrer">{{.SwaggerURL}}</a>
+      {{- else -}}—{{- end -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">GraphQL</div>
+    <div class="value" id="graphql">
+      {{- if .GraphQLURL -}}
+        <a href="{{.GraphQLURL}}" target="_blank" rel="noopener noreferrer">{{.GraphQLURL}}</a>
+      {{- else -}}—{{- end -}}
+    </div>
+  </div>
+  <div class="card">
+    <div class="label">Queue (asynqmon)</div>
+    <div class="value" id="asynqmon">
+      {{- if .AsynqmonURL -}}
+        <a href="{{.AsynqmonURL}}" target="_blank" rel="noopener noreferrer">{{.AsynqmonURL}}</a>
+      {{- else -}}—{{- end -}}
+    </div>
+  </div>
+</div>
+
+<h2>Metrics</h2>
+<div id="metrics">
+  {{- template "metricsCards" .Metrics -}}
+</div>
+
+<h2>
+  Profiles
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="profiles">
+  {{- template "profilesBar" . -}}
+</div>
+
+<h2>
+  Goroutines
+  {{- if .Goroutines.Total }}
+    <span class="pill ok" style="margin-left: 8px;">{{.Goroutines.Total}}</span>
+  {{- end -}}
+</h2>
+<div id="goroutines">
+  {{- template "goroutinesTable" .Goroutines -}}
+</div>
+
+<h2>Services</h2>
+<div id="services">
+  {{- template "servicesTable" .Services -}}
+</div>
+
+<h2>Routes</h2>
+<div id="routes">
+  {{- template "routesTable" .Routes -}}
+</div>
+
+<h2 style="display: flex; align-items: center; gap: 8px;">
+  <span>Recent requests</span>
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn">devtools tag off</span>
+  {{- end -}}
+  <a href="/api/har" download="gofasta-dev.har"
+     style="margin-left: auto; padding: 3px 10px; background: rgba(79, 209, 229, 0.12); border: 1px solid rgba(79, 209, 229, 0.3); color: var(--primary); border-radius: 4px; font-size: 10px; font-family: ui-monospace, Menlo, monospace; text-transform: none; letter-spacing: 0;">
+    Export HAR
+  </a>
+</h2>
+<div id="requests">
+  {{- template "requestsTable" .RecentRequests -}}
+</div>
+
+<h2>
+  N+1 findings
+  {{- if .NPlusOne }}
+    <span class="pill err" style="margin-left: 8px;">{{len .NPlusOne}}</span>
+  {{- end -}}
+</h2>
+<div id="nplusone">
+  {{- template "nPlusOneTable" .NPlusOne -}}
+</div>
+
+<h2>
+  Recent SQL
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="queries">
+  {{- template "queriesTable" .RecentQueries -}}
+</div>
+
+<h2>
+  Exceptions
+  {{- if .Exceptions }}
+    <span class="pill err" style="margin-left: 8px;">{{len .Exceptions}}</span>
+  {{- end -}}
+</h2>
+<div id="exceptions">
+  {{- template "exceptionsTable" .Exceptions -}}
+</div>
+
+<h2>
+  Cache ops
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="cache-ops">
+  {{- template "cacheOpsTable" .CacheOps -}}
+</div>
+
+<h2>
+  Traces
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="traces">
+  {{- template "tracesTable" .RecentTraces -}}
+</div>
+
+<div class="footer">
+  Updated
+  <span id="updated" data-ts="{{.LastUpdatedMS}}">—</span>
+  · refreshes every 5s
+</div>
+
+<script>
+  // Client-side rendering mirrors the server-side templates below. The
+  // server renders the initial state so first paint is already live;
+  // the SSE stream then swaps these fragments in on every tick without
+  // a full page reload.
+  function renderHealth(h) {
+    var cls = h === 'ok' ? 'ok' : (h === 'unhealthy' ? 'warn' : 'err');
+    return '<span class="pill ' + cls + '">' + h + '</span>';
+  }
+  function renderLink(url) {
+    if (!url) return '—';
+    return '<a href="' + url + '" target="_blank" rel="noopener noreferrer">' + url + '</a>';
+  }
+  function renderServices(services) {
+    if (!services || services.length === 0) {
+      return '<div class="empty">No compose services attached.</div>';
+    }
+    var rows = services.map(function (s) {
+      var status = (s.Health || s.State || '').toLowerCase();
+      var cls = status === 'healthy' || status === 'running' ? 'ok' : 'warn';
+      return '<tr><td>' + s.Service + '</td><td><span class="pill ' + cls + '">' + (s.Health || s.State) + '</span></td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Service</th><th>State</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function renderRoutes(routes) {
+    if (!routes || routes.length === 0) {
+      return '<div class="empty">No routes scraped yet (regenerate swagger to populate).</div>';
+    }
+    var rows = routes.map(function (r) {
+      return '<tr><td><span class="method">' + r.method + '</span></td><td>' + r.path + '</td></tr>';
+    }).join('');
+    return '<table><thead><tr><th>Method</th><th>Path</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+  function fmtTime(iso) {
+    try { return new Date(iso).toLocaleTimeString('en-US', { hour12: false }) + '.' + (new Date(iso).getMilliseconds() + '').padStart(3, '0'); }
+    catch (e) { return iso; }
+  }
+  function renderTraces(traces) {
+    if (!traces || traces.length === 0) {
+      return '<div class="empty">No traces captured yet.</div>';
+    }
+    var rows = traces.map(function (t) {
+      var pill = t.status === 'error'
+        ? '<span class="pill err">error</span>'
+        : '<span class="pill ok">ok</span>';
+      return (
+        '<tr class="trace-row" data-trace-id="' + esc(t.trace_id) + '">' +
+          '<td>' + fmtTime(t.time) + '</td>' +
+          '<td>' + esc(t.root_name) + '</td>' +
+          '<td>' + t.span_count + '</td>' +
+          '<td>' + t.duration_ms + ' ms</td>' +
+          '<td>' + pill + '</td>' +
+          '<td style="color: var(--muted); font-size: 10px;">' + esc(t.trace_id) + '</td>' +
+        '</tr>'
+      );
+    }).join('');
+    return '<table><thead><tr><th>Time</th><th>Root span</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function apply(state) {
+    document.getElementById('app-url').textContent = state.app_url;
+    document.getElementById('health').innerHTML = renderHealth(state.health);
+    document.getElementById('port').textContent = state.app_port;
+    document.getElementById('swagger').innerHTML = renderLink(state.swagger_url);
+    document.getElementById('graphql').innerHTML = renderLink(state.graphql_url);
+    document.getElementById('services').innerHTML = renderServices(state.services);
+    document.getElementById('routes').innerHTML = renderRoutes(state.routes);
+    var tracesEl = document.getElementById('traces');
+    if (tracesEl) tracesEl.innerHTML = renderTraces(state.recent_traces);
+    document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
+  }
+
+  // ── Trace waterfall drill-down ────────────────────────────────────
+  // Clicking a trace row toggles an expanded section below it that
+  // fetches the full trace (every span, every stack frame) from
+  // /api/trace/{id} — cached after the first fetch so repeated
+  // clicks are free. Span bars are positioned by offset_ms and
+  // width-scaled by duration_ms.
+  var traceCache = {};
+  function renderWaterfall(trace) {
+    if (!trace || !trace.spans || trace.spans.length === 0) {
+      return '<div class="empty">This trace carries no spans yet.</div>';
+    }
+    var maxDuration = Math.max(1, trace.duration_ms);
+    var lines = trace.spans.map(function (sp, i) {
+      var left = (sp.offset_ms / maxDuration) * 100;
+      var width = (sp.duration_ms / maxDuration) * 100;
+      var barCls = sp.status === 'error' ? 'span-bar err' : 'span-bar';
+      var stack = '';
+      if (sp.stack && sp.stack.length > 0) {
+        stack =
+          '<span class="stack-toggle" data-stack-idx="' + i + '">▸ stack (' + sp.stack.length + ' frames)</span>' +
+          '<pre class="stack-frames" id="stack-' + i + '" style="display:none;">' + esc(sp.stack.join('\n')) + '</pre>';
+      }
+      return (
+        '<div class="span-row' + (sp.parent_id ? ' kid' : '') + '">' +
+          '<div class="span-name" title="' + esc(sp.name) + '">' +
+            esc(sp.name) +
+            (sp.kind ? ' <span style="color: var(--muted);">(' + esc(sp.kind) + ')</span>' : '') +
+            stack +
+          '</div>' +
+          '<div class="span-bar-track">' +
+            '<div class="' + barCls + '" style="left:' + left + '%; width:' + Math.max(width, 0.5) + '%;"></div>' +
+            '<div class="span-duration">' + sp.duration_ms + ' ms</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+    return '<div>' + lines + '</div>';
+  }
+  function renderLogs(logs) {
+    if (!logs || logs.length === 0) {
+      return '<div class="empty" style="padding: 8px;">No logs captured for this trace.</div>';
+    }
+    var rows = logs.map(function (l) {
+      var levelCls = (l.level === 'ERROR') ? 'err'
+                   : (l.level === 'WARN') ? 'warn'
+                   : 'ok';
+      var attrs = '';
+      if (l.attrs) {
+        var keys = Object.keys(l.attrs);
+        if (keys.length > 0) {
+          attrs = ' <span style="color: var(--muted); font-size: 10px;">{' +
+            keys.map(function (k) { return esc(k) + '=' + esc(l.attrs[k]); }).join(', ') +
+          '}</span>';
+        }
+      }
+      return (
+        '<div style="padding: 3px 0; font-family: ui-monospace, Menlo, monospace; font-size: 10.5px;">' +
+          '<span style="color: var(--muted);">' + fmtTime(l.time) + '</span> ' +
+          '<span class="pill ' + levelCls + '" style="font-size: 9px;">' + esc(l.level) + '</span> ' +
+          esc(l.message) + attrs +
+        '</div>'
+      );
+    }).join('');
+    return rows;
+  }
+  function toggleTrace(id, row) {
+    var existing = row.nextElementSibling;
+    if (existing && existing.classList && existing.classList.contains('trace-expanded')) {
+      existing.remove();
+      return;
+    }
+    var holder = document.createElement('tr');
+    holder.className = 'trace-expanded';
+    var cell = document.createElement('td');
+    cell.colSpan = 6;
+    cell.className = 'trace-detail';
+    cell.innerHTML = '<div class="empty">loading trace…</div>';
+    holder.appendChild(cell);
+    row.parentNode.insertBefore(holder, row.nextSibling);
+    var finalize = function (trace) {
+      var tabsHTML =
+        '<div class="trace-tabs">' +
+          '<button class="trace-tab active" data-tab="waterfall">Waterfall</button>' +
+          '<button class="trace-tab" data-tab="logs">Logs</button>' +
+        '</div>' +
+        '<div class="trace-tab-body" data-tab-body="waterfall">' +
+          renderWaterfall(trace) +
+        '</div>' +
+        '<div class="trace-tab-body" data-tab-body="logs" style="display:none;">' +
+          '<div class="empty" style="padding: 8px;">loading logs…</div>' +
+        '</div>';
+      cell.innerHTML = tabsHTML;
+    };
+    if (traceCache[id]) {
+      finalize(traceCache[id]);
+      return;
+    }
+    fetch('/api/trace/' + encodeURIComponent(id))
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (t) {
+        if (!t) { cell.innerHTML = '<div class="empty">trace no longer available</div>'; return; }
+        traceCache[id] = t;
+        finalize(t);
+      })
+      .catch(function () {
+        cell.innerHTML = '<div class="empty">fetch failed</div>';
+      });
+  }
+
+  // Delegated click handler — works for both the server-rendered
+  // initial rows and any rows swapped in by the SSE apply().
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    // Stack toggle inside a trace detail
+    if (t && t.classList && t.classList.contains('stack-toggle')) {
+      var idx = t.getAttribute('data-stack-idx');
+      var frames = document.getElementById('stack-' + idx);
+      if (frames) {
+        frames.style.display = frames.style.display === 'none' ? 'block' : 'none';
+        t.textContent = (frames.style.display === 'none' ? '▸' : '▾') + t.textContent.slice(1);
+      }
+      return;
+    }
+    // Jump from a request row's trace link into the traces section.
+    if (t && t.classList && t.classList.contains('trace-jump')) {
+      e.preventDefault();
+      var tid = t.getAttribute('data-trace-id');
+      var row = document.querySelector('.trace-row[data-trace-id="' + tid + '"]');
+      if (row) {
+        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        toggleTrace(tid, row);
+      }
+      return;
+    }
+    // Replay button in the requests table — open the inline editor.
+    if (t && t.classList && t.classList.contains('replay-btn')) {
+      var method = t.getAttribute('data-method');
+      var path = t.getAttribute('data-path');
+      var body = t.getAttribute('data-body') || '';
+      openReplayEditor(t, method, path, body);
+      return;
+    }
+    // Send button inside an open editor.
+    if (t && t.classList && t.classList.contains('replay-send')) {
+      var editor = t.closest('.replay-editor');
+      if (!editor) return;
+      var method = editor.getAttribute('data-method');
+      var path = editor.getAttribute('data-path');
+      var body = editor.querySelector('textarea').value;
+      var mutating = /^(POST|PUT|PATCH|DELETE)$/i.test(method);
+      if (mutating && !confirm('Re-send ' + method + ' ' + path + '? This will execute the request again against the live app.')) {
+        return;
+      }
+      replay(t, method, path, body, editor);
+      return;
+    }
+    // Cancel / close button inside an open editor.
+    if (t && t.classList && t.classList.contains('replay-cancel')) {
+      var editor = t.closest('.replay-editor');
+      if (editor) editor.remove();
+      return;
+    }
+    // EXPLAIN button in the SQL table.
+    if (t && t.classList && t.classList.contains('explain-btn')) {
+      var sql = t.getAttribute('data-sql') || '';
+      var varsStr = t.getAttribute('data-vars') || '';
+      var vars = varsStr ? varsStr.split('|').filter(Boolean) : [];
+      runExplain(sql, vars);
+      return;
+    }
+    // Close the explain modal.
+    if (t && t.id === 'explain-close') {
+      var modal = document.getElementById('explain-modal');
+      if (modal) modal.remove();
+      return;
+    }
+    // Waterfall / Logs tab switching inside an expanded trace.
+    if (t && t.classList && t.classList.contains('trace-tab')) {
+      var tab = t.getAttribute('data-tab');
+      var detail = t.closest('.trace-detail');
+      if (!detail) return;
+      detail.querySelectorAll('.trace-tab').forEach(function (el) {
+        el.classList.toggle('active', el === t);
+      });
+      detail.querySelectorAll('.trace-tab-body').forEach(function (el) {
+        el.style.display = el.getAttribute('data-tab-body') === tab ? '' : 'none';
+      });
+      if (tab === 'logs') {
+        var body = detail.querySelector('[data-tab-body="logs"]');
+        if (body && !body.getAttribute('data-loaded')) {
+          // Resolve the trace ID by walking up to the row that opened
+          // this expansion.
+          var expanded = detail.closest('tr.trace-expanded');
+          var row = expanded && expanded.previousElementSibling;
+          var traceId = row && row.getAttribute('data-trace-id');
+          if (traceId) {
+            fetch('/api/logs?trace_id=' + encodeURIComponent(traceId))
+              .then(function (r) { return r.ok ? r.json() : []; })
+              .then(function (logs) {
+                body.innerHTML = renderLogs(logs);
+                body.setAttribute('data-loaded', '1');
+              })
+              .catch(function () { body.innerHTML = '<div class="empty">log fetch failed</div>'; });
+          }
+        }
+      }
+      return;
+    }
+    // Expand / collapse the full trace waterfall.
+    var row = t && (t.closest ? t.closest('.trace-row') : null);
+    if (row && !t.classList.contains('trace-jump')) {
+      toggleTrace(row.getAttribute('data-trace-id'), row);
+    }
+  });
+
+  // openReplayEditor renders a small form below the requests table so
+  // developers can tweak the body before re-firing. The textarea is
+  // prefilled with the captured request body, so "hit Send" gives
+  // exactly the original behavior — editing is opt-in.
+  function openReplayEditor(btn, method, path, body) {
+    // Remove any already-open editor: one-at-a-time keeps the UI calm.
+    var existing = document.querySelector('.replay-editor');
+    if (existing) existing.remove();
+
+    var wrapper = document.createElement('div');
+    wrapper.className = 'replay-editor';
+    wrapper.setAttribute('data-method', method);
+    wrapper.setAttribute('data-path', path);
+    wrapper.innerHTML =
+      '<div class="replay-editor-header">' +
+        '<span class="method">' + esc(method) + '</span> ' +
+        '<span style="color: var(--fg);">' + esc(path) + '</span>' +
+        '<span style="float: right;">' +
+          '<button class="replay-send">send</button>' +
+          '<button class="replay-cancel" style="margin-left: 6px;">cancel</button>' +
+        '</span>' +
+      '</div>' +
+      '<textarea rows="6" spellcheck="false">' + esc(body) + '</textarea>' +
+      '<div class="replay-editor-footer">' +
+        '<span style="color: var(--muted); font-size: 10px;">' +
+          'content-type defaults to application/json — responses appear inline' +
+        '</span>' +
+      '</div>';
+
+    // Insert just after the requests section so it stays visible.
+    var host = document.getElementById('requests');
+    host.appendChild(wrapper);
+    var ta = wrapper.querySelector('textarea');
+    if (ta) ta.focus();
+  }
+
+  function runExplain(sql, vars) {
+    var existing = document.getElementById('explain-modal');
+    if (existing) existing.remove();
+    var modal = document.createElement('div');
+    modal.id = 'explain-modal';
+    modal.className = 'explain-modal';
+    modal.innerHTML =
+      '<div class="explain-modal-box">' +
+        '<div class="explain-modal-header">' +
+          '<strong style="color: var(--primary);">EXPLAIN</strong>' +
+          '<button id="explain-close" style="float: right; background: transparent; border: 1px solid rgba(138, 155, 160, 0.3); color: var(--muted); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">close</button>' +
+        '</div>' +
+        '<pre class="explain-sql">' + esc(sql) + '</pre>' +
+        '<div class="explain-plan-container"><div class="empty">running plan…</div></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    fetch('/api/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: sql, vars: vars }),
+    })
+      .then(function (r) {
+        return r.text().then(function (text) { return { ok: r.ok, text: text }; });
+      })
+      .then(function (res) {
+        var container = modal.querySelector('.explain-plan-container');
+        if (!res.ok) {
+          container.innerHTML = '<div class="empty" style="color: var(--err); padding: 8px;">' + esc(res.text) + '</div>';
+          return;
+        }
+        try {
+          var json = JSON.parse(res.text);
+          container.innerHTML = '<pre class="explain-plan">' + esc(json.plan || '(empty plan)') + '</pre>';
+        } catch (e) {
+          container.innerHTML = '<pre class="explain-plan">' + esc(res.text) + '</pre>';
+        }
+      })
+      .catch(function (e) {
+        var container = modal.querySelector('.explain-plan-container');
+        container.innerHTML = '<div class="empty" style="color: var(--err);">fetch failed</div>';
+      });
+  }
+
+  function replay(sendBtn, method, path, body, editor) {
+    sendBtn.disabled = true;
+    var originalLabel = sendBtn.textContent;
+    sendBtn.textContent = '…';
+    fetch('/api/replay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: method, path: path, body: body }),
+    })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        sendBtn.disabled = false;
+        sendBtn.textContent = originalLabel;
+        var prev = editor.querySelector('.replay-result');
+        if (prev) prev.remove();
+        var box = document.createElement('div');
+        box.className = 'replay-result';
+        if (!res.ok) {
+          box.textContent = 'error: ' + (res.j && res.j.error ? res.j.error : 'unknown');
+        } else {
+          box.innerHTML =
+            '<div><strong>status:</strong> ' + res.j.status + '</div>' +
+            '<pre style="margin: 4px 0 0 0; white-space: pre-wrap;">' + esc(res.j.body) + '</pre>';
+        }
+        editor.appendChild(box);
+      })
+      .catch(function () {
+        sendBtn.disabled = false;
+        sendBtn.textContent = originalLabel;
+      });
+  }
+
+  // Seed the "updated" label from the server-rendered timestamp so the
+  // initial paint shows a real clock time rather than an em dash.
+  (function seedUpdated() {
+    var el = document.getElementById('updated');
+    var ts = parseInt(el.getAttribute('data-ts'), 10);
+    if (!isNaN(ts) && ts > 0) {
+      el.textContent = new Date(ts).toLocaleTimeString();
+    }
+  })();
+
+  // Subscribe to the SSE stream for live updates. Native EventSource
+  // reconnects automatically if the server restarts, so no additional
+  // resilience logic is needed here.
+  var es = new EventSource('/api/stream');
+  es.onmessage = function (e) { apply(JSON.parse(e.data)); };
+</script>
+</body>
+</html>
+
+{{define "healthPill"}}
+  {{- if eq . "ok" -}}
+    <span class="pill ok">ok</span>
+  {{- else if eq . "unhealthy" -}}
+    <span class="pill warn">unhealthy</span>
+  {{- else -}}
+    <span class="pill err">{{.}}</span>
+  {{- end -}}
+{{end}}
+
+{{define "servicesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr><th>Service</th><th>State</th></tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td>{{.Name}}</td>
+            <td>
+              {{- if or (eq .Health "healthy") (eq .State "running") -}}
+                <span class="pill ok">{{if .Health}}{{.Health}}{{else}}{{.State}}{{end}}</span>
+              {{- else -}}
+                <span class="pill warn">{{if .Health}}{{.Health}}{{else}}{{.State}}{{end}}</span>
+              {{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">No compose services attached.</div>
+  {{- end -}}
+{{end}}
+
+{{define "routesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Path</th>
+          <th>Request</th>
+          <th>Response</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td><span class="method">{{.Method}}</span></td>
+            <td>
+              {{.Path}}
+              {{- if .Summary -}}
+                <div style="font-size: 10px; color: var(--muted); font-weight: 400; margin-top: 2px;">{{.Summary}}</div>
+              {{- end -}}
+            </td>
+            <td>
+              {{- if .Request -}}
+                <code style="color: var(--primary); font-size: 11px;">{{.Request}}</code>
+              {{- else -}}
+                <span style="color: var(--muted);">—</span>
+              {{- end -}}
+            </td>
+            <td>
+              {{- if .Response -}}
+                <code style="color: var(--primary); font-size: 11px;">{{.Response}}</code>
+              {{- else -}}
+                <span style="color: var(--muted);">—</span>
+              {{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">No routes scraped yet (regenerate swagger to populate).</div>
+  {{- end -}}
+{{end}}
+
+{{define "metricsCards"}}
+  {{- if .MetricsOK -}}
+    <div class="grid">
+      <div class="card"><div class="label">Requests (total)</div><div class="value">{{.RequestsTotal}}</div></div>
+      <div class="card"><div class="label">In-flight</div><div class="value">{{.InFlight}}</div></div>
+      {{- if .LatencyP50MS }}
+        <div class="card"><div class="label">Avg latency</div><div class="value">{{printf "%.1f" .LatencyP50MS}} ms</div></div>
+      {{- end }}
+    </div>
+  {{- else -}}
+    <div class="empty">
+      /metrics not reachable yet — start the app (and make sure
+      cfg.Observability.MetricsEnabled is true).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "requestsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Method}}</span></td>
+            <td>{{.Path}}</td>
+            <td>
+              {{- if lt .Status 300 -}}
+                <span class="pill ok">{{.Status}}</span>
+              {{- else if lt .Status 500 -}}
+                <span class="pill warn">{{.Status}}</span>
+              {{- else -}}
+                <span class="pill err">{{.Status}}</span>
+              {{- end -}}
+            </td>
+            <td>{{.DurationMS}} ms</td>
+            <td style="color: var(--muted); font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+            <td>
+              <button class="replay-btn"
+                      data-method="{{.Method}}"
+                      data-path="{{.Path}}"
+                      data-body="{{.Body}}">replay</button>
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No captured requests yet — hit your app and they will appear here
+      (requires the <code>devtools</code> build tag, which
+      <code>gofasta dev</code> sets automatically).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "cacheOpsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Time</th>
+          <th style="width: 10%;">Op</th>
+          <th>Key</th>
+          <th style="width: 10%;">Hit</th>
+          <th style="width: 10%;">Duration</th>
+          <th style="width: 15%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Op}}</span></td>
+            <td style="font-size: 11px;">{{.Key}}</td>
+            <td>
+              {{- if eq .Op "get" -}}
+                {{- if .Hit -}}
+                  <span class="pill ok">hit</span>
+                {{- else -}}
+                  <span class="pill warn">miss</span>
+                {{- end -}}
+              {{- else -}}—{{- end -}}
+            </td>
+            <td>{{.DurationMS}} ms</td>
+            <td style="font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No cache operations yet — they'll appear here once your app calls
+      <code>container.CacheService</code>.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "exceptionsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Time</th>
+          <th style="width: 10%;">Method</th>
+          <th style="width: 25%;">Path</th>
+          <th>Recovered</th>
+          <th style="width: 15%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Method}}</span></td>
+            <td style="font-size: 11px;">{{.Path}}</td>
+            <td style="color: var(--err); font-size: 11px;">{{.Recovered}}</td>
+            <td style="font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+          </tr>
+          {{- if .Stack -}}
+            <tr>
+              <td colspan="5" style="padding: 0 12px 8px 12px;">
+                <pre style="margin: 0; padding: 6px 8px; background: rgba(10, 28, 36, 0.9); border-radius: 4px; font-size: 10px; color: var(--muted); max-height: 180px; overflow: auto;">{{range .Stack}}{{.}}
+{{end}}</pre>
+              </td>
+            </tr>
+          {{- end -}}
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No exceptions recorded this session.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "nPlusOneTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Count</th>
+          <th>SQL template</th>
+          <th style="width: 25%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td><span class="pill err">{{.Count}}×</span></td>
+            <td style="font-size: 11px; color: var(--fg);">{{.Template}}</td>
+            <td style="font-size: 10px;">
+              <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No N+1 patterns detected in recent traces.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "goroutinesTable"}}
+  {{- if .Groups -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Count</th>
+          <th>Top-of-stack</th>
+          <th style="width: 25%;">States</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range .Groups -}}
+          <tr>
+            <td>
+              <span class="pill ok">{{.Count}}</span>
+            </td>
+            <td style="font-size: 11px; color: var(--fg);">{{.Top}}</td>
+            <td>
+              {{- range .States -}}
+                <span class="pill warn" style="margin-right: 4px;">{{.}}</span>
+              {{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      Goroutines require the <code>devtools</code> build tag
+      (<code>/debug/pprof/goroutine</code>) — start the app via
+      <code>gofasta dev</code>.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "profilesBar"}}
+  {{- if .PprofURL -}}
+    <div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">
+      <a class="card" href="{{.PprofURL}}heap?debug=1" target="_blank" rel="noopener">
+        <div class="label">Heap</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ snapshot</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}goroutine?debug=2" target="_blank" rel="noopener">
+        <div class="label">Goroutines</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ dump</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}profile?seconds=30" target="_blank" rel="noopener">
+        <div class="label">CPU (30s)</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ .pprof</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}allocs?debug=1" target="_blank" rel="noopener">
+        <div class="label">Allocations</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ snapshot</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}mutex?debug=1" target="_blank" rel="noopener">
+        <div class="label">Mutex</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ contention</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}block?debug=1" target="_blank" rel="noopener">
+        <div class="label">Block</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ blocking ops</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}trace?seconds=5" target="_blank" rel="noopener">
+        <div class="label">Trace (5s)</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ .trace</div>
+      </a>
+      <a class="card" href="{{.PprofURL}}" target="_blank" rel="noopener">
+        <div class="label">Index</div>
+        <div class="value" style="font-size: 14px; color: var(--primary);">→ all profiles</div>
+      </a>
+    </div>
+  {{- else -}}
+    <div class="empty">
+      pprof endpoints require the <code>devtools</code> build tag —
+      start the app via <code>gofasta dev</code> to enable.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "tracesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th>Time</th>
+          <th>Root span</th>
+          <th>Spans</th>
+          <th>Duration</th>
+          <th>Status</th>
+          <th>Trace ID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr class="trace-row" data-trace-id="{{.TraceID}}">
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td>{{.RootName}}</td>
+            <td>{{.SpanCount}}</td>
+            <td>{{.DurationMS}} ms</td>
+            <td>
+              {{- if eq .Status "error" -}}
+                <span class="pill err">error</span>
+              {{- else -}}
+                <span class="pill ok">ok</span>
+              {{- end -}}
+            </td>
+            <td style="color: var(--muted); font-size: 10px;">{{.TraceID}}</td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No traces captured yet — traces land here once
+      <code>cfg.Observability.TracingEnabled</code> is true and a
+      request flows through the app.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "queriesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td>{{.Rows}}</td>
+            <td>{{.DurationMS}} ms</td>
+            <td>
+              {{- if .Error -}}
+                <span class="pill err">error</span> {{.SQL}}
+              {{- else -}}
+                {{.SQL}}
+              {{- end -}}
+            </td>
+            <td>
+              <button class="explain-btn"
+                      data-sql="{{.SQL}}"
+                      data-vars="{{range .Vars}}{{.}}|{{end}}">
+                EXPLAIN
+              </button>
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No captured queries yet — GORM calls will appear here when
+      <code>devtools.GormPlugin()</code> is active (auto-enabled by
+      <code>gofasta dev</code>).
+    </div>
+  {{- end -}}
+{{end}}

@@ -1,0 +1,30 @@
+# Windsurf project rules for {{.ProjectName}}.
+# See AGENTS.md at the project root for the comprehensive briefing.
+
+This project is a gofasta-scaffolded Go backend service. Gofasta is a
+CLI toolkit documented at https://gofasta.dev.
+
+## Architecture
+
+Layered, strict: Request → Controller → Service → Repository → Database.
+Higher layers depend on interfaces; lower layers implement them. DTOs
+describe the API; GORM models describe the DB. Never mix.
+
+## Required commands
+
+- `gofasta verify` before claiming any change is done
+- `gofasta g scaffold <Name> <fields>` to generate a new REST resource
+- `gofasta wire` after editing `app/di/wire.go`
+- `gofasta routes` to inspect the registered API surface
+
+## Forbidden
+
+- Editing `app/di/wire_gen.go` by hand
+- Adding business logic to controllers
+- Calling the DB from a service instead of the repository interface
+- Skipping migrations when a model field changes
+
+## Source of truth
+
+`AGENTS.md` at the project root. Read it in full before making
+substantial changes.

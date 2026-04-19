@@ -1,0 +1,18 @@
+# Aider project configuration for a gofasta project. Aider reads this
+# file at startup and uses CONVENTIONS.md for per-project style rules.
+#
+# Docs: https://aider.chat/docs/config.html
+
+# Run the gofasta verify gauntlet after every edit so the agent can
+# self-verify before returning control. Prevents "looks right, compiles
+# wrong" failure modes.
+auto-test: true
+test-cmd: gofasta verify --json
+
+# Project conventions file. Copied from AGENTS.md content during install.
+read: .aider/CONVENTIONS.md
+
+# Force lint-on-edit using the same linter CI uses.
+auto-lint: true
+lint-cmd:
+  - "go: gofmt -s -w && go vet ./..."

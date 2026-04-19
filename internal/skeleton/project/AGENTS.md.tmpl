@@ -1,0 +1,762 @@
+# AGENTS.md — Guidance for AI coding agents
+
+This file tells AI coding agents (Claude Code, OpenAI Codex, Cursor, Aider,
+Devin, and other MCP-compatible agents) everything they need to work
+productively in this codebase. Agents read it automatically at startup.
+Humans onboarding to the project should read it too.
+
+## Setting up your agent
+
+For per-agent configuration (permission allowlists, slash commands, rules,
+conventions files), run the installer for whichever agent you use:
+
+| Command | What it installs |
+|---|---|
+| `gofasta ai claude` | `.claude/` — settings, hooks, slash commands (`/verify`, `/scaffold`, `/inspect`) |
+| `gofasta ai cursor` | `.cursor/rules/gofasta.mdc` — project rules referencing this file |
+| `gofasta ai codex` | `.codex/config.toml` — command allowlist pointing at AGENTS.md |
+| `gofasta ai aider` | `.aider.conf.yml` + `.aider/CONVENTIONS.md` — auto-test + auto-lint |
+| `gofasta ai windsurf` | `.windsurfrules` — rules file |
+
+Run `gofasta ai list` to see every supported agent, or `gofasta ai status`
+to see which ones are currently installed. Every installer is idempotent
+— re-run after a gofasta update to pick up improved configs.
+
+This file alone covers 80% of what any agent needs. Running the installer
+for your agent fills in the last 20% (permissions, hooks, slash commands).
+
+## Project overview
+
+- **Name:** {{.ProjectName}}
+- **Go module:** `{{.ModulePath}}`
+- **Scaffolded from:** [gofasta](https://gofasta.dev) — a Go backend
+  toolkit that generates standard Go code (no runtime framework, no
+  custom compiler, no reflection-based DI).
+
+A gofasta-scaffolded project is **plain Go**. Every file here is code the
+developer owns. The gofasta library (`github.com/gofastadev/gofasta`) is
+imported as an opt-out default; individual `pkg/*` packages can be
+replaced or deleted without touching the rest of the project.
+
+## Tech stack
+
+| Concern | Library | Notes |
+|---|---|---|
+| Go version | 1.25.0 (see `.go-version`) | Toolchain auto-downloads if needed |
+| HTTP router | `github.com/go-chi/chi/v5` | Swap-friendly; see docs below |
+| ORM | `gorm.io/gorm` | PostgreSQL by default; 5 drivers supported |
+| Dependency injection | `github.com/google/wire` | Compile-time, no reflection |
+| Config | `github.com/knadh/koanf` | YAML + env var overrides |
+| Logging | `log/slog` (stdlib) | Structured JSON or text |
+| Migrations | `golang-migrate/migrate/v4` | SQL files in `db/migrations/` |
+| Validation | `go-playground/validator/v10` | Struct-tag driven |
+| Tests | `stretchr/testify` + `testcontainers-go` | Real Postgres in containers |
+| Feature flags | OpenFeature Go SDK (via `pkg/featureflag`) | Any OpenFeature provider |
+
+{{if .GraphQL}}GraphQL support is enabled: `github.com/99designs/gqlgen` is the codegen tool.{{end}}
+
+## Directory structure (layered architecture)
+
+```
+{{.ProjectNameLower}}/
+├── app/                       # Application code
+│   ├── main/main.go          # Entry point
+│   ├── models/                # GORM models (one file per resource)
+│   ├── dtos/                  # Request/response types (API shape)
+│   ├── repositories/          # Data access layer
+│   │   └── interfaces/        # Repository contracts
+│   ├── services/              # Business logic
+│   │   └── interfaces/        # Service contracts
+│   ├── rest/
+│   │   ├── controllers/       # HTTP handlers (one file per resource)
+│   │   └── routes/            # chi.Router registration (one file per resource)
+│   ├── validators/            # Custom validation rules
+│   ├── di/                    # Google Wire dependency injection
+│   │   ├── container.go       # Service container struct
+│   │   ├── wire.go            # Wire build config (edit this)
+│   │   ├── wire_gen.go        # GENERATED — do not edit
+│   │   └── providers/         # Wire provider sets
+│   ├── jobs/                  # Cron jobs
+│   └── tasks/                 # Async task handlers (asynq)
+├── cmd/                       # Cobra CLI commands (serve, migrate, seed)
+├── db/
+│   ├── migrations/            # SQL migration pairs (up + down)
+│   └── seeds/                 # Database seed functions
+├── configs/                   # RBAC policies, feature-flag config
+├── deployments/               # Docker, CI/CD workflows, nginx, systemd
+├── templates/emails/          # HTML email templates
+├── locales/                   # i18n translation YAML
+├── testutil/mocks/            # Test mocks
+├── config.yaml                # Application config (env-overridable)
+├── compose.yaml               # Local dev Docker Compose
+├── Dockerfile                 # Production container image
+└── Makefile                   # Common tasks
+```
+
+**Layer rule:** Request → Controller → Service → Repository → Database.
+Controllers never touch the DB directly. Services never parse HTTP.
+Repositories never contain business logic.
+
+## How to work in this codebase as an agent
+
+Gofasta ships a set of commands and conventions specifically designed to
+make AI agents effective here. Read this section before doing any work —
+using these tools cuts round-trips, eliminates guessing, and prevents the
+most common failure modes.
+
+### Always prefer structured output (`--json`)
+
+`--json` is the contract between agents and the CLI. Every command
+that produces structured output honors it. Text output is for humans;
+JSON is the stable machine-readable shape, versioned as API.
+
+**Flag position.** `--json` is a persistent flag on the root command,
+so both positions are valid:
+
+```bash
+gofasta --json verify    # before the subcommand
+gofasta verify --json    # after — equivalent
+```
+
+**Output modes.** Two shapes, depending on the command:
+
+1. **Single document.** One JSON object or array on stdout, followed
+   by a newline. Parse with `jq`, `json.Unmarshal`, etc. This is the
+   default for every introspection + workflow command.
+
+   ```bash
+   gofasta routes --json | jq '.[] | select(.method == "POST") | .path'
+   gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+   gofasta inspect User --json | jq '.service_methods[].name'
+   gofasta status --json | jq '.checks[] | select(.status == "drift")'
+   gofasta ai list --json
+   gofasta do list --json
+   gofasta g scaffold Invoice total:float --dry-run --json | jq '.planned_files'
+   ```
+
+2. **NDJSON (newline-delimited).** One JSON object per line, emitted
+   as events happen. Used by long-running commands that stream
+   progress. `gofasta dev --json` is the main example — it emits
+   `preflight`, `service`, `migrate`, `air`, and `shutdown` events in
+   sequence:
+
+   ```bash
+   # Watch for the first service to go unhealthy and react immediately:
+   gofasta dev --json | jq -c 'select(.event=="service" and .status=="unhealthy")'
+
+   # Wait until the HTTP server reports ready, then exit the tail:
+   gofasta dev --json | jq -c 'select(.event=="air" and .status=="running")' | head -1
+   ```
+
+**Exit codes.** `--json` does NOT suppress exit codes. A failing
+command still exits non-zero; the JSON on stderr tells you why.
+Always branch on the exit code first, then read the error payload:
+
+```bash
+if ! gofasta verify --json > result.json 2> error.json; then
+  jq -r '.code' error.json   # e.g. "GO_TEST_FAILED"
+  jq -r '.hint' error.json   # remediation in one line
+  exit 1
+fi
+```
+
+**Stream separation.** Success output goes to **stdout**; errors go
+to **stderr**. Never mix them. If you need only the failure payload,
+redirect stdout to `/dev/null`:
+
+```bash
+gofasta verify --json 2> err.json 1> /dev/null || jq -r '.code' err.json
+```
+
+**Error shape.** Every error in `--json` mode serializes as:
+
+```json
+{
+  "code": "WIRE_MISSING_PROVIDER",
+  "message": "undefined: NewOrderProvider",
+  "hint": "add NewOrderProvider to app/di/providers/order.go and run `gofasta wire`",
+  "docs": "https://gofasta.dev/docs/cli-reference/wire"
+}
+```
+
+Pattern-match on `code` (stable API, never renamed). The `hint` is
+the exact remediation. The `docs` URL is the most relevant reference.
+
+**Stable contract.** Field names and types are stable API across
+releases. Adding new fields is a compatible change agents should
+tolerate (parse with `jq` / unmarshal into structs that ignore
+unknown fields). Renaming or removing a field follows a deprecation
+cycle and is called out in release notes.
+
+**`--dry-run` + `--json`.** Destructive commands accept `--dry-run` to
+preview actions without touching disk. Combine with `--json` to get a
+structured preview — extremely useful before scaffolding or workflow
+runs:
+
+```bash
+gofasta g scaffold Invoice total:float --dry-run --json
+  # → { "planned_files": [...], "planned_patches": [...], ... }
+
+gofasta do new-rest-endpoint Invoice total:float --dry-run --json
+  # → { "workflow": "...", "steps": [{command, args, ...}], ... }
+
+gofasta ai claude --dry-run --json
+  # → { "agent": "claude", "files_to_write": [...], ... }
+```
+
+**Which commands support `--json` (non-exhaustive):**
+
+| Category | Commands |
+|---|---|
+| Introspection | `routes`, `inspect <Resource>`, `config schema`, `status`, `version`, `doctor` |
+| Quality gates | `verify`, `do health-check` |
+| Generators (dry-run + result) | `g scaffold`, `g model`, `g service`, `g controller`, `g job`, `g task`, … |
+| Workflows | `do <workflow>`, `do list` |
+| AI installer | `ai list`, `ai status`, `ai <agent>` |
+| Dev server (NDJSON) | `dev` |
+| Deploy | `deploy status`, `deploy` (NDJSON steps) |
+
+Run any command with `--help` to confirm exact semantics. When in
+doubt, pass `--json` — commands without structured output simply
+ignore it.
+
+### Parse error codes, not error text
+
+Every CLI error carries four fields when emitted in `--json` mode:
+
+```json
+{
+  "code": "WIRE_MISSING_PROVIDER",
+  "message": "undefined: NewOrderProvider",
+  "hint": "add NewOrderProvider to app/di/providers/order.go and run `gofasta wire`",
+  "docs": "https://gofasta.dev/docs/cli-reference/wire"
+}
+```
+
+Pattern-match on the **`code`** (stable across releases) rather than
+regex-parsing the message. The **`hint`** tells you the exact
+remediation; the **`docs`** URL is the most relevant reference page.
+Codes are grouped by subsystem — `WIRE_*`, `HEALTH_*`, `DEV_*`,
+`DEPLOY_*`, `SEED_*`, `ROUTES_*`, `INIT_*` — and are never renamed
+once shipped. The full list lives in the error-code registry at
+`https://gofasta.dev/docs/cli-reference/verify` and related pages.
+
+### Understand a resource before modifying it
+
+When asked to change an existing resource (e.g. "add a `SoftArchive`
+method to `Order`"), **run `gofasta inspect <Resource>` first**. It
+AST-parses the model, DTOs, service interface, controller methods, and
+routes, emitting the whole resource shape as one structured document.
+Replaces opening six files and guessing.
+
+```bash
+gofasta inspect Order --json
+```
+
+Reveals:
+- Every field in the model
+- Every DTO type declared for the resource
+- Every service-interface method signature
+- Every controller method signature
+- Every registered route
+
+Equivalent to reading `app/models/order.model.go` + `app/dtos/order.dtos.go`
++ `app/services/interfaces/order_service.go` + `app/rest/controllers/order.controller.go`
++ `app/rest/routes/order.routes.go` — but in one call, in a shape that
+parses cleanly.
+
+### Check for drift before making changes
+
+`gofasta status` is the offline "is this project in a clean state?"
+check. It reports when derived artifacts (Wire, Swagger) are out of
+sync with their inputs, when migrations are pending, and when
+regenerated files show up as uncommitted in git. Run it when entering
+the project cold — if anything reports `drift`, fix it before starting
+work so your own changes don't mix with unrelated staleness.
+
+```bash
+gofasta status            # one-glance drift report
+gofasta status --json     # structured consumption
+```
+
+### Use workflows to avoid multi-round-trip command chains
+
+When a task requires multiple gofasta commands in sequence, use
+`gofasta do <workflow>` instead of invoking each command separately.
+Fewer tool calls, stable atomic contract, transparent step list.
+
+```bash
+gofasta do list                                            # every workflow
+gofasta do new-rest-endpoint Invoice total:float           # scaffold + migrate up + swagger
+gofasta do rebuild                                         # wire + swagger
+gofasta do clean-slate                                     # db reset + seed
+gofasta do health-check                                    # verify + status
+```
+
+Pass `--dry-run` to preview the chain without executing. Use
+`--json` to get a structured `{workflow, steps[], status, duration_ms}`
+result.
+
+### Validate config edits against the schema
+
+When editing `config.yaml`, generate the schema first to know what keys
+and values are valid — don't guess from memory, and don't trust training
+data (it may be stale):
+
+```bash
+gofasta config schema > /tmp/config.schema.json
+# validate your proposed config edit against the schema before writing
+ajv validate -s /tmp/config.schema.json -d config.yaml
+```
+
+The schema is emitted by a project-local helper (`./cmd/schema`) so it
+always matches the exact `gofasta` version pinned in `go.mod` — no
+version skew between the CLI and the library your project uses.
+
+### Use the right generator, not hand-written CRUD
+
+Before writing any CRUD code by hand, check whether a `gofasta g *`
+generator produces the right starting point. The scaffold auto-wires
+every layer (DI container, routes index, `cmd/serve.go`) and runs
+`go build ./...` after generation to catch template regressions
+immediately. See the "Code generation" table below.
+
+If unsure what a generator would produce, run it with `--dry-run` —
+every file it would create and every patch it would apply is printed
+without touching disk.
+
+```bash
+gofasta g scaffold Invoice total:float --dry-run
+```
+
+### One command to verify your work
+
+The single most important command for agents: **`gofasta verify`**.
+Runs gofmt, `go vet`, `golangci-lint`, `go test -race`, `go build`,
+Wire drift check, and routes sanity — in one invocation. Run it
+**before** claiming any task is done. `--json` output gives
+per-check status so you can pinpoint failures:
+
+```bash
+gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+```
+
+Wrap in `gofasta do health-check` to also run `gofasta status`
+(drift detection) at the same time.
+
+### Debug a failing request without guesswork
+
+When a test fails, an endpoint returns the wrong status, or a request
+is slow and you can't tell why, **do not grep through logs**. The
+scaffold ships a devtools package that captures structured runtime
+state (requests, SQL with bound vars, trace spans with call-stack
+snapshots, slog records, cache ops, panics), and the CLI exposes
+every surface as a first-class `gofasta debug <subcommand>` —
+agent-friendly, `--json`-native, no port or URL guessing required.
+
+`gofasta dev` sets the `devtools` build tag automatically so the
+endpoints are live. In production builds the same package compiles
+to no-ops — zero debug surface.
+
+#### The `gofasta debug` command family
+
+Every command below honors `--json` (stable API) and the global
+`--app-url` override. Run `gofasta debug <cmd> --help` for flag
+details. Exit codes are meaningful: `DEBUG_APP_UNREACHABLE` (app not
+running), `DEBUG_DEVTOOLS_OFF` (production build — rebuild under
+`gofasta dev`), `DEBUG_TRACE_NOT_FOUND`, `DEBUG_BAD_FILTER`,
+`DEBUG_BAD_DURATION`.
+
+| Command | Purpose |
+|---|---|
+| `gofasta debug health` | Probe the app + every `/debug/*` surface; reports reachability + devtools state. First call after `gofasta dev`. |
+| `gofasta debug requests` | List captured requests. Filters: `--trace`, `--method`, `--status=2xx\|5xx\|400-499`, `--path`, `--slower-than=100ms`, `--limit`. |
+| `gofasta debug sql` | List captured SQL. Filters: `--trace`, `--slower-than`, `--contains`, `--errors-only`, `--limit`. |
+| `gofasta debug traces` | List completed trace summaries. Filters: `--slower-than`, `--status=ok\|error`, `--limit`. |
+| `gofasta debug trace <id>` | Full waterfall for one trace — spans, durations, parent-child nesting. Add `--with-stacks` for the captured call frames. |
+| `gofasta debug logs --trace=<id>` | Slog records for a specific trace. Filters: `--level`, `--contains`. |
+| `gofasta debug errors` | Recent recovered panics with stacks and originating requests. |
+| `gofasta debug cache` | Cache ops with hit/miss status and a hit-rate footer. Filters: `--trace`, `--op`, `--miss-only`. |
+| `gofasta debug goroutines` | Live goroutines grouped by top-of-stack. Filters: `--filter=<substr>`, `--min-count`. |
+| `gofasta debug n-plus-one` | Detected N+1 patterns in the recent SQL ring — one row per `(trace, template)` with ≥3 hits. |
+| `gofasta debug explain <sql>` | Run EXPLAIN against a captured SELECT via the app's registered GORM handle. Takes `--vars`. |
+| `gofasta debug last-slow-request` | **Composed**: latest request ≥ `--threshold=200ms` + its trace + logs + SQL + N+1 findings, bundled as one JSON payload. |
+| `gofasta debug last-error` | **Composed**: most recent panic + its trace + logs in one call. |
+| `gofasta debug watch` | NDJSON stream of new events. Channels: `--requests` + `--errors` by default, `--sql`, `--cache`, `--trace` opt-in. |
+| `gofasta debug profile <kind>` | Download a pprof profile. Kinds: cpu, heap, goroutine, mutex, block, allocs, threadcreate, trace. |
+| `gofasta debug har` | Export the request ring as HAR 1.2 JSON (import into Chrome DevTools / Insomnia / Postman). |
+
+#### Typical agent workflows
+
+**A slow endpoint.** One call returns everything:
+
+```bash
+gofasta debug last-slow-request --threshold=200ms --json
+```
+
+The bundled JSON has `request`, `trace` (waterfall), `logs`, `sql`,
+and `n_plus_one`. Parse with `jq` — no follow-up fetches needed.
+
+**A failing endpoint.** Same shape, for the most recent panic:
+
+```bash
+gofasta debug last-error --json
+```
+
+**Live triage.** Stream new requests + errors as they happen:
+
+```bash
+gofasta debug watch --requests --errors --json | jq -c 'select(.status >= 500)'
+```
+
+**Targeted inspection.** When you know the trace ID:
+
+```bash
+gofasta debug trace <id>                  # waterfall
+gofasta debug logs --trace=<id>           # request logs
+gofasta debug sql --trace=<id>            # request SQL
+gofasta debug cache --trace=<id>          # request cache ops
+```
+
+**N+1 hunt.** After reproducing the slow request:
+
+```bash
+gofasta debug n-plus-one --json
+```
+
+**EXPLAIN on demand.** Once you've found a suspect SELECT:
+
+```bash
+sql=$(gofasta debug sql --limit=1 --json | jq -r '.[0].sql')
+vars=$(gofasta debug sql --limit=1 --json | jq -r '.[0].vars[]?')
+gofasta debug explain "$sql" --vars "$vars"
+```
+
+**Leak investigation.** Goroutines grouped by function:
+
+```bash
+gofasta debug goroutines --min-count=10
+```
+
+**Deeper profiling.** Capture a 30s CPU profile and open with pprof:
+
+```bash
+gofasta debug profile cpu --duration=30s -o cpu.pprof
+go tool pprof -http=:8090 cpu.pprof
+```
+
+**Share a repro.** Export HAR and attach to a bug report:
+
+```bash
+gofasta debug har -o bug.har
+```
+
+The dashboard at `localhost:9090` renders all of this visually, but
+the `gofasta debug` commands are the stable, scriptable interface
+agents should prefer. See the guides for the full walkthrough:
+
+- **https://gofasta.dev/docs/guides/debugging** — guided tour + every debug surface + architecture walkthrough
+- **https://gofasta.dev/docs/cli-reference/debug** — per-command flag reference
+- **https://gofasta.dev/docs/cli-reference/dev** — `gofasta dev` flags + event stream
+
+## Commands to run
+
+### Development
+
+| Command | What it does |
+|---|---|
+| `make up` | Start app + PostgreSQL in Docker (production-like) |
+| `make dev` | Start with Air hot reload (needs DB running separately) |
+| `make down` | Stop everything |
+| `gofasta dev` | Full dev environment: start services → health-wait → migrate → Air hot reload. Ctrl+C tears it all down. |
+
+#### `gofasta dev` flags
+
+`gofasta dev` is the one-command dev loop. Every flag below is additive and orthogonal — combine them freely.
+
+| Flag | Purpose |
+|---|---|
+| `--no-services` | Skip all compose orchestration; just run Air (project has its own DB) |
+| `--no-db` / `--no-cache` / `--no-queue` | Skip individual service classes by name-heuristic |
+| `--services=<list>` | Comma-separated explicit list (overrides `--no-*` flags) |
+| `--profile=<name>` | Pass through to `docker compose --profile` (e.g. `cache`, `queue`) |
+| `--no-migrate` | Skip `migrate up` after services become healthy |
+| `--no-teardown` | Leave compose services running on exit |
+| `--keep-volumes` | Preserve named volumes on teardown (default `true`). Pass `--keep-volumes=false` for `down -v` instead of `stop`. |
+| `--fresh` | Drop every compose volume before starting — forces a clean DB state |
+| `--wait-timeout=<dur>` | Healthcheck wait timeout (default `30s`) |
+| `--env-file=<path>` | Alternate env file (default `.env`) |
+| `--port=<n>` | Override `PORT` env var |
+| `--rebuild` | Delete Air's `tmp/` cache before starting so the next build is fresh |
+| `--seed` | Run seeders after migrations |
+| `--dry-run` | Print the resolved plan and exit (no side effects) |
+| `--attach-logs` | Stream `docker compose logs -f` alongside Air output |
+| `--dashboard` | Start the local dev dashboard (HTML debug page on `:9090` by default) |
+| `--dashboard-port=<n>` | Port for `--dashboard` |
+| `--json` | Structured NDJSON events instead of human log lines (inherited from root) |
+
+**Structured output.** `gofasta dev --json` emits one event per line: `preflight`, `service` (with `starting` / `healthy` / `unhealthy` status), `migrate`, `air`, `shutdown`. Agents and CI pipelines branch on the `event` field rather than string-matching log output.
+
+**Error codes.** Failures during the dev pipeline return one of `DEV_DOCKER_UNAVAILABLE`, `DEV_COMPOSE_NOT_FOUND`, `DEV_SERVICE_UNHEALTHY`, `DEV_MIGRATION_FAILED`, `DEV_AIR_NOT_INSTALLED`, or `DEV_PORT_IN_USE`. Each carries a specific remediation hint in the JSON error payload.
+
+### Testing
+
+| Command | What it does |
+|---|---|
+| `go test ./...` | Run all tests |
+| `go test -race ./...` | Run with the race detector (required before commit) |
+| `make test` | Project's configured test target |
+
+### Code generation
+
+These are the workhorse commands. Prefer them over writing CRUD by hand:
+
+| Command | What it generates |
+|---|---|
+| `gofasta g scaffold Product name:string price:float` | Full REST resource — model, migration, repository, service, DTOs, controller, routes, Wire provider. Auto-wires into the DI container, routes index, and `cmd/serve.go`. |
+| `gofasta g model Product name:string` | Model + migration only |
+| `gofasta g service Product name:string` | Model + repository + service + DTOs |
+| `gofasta g controller Product name:string` | Full REST stack for existing service |
+| `gofasta g migration AddIndexToUsers` | Empty migration pair |
+| `gofasta g job cleanup-tokens "0 0 * * *"` | Scheduled cron job |
+| `gofasta g task send-welcome-email` | Async task handler (asynq) |
+| `gofasta wire` | Regenerate `app/di/wire_gen.go` from Wire's sources |
+| `gofasta swagger` | Regenerate OpenAPI docs from code annotations |
+| `gofasta routes` | Print every registered REST route (static grep of route files) |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml` — feed to a YAML language server or validate edits before writing |
+
+Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
+
+### Database
+
+| Command | What it does |
+|---|---|
+| `gofasta migrate up` | Apply all pending migrations |
+| `gofasta migrate down` | Roll back the most recent migration |
+| `gofasta seed` | Run seed functions (`--fresh` drops + re-migrates first) |
+
+### Deployment (VPS)
+
+| Command | What it does |
+|---|---|
+| `gofasta deploy setup --host user@server` | One-time server prep (Docker, nginx, directories) |
+| `gofasta deploy` | Build + ship + migrate + health-check + swap symlink |
+| `gofasta deploy status` | Show current release + service status |
+| `gofasta deploy logs` | Tail remote logs |
+| `gofasta deploy rollback` | Revert to previous release |
+
+### Agent-first helpers
+
+These commands exist specifically to support AI-agent workflows — always
+prefer them over hand-running the underlying checks. They honor `--json`.
+
+| Command | What it does |
+|---|---|
+| `gofasta verify` | Full preflight gauntlet — gofmt, vet, golangci-lint, tests with the race detector, build, Wire drift, routes. The single "am I done?" check. |
+| `gofasta status` | Offline drift report — stale Wire, stale Swagger, pending migrations, uncommitted generated files, `go.sum` freshness. |
+| `gofasta inspect <Resource>` | AST-parsed structured report of a resource's model, DTOs, service methods, controller methods, and routes. |
+| `gofasta debug <...>` | Query a running dev app's `/debug/*` surface — requests, SQL, traces, logs, errors, goroutines, pprof, HAR. See the dedicated Debug section above for the full command list. |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml`. Validates edits before writing; powers editor autocomplete. |
+| `gofasta do <workflow>` | Named workflow chains: `new-rest-endpoint`, `rebuild`, `fresh-start`, `clean-slate`, `health-check`. |
+| `gofasta do list` | List every registered workflow. |
+| `gofasta ai <agent>` | Install per-agent configuration (Claude, Cursor, Codex, Aider, Windsurf). Idempotent. |
+
+## Conventions the agent must follow
+
+- **Layered architecture** — honor the Request → Controller → Service → Repository → Database pipeline. A new dependency that skips a layer (e.g., controller calling the repo directly) is a code smell and usually a mistake.
+- **Interface at each boundary** — repositories and services expose Go interfaces in their `interfaces/` subdirectory. Higher layers depend on the interface, not the concrete type. This is what makes the layer swappable.
+- **DTOs for the API, models for the DB** — never expose a GORM model in a response body or accept one as a request body. Always translate through `app/dtos/`.
+- **Error handling** — controllers return `error`. Wrap with `httputil.Handle(...)` from `github.com/gofastadev/gofasta/pkg/httputil` to adapt to `http.HandlerFunc`. Use typed errors from `github.com/gofastadev/gofasta/pkg/errors` (`NewBadRequest`, `NewNotFound`, etc.) so the middleware can map to the right HTTP status.
+- **Context propagation** — `ctx context.Context` is the first parameter through every layer. Never call a repository without passing the request context.
+- **Validation at the boundary** — `validator:"required,email"` style tags on DTOs; validators run at the controller before the service is called. Services assume input is already validated.
+- **Config over constants** — read from `config.yaml` via `pkg/config`, not hardcoded values. Environment variables override with the `{{.ProjectNameUpper}}_` prefix (e.g., `{{.ProjectNameUpper}}_DATABASE_HOST`).
+- **Swagger annotations on controller methods** — `@Summary`, `@Tags`, `@Param`, `@Success`, `@Router` comments drive OpenAPI generation. Add them when you add endpoints.
+
+## Things the agent must NOT do
+
+1. **Do not edit `app/di/wire_gen.go`.** It's generated. Edit `app/di/wire.go` (or add a new file in `app/di/providers/`), then run `gofasta wire` to regenerate. Commit both.
+2. **Do not skip migrations.** If you add a field to a model, write a migration pair in `db/migrations/`. Never rely on `AutoMigrate` in production code.
+3. **Do not put GORM tags on DTOs.** DTOs describe the API contract, not the database schema. GORM tags belong on `app/models/*` types only.
+4. **Do not reorganize the directory layout** (`controllers/`, `services/`, `repositories/`, etc.). The scaffold's generators assume this layered shape. If the team wants feature-module layout, that's a dedicated migration — see the project-structure docs.
+5. **Do not add business logic to controllers.** Parse the request, call the service, format the response. Nothing else.
+6. **Do not call the database from a service.** Call the repository interface. The service depends on the abstraction, not the implementation.
+7. **Do not commit generated files that aren't already committed** (e.g., don't add `docs/swagger.json` if it's already being regenerated by CI). Check `.gitignore` first.
+8. **Do not swap or remove `pkg/*` imports speculatively.** Each `pkg/*` is an opt-out default; if replacing it is part of the actual task, do it. If not, leave it alone — the user chose these defaults for a reason.
+
+## Wire gotcha (the most common agent failure mode)
+
+Google Wire is compile-time DI. The flow is:
+
+1. Add a new service/controller struct.
+2. Add a `New<Thing>` constructor.
+3. Add the constructor to a provider set in `app/di/providers/`.
+4. Add the provider set to `app/di/wire.go`.
+5. Add the field to `app/di/container.go`.
+6. **Run `gofasta wire`** to regenerate `app/di/wire_gen.go`.
+7. Update `cmd/serve.go` to pass the new controller into `routes.RouteConfig`.
+
+If you forget step 6, `go build` will fail with "undefined: someProvider". If
+you forget step 7, the route handler panics at startup. Always run
+`gofasta wire` after adding a provider. `gofasta g scaffold` automates all
+seven steps; prefer the generator over manual wiring.
+
+## Feature flags
+
+`pkg/featureflag` wraps the OpenFeature Go SDK. The scaffold does not
+register a provider by default — flag evaluations resolve to the
+caller-supplied default. To opt in, call `openfeature.SetProvider(...)` at
+startup with any OpenFeature-compatible provider (in-memory for dev,
+Flagd, LaunchDarkly, go-feature-flag, or custom). See
+`configs/features.yaml` for notes.
+
+## Where to read more
+
+### Preferred entry points
+
+Two LLM-optimized files expose the entire gofasta documentation in the
+format agents consume most efficiently. Prefer these over scraping
+individual pages, and use them **instead of** training-data recall
+(which may be stale — features change between releases).
+
+- **https://gofasta.dev/llms.txt** — structured markdown index of every
+  docs page with a one-line description and URL, following the
+  [llmstxt.org](https://llmstxt.org) spec. ~11 KB. Use this to discover
+  which page answers a specific question, then fetch just that page.
+- **https://gofasta.dev/llms-full.txt** — the entire docs site
+  concatenated into a single markdown file (~440 KB / ~110k tokens).
+  Use this when you want all gofasta context loaded at once and can
+  afford the token cost — every API signature, every CLI flag, every
+  design rationale in one fetch.
+
+Rule of thumb: if you're answering a specific question about gofasta,
+fetch `llms.txt`, pick the right page URL from the index, then fetch
+that single page. If you're about to make a substantial change that
+touches multiple subsystems (e.g., adding a new controller + service +
+repository with custom middleware), preload `llms-full.txt` so the
+relevant conventions are in your context from the start.
+
+### Fallback — per-page links
+
+If you can't fetch the aggregate files above (sandboxed environment,
+outbound HTTP restricted, offline), the full URL list is below. Each
+URL maps to one `.mdx` page on https://gofasta.dev/docs.
+
+### Getting Started
+
+- Introduction: https://gofasta.dev/docs/getting-started/introduction
+- Installation: https://gofasta.dev/docs/getting-started/installation
+- Quick Start: https://gofasta.dev/docs/getting-started/quick-start
+- Project Structure: https://gofasta.dev/docs/getting-started/project-structure
+
+### Guides
+
+- REST API: https://gofasta.dev/docs/guides/rest-api
+- GraphQL: https://gofasta.dev/docs/guides/graphql
+- Database & Migrations: https://gofasta.dev/docs/guides/database-and-migrations
+- Authentication: https://gofasta.dev/docs/guides/authentication
+- Code Generation: https://gofasta.dev/docs/guides/code-generation
+- Background Jobs: https://gofasta.dev/docs/guides/background-jobs
+- Email & Notifications: https://gofasta.dev/docs/guides/email-and-notifications
+- Testing: https://gofasta.dev/docs/guides/testing
+- Debugging: https://gofasta.dev/docs/guides/debugging
+- Deployment: https://gofasta.dev/docs/guides/deployment
+- Configuration: https://gofasta.dev/docs/guides/configuration
+
+### CLI Reference
+
+- `gofasta new`: https://gofasta.dev/docs/cli-reference/new
+- `gofasta init`: https://gofasta.dev/docs/cli-reference/init
+- `gofasta dev`: https://gofasta.dev/docs/cli-reference/dev
+- `gofasta debug`: https://gofasta.dev/docs/cli-reference/debug
+- `gofasta serve`: https://gofasta.dev/docs/cli-reference/serve
+- `gofasta migrate`: https://gofasta.dev/docs/cli-reference/migrate
+- `gofasta seed`: https://gofasta.dev/docs/cli-reference/seed
+- `gofasta db`: https://gofasta.dev/docs/cli-reference/db
+- `gofasta deploy`: https://gofasta.dev/docs/cli-reference/deploy
+- `gofasta wire`: https://gofasta.dev/docs/cli-reference/wire
+- `gofasta swagger`: https://gofasta.dev/docs/cli-reference/swagger
+- `gofasta routes`: https://gofasta.dev/docs/cli-reference/routes
+- `gofasta console`: https://gofasta.dev/docs/cli-reference/console
+- `gofasta doctor`: https://gofasta.dev/docs/cli-reference/doctor
+- `gofasta upgrade`: https://gofasta.dev/docs/cli-reference/upgrade
+- `gofasta version`: https://gofasta.dev/docs/cli-reference/version
+
+### Code generators (`gofasta g <...>`)
+
+- `scaffold`: https://gofasta.dev/docs/cli-reference/generate/scaffold
+- `model`: https://gofasta.dev/docs/cli-reference/generate/model
+- `repository`: https://gofasta.dev/docs/cli-reference/generate/repository
+- `service`: https://gofasta.dev/docs/cli-reference/generate/service
+- `controller`: https://gofasta.dev/docs/cli-reference/generate/controller
+- `dto`: https://gofasta.dev/docs/cli-reference/generate/dto
+- `route`: https://gofasta.dev/docs/cli-reference/generate/route
+- `provider`: https://gofasta.dev/docs/cli-reference/generate/provider
+- `resolver`: https://gofasta.dev/docs/cli-reference/generate/resolver
+- `migration`: https://gofasta.dev/docs/cli-reference/generate/migration
+- `job`: https://gofasta.dev/docs/cli-reference/generate/job
+- `task`: https://gofasta.dev/docs/cli-reference/generate/task
+- `email-template`: https://gofasta.dev/docs/cli-reference/generate/email-template
+
+### Package Library (`pkg/*` API reference)
+
+- `pkg/config`: https://gofasta.dev/docs/api-reference/config
+- `pkg/logger`: https://gofasta.dev/docs/api-reference/logger
+- `pkg/errors`: https://gofasta.dev/docs/api-reference/errors
+- `pkg/models`: https://gofasta.dev/docs/api-reference/models
+- `pkg/httputil`: https://gofasta.dev/docs/api-reference/http-utilities
+- `pkg/middleware`: https://gofasta.dev/docs/api-reference/middleware
+- `pkg/auth`: https://gofasta.dev/docs/api-reference/auth
+- `pkg/cache`: https://gofasta.dev/docs/api-reference/cache
+- `pkg/storage`: https://gofasta.dev/docs/api-reference/storage
+- `pkg/mailer`: https://gofasta.dev/docs/api-reference/mailer
+- `pkg/notify`: https://gofasta.dev/docs/api-reference/notifications
+- `pkg/websocket`: https://gofasta.dev/docs/api-reference/websocket
+- `pkg/scheduler`: https://gofasta.dev/docs/api-reference/scheduler
+- `pkg/queue`: https://gofasta.dev/docs/api-reference/queue
+- `pkg/resilience`: https://gofasta.dev/docs/api-reference/resilience
+- `pkg/validators`: https://gofasta.dev/docs/api-reference/validators
+- `pkg/i18n`: https://gofasta.dev/docs/api-reference/i18n
+- `pkg/observability`: https://gofasta.dev/docs/api-reference/observability
+- `pkg/featureflag`: https://gofasta.dev/docs/api-reference/feature-flags
+- `pkg/session`: https://gofasta.dev/docs/api-reference/sessions
+- `pkg/encryption`: https://gofasta.dev/docs/api-reference/encryption
+- `pkg/seeds`: https://gofasta.dev/docs/api-reference/seeds
+- `pkg/types`: https://gofasta.dev/docs/api-reference/types
+- `pkg/utils`: https://gofasta.dev/docs/api-reference/utils
+- `pkg/health`: https://gofasta.dev/docs/api-reference/health
+- `pkg/testutil`: https://gofasta.dev/docs/api-reference/test-utilities
+
+### Architecture + design philosophy
+
+- White Paper: https://gofasta.dev/docs/white-paper
+
+## Quick agent self-check before finishing a task
+
+The fast path — run these two, confirm both green:
+
+```bash
+gofasta verify --json    # full quality-gate gauntlet
+gofasta status --json    # drift detection
+```
+
+Or in one call:
+
+```bash
+gofasta do health-check --json
+```
+
+If anything fails, the JSON output tells you precisely which check
+broke and what the remediation is (via the `hint` and `docs` fields).
+
+The detailed checklist, for reference:
+
+- [ ] `gofasta verify` passes (covers build, tests, lint, fmt, vet, Wire drift, routes)
+- [ ] `gofasta status` reports no drift (Wire, Swagger, migrations, generated files)
+- [ ] `gofasta routes --json` shows any new endpoints you added
+- [ ] If you added a Wire provider: `gofasta wire` was run and `wire_gen.go` is up to date
+- [ ] If you added a model field: a migration exists in `db/migrations/`
+- [ ] If you added a controller endpoint: Swagger annotations are present
+- [ ] If you edited `config.yaml`: it validates against `gofasta config schema`
+- [ ] No edits to `app/di/wire_gen.go`
+
+If any item fails, fix it before reporting the task complete.

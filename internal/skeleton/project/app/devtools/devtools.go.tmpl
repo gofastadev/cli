@@ -1,0 +1,279 @@
+// Package devtools exposes a small, build-tag-gated surface that the
+// gofasta dev dashboard can scrape for per-request + per-query visibility.
+//
+// The package is split across three files:
+//
+//   devtools.go         — always-compiled shared types + public API shape.
+//   devtools_enabled.go — `//go:build devtools` real implementation.
+//   devtools_stub.go    — `//go:build !devtools` no-op implementation.
+//
+// Both `_enabled.go` and `_stub.go` define the SAME exported symbols with
+// matching signatures — so cmd/serve.go calls them unconditionally and
+// the build tag decides which one compiles in. Production builds (no tag)
+// compile the stubs; these are zero-cost (the Go compiler inlines the
+// nil-returning funcs and dead-code-eliminates the call sites).
+//
+// `gofasta dev` passes `-tags devtools` via GOFLAGS so the real
+// implementation is active during development, and the dashboard
+// (http://localhost:9090) scrapes /debug/requests + /debug/sql off the
+// running app. Delete this package entirely and the scaffold keeps
+// working — it's opt-out, not a lock-in.
+package devtools
+
+import (
+	"log/slog"
+	"net/http"
+	"time"
+
+	"github.com/gofastadev/gofasta/pkg/cache"
+)
+
+// RequestEntry is a single captured request in the in-memory ring buffer.
+// JSON tags are stable API — the dashboard reads this shape from
+// /debug/requests and any dashboard-compatible tooling relies on it.
+//
+// TraceID links the request to the corresponding TraceEntry in the
+// trace ring (via /debug/traces/{id}). When OpenTelemetry tracing is
+// enabled in config.yaml, every captured request carries the TraceID
+// of the root span its middleware chain opened, so the dashboard can
+// render a "drill into trace" link per request row.
+type RequestEntry struct {
+	Time       time.Time `json:"time"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Status     int       `json:"status"`
+	DurationMS int64     `json:"duration_ms"`
+	RemoteAddr string    `json:"remote_addr,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	// Body is the captured request body (capped at 64KiB). Used by the
+	// /api/replay endpoint in the dashboard to re-fire the exact same
+	// request. Only populated for requests with a body ≤ cap.
+	Body string `json:"body,omitempty"`
+	// ResponseBody is the captured response body (capped at 64KiB). Fed
+	// by a teeing ResponseWriter around the real one; large responses
+	// stream through but only the first 64KiB are retained. Drives
+	// HAR export and side-by-side replay diffs in the dashboard.
+	ResponseBody string `json:"response_body,omitempty"`
+	// ResponseContentType is copied verbatim from the outgoing headers
+	// so the dashboard can render JSON / plain text bodies correctly
+	// and the HAR export carries the right MIME type.
+	ResponseContentType string `json:"response_content_type,omitempty"`
+}
+
+// QueryEntry is a single captured SQL query. Populated by the GORM
+// callback the devtools package registers when the `devtools` build tag
+// is active. Stable API.
+//
+// TraceID links the query back to the RequestEntry (and TraceEntry)
+// whose root span was active when GORM ran this statement. Enables
+// per-request SQL filters and N+1 detection (clustering queries that
+// share a trace ID and template).
+//
+// Vars carries the parameter values bound to the query — without them
+// the dashboard's EXPLAIN button would have to render plans for
+// placeholder-only SQL, which Postgres rejects. Values are coerced to
+// strings (fmt.Sprint) so the JSON payload stays cheap; loss of the
+// original Go type is acceptable for a debug surface.
+type QueryEntry struct {
+	Time       time.Time `json:"time"`
+	SQL        string    `json:"sql"`
+	Rows       int64     `json:"rows"`
+	DurationMS int64     `json:"duration_ms"`
+	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+	Vars       []string  `json:"vars,omitempty"`
+}
+
+// Middleware returns an HTTP middleware that captures request metadata
+// into the ring buffer. In stub builds this is a pass-through; in
+// devtools builds it records every request.
+//
+// Usage (cmd/serve.go wires this alongside the normal middleware
+// chain):
+//
+//	middlewares = append(middlewares, middleware.Middleware(devtools.Middleware))
+//
+// Calling this unconditionally is safe — the stub is a no-op.
+func Middleware(next http.Handler) http.Handler {
+	return middlewareImpl(next)
+}
+
+// Handler returns an http.Handler that serves the devtools debug
+// endpoints:
+//
+//	GET /debug/requests       — most recent RequestEntries
+//	GET /debug/sql            — most recent QueryEntries
+//	GET /debug/traces         — most recent completed TraceEntries
+//	GET /debug/traces/{id}    — one full trace by ID
+//	GET /debug/health         — {"devtools":"enabled"} | {"devtools":"stub"}
+//
+// In stub builds Handler returns a tiny handler that responds with
+// `{"devtools":"stub"}` to /debug/health and 404 to everything else —
+// so the dashboard can probe for availability without confusing errors.
+func Handler() http.Handler {
+	return handlerImpl()
+}
+
+// TraceEntry is one completed request trace captured by the OpenTelemetry
+// span processor. The dashboard renders this as an expandable waterfall:
+// span durations + nesting show the developer exactly which middleware,
+// service, and repository methods the request traversed, and how much
+// time each consumed.
+//
+// TraceID matches RequestEntry.TraceID for requests that flowed through
+// the devtools middleware chain — click a request row to drill into
+// the corresponding trace.
+type TraceEntry struct {
+	TraceID    string      `json:"trace_id"`
+	RootName   string      `json:"root_name"`
+	Time       time.Time   `json:"time"`
+	DurationMS int64       `json:"duration_ms"`
+	Status     string      `json:"status"` // "ok" | "error"
+	SpanCount  int         `json:"span_count"`
+	Spans      []TraceSpan `json:"spans,omitempty"`
+}
+
+// TraceSpan is one span inside a TraceEntry. OffsetMS is the span's
+// start time relative to the trace's root span start — the dashboard
+// uses it to position the span bar horizontally; DurationMS controls
+// the bar's width.
+//
+// Stack is a captured snapshot of the Go call stack at span start —
+// file:line:function, outermost frame first. Lets developers click a
+// span and see exactly where in the source it was opened.
+type TraceSpan struct {
+	SpanID     string            `json:"span_id"`
+	ParentID   string            `json:"parent_id,omitempty"`
+	Name       string            `json:"name"`
+	Kind       string            `json:"kind,omitempty"`
+	OffsetMS   int64             `json:"offset_ms"`
+	DurationMS int64             `json:"duration_ms"`
+	Status     string            `json:"status,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Events     []TraceEvent      `json:"events,omitempty"`
+	Stack      []string          `json:"stack,omitempty"`
+}
+
+// TraceEvent is an OpenTelemetry span event — usually an error or an
+// informational log point.
+type TraceEvent struct {
+	Name       string            `json:"name"`
+	OffsetMS   int64             `json:"offset_ms"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+}
+
+// CacheEntry is one captured cache operation. TraceID links the call
+// back to the originating request so the dashboard can aggregate
+// cache activity per trace (how many hits, how many misses — a solid
+// signal that a page could be cached, or that a cache is ineffective).
+type CacheEntry struct {
+	Time       time.Time `json:"time"`
+	Op         string    `json:"op"` // "get" | "set" | "delete" | "flush" | "ping"
+	Key        string    `json:"key,omitempty"`
+	Hit        bool      `json:"hit,omitempty"` // only meaningful for Get
+	DurationMS int64     `json:"duration_ms"`
+	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+}
+
+// WrapCache returns a cache.CacheService that delegates every
+// operation to the wrapped implementation while recording the op + key
+// + duration into the devtools cache ring. Stub builds return the
+// wrapped cache unchanged — zero overhead.
+//
+// Usage (cmd/serve.go, after DI initialization):
+//
+//	container.CacheService = devtools.WrapCache(container.CacheService)
+func WrapCache(inner cache.CacheService) cache.CacheService {
+	return wrapCacheImpl(inner)
+}
+
+// RegisterDB captures the project's *gorm.DB so devtools endpoints
+// that need to issue ad-hoc queries (currently /debug/explain) have a
+// handle to work with. Called from cmd/serve.go after DI constructs
+// the container. In stub builds it's a no-op.
+func RegisterDB(db interface{}) {
+	registerDBImpl(db)
+}
+
+// RegisterTraceProcessor hooks the devtools span processor into the
+// global OpenTelemetry tracer provider. Call it from cmd/serve.go after
+// observability.InitTracer() has set up the provider:
+//
+//	if cfg.Observability.TracingEnabled {
+//	    shutdown := observability.InitTracer(cfg.Observability.ServiceName)
+//	    defer shutdown()
+//	    devtools.RegisterTraceProcessor()
+//	}
+//
+// Calling RegisterTraceProcessor in a production build (no `devtools`
+// tag) is a no-op. Calling it before InitTracer is safe but useless —
+// the type assertion against the no-op provider falls through silently.
+func RegisterTraceProcessor() {
+	registerTraceProcessorImpl()
+}
+
+// ExceptionEntry is one captured panic or unhandled error. Populated
+// by the devtools Recover middleware (enabled builds) or — for
+// apperrors-wrapped 5xx responses — by a response-side interceptor.
+//
+// TraceID and Path tie the exception back to the offending request so
+// the dashboard can link "this panic" to "this trace" in one click.
+// Stack is a pre-formatted snapshot captured at the moment the panic
+// was recovered; Recovered is the panic value stringified.
+type ExceptionEntry struct {
+	Time      time.Time `json:"time"`
+	Path      string    `json:"path,omitempty"`
+	Method    string    `json:"method,omitempty"`
+	Status    int       `json:"status,omitempty"`
+	Recovered string    `json:"recovered"`
+	Stack     []string  `json:"stack,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+}
+
+// Recovery returns an HTTP middleware that catches panics raised by
+// downstream handlers. Behaviors:
+//   - In devtools builds: the recovered value + stack + request are
+//     pushed into the exceptions ring AND a 500 is written. Replaces
+//     (rather than layers under) pkg/middleware.Recovery so a single
+//     panic results in one recorded exception, not two.
+//   - In production builds: falls through to the supplied `fallback`
+//     middleware (typically pkg/middleware.Recovery) unchanged.
+//
+// Usage:
+//
+//	middlewares = append(middlewares,
+//	    devtools.Recovery(middleware.Recovery(logger)),
+//	)
+//
+// In production the wrapper is identity — zero cost.
+func Recovery(fallback func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return recoveryImpl(fallback)
+}
+
+// LogEntry is one captured slog record. Attrs is a flat string→string
+// map so the dashboard can render it without a JSON editor; complex
+// values are stringified via slog's built-in value formatting.
+//
+// TraceID is extracted from the record's context at capture time (if
+// a valid span context is present) so the Logs tab in the dashboard
+// can filter to "only logs from this request".
+type LogEntry struct {
+	Time    time.Time         `json:"time"`
+	Level   string            `json:"level"`
+	Message string            `json:"message"`
+	Attrs   map[string]string `json:"attrs,omitempty"`
+	TraceID string            `json:"trace_id,omitempty"`
+}
+
+// WrapLogger wraps an existing slog.Handler so that every log record
+// passing through it is ALSO teed into the devtools log ring with its
+// originating trace ID attached. Call it once during startup:
+//
+//	logger := slog.New(devtools.WrapLogger(baseHandler))
+//
+// In stub builds WrapLogger returns its argument unchanged, so this
+// call is safe in production — zero overhead, no behavior change.
+func WrapLogger(h slog.Handler) slog.Handler {
+	return wrapLoggerImpl(h)
+}

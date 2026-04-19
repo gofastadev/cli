@@ -1,0 +1,8 @@
+---
+description: Show the project's current REST route inventory as structured JSON. Useful before modifying routing or adding middleware.
+allowed-tools: Bash(gofasta routes*)
+---
+
+Run `gofasta routes --json` and present the registered routes as a table,
+grouped by the file that registers them. Flag any duplicates or unusual
+patterns (e.g., auth'd and unauth'd handlers on the same path).

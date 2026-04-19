@@ -31,6 +31,22 @@ DB_HOST_PORT=5433
 {{.ProjectNameUpper}}_LOG_LEVEL=debug
 {{.ProjectNameUpper}}_LOG_FORMAT=text
 
+# Cache (Redis) — only active when the `cache` compose profile is on.
+#
+# Start it with:
+#   gofasta dev --profile cache
+# or:
+#   docker compose --profile cache up -d
+#
+# Host-run app talks to the dockerized redis on localhost:REDIS_HOST_PORT.
+# Inside the app container (compose profile), REDIS_ADDR=cache:6379.
+{{.ProjectNameUpper}}_REDIS_URL=redis://localhost:6379/0
+REDIS_HOST_PORT=6379
+
+# Queue dashboard (asynqmon) — only active when the `queue` compose
+# profile is on. Serves the Asynq monitoring UI on :ASYNQMON_HOST_PORT.
+ASYNQMON_HOST_PORT=8081
+
 # Email (configure when needed)
 # {{.ProjectNameUpper}}_EMAIL_PROVIDER=smtp
 # {{.ProjectNameUpper}}_EMAIL_FROM_NAME=My App

@@ -1,0 +1,29 @@
+# Aider conventions for {{.ProjectName}}
+
+This file is read by Aider at every session start. See `AGENTS.md` at the
+project root for the full briefing.
+
+## Summary
+
+- Gofasta project scaffolded from https://gofasta.dev
+- Layered architecture: Controller → Service → Repository → Database
+- DTOs for API shape, models for DB schema — never mix
+- Google Wire is compile-time DI. Edit `app/di/wire.go`, run `gofasta wire`.
+- Never edit `app/di/wire_gen.go` — it's generated.
+
+## Required verification before each commit
+
+Run `gofasta verify` — it runs gofmt, go vet, golangci-lint, go test -race,
+go build, checks Wire is in sync, and parses the route inventory. Exits
+non-zero if any step fails.
+
+## Common workhorse commands
+
+- `gofasta g scaffold <Name> <fields>` — new REST resource
+- `gofasta wire` — regenerate DI
+- `gofasta routes` — list registered routes
+- `gofasta migrate up` — apply pending migrations
+
+## Full docs
+
+https://gofasta.dev/docs

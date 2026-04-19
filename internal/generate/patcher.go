@@ -35,8 +35,9 @@ func PatchContainer(d ScaffoldData) error {
 	}
 	s = strings.Replace(s, "\tResolver       *resolvers.Resolver", fields+"\tResolver       *resolvers.Resolver", 1)
 
-	termcolor.PrintPatch(path, "")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path,
+		describePatch(fmt.Sprintf("add %sRepo/%sService fields", d.Name, d.Name)),
+		[]byte(s))
 }
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
@@ -56,8 +57,9 @@ func PatchWireFile(d ScaffoldData) error {
 
 	s = strings.Replace(s, "\t\tproviders.GraphQLSet,", fmt.Sprintf("\t\t%s,\n\t\tproviders.GraphQLSet,", providerRef), 1)
 
-	termcolor.PrintPatch(path, "")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path,
+		describePatch("add "+providerRef+" to wire.Build"),
+		[]byte(s))
 }
 
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
@@ -102,8 +104,9 @@ func PatchResolver(d ScaffoldData) error {
 	afterClose := s[retIdx+closingBrace:]
 	s = beforeClose + ", " + fieldName + ": " + paramName + afterClose
 
-	termcolor.PrintPatch(path, "")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path,
+		describePatch("inject "+fieldName+" into Resolver"),
+		[]byte(s))
 }
 
 // PatchRouteConfig adds controller to RouteConfig and registers routes in app/rest/routes/index.routes.go.
@@ -130,8 +133,9 @@ func PatchRouteConfig(d ScaffoldData) error {
 	mountLine := "\tr.Mount(\"/api/v1\", api)"
 	s = strings.Replace(s, mountLine, routeCall+mountLine, 1)
 
-	termcolor.PrintPatch(path, "")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path,
+		describePatch("register "+d.Name+"Routes under /api/v1"),
+		[]byte(s))
 }
 
 // PatchServeFile adds the controller to RouteConfig initialization in cmd/serve.go.
@@ -154,6 +158,7 @@ func PatchServeFile(d ScaffoldData) error {
 		fmt.Sprintf("%s:   container.%s,\n\t\tHealthController: healthController,", controllerField, controllerField),
 		1)
 
-	termcolor.PrintPatch(path, "")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path,
+		describePatch("wire "+controllerField+" into RouteConfig"),
+		[]byte(s))
 }

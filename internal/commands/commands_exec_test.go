@@ -295,7 +295,7 @@ func TestRunDev_FakeSuccess(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	// runDev starts air in foreground, fake exits 0 immediately, returns nil
-	assert.NoError(t, runDev())
+	assert.NoError(t, runDev(devFlags{envFile: ".env", noServices: true}))
 }
 
 func TestRunDev_WithGraphQLFile(t *testing.T) {
@@ -303,7 +303,7 @@ func TestRunDev_WithGraphQLFile(t *testing.T) {
 	writeConfigYAML(t)
 	os.WriteFile("gqlgen.yml", []byte("schema: s\n"), 0644)
 	withFakeExec(t, 0)
-	assert.NoError(t, runDev())
+	assert.NoError(t, runDev(devFlags{envFile: ".env", noServices: true}))
 }
 
 func TestRunDev_AirFails(t *testing.T) {
@@ -311,7 +311,7 @@ func TestRunDev_AirFails(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 1)
 	// Both migrate + air "fail" — migrate is non-fatal, air error returns
-	err := runDev()
+	err := runDev(devFlags{envFile: ".env", noServices: true})
 	assert.Error(t, err)
 }
 

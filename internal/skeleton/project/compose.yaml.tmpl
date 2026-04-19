@@ -53,6 +53,43 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # cache (redis) is profile-gated. Start it on demand with
+  #   gofasta dev --profile cache
+  # or
+  #   docker compose --profile cache up -d
+  # Not started by default so projects that don't use pkg/cache don't
+  # pay the memory cost.
+  cache:
+    image: redis:7-alpine
+    container_name: {{.ProjectNameLower}}_cache
+    profiles: [cache]
+    ports:
+      - "${REDIS_HOST_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # queue (asynq monitoring UI) is profile-gated. The async queue
+  # itself runs inside the app process via hibiken/asynq against redis;
+  # this service is purely the web dashboard for inspecting queues.
+  # Start it on demand with:
+  #   gofasta dev --profile queue
+  queue:
+    image: hibiken/asynqmon:latest
+    container_name: {{.ProjectNameLower}}_queue
+    profiles: [queue]
+    ports:
+      - "${ASYNQMON_HOST_PORT:-8081}:8080"
+    depends_on:
+      cache:
+        condition: service_healthy
+    environment:
+      - REDIS_ADDR=cache:6379
+    restart: unless-stopped
+
 volumes:
   db_data:
   go_modules:

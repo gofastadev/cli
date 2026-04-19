@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/generate"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -50,6 +51,13 @@ var groupOrder = []string{
 // is suppressed even if the environment would otherwise show it.
 var noBanner bool
 
+// jsonOutput is set by the global --json flag. When true, every
+// structured-output subcommand emits machine-parseable JSON instead of
+// human-formatted text, and the banner is suppressed unconditionally.
+// The value is mirrored into the cliout package via SetJSONMode at
+// start-up so every subcommand reads it through a single source of truth.
+var jsonOutput bool
+
 // commandsWithoutBanner lists subcommands whose output must stay
 // machine-parseable. Showing a decorative banner on top of these would
 // break shell-completion scripts, scrape-friendly `--version` output, or
@@ -60,9 +68,13 @@ var commandsWithoutBanner = map[string]bool{
 }
 
 // shouldSkipBanner returns true when the invocation should not emit the
-// banner: explicit opt-out, machine-output commands, or bare --version.
+// banner: explicit opt-out, machine-output commands, bare --version, or
+// --json mode (which must emit strictly parseable output).
 func shouldSkipBanner(cmd *cobra.Command) bool {
 	if noBanner {
+		return true
+	}
+	if jsonOutput {
 		return true
 	}
 	// `gofasta --version` / `gofasta -v` is widely parsed by shell scripts
@@ -92,9 +104,12 @@ The CLI is a standalone binary that does not import the Gofasta library —
 it only manipulates files on disk.`,
 	SilenceUsage: true,
 	// PersistentPreRun fires before every Run / RunE, for the root command
-	// AND every subcommand in the tree — the exact hook we want for a
-	// persistent branded banner.
+	// AND every subcommand in the tree — the exact hook we want for
+	// mirroring the --json flag into cliout and printing the banner.
 	PersistentPreRun: func(cmd *cobra.Command, _ []string) {
+		// Mirror the --json flag into cliout before anything else runs,
+		// so every subcommand reads the same value via cliout.JSON().
+		cliout.SetJSONMode(jsonOutput)
 		if shouldSkipBanner(cmd) {
 			return
 		}
@@ -109,6 +124,8 @@ it only manipulates files on disk.`,
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&noBanner, "no-banner", false,
 		"Suppress the branded banner shown before each command (also honored via GOFASTA_NO_BANNER=1)")
+	rootCmd.PersistentFlags().BoolVar(&jsonOutput, "json", false,
+		"Emit machine-parseable JSON output (and suppress the banner). Intended for AI agents and CI automation.")
 
 	// Register command groups so every top-level command can be placed into a
 	// section that mirrors the whitepaper. Groups are matched by ID when a
@@ -160,6 +177,9 @@ var commandGroupAssignments = map[string]string{
 	"routes":  groupWorkflow,
 	"swagger": groupWorkflow,
 	"wire":    groupWorkflow,
+	"verify":  groupWorkflow,
+	"status":  groupWorkflow,
+	"debug":   groupWorkflow,
 	// Database
 	"migrate": groupDatabase,
 	"seed":    groupDatabase,
@@ -328,10 +348,13 @@ func runExecute(version string) error {
 // path without actually terminating the test binary.
 var osExit = os.Exit
 
-// Execute runs the root command with the given version string.
+// Execute runs the root command with the given version string. Errors
+// returned by the command tree are rendered through cliout.PrintError
+// so --json mode serializes them via MarshalJSON (clierr.Error supports
+// this) and text mode falls back to err.Error().
 func Execute(version string) {
 	if err := runExecute(version); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		cliout.PrintError(err)
 		osExit(1)
 	}
 }

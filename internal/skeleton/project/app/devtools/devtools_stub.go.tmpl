@@ -1,0 +1,80 @@
+//go:build !devtools
+// +build !devtools
+
+package devtools
+
+import (
+	"log/slog"
+	"net/http"
+
+	"github.com/gofastadev/gofasta/pkg/cache"
+	"gorm.io/gorm"
+)
+
+// In production builds (the default — no `devtools` build tag set),
+// every exported function here is a zero-cost no-op. The Go compiler
+// will inline the identity middleware and dead-code-eliminate the
+// callers so the devtools package contributes nothing to the final
+// binary beyond the symbol table.
+
+// middlewareImpl passes requests straight through. Its signature must
+// match the enabled-build version so cmd/serve.go compiles in both
+// configurations.
+func middlewareImpl(next http.Handler) http.Handler {
+	return next
+}
+
+// handlerImpl returns a handler that advertises the stub state on
+// /debug/health (so the dashboard can tell the app is running without
+// devtools instrumentation) and 404s on every other path.
+func handlerImpl() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/debug/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"devtools":"stub"}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
+}
+
+// registerTraceProcessorImpl is a no-op in stub builds. Callers
+// (cmd/serve.go) invoke it unconditionally after InitTracer; in
+// production the compiler elides the call entirely.
+func registerTraceProcessorImpl() {}
+
+// wrapLoggerImpl returns the handler unchanged in stub builds. The
+// scaffold calls WrapLogger unconditionally so this keeps slog
+// overhead at zero when devtools is off.
+func wrapLoggerImpl(h slog.Handler) slog.Handler { return h }
+
+// registerDBImpl is a no-op in stub builds. /debug/explain is not
+// exposed so there's no need to hold a DB handle.
+func registerDBImpl(_ interface{}) {}
+
+// wrapCacheImpl returns its argument unchanged — the real decorator
+// is compiled only in devtools builds.
+func wrapCacheImpl(inner cache.CacheService) cache.CacheService { return inner }
+
+// recoveryImpl delegates to the supplied fallback middleware in stub
+// builds. Production binaries get whichever recovery semantics
+// pkg/middleware.Recovery provides.
+func recoveryImpl(fallback func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	if fallback == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return fallback
+}
+
+// GormPlugin returns a plugin whose Initialize is a no-op. Calling
+// `db.Use(devtools.GormPlugin())` unconditionally in the DB setup is
+// therefore safe: it costs one allocation at startup and nothing per
+// query in production builds.
+func GormPlugin() gorm.Plugin {
+	return &stubGormPlugin{}
+}
+
+type stubGormPlugin struct{}
+
+func (s *stubGormPlugin) Name() string            { return "gofasta-devtools-stub" }
+func (s *stubGormPlugin) Initialize(_ *gorm.DB) error { return nil }

@@ -1,86 +1,429 @@
 package commands
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
+var (
+	devFlagValues  devFlags
+	devServicesRaw string
+)
+
 var devCmd = &cobra.Command{
 	Use:   "dev",
-	Short: "Run the project in development mode with Air hot reload",
-	Long: `Start the development loop against the current project on the host
-machine (not inside Docker). The command does three things:
+	Short: "Run the full local dev environment (services + migrations + Air hot reload)",
+	Long: `Bring the project's full development environment up with one
+command: start the compose services (database, cache, queue),
+health-check each one, apply pending migrations, then launch Air
+for hot reload of the host-side app.
 
-  1. Builds the migration URL from config.yaml and applies every pending
-     migration via ` + "`migrate up`" + ` (skipped gracefully if the database is
-     unreachable — useful before the DB container is up)
-  2. Launches Air (` + "`go tool air`" + `) against the project's .air.toml, which
-     rebuilds and restarts the binary on every source change
-  3. Wires SIGINT/SIGTERM through to Air so Ctrl+C shuts down cleanly
+Pipeline (each stage can be opted out independently):
+  1. Preflight        — verify docker + docker compose availability
+  2. Fresh volumes    — optional; drops every compose volume (--fresh)
+  3. Service start    — docker compose up -d <resolved services>
+  4. Health-wait      — poll each service until healthy (timeout 30s)
+  5. Migrate          — migrate up against the now-healthy database
+  6. Seed             — optional; runs ` + "`gofasta seed`" + ` after migrations
+  7. Air              — exec ` + "`go tool air`" + ` against .air.toml
+  8. Teardown         — on SIGINT/SIGTERM, stop services (volumes preserved)
 
-Assumes the database is reachable — if you use the Docker dev loop,
-start the DB first with ` + "`docker compose up db -d`" + `. If you want a fully
-containerised dev loop, use ` + "`make up`" + ` instead (runs the app and DB in
-Compose).
+Projects without compose.yaml get steps 1–4 short-circuited and fall
+straight through to Air — preserving the "I brought my own DB"
+workflow.
 
-Prerequisites: Go toolchain, Air registered in go.mod (` + "`gofasta new`" + ` and
-` + "`gofasta init`" + ` do this automatically), and ` + "`migrate`" + ` on $PATH if you want
-auto-migration.`,
+Every step emits a structured event when --json is set, so agents and
+CI tooling can branch on facts instead of log strings.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runDev()
+		devFlagValues.servicesList = parseServicesList(devServicesRaw)
+		return runDev(devFlagValues)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(devCmd)
+
+	f := devCmd.Flags()
+	f.BoolVar(&devFlagValues.noServices, "no-services", false,
+		"skip all compose orchestration; just run Air (honors an externally-managed database)")
+	f.BoolVar(&devFlagValues.noDB, "no-db", false,
+		"skip DB-like services (postgres, mysql, clickhouse, …)")
+	f.BoolVar(&devFlagValues.noCache, "no-cache", false,
+		"skip cache-like services (redis, valkey, …)")
+	f.BoolVar(&devFlagValues.noQueue, "no-queue", false,
+		"skip queue-like services (asynq, nats, rabbitmq, …)")
+	f.BoolVar(&devFlagValues.noMigrate, "no-migrate", false,
+		"skip running migrate up after services become healthy")
+	f.BoolVar(&devFlagValues.noTeardown, "no-teardown", false,
+		"leave compose services running on exit (default: stop them)")
+	f.BoolVar(&devFlagValues.keepVolumes, "keep-volumes", true,
+		"preserve named volumes on teardown (default: true)")
+	f.BoolVar(&devFlagValues.fresh, "fresh", false,
+		"drop every compose volume before starting — forces a clean DB state")
+	f.StringVar(&devServicesRaw, "services", "",
+		"comma-separated list of compose services to start (overrides --no-* flags)")
+	f.StringVar(&devFlagValues.profile, "profile", "",
+		"docker compose profile to activate (e.g. cache, queue)")
+	f.DurationVar(&devFlagValues.waitTimeout, "wait-timeout", defaultWaitTimeout,
+		"how long to wait for compose services to report healthy")
+	f.StringVar(&devFlagValues.envFile, "env-file", ".env",
+		"path to the .env file to load before starting Air")
+	f.StringVar(&devFlagValues.port, "port", "",
+		"override the PORT env var passed to Air / the app binary")
+	f.BoolVar(&devFlagValues.rebuild, "rebuild", false,
+		"force Air to do a rebuild cycle before first serve")
+	f.BoolVar(&devFlagValues.seed, "seed", false,
+		"run seeders after migrations (equivalent to running `gofasta seed` post-start)")
+	f.BoolVar(&devFlagValues.dryRun, "dry-run", false,
+		"print the resolved plan and exit without touching anything")
+	f.BoolVar(&devFlagValues.attachLogs, "attach-logs", false,
+		"stream `docker compose logs -f` alongside Air (service-prefixed)")
+	f.BoolVar(&devFlagValues.dashboard, "dashboard", false,
+		"start the local dev dashboard — an HTML debug page with routes, health, and live service state")
+	f.IntVar(&devFlagValues.dashboardPort, "dashboard-port", 9090,
+		"port for the dev dashboard HTTP server")
 }
 
-func runDev() error {
-	termcolor.PrintHeader("Starting gofasta development server...")
+// runDev is the orchestration entrypoint. Broken into clearly-named
+// stages so the pipeline reads top-to-bottom. Each stage consults flags
+// to decide whether to execute; each emits one or more events via the
+// devEmitter so humans see status lines and agents see JSON events.
+//
+//nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
+func runDev(flags devFlags) error {
+	emitter := newDevEmitter(jsonOutput)
 
-	// Load .env if present so config overrides (DATABASE_HOST, PORT, etc.)
-	// propagate to both the migration preflight and the Air-spawned app.
-	// Without this, a host-running app can't see the values users put in
-	// .env and silently falls back to config.yaml defaults — which breaks
-	// the "app on host, db in Docker" workflow.
-	if loaded, err := loadDotEnv(".env"); err != nil {
-		termcolor.PrintWarn(".env present but could not be loaded: %v", err)
+	// --- Stage 0: load .env ------------------------------------------------
+	// Keep the existing behavior: load .env first so subsequent stages see
+	// the developer's local overrides for DATABASE_HOST / PORT / etc.
+	if loaded, err := loadDotEnv(flags.envFile); err != nil {
+		emitter.Warn(fmt.Sprintf("%s present but could not be loaded: %v", flags.envFile, err))
 	} else if loaded > 0 {
-		termcolor.PrintStep("📋 Loaded %d variables from .env", loaded)
+		emitter.Info(fmt.Sprintf("loaded %d variables from %s", loaded, flags.envFile))
+	}
+	if flags.port != "" {
+		_ = os.Setenv("PORT", flags.port)
 	}
 
-	// Try running migrations. The database container may still be starting
-	// (docker compose up db -d takes 1-3 seconds to accept connections), so
-	// we retry once after a short pause before giving up. The error from the
-	// migrate CLI is printed verbatim so the developer can see what actually
-	// went wrong instead of guessing from a generic warning.
-	termcolor.PrintStep("🗄  Running migrations...")
-	if migErr := runMigrations(); migErr != nil {
-		termcolor.PrintWarn("Migrations skipped: %v", migErr)
-		termcolor.PrintHint("If the database is still starting, migrations will be applied on the next file save (Air rebuild).")
+	// --- Stage 1: resolve services -----------------------------------------
+	// Decide what we'd do — even in non-dry-run mode, we build the plan
+	// before touching anything so a failure here surfaces without side
+	// effects.
+	plan, err := resolveDevPlan(flags)
+	if err != nil {
+		return err
 	}
 
+	if flags.dryRun {
+		printDevPlan(plan, emitter)
+		return nil
+	}
+
+	// --- Stage 2: preflight ------------------------------------------------
+	if plan.orchestrate {
+		if !composeAvailable() {
+			return clierr.New(clierr.CodeDevDockerUnavailable,
+				"docker or docker compose is not available")
+		}
+		docker, compose := detectVersions()
+		emitter.Preflight(docker, compose)
+	}
+
+	// --- Stage 3: fresh volumes (optional) ---------------------------------
+	if plan.orchestrate && flags.fresh {
+		emitter.Info("dropping compose volumes (--fresh)")
+		if err := resetVolumes(); err != nil {
+			emitter.Warn(fmt.Sprintf("could not drop volumes: %v — continuing", err))
+		}
+	}
+
+	// --- Stage 4: start services -------------------------------------------
+	if plan.orchestrate && len(plan.services.selected) > 0 {
+		for _, name := range plan.services.selected {
+			emitter.ServiceStart(name)
+		}
+		if err := startServices(plan.services.selected, flags.profile); err != nil {
+			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
+				"failed to start compose services")
+		}
+
+		if err := waitHealthy(plan.services.selected, plan.services.hasHealth, flags.waitTimeout,
+			func(name, state string, elapsed time.Duration) {
+				if strings.HasPrefix(state, "running/healthy") || state == "running/" {
+					emitter.ServiceHealthy(name, elapsed)
+				}
+			}); err != nil {
+			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err, err.Error())
+		}
+	}
+
+	// Teardown runs exactly once on exit, unless --no-teardown is set.
+	// `--keep-volumes=false` upgrades the teardown from `stop` (preserve
+	// containers + volumes) to `down -v` (destroy both). The default keeps
+	// volumes so the next `gofasta dev` reuses the primed database.
+	var teardownDone bool
+	runTeardown := func(reason string) {
+		if teardownDone || flags.noTeardown {
+			return
+		}
+		teardownDone = true
+		if plan.orchestrate && len(plan.services.selected) > 0 {
+			var err error
+			var mode string
+			if flags.keepVolumes {
+				err = stopServices(plan.services.selected)
+				mode = "stopped"
+			} else {
+				err = resetVolumes()
+				mode = "destroyed"
+			}
+			if err == nil {
+				emitter.Shutdown(mode, 0)
+			} else {
+				emitter.Shutdown(mode+"-failed", 1)
+			}
+		} else {
+			emitter.Shutdown(reason, 0)
+		}
+	}
+	defer runTeardown("clean")
+
+	// --- Stage 5: migrations -----------------------------------------------
+	if !flags.noMigrate {
+		if applied, err := runMigrationsWithCount(); err != nil {
+			emitter.MigrateSkipped(err.Error())
+		} else {
+			emitter.MigrateOK(applied)
+		}
+	}
+
+	// --- Stage 6: seed (optional) ------------------------------------------
+	if flags.seed {
+		if err := runSeedDelegation(); err != nil {
+			emitter.Warn(fmt.Sprintf("seed failed: %v", err))
+		} else {
+			emitter.Info("seeders completed")
+		}
+	}
+
+	// --- Stage 7: optional side-processes ----------------------------------
+	// --attach-logs: stream docker compose logs alongside Air output.
+	// --dashboard:   spin up the debug HTTP server on dashboardPort.
+	// Both register shutdown hooks so they stop cleanly with the pipeline.
+	var sideCancels []func()
+	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 {
+		sideCancels = append(sideCancels, startLogStreamer(plan.services.selected))
+	}
+
+	// --- Stage 8: Air ------------------------------------------------------
 	port := configutil.GetPort()
-	fmt.Println()
-	termcolor.PrintStep("🚀 Starting air (hot reload)...")
-	fmt.Printf("   %s    %s\n", termcolor.CDim("REST API:"), termcolor.CBlue("http://localhost:"+port))
-	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		fmt.Printf("   %s     %s\n", termcolor.CDim("GraphQL:"), termcolor.CBlue("http://localhost:"+port+"/graphql"))
-		fmt.Printf("   %s  %s\n", termcolor.CDim("Playground:"), termcolor.CBlue("http://localhost:"+port+"/graphql-playground"))
+	if flags.port != "" {
+		port = flags.port
 	}
-	fmt.Println()
+	portInt, _ := strconv.Atoi(port)
+	urls := airURLs(port)
+	emitter.Air(portInt, urls)
 
-	airCmd := execCommand("go", "tool", "air")
+	if flags.dashboard {
+		sideCancels = append(sideCancels, startDashboard(flags.dashboardPort, portInt, &plan.services, emitter))
+	}
+
+	err = runAir(flags, runTeardown)
+	for _, c := range sideCancels {
+		c()
+	}
+	return err
+}
+
+// devPlan is what resolveDevPlan builds before any side effect runs.
+// Passed to both the dry-run printer and the real execution path, so
+// both paths see an identical picture of what's about to happen.
+type devPlan struct {
+	orchestrate bool        // run the compose pipeline at all
+	services    devServices // resolved service set (may be empty)
+}
+
+func resolveDevPlan(flags devFlags) (devPlan, error) {
+	// If the user opts out of orchestration entirely, or there's no
+	// compose.yaml in sight, fall straight through to the Air-only path.
+	if flags.noServices || !composeFileExists() {
+		if len(flags.servicesList) > 0 && !composeFileExists() {
+			return devPlan{}, clierr.New(clierr.CodeDevComposeNotFound,
+				"no compose.yaml found but --services was set")
+		}
+		return devPlan{orchestrate: false}, nil
+	}
+
+	available, hasHealth, err := detectComposeServices(flags.profile)
+	if err != nil {
+		return devPlan{}, clierr.Wrap(clierr.CodeDevComposeNotFound, err,
+			"could not read compose configuration")
+	}
+	selected := resolveSelectedServices(available, flags)
+	return devPlan{
+		orchestrate: true,
+		services: devServices{
+			available: available,
+			selected:  selected,
+			profile:   flags.profile,
+			hasHealth: hasHealth,
+		},
+	}, nil
+}
+
+func printDevPlan(plan devPlan, emitter devEmitter) {
+	if plan.orchestrate {
+		emitter.Info(fmt.Sprintf("orchestrate=true profile=%q services=%v",
+			plan.services.profile, plan.services.selected))
+	} else {
+		emitter.Info("orchestrate=false (no compose.yaml or --no-services)")
+	}
+}
+
+// detectVersions returns best-effort version strings for docker and
+// docker compose. Used for the preflight event — non-critical, so any
+// detection failure just returns "unknown".
+func detectVersions() (docker, compose string) {
+	docker = captureVersionLine(execCommand("docker", "version", "--format", "{{.Client.Version}}"))
+	if docker == "" {
+		docker = "unknown"
+	}
+	compose = captureVersionLine(execCommand("docker", "compose", "version", "--short"))
+	if compose == "" {
+		compose = "unknown"
+	}
+	return docker, compose
+}
+
+// captureVersionLine runs a prepared *exec.Cmd and returns the first
+// non-empty line of stdout trimmed. Returns "" on any failure so the
+// preflight event can fall back to "unknown" without a panic.
+func captureVersionLine(cmd *exec.Cmd) string {
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return ""
+	}
+	line := strings.SplitN(strings.TrimSpace(out.String()), "\n", 2)[0]
+	return strings.TrimSpace(line)
+}
+
+// runMigrationsWithCount re-uses the existing runMigrations but also
+// tries to extract a count of applied migrations from the migrate CLI
+// output. The golang-migrate CLI prints one line per applied step to
+// stderr in the form "N/u migration_name (duration)" — counting those
+// is a good-enough approximation of "how many ran".
+func runMigrationsWithCount() (int, error) {
+	if _, err := execLookPath("migrate"); err != nil {
+		return 0, errors.New("migrate CLI not found on $PATH")
+	}
+	dbURL := configutil.BuildMigrationURL()
+
+	var buf bytes.Buffer
+	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+	cmd.Stdout = &buf
+	cmd.Stderr = &buf
+	if err := cmd.Run(); err != nil {
+		// If the output says "no change", treat it as a zero-applied success
+		// rather than an error — migrate exits 0 in that case anyway, but
+		// we want this branch to be explicit.
+		return 0, clierr.Wrapf(clierr.CodeDevMigrationFailed, err,
+			"migrate up failed:\n%s", strings.TrimSpace(buf.String()))
+	}
+
+	applied := strings.Count(buf.String(), "/u ")
+	return applied, nil
+}
+
+// runSeedDelegation shells out to the project's own seed command. The
+// seed code path lives in the scaffolded project (not the CLI), so we
+// invoke it the same way `gofasta seed` does: via the project's main
+// binary with the `seed` subcommand.
+func runSeedDelegation() error {
+	cmd := execCommand("go", "run", "./app/main", "seed")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// airURLs builds the per-transport URL set for the running project.
+// GraphQL / swagger endpoints are included only if the project actually
+// exposes them (detected via filesystem markers), so the URL set never
+// lies about what's live.
+func airURLs(port string) map[string]string {
+	urls := map[string]string{"rest": "http://localhost:" + port}
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		urls["graphql"] = "http://localhost:" + port + "/graphql"
+		urls["playground"] = "http://localhost:" + port + "/graphql-playground"
+	}
+	if _, err := os.Stat("docs/swagger.json"); err == nil {
+		urls["swagger"] = "http://localhost:" + port + "/swagger/index.html"
+	}
+	urls["metrics"] = "http://localhost:" + port + "/metrics"
+	urls["health"] = "http://localhost:" + port + "/health"
+	return urls
+}
+
+// runAir execs `go tool air` and wires SIGINT/SIGTERM through so Ctrl+C
+// tears down services before the process exits.
+//
+// If --rebuild is set, the Air build cache directory (tmp/ by default,
+// configured via .air.toml) is deleted first so the next `go tool air`
+// invocation rebuilds from scratch rather than reusing a stale binary.
+// Air has no "force rebuild" flag of its own — deleting the tmp dir is
+// the officially-documented way.
+func runAir(flags devFlags, teardown func(string)) error {
+	if flags.rebuild {
+		// tmp/ is Air's default build directory; projects that
+		// customize .air.toml may use a different path, but clearing
+		// the default is a safe best-effort.
+		if err := os.RemoveAll("tmp"); err != nil {
+			// A missing tmp dir is the expected state on first run.
+			// Any other failure is non-fatal: Air will still run; the
+			// developer just won't get the forced-rebuild guarantee.
+			_ = err
+		}
+	}
+	args := []string{"tool", "air"}
+
+	if _, err := execLookPath("go"); err != nil {
+		return clierr.New(clierr.CodeDevAirNotInstalled,
+			"Go toolchain not on $PATH")
+	}
+
+	airCmd := execCommand("go", args...)
 	airCmd.Stdout = os.Stdout
 	airCmd.Stderr = os.Stderr
 	airCmd.Stdin = os.Stdin
+
+	// Inject GOFLAGS=-tags=devtools so Air's internal `go build`
+	// compiles the scaffold's app/devtools/devtools_enabled.go file
+	// (and excludes devtools_stub.go). Merges with any existing GOFLAGS
+	// value in the environment so projects that rely on custom GOFLAGS
+	// for other purposes aren't clobbered.
+	//
+	// Append to whatever Env the caller already set on the command
+	// (tests use a fake exec helper that populates Env with subprocess
+	// markers); starting from os.Environ() when no Env was set
+	// preserves the regular pass-through behavior.
+	if airCmd.Env == nil {
+		airCmd.Env = os.Environ()
+	}
+	airCmd.Env = append(airCmd.Env, appendTag(os.Getenv("GOFLAGS"), "devtools"))
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
@@ -89,35 +432,77 @@ func runDev() error {
 		if airCmd.Process != nil {
 			_ = airCmd.Process.Signal(os.Interrupt)
 		}
+		teardown("interrupted")
 	}()
 
-	return airCmd.Run()
+	err := airCmd.Run()
+	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
+	// exit as a successful shutdown rather than a pipeline failure.
+	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
+		if ws, ok := airCmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+			return nil
+		}
+	}
+	if err != nil {
+		return clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+			"air exited with error")
+	}
+	return nil
 }
 
-// runMigrations checks for the `migrate` CLI, builds the database URL from
-// config, and applies pending migrations. If the first attempt fails (common
-// when the database container is still starting), it waits briefly and
-// retries once. Returns nil on success (including "no change"), or the
-// underlying error on failure so the caller can print it verbatim.
+// appendTag merges a build tag into an existing GOFLAGS string. If the
+// existing value already contains a -tags= fragment, we splice the new
+// tag into it (comma-separated, no dupes). Otherwise we append a fresh
+// -tags=<name> fragment. The returned string has the GOFLAGS= prefix
+// and is suitable for dropping into os.Environ(). Kept generic (rather
+// than hard-coded to "devtools") so future stages can layer on other
+// tags — for instance, an observability-heavy `-tags=profiling` mode.
+//
+//nolint:unparam // tag is intentionally generic; only one caller today.
+func appendTag(existing, tag string) string {
+	// Normalize the incoming value. Both "GOFLAGS=..." and just "..."
+	// variants come through the test helpers; we always return a
+	// "GOFLAGS=..." string.
+	val := strings.TrimPrefix(existing, "GOFLAGS=")
+
+	if !strings.Contains(val, "-tags=") {
+		if val == "" {
+			return "GOFLAGS=-tags=" + tag
+		}
+		return "GOFLAGS=" + val + " -tags=" + tag
+	}
+
+	// Splice the tag into the existing -tags= fragment.
+	parts := strings.Fields(val)
+	for i, p := range parts {
+		if !strings.HasPrefix(p, "-tags=") {
+			continue
+		}
+		existingTags := strings.TrimPrefix(p, "-tags=")
+		for _, t := range strings.Split(existingTags, ",") {
+			if t == tag {
+				return "GOFLAGS=" + val // already present
+			}
+		}
+		parts[i] = "-tags=" + existingTags + "," + tag
+		break
+	}
+	return "GOFLAGS=" + strings.Join(parts, " ")
+}
+
+// Legacy helpers kept for backward-compat with other files that still
+// reference them. runMigrations is the original best-effort entrypoint
+// used elsewhere in the codebase; leaving it here avoids churning
+// callers outside the dev command.
 func runMigrations() error {
 	if _, err := execLookPath("migrate"); err != nil {
 		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
 			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
 	}
-
-	// configutil always builds a URL from defaults (at minimum
-	// postgres://:@localhost:5432/?sslmode=disable), so a "" return is
-	// not expected and not checked. If the URL is structurally wrong,
-	// the migrate CLI will surface the error on the first attempt below.
 	dbURL := configutil.BuildMigrationURL()
-
-	// First attempt.
 	if err := runMigrateUp(dbURL); err == nil {
 		return nil
 	}
-
-	// Retry once after a short pause — gives the database container time
-	// to finish accepting connections after `docker compose up db -d`.
 	termcolor.PrintHint("Database not ready, retrying in 2 seconds...")
 	time.Sleep(2 * time.Second)
 	return runMigrateUp(dbURL)

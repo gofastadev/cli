@@ -82,6 +82,12 @@ func TestHelperProcess(t *testing.T) {
 			}
 		}
 	}
+	// GOFASTA_FAKE_STDOUT lets callers script the child's stdout —
+	// used by dev_services_success_test.go to simulate the JSON that
+	// `docker compose config` / `docker compose ps` emit.
+	if stdout := os.Getenv("GOFASTA_FAKE_STDOUT"); stdout != "" {
+		fmt.Fprint(os.Stdout, stdout)
+	}
 	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
 	os.Exit(code)
 }
