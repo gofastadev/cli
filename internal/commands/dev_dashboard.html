@@ -140,6 +140,11 @@
   </div>
 </div>
 
+<h2>Metrics</h2>
+<div id="metrics">
+  {{- template "metricsCards" .Metrics -}}
+</div>
+
 <h2>Services</h2>
 <div id="services">
   {{- template "servicesTable" .Services -}}
@@ -148,6 +153,26 @@
 <h2>Routes</h2>
 <div id="routes">
   {{- template "routesTable" .Routes -}}
+</div>
+
+<h2>
+  Recent requests
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="requests">
+  {{- template "requestsTable" .RecentRequests -}}
+</div>
+
+<h2>
+  Recent SQL
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="queries">
+  {{- template "queriesTable" .RecentQueries -}}
 </div>
 
 <div class="footer">
@@ -272,5 +297,89 @@
     </table>
   {{- else -}}
     <div class="empty">No routes scraped yet (regenerate swagger to populate).</div>
+  {{- end -}}
+{{end}}
+
+{{define "metricsCards"}}
+  {{- if .MetricsOK -}}
+    <div class="grid">
+      <div class="card"><div class="label">Requests (total)</div><div class="value">{{.RequestsTotal}}</div></div>
+      <div class="card"><div class="label">In-flight</div><div class="value">{{.InFlight}}</div></div>
+      {{- if .LatencyP50MS }}
+        <div class="card"><div class="label">Avg latency</div><div class="value">{{printf "%.1f" .LatencyP50MS}} ms</div></div>
+      {{- end }}
+    </div>
+  {{- else -}}
+    <div class="empty">
+      /metrics not reachable yet — start the app (and make sure
+      cfg.Observability.MetricsEnabled is true).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "requestsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th></tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Method}}</span></td>
+            <td>{{.Path}}</td>
+            <td>
+              {{- if lt .Status 300 -}}
+                <span class="pill ok">{{.Status}}</span>
+              {{- else if lt .Status 500 -}}
+                <span class="pill warn">{{.Status}}</span>
+              {{- else -}}
+                <span class="pill err">{{.Status}}</span>
+              {{- end -}}
+            </td>
+            <td>{{.DurationMS}} ms</td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No captured requests yet — hit your app and they will appear here
+      (requires the <code>devtools</code> build tag, which
+      <code>gofasta dev</code> sets automatically).
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "queriesTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th></tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td>{{.Time.Format "15:04:05.000"}}</td>
+            <td>{{.Rows}}</td>
+            <td>{{.DurationMS}} ms</td>
+            <td>
+              {{- if .Error -}}
+                <span class="pill err">error</span> {{.SQL}}
+              {{- else -}}
+                {{.SQL}}
+              {{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No captured queries yet — GORM calls will appear here when
+      <code>devtools.GormPlugin()</code> is active (auto-enabled by
+      <code>gofasta dev</code>).
+    </div>
   {{- end -}}
 {{end}}

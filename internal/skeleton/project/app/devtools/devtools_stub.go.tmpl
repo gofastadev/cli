@@ -1,0 +1,50 @@
+//go:build !devtools
+// +build !devtools
+
+package devtools
+
+import (
+	"net/http"
+
+	"gorm.io/gorm"
+)
+
+// In production builds (the default — no `devtools` build tag set),
+// every exported function here is a zero-cost no-op. The Go compiler
+// will inline the identity middleware and dead-code-eliminate the
+// callers so the devtools package contributes nothing to the final
+// binary beyond the symbol table.
+
+// middlewareImpl passes requests straight through. Its signature must
+// match the enabled-build version so cmd/serve.go compiles in both
+// configurations.
+func middlewareImpl(next http.Handler) http.Handler {
+	return next
+}
+
+// handlerImpl returns a handler that advertises the stub state on
+// /debug/health (so the dashboard can tell the app is running without
+// devtools instrumentation) and 404s on every other path.
+func handlerImpl() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/debug/health" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"devtools":"stub"}`))
+			return
+		}
+		http.NotFound(w, r)
+	})
+}
+
+// GormPlugin returns a plugin whose Initialize is a no-op. Calling
+// `db.Use(devtools.GormPlugin())` unconditionally in the DB setup is
+// therefore safe: it costs one allocation at startup and nothing per
+// query in production builds.
+func GormPlugin() gorm.Plugin {
+	return &stubGormPlugin{}
+}
+
+type stubGormPlugin struct{}
+
+func (s *stubGormPlugin) Name() string            { return "gofasta-devtools-stub" }
+func (s *stubGormPlugin) Initialize(_ *gorm.DB) error { return nil }

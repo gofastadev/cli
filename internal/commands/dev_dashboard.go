@@ -69,15 +69,19 @@ func loadDashboardTemplate() (*template.Template, error) {
 // dashboardState is the JSON payload served by /api/state. Embedded in
 // the HTML page for first paint and refreshed via SSE every 5s.
 type dashboardState struct {
-	AppPort       int              `json:"app_port"`
-	AppURL        string           `json:"app_url"`
-	Health        string           `json:"health"` // "ok" | "unreachable" | "unhealthy"
-	Services      []serviceState   `json:"services"`
-	Routes        []dashboardRoute `json:"routes"`
-	SwaggerURL    string           `json:"swagger_url,omitempty"`
-	GraphQLURL    string           `json:"graphql_url,omitempty"`
-	MetricsURL    string           `json:"metrics_url,omitempty"`
-	LastUpdatedMS int64            `json:"last_updated_ms"`
+	AppPort         int              `json:"app_port"`
+	AppURL          string           `json:"app_url"`
+	Health          string           `json:"health"` // "ok" | "unreachable" | "unhealthy"
+	Services        []serviceState   `json:"services"`
+	Routes          []dashboardRoute `json:"routes"`
+	SwaggerURL      string           `json:"swagger_url,omitempty"`
+	GraphQLURL      string           `json:"graphql_url,omitempty"`
+	MetricsURL      string           `json:"metrics_url,omitempty"`
+	Metrics         metricsSnapshot  `json:"metrics"`
+	DevtoolsEnabled bool             `json:"devtools_enabled"`
+	RecentRequests  []scrapedRequest `json:"recent_requests,omitempty"`
+	RecentQueries   []scrapedQuery   `json:"recent_queries,omitempty"`
+	LastUpdatedMS   int64            `json:"last_updated_ms"`
 }
 
 // dashboardRoute is a single REST route scraped from the scaffold's
@@ -201,9 +205,24 @@ func (s *dashboardServer) refresh() {
 		}
 	}
 
+	// External scrapes — each fails soft (empty result) so one missing
+	// surface never blanks the whole dashboard.
+	metrics := scrapeMetrics(s.appURL)
+	devtoolsOn := devtoolsAvailable(s.appURL)
+	var recentReqs []scrapedRequest
+	var recentQueries []scrapedQuery
+	if devtoolsOn {
+		recentReqs = scrapeRequestLog(s.appURL)
+		recentQueries = scrapeSQLLog(s.appURL)
+	}
+
 	s.mu.Lock()
 	s.state.Health = health
 	s.state.Services = states
+	s.state.Metrics = metrics
+	s.state.DevtoolsEnabled = devtoolsOn
+	s.state.RecentRequests = recentReqs
+	s.state.RecentQueries = recentQueries
 	s.state.LastUpdatedMS = time.Now().UnixMilli()
 	snapshot := s.state
 	s.mu.Unlock()

@@ -410,6 +410,21 @@ func runAir(flags devFlags, teardown func(string)) error {
 	airCmd.Stderr = os.Stderr
 	airCmd.Stdin = os.Stdin
 
+	// Inject GOFLAGS=-tags=devtools so Air's internal `go build`
+	// compiles the scaffold's app/devtools/devtools_enabled.go file
+	// (and excludes devtools_stub.go). Merges with any existing GOFLAGS
+	// value in the environment so projects that rely on custom GOFLAGS
+	// for other purposes aren't clobbered.
+	//
+	// Append to whatever Env the caller already set on the command
+	// (tests use a fake exec helper that populates Env with subprocess
+	// markers); starting from os.Environ() when no Env was set
+	// preserves the regular pass-through behavior.
+	if airCmd.Env == nil {
+		airCmd.Env = os.Environ()
+	}
+	airCmd.Env = append(airCmd.Env, appendTag(os.Getenv("GOFLAGS"), "devtools"))
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -433,6 +448,46 @@ func runAir(flags devFlags, teardown func(string)) error {
 			"air exited with error")
 	}
 	return nil
+}
+
+// appendTag merges a build tag into an existing GOFLAGS string. If the
+// existing value already contains a -tags= fragment, we splice the new
+// tag into it (comma-separated, no dupes). Otherwise we append a fresh
+// -tags=<name> fragment. The returned string has the GOFLAGS= prefix
+// and is suitable for dropping into os.Environ(). Kept generic (rather
+// than hard-coded to "devtools") so future stages can layer on other
+// tags — for instance, an observability-heavy `-tags=profiling` mode.
+//
+//nolint:unparam // tag is intentionally generic; only one caller today.
+func appendTag(existing, tag string) string {
+	// Normalize the incoming value. Both "GOFLAGS=..." and just "..."
+	// variants come through the test helpers; we always return a
+	// "GOFLAGS=..." string.
+	val := strings.TrimPrefix(existing, "GOFLAGS=")
+
+	if !strings.Contains(val, "-tags=") {
+		if val == "" {
+			return "GOFLAGS=-tags=" + tag
+		}
+		return "GOFLAGS=" + val + " -tags=" + tag
+	}
+
+	// Splice the tag into the existing -tags= fragment.
+	parts := strings.Fields(val)
+	for i, p := range parts {
+		if !strings.HasPrefix(p, "-tags=") {
+			continue
+		}
+		existingTags := strings.TrimPrefix(p, "-tags=")
+		for _, t := range strings.Split(existingTags, ",") {
+			if t == tag {
+				return "GOFLAGS=" + val // already present
+			}
+		}
+		parts[i] = "-tags=" + existingTags + "," + tag
+		break
+	}
+	return "GOFLAGS=" + strings.Join(parts, " ")
 }
 
 // Legacy helpers kept for backward-compat with other files that still

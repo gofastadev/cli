@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/google/wire"
+	"{{.ModulePath}}/app/devtools"
 	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
@@ -45,7 +46,7 @@ var CoreSet = wire.NewSet(
 	ProvideStorageConfig,
 	ProvideQueueConfig,
 	// Infrastructure
-	config.SetupDB,
+	ProvideDB,
 	logger.NewLogger,
 	validators.NewAppValidator,
 	ProvideTemplateRenderer,
@@ -64,6 +65,19 @@ var CoreSet = wire.NewSet(
 )
 
 // --- Config extractors ---
+
+// ProvideDB wraps config.SetupDB with the devtools GORM plugin so SQL
+// queries are captured into the dev dashboard's ring buffer when the
+// binary is built with the `devtools` tag. In production builds the
+// plugin is a no-op (see app/devtools/devtools_stub.go). Safe to call
+// unconditionally.
+func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
+	db := config.SetupDB(cfg)
+	if err := db.Use(devtools.GormPlugin()); err != nil {
+		slog.Warn("failed to install devtools GORM plugin", "error", err)
+	}
+	return db
+}
 
 func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }
 func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig           { return &cfg.Log }

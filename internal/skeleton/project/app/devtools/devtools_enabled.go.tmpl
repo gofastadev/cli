@@ -1,0 +1,206 @@
+//go:build devtools
+// +build devtools
+
+package devtools
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"sync"
+	"time"
+
+	"gorm.io/gorm"
+)
+
+// ringCapacity bounds the memory footprint of the request / query
+// buffers. 200 entries each is enough to inspect a few minutes of
+// development traffic; bigger would start to matter on a long-running
+// dev session. Mutate here if you want more retention.
+const ringCapacity = 200
+
+// ── Request ring ──────────────────────────────────────────────────────
+
+type requestRing struct {
+	mu      sync.RWMutex
+	entries [ringCapacity]RequestEntry
+	head    int // next index to write
+	count   int // number of valid entries (up to ringCapacity)
+}
+
+var requests = &requestRing{}
+
+func (r *requestRing) push(e RequestEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % ringCapacity
+	if r.count < ringCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+// snapshot returns a slice of entries in newest-first order.
+func (r *requestRing) snapshot() []RequestEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]RequestEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + ringCapacity) % ringCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// ── Query ring ────────────────────────────────────────────────────────
+
+type queryRing struct {
+	mu      sync.RWMutex
+	entries [ringCapacity]QueryEntry
+	head    int
+	count   int
+}
+
+var queries = &queryRing{}
+
+func (r *queryRing) push(e QueryEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % ringCapacity
+	if r.count < ringCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+func (r *queryRing) snapshot() []QueryEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]QueryEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + ringCapacity) % ringCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// ── Middleware implementation ─────────────────────────────────────────
+
+// statusRecorder wraps a ResponseWriter so we can observe the status
+// code the handler wrote. Recording only the status (not the body) keeps
+// the middleware light and avoids accidentally double-buffering
+// potentially-large response bodies.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+func middlewareImpl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip the devtools endpoints themselves so they don't bloat the
+		// ring with their own polling traffic.
+		if len(r.URL.Path) >= 6 && r.URL.Path[:6] == "/debug" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		requests.push(RequestEntry{
+			Time:       start,
+			Method:     r.Method,
+			Path:       r.URL.Path,
+			Status:     rec.status,
+			DurationMS: time.Since(start).Milliseconds(),
+			RemoteAddr: r.RemoteAddr,
+		})
+	})
+}
+
+// ── Handler implementation ────────────────────────────────────────────
+
+func handlerImpl() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/requests", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(requests.snapshot())
+	})
+	mux.HandleFunc("/debug/sql", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(queries.snapshot())
+	})
+	mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+	})
+	return mux
+}
+
+// ── GORM plugin implementation ────────────────────────────────────────
+
+// GormPlugin returns a gorm.io/gorm Plugin that captures every executed
+// SQL statement into the ring buffer. Call it from the DB setup in the
+// scaffold:
+//
+//	db.Use(devtools.GormPlugin())
+//
+// Safe to call unconditionally — in stub builds this returns a plugin
+// that does nothing on Initialize.
+func GormPlugin() gorm.Plugin {
+	return &gormDevtools{}
+}
+
+type gormDevtools struct{}
+
+func (g *gormDevtools) Name() string { return "gofasta-devtools" }
+
+func (g *gormDevtools) Initialize(db *gorm.DB) error {
+	// Register a single "after every op" callback that reads the
+	// prepared SQL + rows-affected + error state out of the gorm.Statement.
+	after := func(tx *gorm.DB) {
+		start, ok := tx.Statement.Context.Value(gormStartKey{}).(time.Time)
+		if !ok {
+			start = time.Now()
+		}
+		errMsg := ""
+		if tx.Error != nil {
+			errMsg = tx.Error.Error()
+		}
+		queries.push(QueryEntry{
+			Time:       start,
+			SQL:        tx.Statement.SQL.String(),
+			Rows:       tx.Statement.RowsAffected,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error:      errMsg,
+		})
+	}
+
+	before := func(tx *gorm.DB) {
+		tx.Statement.Context = context.WithValue(
+			tx.Statement.Context, gormStartKey{}, time.Now(),
+		)
+	}
+
+	// Register against every operation so SELECTs, INSERTs, UPDATEs, and
+	// DELETEs all land in the ring.
+	for _, op := range []string{"create", "query", "update", "delete", "row", "raw"} {
+		if err := db.Callback().Query().Before("gorm:" + op).Register("devtools:before_"+op, before); err != nil {
+			// Ignore re-register errors — `Before` on some ops may conflict;
+			// we still want to proceed with the ones that worked.
+			_ = err
+		}
+		if err := db.Callback().Query().After("gorm:" + op).Register("devtools:after_"+op, after); err != nil {
+			_ = err
+		}
+	}
+	return nil
+}
+
+type gormStartKey struct{}

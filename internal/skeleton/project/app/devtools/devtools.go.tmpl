@@ -1,0 +1,77 @@
+// Package devtools exposes a small, build-tag-gated surface that the
+// gofasta dev dashboard can scrape for per-request + per-query visibility.
+//
+// The package is split across three files:
+//
+//   devtools.go         — always-compiled shared types + public API shape.
+//   devtools_enabled.go — `//go:build devtools` real implementation.
+//   devtools_stub.go    — `//go:build !devtools` no-op implementation.
+//
+// Both `_enabled.go` and `_stub.go` define the SAME exported symbols with
+// matching signatures — so cmd/serve.go calls them unconditionally and
+// the build tag decides which one compiles in. Production builds (no tag)
+// compile the stubs; these are zero-cost (the Go compiler inlines the
+// nil-returning funcs and dead-code-eliminates the call sites).
+//
+// `gofasta dev` passes `-tags devtools` via GOFLAGS so the real
+// implementation is active during development, and the dashboard
+// (http://localhost:9090) scrapes /debug/requests + /debug/sql off the
+// running app. Delete this package entirely and the scaffold keeps
+// working — it's opt-out, not a lock-in.
+package devtools
+
+import (
+	"net/http"
+	"time"
+)
+
+// RequestEntry is a single captured request in the in-memory ring buffer.
+// JSON tags are stable API — the dashboard reads this shape from
+// /debug/requests and any dashboard-compatible tooling relies on it.
+type RequestEntry struct {
+	Time       time.Time `json:"time"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Status     int       `json:"status"`
+	DurationMS int64     `json:"duration_ms"`
+	RemoteAddr string    `json:"remote_addr,omitempty"`
+}
+
+// QueryEntry is a single captured SQL query. Populated by the GORM
+// callback the devtools package registers when the `devtools` build tag
+// is active. Stable API.
+type QueryEntry struct {
+	Time       time.Time `json:"time"`
+	SQL        string    `json:"sql"`
+	Rows       int64     `json:"rows"`
+	DurationMS int64     `json:"duration_ms"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// Middleware returns an HTTP middleware that captures request metadata
+// into the ring buffer. In stub builds this is a pass-through; in
+// devtools builds it records every request.
+//
+// Usage (cmd/serve.go wires this alongside the normal middleware
+// chain):
+//
+//	middlewares = append(middlewares, middleware.Middleware(devtools.Middleware))
+//
+// Calling this unconditionally is safe — the stub is a no-op.
+func Middleware(next http.Handler) http.Handler {
+	return middlewareImpl(next)
+}
+
+// Handler returns an http.Handler that serves the devtools debug
+// endpoints:
+//
+//	GET /debug/requests   — JSON array of the most recent RequestEntries
+//	GET /debug/sql        — JSON array of the most recent QueryEntries
+//	GET /debug/health     — {"devtools":"enabled"} | {"devtools":"stub"}
+//
+// In stub builds Handler returns a tiny handler that responds with
+// `{"devtools":"stub"}` to /debug/health and 404 to everything else —
+// so the dashboard can probe for availability without confusing errors.
+func Handler() http.Handler {
+	return handlerImpl()
+}
