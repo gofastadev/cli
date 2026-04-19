@@ -48,6 +48,10 @@ func startServer() error {
 	cfg := container.Config
 	logger := container.Logger
 
+	// Hand the DB to devtools so /debug/explain can issue EXPLAIN
+	// queries against captured SQL. No-op in production.
+	devtools.RegisterDB(container.DB)
+
 	// Initialize tracing (if enabled)
 	if cfg.Observability.TracingEnabled {
 		shutdown := observability.InitTracer(cfg.Observability.ServiceName)
@@ -101,7 +105,12 @@ func startServer() error {
 	middlewares := []middleware.Middleware{
 		middleware.RequestID(),
 		middleware.RequestLogging(logger),
-		middleware.Recovery(logger),
+		// Devtools Recovery wraps the framework's Recovery: in devtools
+		// builds it captures the panic + stack + request into the
+		// exceptions ring (surfaced on the dashboard); in production
+		// it delegates straight to pkg/middleware.Recovery so behavior
+		// is unchanged.
+		middleware.Middleware(devtools.Recovery(middleware.Recovery(logger))),
 		middleware.CORS(cfg.Server.AllowedOrigins),
 		middleware.SecurityHeaders(cfg.Security),
 		// Devtools request-capture — pass-through no-op in production builds.

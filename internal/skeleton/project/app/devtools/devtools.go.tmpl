@@ -24,6 +24,8 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
+
+	"github.com/gofastadev/gofasta/pkg/cache"
 )
 
 // RequestEntry is a single captured request in the in-memory ring buffer.
@@ -160,6 +162,40 @@ type TraceEvent struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+// CacheEntry is one captured cache operation. TraceID links the call
+// back to the originating request so the dashboard can aggregate
+// cache activity per trace (how many hits, how many misses — a solid
+// signal that a page could be cached, or that a cache is ineffective).
+type CacheEntry struct {
+	Time       time.Time `json:"time"`
+	Op         string    `json:"op"` // "get" | "set" | "delete" | "flush" | "ping"
+	Key        string    `json:"key,omitempty"`
+	Hit        bool      `json:"hit,omitempty"` // only meaningful for Get
+	DurationMS int64     `json:"duration_ms"`
+	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+}
+
+// WrapCache returns a cache.CacheService that delegates every
+// operation to the wrapped implementation while recording the op + key
+// + duration into the devtools cache ring. Stub builds return the
+// wrapped cache unchanged — zero overhead.
+//
+// Usage (cmd/serve.go, after DI initialization):
+//
+//	container.CacheService = devtools.WrapCache(container.CacheService)
+func WrapCache(inner cache.CacheService) cache.CacheService {
+	return wrapCacheImpl(inner)
+}
+
+// RegisterDB captures the project's *gorm.DB so devtools endpoints
+// that need to issue ad-hoc queries (currently /debug/explain) have a
+// handle to work with. Called from cmd/serve.go after DI constructs
+// the container. In stub builds it's a no-op.
+func RegisterDB(db interface{}) {
+	registerDBImpl(db)
+}
+
 // RegisterTraceProcessor hooks the devtools span processor into the
 // global OpenTelemetry tracer provider. Call it from cmd/serve.go after
 // observability.InitTracer() has set up the provider:
@@ -175,6 +211,44 @@ type TraceEvent struct {
 // the type assertion against the no-op provider falls through silently.
 func RegisterTraceProcessor() {
 	registerTraceProcessorImpl()
+}
+
+// ExceptionEntry is one captured panic or unhandled error. Populated
+// by the devtools Recover middleware (enabled builds) or — for
+// apperrors-wrapped 5xx responses — by a response-side interceptor.
+//
+// TraceID and Path tie the exception back to the offending request so
+// the dashboard can link "this panic" to "this trace" in one click.
+// Stack is a pre-formatted snapshot captured at the moment the panic
+// was recovered; Recovered is the panic value stringified.
+type ExceptionEntry struct {
+	Time      time.Time `json:"time"`
+	Path      string    `json:"path,omitempty"`
+	Method    string    `json:"method,omitempty"`
+	Status    int       `json:"status,omitempty"`
+	Recovered string    `json:"recovered"`
+	Stack     []string  `json:"stack,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+}
+
+// Recovery returns an HTTP middleware that catches panics raised by
+// downstream handlers. Behaviors:
+//   - In devtools builds: the recovered value + stack + request are
+//     pushed into the exceptions ring AND a 500 is written. Replaces
+//     (rather than layers under) pkg/middleware.Recovery so a single
+//     panic results in one recorded exception, not two.
+//   - In production builds: falls through to the supplied `fallback`
+//     middleware (typically pkg/middleware.Recovery) unchanged.
+//
+// Usage:
+//
+//	middlewares = append(middlewares,
+//	    devtools.Recovery(middleware.Recovery(logger)),
+//	)
+//
+// In production the wrapper is identity — zero cost.
+func Recovery(fallback func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return recoveryImpl(fallback)
 }
 
 // LogEntry is one captured slog record. Attrs is a flat string→string

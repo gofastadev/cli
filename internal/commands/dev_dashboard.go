@@ -70,24 +70,26 @@ func loadDashboardTemplate() (*template.Template, error) {
 // dashboardState is the JSON payload served by /api/state. Embedded in
 // the HTML page for first paint and refreshed via SSE every 5s.
 type dashboardState struct {
-	AppPort         int              `json:"app_port"`
-	AppURL          string           `json:"app_url"`
-	Health          string           `json:"health"` // "ok" | "unreachable" | "unhealthy"
-	Services        []serviceState   `json:"services"`
-	Routes          []dashboardRoute `json:"routes"`
-	SwaggerURL      string           `json:"swagger_url,omitempty"`
-	GraphQLURL      string           `json:"graphql_url,omitempty"`
-	MetricsURL      string           `json:"metrics_url,omitempty"`
-	Metrics         metricsSnapshot  `json:"metrics"`
-	DevtoolsEnabled bool              `json:"devtools_enabled"`
-	PprofURL        string            `json:"pprof_url,omitempty"`
-	AsynqmonURL     string            `json:"asynqmon_url,omitempty"`
-	Goroutines      goroutineSnapshot `json:"goroutines"`
-	RecentRequests  []scrapedRequest  `json:"recent_requests,omitempty"`
-	RecentQueries   []scrapedQuery    `json:"recent_queries,omitempty"`
-	RecentTraces    []scrapedTrace    `json:"recent_traces,omitempty"`
-	NPlusOne        []nPlusOneFinding `json:"n_plus_one,omitempty"`
-	LastUpdatedMS   int64             `json:"last_updated_ms"`
+	AppPort         int                `json:"app_port"`
+	AppURL          string             `json:"app_url"`
+	Health          string             `json:"health"` // "ok" | "unreachable" | "unhealthy"
+	Services        []serviceState     `json:"services"`
+	Routes          []dashboardRoute   `json:"routes"`
+	SwaggerURL      string             `json:"swagger_url,omitempty"`
+	GraphQLURL      string             `json:"graphql_url,omitempty"`
+	MetricsURL      string             `json:"metrics_url,omitempty"`
+	Metrics         metricsSnapshot    `json:"metrics"`
+	DevtoolsEnabled bool               `json:"devtools_enabled"`
+	PprofURL        string             `json:"pprof_url,omitempty"`
+	AsynqmonURL     string             `json:"asynqmon_url,omitempty"`
+	Goroutines      goroutineSnapshot  `json:"goroutines"`
+	RecentRequests  []scrapedRequest   `json:"recent_requests,omitempty"`
+	RecentQueries   []scrapedQuery     `json:"recent_queries,omitempty"`
+	RecentTraces    []scrapedTrace     `json:"recent_traces,omitempty"`
+	NPlusOne        []nPlusOneFinding  `json:"n_plus_one,omitempty"`
+	Exceptions      []scrapedException `json:"exceptions,omitempty"`
+	CacheOps        []scrapedCache     `json:"cache_ops,omitempty"`
+	LastUpdatedMS   int64              `json:"last_updated_ms"`
 }
 
 // dashboardRoute is a single REST route scraped from the scaffold's
@@ -198,6 +200,8 @@ func startDashboard(port, appPort int, svc *devServices, emitter devEmitter) fun
 	mux.HandleFunc("/api/trace/", srv.handleTraceDetail)
 	mux.HandleFunc("/api/logs", srv.handleLogs)
 	mux.HandleFunc("/api/replay", srv.handleReplay)
+	mux.HandleFunc("/api/explain", srv.handleExplain)
+	mux.HandleFunc("/api/har", srv.handleHAR)
 
 	srv.httpSrv = &http.Server{
 		Addr:              fmt.Sprintf(":%d", port),
@@ -248,48 +252,10 @@ func (s *dashboardServer) refresherLoop(ctx context.Context) {
 // broadcasts to subscribers.
 func (s *dashboardServer) refresh() {
 	health := probeHealth(s.appURL + "/health")
-
-	var states []serviceState
-	asynqmonURL := ""
-	if s.svc != nil && len(s.svc.selected) > 0 {
-		if live, err := queryServiceStates(); err == nil {
-			for _, st := range live {
-				for _, sel := range s.svc.selected {
-					if st.Name == sel {
-						states = append(states, st)
-					}
-				}
-				// Detect asynqmon and publish its URL if it's running. The
-				// scaffold's compose.yaml names this service `queue` (or
-				// `<project>_queue`) and exposes it on
-				// ${ASYNQMON_HOST_PORT:-8081}. Name match is sufficient;
-				// projects using a different queue viewer can override
-				// the env var without the dashboard caring.
-				if strings.Contains(strings.ToLower(st.Name), "queue") {
-					if strings.EqualFold(st.Health, "healthy") || strings.EqualFold(st.State, "running") {
-						port := os.Getenv("ASYNQMON_HOST_PORT")
-						if port == "" {
-							port = "8081"
-						}
-						asynqmonURL = "http://localhost:" + port
-					}
-				}
-			}
-		}
-	}
-
-	// External scrapes — each fails soft (empty result) so one missing
-	// surface never blanks the whole dashboard.
+	states, asynqmonURL := s.resolveServices()
 	metrics := scrapeMetrics(s.appURL)
 	devtoolsOn := devtoolsAvailable(s.appURL)
-	var recentReqs []scrapedRequest
-	var recentQueries []scrapedQuery
-	var recentTraces []scrapedTrace
-	if devtoolsOn {
-		recentReqs = scrapeRequestLog(s.appURL)
-		recentQueries = scrapeSQLLog(s.appURL)
-		recentTraces = scrapeTraces(s.appURL)
-	}
+	dt := s.scrapeDevtools(devtoolsOn)
 
 	s.mu.Lock()
 	s.state.Health = health
@@ -298,16 +264,17 @@ func (s *dashboardServer) refresh() {
 	s.state.DevtoolsEnabled = devtoolsOn
 	if devtoolsOn {
 		s.state.PprofURL = s.appURL + "/debug/pprof/"
-		s.state.Goroutines = scrapeGoroutines(s.appURL)
 	} else {
 		s.state.PprofURL = ""
-		s.state.Goroutines = goroutineSnapshot{}
 	}
+	s.state.Goroutines = dt.goroutines
 	s.state.AsynqmonURL = asynqmonURL
-	s.state.NPlusOne = detectNPlusOne(recentQueries)
-	s.state.RecentRequests = recentReqs
-	s.state.RecentQueries = recentQueries
-	s.state.RecentTraces = recentTraces
+	s.state.NPlusOne = detectNPlusOne(dt.queries)
+	s.state.Exceptions = dt.exceptions
+	s.state.CacheOps = dt.cacheOps
+	s.state.RecentRequests = dt.requests
+	s.state.RecentQueries = dt.queries
+	s.state.RecentTraces = dt.traces
 	s.state.LastUpdatedMS = time.Now().UnixMilli()
 	snapshot := s.state
 	s.mu.Unlock()
@@ -322,6 +289,78 @@ func (s *dashboardServer) refresh() {
 		}
 		return true
 	})
+}
+
+// devtoolsScrape bundles everything we pull from the app's
+// /debug/* endpoints in one pass. Assembled by scrapeDevtools and
+// applied to state under the server's lock.
+type devtoolsScrape struct {
+	requests   []scrapedRequest
+	queries    []scrapedQuery
+	traces     []scrapedTrace
+	exceptions []scrapedException
+	cacheOps   []scrapedCache
+	goroutines goroutineSnapshot
+}
+
+// scrapeDevtools fans out to each /debug/* endpoint when the target
+// app exposes them. Each call fails soft so a single-surface outage
+// never blanks the whole dashboard. Returns an empty struct when the
+// app was built without the devtools tag.
+func (s *dashboardServer) scrapeDevtools(devtoolsOn bool) devtoolsScrape {
+	if !devtoolsOn {
+		return devtoolsScrape{}
+	}
+	return devtoolsScrape{
+		requests:   scrapeRequestLog(s.appURL),
+		queries:    scrapeSQLLog(s.appURL),
+		traces:     scrapeTraces(s.appURL),
+		exceptions: scrapeExceptions(s.appURL),
+		cacheOps:   scrapeCacheOps(s.appURL),
+		goroutines: scrapeGoroutines(s.appURL),
+	}
+}
+
+// resolveServices reconciles compose state with our selected service
+// list. Returns the filtered service states plus a non-empty
+// asynqmonURL when a `queue`-named service is running.
+func (s *dashboardServer) resolveServices() (states []serviceState, asynqmonURL string) {
+	if s.svc == nil || len(s.svc.selected) == 0 {
+		return nil, ""
+	}
+	live, err := queryServiceStates()
+	if err != nil {
+		return nil, ""
+	}
+	for _, st := range live {
+		for _, sel := range s.svc.selected {
+			if st.Name == sel {
+				states = append(states, st)
+			}
+		}
+		if url := asynqmonURLFor(st); url != "" {
+			asynqmonURL = url
+		}
+	}
+	return states, asynqmonURL
+}
+
+// asynqmonURLFor returns the dashboard URL for a healthy `queue`-named
+// compose service, or "" if the service isn't an asynqmon match. The
+// scaffold's compose.yaml names this service `queue` and exposes it
+// on ${ASYNQMON_HOST_PORT:-8081}.
+func asynqmonURLFor(st serviceState) string {
+	if !strings.Contains(strings.ToLower(st.Name), "queue") {
+		return ""
+	}
+	if !strings.EqualFold(st.Health, "healthy") && !strings.EqualFold(st.State, "running") {
+		return ""
+	}
+	port := os.Getenv("ASYNQMON_HOST_PORT")
+	if port == "" {
+		port = "8081"
+	}
+	return "http://localhost:" + port
 }
 
 // probeHealth does a 2-second-timeout GET against the app's /health
@@ -557,6 +596,170 @@ func writeSSE(w http.ResponseWriter, flusher http.Flusher, st dashboardState) {
 	}
 	_, _ = fmt.Fprintf(w, "data: %s\n\n", b)
 	flusher.Flush()
+}
+
+// handleHAR serializes the current request ring as HAR 1.2 JSON so
+// developers can hand the file to any HAR-aware viewer (Chrome
+// DevTools, insomnia, postman). Keeping this client-side-triggered
+// means the server doesn't persist the HAR anywhere — it's a download,
+// not a report.
+func (s *dashboardServer) handleHAR(w http.ResponseWriter, _ *http.Request) {
+	s.mu.RLock()
+	reqs := s.state.RecentRequests
+	s.mu.RUnlock()
+	har := buildHAR(reqs)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="gofasta-dev.har"`)
+	_ = json.NewEncoder(w).Encode(har)
+}
+
+// buildHAR converts scrapedRequest entries into the HAR 1.2 shape the
+// ecosystem's tooling reads. We emit minimally — no cookies, no
+// detailed headers beyond Content-Type, no timings breakdown —
+// because the devtools ring doesn't capture any of that. Viewers
+// gracefully degrade.
+func buildHAR(reqs []scrapedRequest) harDoc {
+	entries := make([]harEntry, 0, len(reqs))
+	for _, r := range reqs {
+		ctype := r.ResponseContentType
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		reqContentType := "application/json"
+		entries = append(entries, harEntry{
+			StartedDateTime: r.Time.UTC().Format(time.RFC3339Nano),
+			Time:            r.DurationMS,
+			Request: harRequest{
+				Method:      r.Method,
+				URL:         r.Path,
+				HTTPVersion: "HTTP/1.1",
+				Cookies:     []struct{}{},
+				Headers:     []struct{}{},
+				QueryString: []struct{}{},
+				PostData: &harPostData{
+					MimeType: reqContentType,
+					Text:     r.Body,
+				},
+				HeadersSize: -1,
+				BodySize:    int64(len(r.Body)),
+			},
+			Response: harResponse{
+				Status:      r.Status,
+				StatusText:  http.StatusText(r.Status),
+				HTTPVersion: "HTTP/1.1",
+				Cookies:     []struct{}{},
+				Headers:     []struct{}{},
+				Content: harContent{
+					Size:     int64(len(r.ResponseBody)),
+					MimeType: ctype,
+					Text:     r.ResponseBody,
+				},
+				RedirectURL: "",
+				HeadersSize: -1,
+				BodySize:    int64(len(r.ResponseBody)),
+			},
+			Cache:   struct{}{},
+			Timings: harTimings{Send: 0, Wait: r.DurationMS, Receive: 0},
+		})
+	}
+	return harDoc{
+		Log: harLog{
+			Version: "1.2",
+			Creator: harCreator{Name: "gofasta dev dashboard", Version: "1"},
+			Entries: entries,
+		},
+	}
+}
+
+// ── HAR 1.2 shape — https://en.wikipedia.org/wiki/HAR_(file_format) ──
+
+type harDoc struct {
+	Log harLog `json:"log"`
+}
+type harLog struct {
+	Version string     `json:"version"`
+	Creator harCreator `json:"creator"`
+	Entries []harEntry `json:"entries"`
+}
+type harCreator struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+type harEntry struct {
+	StartedDateTime string      `json:"startedDateTime"`
+	Time            int64       `json:"time"`
+	Request         harRequest  `json:"request"`
+	Response        harResponse `json:"response"`
+	Cache           struct{}    `json:"cache"`
+	Timings         harTimings  `json:"timings"`
+}
+type harRequest struct {
+	Method      string       `json:"method"`
+	URL         string       `json:"url"`
+	HTTPVersion string       `json:"httpVersion"`
+	Cookies     []struct{}   `json:"cookies"`
+	Headers     []struct{}   `json:"headers"`
+	QueryString []struct{}   `json:"queryString"`
+	PostData    *harPostData `json:"postData,omitempty"`
+	HeadersSize int64        `json:"headersSize"`
+	BodySize    int64        `json:"bodySize"`
+}
+type harPostData struct {
+	MimeType string `json:"mimeType"`
+	Text     string `json:"text"`
+}
+type harResponse struct {
+	Status      int        `json:"status"`
+	StatusText  string     `json:"statusText"`
+	HTTPVersion string     `json:"httpVersion"`
+	Cookies     []struct{} `json:"cookies"`
+	Headers     []struct{} `json:"headers"`
+	Content     harContent `json:"content"`
+	RedirectURL string     `json:"redirectURL"`
+	HeadersSize int64      `json:"headersSize"`
+	BodySize    int64      `json:"bodySize"`
+}
+type harContent struct {
+	Size     int64  `json:"size"`
+	MimeType string `json:"mimeType"`
+	Text     string `json:"text,omitempty"`
+}
+type harTimings struct {
+	Send    int64 `json:"send"`
+	Wait    int64 `json:"wait"`
+	Receive int64 `json:"receive"`
+}
+
+// handleExplain forwards the dashboard's EXPLAIN request to the app's
+// /debug/explain endpoint. The scaffold's handler enforces the
+// SELECT-only whitelist and runs the plan against GORM; we pass the
+// response through verbatim so any failure surfaces in the modal.
+func (s *dashboardServer) handleExplain(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 64*1024))
+	if err != nil {
+		http.Error(w, "read body: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodPost, s.appURL+"/debug/explain", strings.NewReader(string(body)))
+	if err != nil {
+		http.Error(w, "build upstream: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	w.Header().Set("Content-Type", resp.Header.Get("Content-Type"))
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 // handleLogs proxies to the app's /debug/logs, forwarding the

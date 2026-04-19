@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/gofastadev/gofasta/pkg/cache"
 	"gorm.io/gorm"
 )
 
@@ -46,6 +47,24 @@ func registerTraceProcessorImpl() {}
 // scaffold calls WrapLogger unconditionally so this keeps slog
 // overhead at zero when devtools is off.
 func wrapLoggerImpl(h slog.Handler) slog.Handler { return h }
+
+// registerDBImpl is a no-op in stub builds. /debug/explain is not
+// exposed so there's no need to hold a DB handle.
+func registerDBImpl(_ interface{}) {}
+
+// wrapCacheImpl returns its argument unchanged — the real decorator
+// is compiled only in devtools builds.
+func wrapCacheImpl(inner cache.CacheService) cache.CacheService { return inner }
+
+// recoveryImpl delegates to the supplied fallback middleware in stub
+// builds. Production binaries get whichever recovery semantics
+// pkg/middleware.Recovery provides.
+func recoveryImpl(fallback func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	if fallback == nil {
+		return func(next http.Handler) http.Handler { return next }
+	}
+	return fallback
+}
 
 // GormPlugin returns a plugin whose Initialize is a no-op. Calling
 // `db.Use(devtools.GormPlugin())` unconditionally in the DB setup is

@@ -254,12 +254,12 @@ func TestScrapeGoroutines_404(t *testing.T) {
 // produce the same template.
 func TestNormalizeSQL(t *testing.T) {
 	cases := map[string]string{
-		"SELECT * FROM users WHERE id = 42":                      "SELECT * FROM users WHERE id = ?",
-		"SELECT * FROM users WHERE id = 15":                      "SELECT * FROM users WHERE id = ?",
-		"SELECT * FROM users WHERE email = 'alice@example.com'":  "SELECT * FROM users WHERE email = ?",
-		"SELECT\n  *\n  FROM users\n  WHERE id = 1":              "SELECT * FROM users WHERE id = ?",
-		`SELECT * FROM users WHERE name = "Bob"`:                  "SELECT * FROM users WHERE name = ?",
-		"SELECT COUNT(*) FROM orders WHERE total > 100.50":       "SELECT COUNT(*) FROM orders WHERE total > ?",
+		"SELECT * FROM users WHERE id = 42":                     "SELECT * FROM users WHERE id = ?",
+		"SELECT * FROM users WHERE id = 15":                     "SELECT * FROM users WHERE id = ?",
+		"SELECT * FROM users WHERE email = 'alice@example.com'": "SELECT * FROM users WHERE email = ?",
+		"SELECT\n  *\n  FROM users\n  WHERE id = 1":             "SELECT * FROM users WHERE id = ?",
+		`SELECT * FROM users WHERE name = "Bob"`:                "SELECT * FROM users WHERE name = ?",
+		"SELECT COUNT(*) FROM orders WHERE total > 100.50":      "SELECT COUNT(*) FROM orders WHERE total > ?",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, normalizeSQL(in), "input: %q", in)
@@ -303,6 +303,45 @@ func TestDetectNPlusOne_IgnoresQueriesWithoutTraceID(t *testing.T) {
 		{TraceID: "", SQL: "SELECT 3"},
 	}
 	assert.Empty(t, detectNPlusOne(queries))
+}
+
+// TestBuildHAR_RoundTripsCoreFields — produced HAR contains method,
+// path, status, and response body. Shape roughly matches the HAR 1.2
+// schema (has log.entries[].request/response).
+func TestBuildHAR_RoundTripsCoreFields(t *testing.T) {
+	reqs := []scrapedRequest{
+		{
+			Method:              "POST",
+			Path:                "/api/v1/users",
+			Status:              201,
+			DurationMS:          12,
+			Body:                `{"name":"Alice"}`,
+			ResponseBody:        `{"id":"u1"}`,
+			ResponseContentType: "application/json",
+		},
+	}
+	har := buildHAR(reqs)
+	assert.Equal(t, "1.2", har.Log.Version)
+	if assert.Len(t, har.Log.Entries, 1) {
+		e := har.Log.Entries[0]
+		assert.Equal(t, "POST", e.Request.Method)
+		assert.Equal(t, "/api/v1/users", e.Request.URL)
+		if assert.NotNil(t, e.Request.PostData) {
+			assert.Equal(t, `{"name":"Alice"}`, e.Request.PostData.Text)
+		}
+		assert.Equal(t, 201, e.Response.Status)
+		assert.Equal(t, "application/json", e.Response.Content.MimeType)
+		assert.Equal(t, `{"id":"u1"}`, e.Response.Content.Text)
+		assert.Equal(t, int64(12), e.Time)
+	}
+}
+
+// TestBuildHAR_EmptyRing — zero requests produces a valid-but-empty
+// HAR doc rather than nil, so the download is still a parseable JSON.
+func TestBuildHAR_EmptyRing(t *testing.T) {
+	har := buildHAR(nil)
+	assert.Equal(t, "1.2", har.Log.Version)
+	assert.Empty(t, har.Log.Entries)
 }
 
 // TestDetectNPlusOne_SortsByCountDesc — the worst offender renders

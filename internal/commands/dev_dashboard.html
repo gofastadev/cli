@@ -102,6 +102,28 @@
   }
   .footer { color: var(--muted); font-size: 11px; margin-top: 24px; }
   /* ── Trace waterfall ──────────────────────────────────────────── */
+  .trace-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid rgba(138, 155, 160, 0.15);
+  }
+  .trace-tab {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 6px 12px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+  }
+  .trace-tab:hover { color: var(--fg); }
+  .trace-tab.active {
+    color: var(--primary);
+    border-bottom-color: var(--primary);
+  }
   .trace-row { cursor: pointer; }
   .trace-row:hover { background: rgba(79, 209, 229, 0.05); }
   .trace-detail {
@@ -240,6 +262,58 @@
     color: var(--muted);
   }
   .replay-cancel:hover { color: var(--fg); }
+  .explain-btn {
+    background: rgba(79, 209, 229, 0.1);
+    border: 1px solid rgba(79, 209, 229, 0.2);
+    color: var(--primary);
+    padding: 2px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 10px;
+  }
+  .explain-btn:hover { background: rgba(79, 209, 229, 0.2); }
+  .explain-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+  .explain-modal-box {
+    background: var(--surface);
+    border: 1px solid rgba(79, 209, 229, 0.25);
+    border-radius: 8px;
+    padding: 16px;
+    max-width: 800px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: auto;
+  }
+  .explain-modal-header { margin-bottom: 8px; font-size: 13px; }
+  .explain-sql {
+    margin: 8px 0;
+    padding: 8px;
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    white-space: pre-wrap;
+  }
+  .explain-plan {
+    margin: 0;
+    padding: 12px;
+    background: var(--bg);
+    color: var(--fg);
+    border-radius: 4px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
@@ -322,11 +396,15 @@
   {{- template "routesTable" .Routes -}}
 </div>
 
-<h2>
-  Recent requests
+<h2 style="display: flex; align-items: center; gap: 8px;">
+  <span>Recent requests</span>
   {{- if not .DevtoolsEnabled }}
-    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+    <span class="pill warn">devtools tag off</span>
   {{- end -}}
+  <a href="/api/har" download="gofasta-dev.har"
+     style="margin-left: auto; padding: 3px 10px; background: rgba(79, 209, 229, 0.12); border: 1px solid rgba(79, 209, 229, 0.3); color: var(--primary); border-radius: 4px; font-size: 10px; font-family: ui-monospace, Menlo, monospace; text-transform: none; letter-spacing: 0;">
+    Export HAR
+  </a>
 </h2>
 <div id="requests">
   {{- template "requestsTable" .RecentRequests -}}
@@ -350,6 +428,26 @@
 </h2>
 <div id="queries">
   {{- template "queriesTable" .RecentQueries -}}
+</div>
+
+<h2>
+  Exceptions
+  {{- if .Exceptions }}
+    <span class="pill err" style="margin-left: 8px;">{{len .Exceptions}}</span>
+  {{- end -}}
+</h2>
+<div id="exceptions">
+  {{- template "exceptionsTable" .Exceptions -}}
+</div>
+
+<h2>
+  Cache ops
+  {{- if not .DevtoolsEnabled }}
+    <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
+  {{- end -}}
+</h2>
+<div id="cache-ops">
+  {{- template "cacheOpsTable" .CacheOps -}}
 </div>
 
 <h2>
@@ -606,6 +704,52 @@
       if (editor) editor.remove();
       return;
     }
+    // EXPLAIN button in the SQL table.
+    if (t && t.classList && t.classList.contains('explain-btn')) {
+      var sql = t.getAttribute('data-sql') || '';
+      var varsStr = t.getAttribute('data-vars') || '';
+      var vars = varsStr ? varsStr.split('|').filter(Boolean) : [];
+      runExplain(sql, vars);
+      return;
+    }
+    // Close the explain modal.
+    if (t && t.id === 'explain-close') {
+      var modal = document.getElementById('explain-modal');
+      if (modal) modal.remove();
+      return;
+    }
+    // Waterfall / Logs tab switching inside an expanded trace.
+    if (t && t.classList && t.classList.contains('trace-tab')) {
+      var tab = t.getAttribute('data-tab');
+      var detail = t.closest('.trace-detail');
+      if (!detail) return;
+      detail.querySelectorAll('.trace-tab').forEach(function (el) {
+        el.classList.toggle('active', el === t);
+      });
+      detail.querySelectorAll('.trace-tab-body').forEach(function (el) {
+        el.style.display = el.getAttribute('data-tab-body') === tab ? '' : 'none';
+      });
+      if (tab === 'logs') {
+        var body = detail.querySelector('[data-tab-body="logs"]');
+        if (body && !body.getAttribute('data-loaded')) {
+          // Resolve the trace ID by walking up to the row that opened
+          // this expansion.
+          var expanded = detail.closest('tr.trace-expanded');
+          var row = expanded && expanded.previousElementSibling;
+          var traceId = row && row.getAttribute('data-trace-id');
+          if (traceId) {
+            fetch('/api/logs?trace_id=' + encodeURIComponent(traceId))
+              .then(function (r) { return r.ok ? r.json() : []; })
+              .then(function (logs) {
+                body.innerHTML = renderLogs(logs);
+                body.setAttribute('data-loaded', '1');
+              })
+              .catch(function () { body.innerHTML = '<div class="empty">log fetch failed</div>'; });
+          }
+        }
+      }
+      return;
+    }
     // Expand / collapse the full trace waterfall.
     var row = t && (t.closest ? t.closest('.trace-row') : null);
     if (row && !t.classList.contains('trace-jump')) {
@@ -647,6 +791,50 @@
     host.appendChild(wrapper);
     var ta = wrapper.querySelector('textarea');
     if (ta) ta.focus();
+  }
+
+  function runExplain(sql, vars) {
+    var existing = document.getElementById('explain-modal');
+    if (existing) existing.remove();
+    var modal = document.createElement('div');
+    modal.id = 'explain-modal';
+    modal.className = 'explain-modal';
+    modal.innerHTML =
+      '<div class="explain-modal-box">' +
+        '<div class="explain-modal-header">' +
+          '<strong style="color: var(--primary);">EXPLAIN</strong>' +
+          '<button id="explain-close" style="float: right; background: transparent; border: 1px solid rgba(138, 155, 160, 0.3); color: var(--muted); padding: 2px 8px; border-radius: 4px; cursor: pointer; font-size: 11px;">close</button>' +
+        '</div>' +
+        '<pre class="explain-sql">' + esc(sql) + '</pre>' +
+        '<div class="explain-plan-container"><div class="empty">running plan…</div></div>' +
+      '</div>';
+    document.body.appendChild(modal);
+
+    fetch('/api/explain', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sql: sql, vars: vars }),
+    })
+      .then(function (r) {
+        return r.text().then(function (text) { return { ok: r.ok, text: text }; });
+      })
+      .then(function (res) {
+        var container = modal.querySelector('.explain-plan-container');
+        if (!res.ok) {
+          container.innerHTML = '<div class="empty" style="color: var(--err); padding: 8px;">' + esc(res.text) + '</div>';
+          return;
+        }
+        try {
+          var json = JSON.parse(res.text);
+          container.innerHTML = '<pre class="explain-plan">' + esc(json.plan || '(empty plan)') + '</pre>';
+        } catch (e) {
+          container.innerHTML = '<pre class="explain-plan">' + esc(res.text) + '</pre>';
+        }
+      })
+      .catch(function (e) {
+        var container = modal.querySelector('.explain-plan-container');
+        container.innerHTML = '<div class="empty" style="color: var(--err);">fetch failed</div>';
+      });
   }
 
   function replay(sendBtn, method, path, body, editor) {
@@ -843,6 +1031,95 @@
   {{- end -}}
 {{end}}
 
+{{define "cacheOpsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Time</th>
+          <th style="width: 10%;">Op</th>
+          <th>Key</th>
+          <th style="width: 10%;">Hit</th>
+          <th style="width: 10%;">Duration</th>
+          <th style="width: 15%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Op}}</span></td>
+            <td style="font-size: 11px;">{{.Key}}</td>
+            <td>
+              {{- if eq .Op "get" -}}
+                {{- if .Hit -}}
+                  <span class="pill ok">hit</span>
+                {{- else -}}
+                  <span class="pill warn">miss</span>
+                {{- end -}}
+              {{- else -}}—{{- end -}}
+            </td>
+            <td>{{.DurationMS}} ms</td>
+            <td style="font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+          </tr>
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No cache operations yet — they'll appear here once your app calls
+      <code>container.CacheService</code>.
+    </div>
+  {{- end -}}
+{{end}}
+
+{{define "exceptionsTable"}}
+  {{- if . -}}
+    <table>
+      <thead>
+        <tr>
+          <th style="width: 10%;">Time</th>
+          <th style="width: 10%;">Method</th>
+          <th style="width: 25%;">Path</th>
+          <th>Recovered</th>
+          <th style="width: 15%;">Trace</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{- range . -}}
+          <tr>
+            <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
+            <td><span class="method">{{.Method}}</span></td>
+            <td style="font-size: 11px;">{{.Path}}</td>
+            <td style="color: var(--err); font-size: 11px;">{{.Recovered}}</td>
+            <td style="font-size: 10px;">
+              {{- if .TraceID -}}
+                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
+              {{- else -}}—{{- end -}}
+            </td>
+          </tr>
+          {{- if .Stack -}}
+            <tr>
+              <td colspan="5" style="padding: 0 12px 8px 12px;">
+                <pre style="margin: 0; padding: 6px 8px; background: rgba(10, 28, 36, 0.9); border-radius: 4px; font-size: 10px; color: var(--muted); max-height: 180px; overflow: auto;">{{range .Stack}}{{.}}
+{{end}}</pre>
+              </td>
+            </tr>
+          {{- end -}}
+        {{- end -}}
+      </tbody>
+    </table>
+  {{- else -}}
+    <div class="empty">
+      No exceptions recorded this session.
+    </div>
+  {{- end -}}
+{{end}}
+
 {{define "nPlusOneTable"}}
   {{- if . -}}
     <table>
@@ -996,7 +1273,7 @@
   {{- if . -}}
     <table>
       <thead>
-        <tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th></tr>
+        <tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr>
       </thead>
       <tbody>
         {{- range . -}}
@@ -1010,6 +1287,13 @@
               {{- else -}}
                 {{.SQL}}
               {{- end -}}
+            </td>
+            <td>
+              <button class="explain-btn"
+                      data-sql="{{.SQL}}"
+                      data-vars="{{range .Vars}}{{.}}|{{end}}">
+                EXPLAIN
+              </button>
             </td>
           </tr>
         {{- end -}}

@@ -254,6 +254,58 @@ type scrapedLog struct {
 	TraceID string            `json:"trace_id,omitempty"`
 }
 
+// scrapedCache mirrors devtools.CacheEntry — one cache op.
+type scrapedCache struct {
+	Time       time.Time `json:"time"`
+	Op         string    `json:"op"`
+	Key        string    `json:"key,omitempty"`
+	Hit        bool      `json:"hit,omitempty"`
+	DurationMS int64     `json:"duration_ms"`
+	Error      string    `json:"error,omitempty"`
+	TraceID    string    `json:"trace_id,omitempty"`
+}
+
+// scrapeCacheOps fetches /debug/cache. Empty ring → nil.
+func scrapeCacheOps(appURL string) []scrapedCache {
+	resp, err := scrapeClient.Get(appURL + "/debug/cache")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var entries []scrapedCache
+	_ = json.NewDecoder(resp.Body).Decode(&entries)
+	return entries
+}
+
+// scrapedException mirrors devtools.ExceptionEntry.
+type scrapedException struct {
+	Time      time.Time `json:"time"`
+	Path      string    `json:"path,omitempty"`
+	Method    string    `json:"method,omitempty"`
+	Status    int       `json:"status,omitempty"`
+	Recovered string    `json:"recovered"`
+	Stack     []string  `json:"stack,omitempty"`
+	TraceID   string    `json:"trace_id,omitempty"`
+}
+
+// scrapeExceptions fetches the recent-exceptions ring.
+func scrapeExceptions(appURL string) []scrapedException {
+	resp, err := scrapeClient.Get(appURL + "/debug/errors")
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	var entries []scrapedException
+	_ = json.NewDecoder(resp.Body).Decode(&entries)
+	return entries
+}
+
 // scrapeLogs fetches the devtools log ring, optionally filtered by
 // trace ID and/or minimum level. Empty filters mean "no filter on
 // that dimension" — the app's /debug/logs handler applies the same
@@ -456,84 +508,105 @@ func parseGoroutineDump(text string) goroutineSnapshot {
 	}
 	lines := strings.Split(text, "\n")
 	groups := make(map[string]*goroutineGroup)
-	i := 0
-	for i < len(lines) {
+	for i := 0; i < len(lines); {
 		line := lines[i]
 		if !strings.HasPrefix(line, "goroutine ") {
 			i++
 			continue
 		}
 		snap.Total++
-		// Pull state from between the [ and ]:
-		state := ""
-		if lb := strings.Index(line, "["); lb >= 0 {
-			if rb := strings.Index(line[lb:], "]"); rb > 0 {
-				state = line[lb+1 : lb+rb]
-			}
-		}
-		// The very next non-blank line is the top-of-stack function
-		// name (followed by a file:line line — we skip the file info).
-		top := ""
-		for j := i + 1; j < len(lines); j++ {
-			cand := strings.TrimSpace(lines[j])
-			if cand == "" {
-				continue
-			}
-			top = cand
-			break
-		}
-		// Trim the argument list. Method receivers look like
-		// `pkg.(*Type).method(args)` — the first `(` belongs to the
-		// type, so we strip from the LAST `(` instead to preserve the
-		// method name.
-		if paren := strings.LastIndex(top, "("); paren > 0 {
-			top = top[:paren]
-		}
-		if top == "" {
-			top = "<unknown>"
-		}
-		g, ok := groups[top]
-		if !ok {
-			g = &goroutineGroup{Top: top}
-			groups[top] = g
-		}
-		g.Count++
-		if state != "" {
-			has := false
-			for _, s := range g.States {
-				if s == state {
-					has = true
-					break
-				}
-			}
-			if !has {
-				g.States = append(g.States, state)
-			}
-		}
-		// Advance past this goroutine block (until the next `goroutine ` or EOF).
-		i++
-		for i < len(lines) && !strings.HasPrefix(lines[i], "goroutine ") {
-			i++
-		}
+		recordGoroutineEntry(groups, goroutineStateOf(line), firstTopOfStack(lines, i+1))
+		i = advancePastGoroutineBlock(lines, i+1)
 	}
 	snap.Groups = make([]goroutineGroup, 0, len(groups))
 	for _, g := range groups {
 		snap.Groups = append(snap.Groups, *g)
 	}
-	// Sort descending by count so the dashboard header reads biggest-first.
-	// Plain sort.Slice-equivalent via a selection loop avoids the sort import.
-	for a := 0; a < len(snap.Groups); a++ {
+	sortGoroutineGroupsDescByCount(snap.Groups)
+	return snap
+}
+
+// goroutineStateOf returns whatever's between [ and ] on a goroutine
+// header line. Empty string if the header is malformed.
+func goroutineStateOf(header string) string {
+	lb := strings.Index(header, "[")
+	if lb < 0 {
+		return ""
+	}
+	rb := strings.Index(header[lb:], "]")
+	if rb <= 0 {
+		return ""
+	}
+	return header[lb+1 : lb+rb]
+}
+
+// firstTopOfStack returns the first non-blank line starting at `from`,
+// with the argument list stripped. Method receivers look like
+// `pkg.(*Type).method(args)` — the first `(` belongs to the type, so
+// we strip from the LAST `(` instead to preserve the method name.
+func firstTopOfStack(lines []string, from int) string {
+	top := ""
+	for j := from; j < len(lines); j++ {
+		cand := strings.TrimSpace(lines[j])
+		if cand == "" {
+			continue
+		}
+		top = cand
+		break
+	}
+	if paren := strings.LastIndex(top, "("); paren > 0 {
+		top = top[:paren]
+	}
+	if top == "" {
+		return "<unknown>"
+	}
+	return top
+}
+
+// advancePastGoroutineBlock walks forward until the next `goroutine `
+// header (or EOF), returning the index to resume parsing from.
+func advancePastGoroutineBlock(lines []string, from int) int {
+	for from < len(lines) && !strings.HasPrefix(lines[from], "goroutine ") {
+		from++
+	}
+	return from
+}
+
+// recordGoroutineEntry increments the count for (top) and unions the
+// state into the group's distinct-states list.
+func recordGoroutineEntry(groups map[string]*goroutineGroup, state, top string) {
+	g, ok := groups[top]
+	if !ok {
+		g = &goroutineGroup{Top: top}
+		groups[top] = g
+	}
+	g.Count++
+	if state == "" {
+		return
+	}
+	for _, s := range g.States {
+		if s == state {
+			return
+		}
+	}
+	g.States = append(g.States, state)
+}
+
+// sortGoroutineGroupsDescByCount orders in-place by Count descending so
+// the dashboard's first row is the biggest bucket. Uses a selection
+// sort to avoid pulling in the sort package for a tiny slice.
+func sortGoroutineGroupsDescByCount(groups []goroutineGroup) {
+	for a := 0; a < len(groups); a++ {
 		best := a
-		for b := a + 1; b < len(snap.Groups); b++ {
-			if snap.Groups[b].Count > snap.Groups[best].Count {
+		for b := a + 1; b < len(groups); b++ {
+			if groups[b].Count > groups[best].Count {
 				best = b
 			}
 		}
 		if best != a {
-			snap.Groups[a], snap.Groups[best] = snap.Groups[best], snap.Groups[a]
+			groups[a], groups[best] = groups[best], groups[a]
 		}
 	}
-	return snap
 }
 
 // devtoolsAvailable reports whether the running app was built with the

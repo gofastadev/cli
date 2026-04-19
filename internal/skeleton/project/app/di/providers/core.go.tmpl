@@ -53,7 +53,7 @@ var CoreSet = wire.NewSet(
 	mailer.NewEmailSender,
 	auth.NewJWTService,
 	auth.NewRBACService,
-	cache.NewCacheService,
+	ProvideCacheService,
 	storage.NewStorageService,
 	queue.NewQueueService,
 	// Newly wired
@@ -77,6 +77,19 @@ func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
 		slog.Warn("failed to install devtools GORM plugin", "error", err)
 	}
 	return db
+}
+
+// ProvideCacheService wraps cache.NewCacheService with the devtools
+// cache decorator so every Get/Set/Delete/Flush/Ping op is teed into
+// the dev-dashboard cache-ops ring. Stub builds return the inner
+// cache unchanged, so the call costs one indirection per op in dev
+// and zero in production.
+func ProvideCacheService(cfg *config.CacheConfig, log *slog.Logger) (cache.CacheService, error) {
+	inner, err := cache.NewCacheService(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	return devtools.WrapCache(inner), nil
 }
 
 // ProvideLogger wraps logger.NewLogger with the devtools slog
