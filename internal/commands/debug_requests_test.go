@@ -139,3 +139,30 @@ func TestParseStatusRange(t *testing.T) {
 		})
 	}
 }
+
+// TestParseInt_LeadingZero — "0" → 0 without error.
+func TestParseInt_LeadingZero(t *testing.T) {
+	v, err := parseInt("0")
+	require.NoError(t, err)
+	assert.Equal(t, 0, v)
+}
+
+// TestParseInt_EmptyString — explicit error path.
+func TestParseInt_EmptyString(t *testing.T) {
+	_, err := parseInt("")
+	require.Error(t, err)
+}
+
+// TestParseInt_NonDigit — non-digit char → error.
+func TestParseInt_NonDigit(t *testing.T) {
+	_, err := parseInt("12x")
+	require.Error(t, err)
+}
+
+// TestParseStatusExplicitRange_TrailingDashEmpty — "200-" fails the
+// right-side int parse.
+func TestParseStatusExplicitRange_TrailingDashEmpty(t *testing.T) {
+	_, _, ok, err := parseStatusExplicitRange("200-")
+	assert.True(t, ok)
+	require.Error(t, err)
+}

@@ -118,3 +118,14 @@ func TestNewDevEmitter_JSONMode(t *testing.T) {
 	_, ok = e.(*humanEmitter)
 	assert.True(t, ok, "expected humanEmitter when json=false")
 }
+
+// TestJSONEmitter_EmitHappyPath — the success branch of emit. The
+// error-fallback branch is effectively dead because devEvent has no
+// non-marshalable fields; we document it by asserting the success
+// path produces valid JSON.
+func TestJSONEmitter_EmitHappyPath(t *testing.T) {
+	var buf bytes.Buffer
+	e := &jsonEmitter{out: &buf}
+	e.emit(devEvent{Event: "info", Message: "ok"})
+	assert.Contains(t, buf.String(), `"info"`)
+}

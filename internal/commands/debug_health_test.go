@@ -154,3 +154,12 @@ func TestRequireDevtools_Unreachable(t *testing.T) {
 		"expected DEBUG_APP_UNREACHABLE, got %s", string(b),
 	)
 }
+
+// TestContainsSubstring_EdgeCases — needle longer than haystack,
+// empty haystack, exact match, substring match.
+func TestContainsSubstring_EdgeCases(t *testing.T) {
+	assert.False(t, containsSubstring([]byte("short"), "longer-needle"))
+	assert.False(t, containsSubstring([]byte(""), "x"))
+	assert.True(t, containsSubstring([]byte("abc-xyz"), "xyz"))
+	assert.True(t, containsSubstring([]byte("abc"), "abc"))
+}

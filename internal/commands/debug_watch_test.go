@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -250,4 +251,29 @@ func TestRunDebugWatch_BadInterval(t *testing.T) {
 	debugWatchInterval = "not-a-duration"
 	t.Cleanup(resetWatchFlags)
 	require.Error(t, runDebugWatch())
+}
+
+// TestWatchMarks_BaselineEmptyRings — every channel's ring is
+// empty so baseline leaves every mark at zero time.
+func TestWatchMarks_BaselineEmptyRings(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/debug/health" {
+			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+			return
+		}
+		_, _ = w.Write([]byte("[]"))
+	}))
+	defer srv.Close()
+	resetWatchFlags()
+	debugWatchSQL = true
+	debugWatchCache = true
+	debugWatchTrace = true
+	t.Cleanup(resetWatchFlags)
+
+	m := watchMarks{}
+	m.baseline(srv.URL)
+	assert.True(t, m.request.IsZero())
+	assert.True(t, m.sql.IsZero())
+	assert.True(t, m.cacheMark.IsZero())
+	assert.True(t, m.trace.IsZero())
 }

@@ -362,3 +362,43 @@ func TestDetectNPlusOne_SortsByCountDesc(t *testing.T) {
 		assert.Equal(t, 3, findings[1].Count)
 	}
 }
+
+// TestGoroutineStateOf_NoBrackets — malformed header with no
+// brackets returns empty state string.
+func TestGoroutineStateOf_NoBrackets(t *testing.T) {
+	assert.Empty(t, goroutineStateOf("goroutine 42"))
+	assert.Empty(t, goroutineStateOf("goroutine 42 ["))
+}
+
+// TestFirstTopOfStack_AllBlank — blank-only input yields <unknown>.
+func TestFirstTopOfStack_AllBlank(t *testing.T) {
+	assert.Equal(t, "<unknown>", firstTopOfStack([]string{"", "", ""}, 0))
+}
+
+// TestScrapeTraceDetail_NetworkError — unreachable URL returns
+// (nil, false).
+func TestScrapeTraceDetail_NetworkError(t *testing.T) {
+	tr, ok := scrapeTraceDetail("http://127.0.0.1:1", "abc")
+	assert.False(t, ok)
+	assert.Nil(t, tr)
+}
+
+// TestScrapeTraceDetail_Malformed — 200 with garbage body → (nil, false).
+func TestScrapeTraceDetail_Malformed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not-json"))
+	}))
+	defer srv.Close()
+	tr, ok := scrapeTraceDetail(srv.URL, "abc")
+	assert.False(t, ok)
+	assert.Nil(t, tr)
+}
+
+// TestDevtoolsAvailable_MalformedJSON — 200 with non-JSON body → false.
+func TestDevtoolsAvailable_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not-json"))
+	}))
+	defer srv.Close()
+	assert.False(t, devtoolsAvailable(srv.URL))
+}

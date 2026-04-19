@@ -385,3 +385,61 @@ func TestResolveServices_QueueSurfacesAsynqmonURL(t *testing.T) {
 	assert.NotEmpty(t, states)
 	assert.NotEmpty(t, asynqmonURL)
 }
+
+// TestReadDevtoolsState_MissingKey — /debug/health responds 200 but
+// the JSON body doesn't include a `devtools` field. readDevtoolsState
+// returns "unreachable" as the fallback.
+func TestReadDevtoolsState_MissingKey(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/health": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"other":"field"}`))
+		},
+	})
+	assert.Equal(t, "unreachable", readDevtoolsState(srv.appURL))
+}
+
+// TestHandleReplay_MissingMethod — only path set → 400.
+func TestHandleReplay_MissingMethod(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"","path":"/x"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleReplay_ForbiddenMethod — TRACE isn't in the allowlist.
+func TestHandleReplay_ForbiddenMethod(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"TRACE","path":"/x"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestWriteSSE_HappyPath — writeSSE emits "data: <json>\n\n".
+func TestWriteSSE_HappyPath(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeSSE(rec, rec, dashboardState{AppPort: 42})
+	assert.Contains(t, rec.Body.String(), "data: ")
+}
+
+// TestHandleExplain_EmptyBody — zero-length POST body still forwards
+// to upstream. With upstream down we get 502.
+func TestHandleExplain_EmptyBody(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://127.0.0.1:1"}
+	req := httptest.NewRequest(http.MethodPost, "/api/explain",
+		bytes.NewReader(nil))
+	rec := httptest.NewRecorder()
+	srv.handleExplain(rec, req)
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+// TestHandleIndex_OKPath — bare state renders the template cleanly.
+func TestHandleIndex_OKPath(t *testing.T) {
+	srv := &dashboardServer{}
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusOK, rec.Code)
+}

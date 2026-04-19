@@ -230,3 +230,77 @@ func TestFindStructFields_MissingStruct(t *testing.T) {
 func TestExprToString_NilNode(t *testing.T) {
 	assert.Equal(t, "?", exprToString(nil))
 }
+
+// TestInspectTryParseModel_BadFile — parse error when the file
+// exists but doesn't compile.
+func TestInspectTryParseModel_BadFile(t *testing.T) {
+	chdirTemp(t)
+	dir := filepath.Join("app", "models")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.model.go"),
+		[]byte("not valid go"), 0o644))
+	_, ok := tryParseModel("Broken", "broken")
+	assert.False(t, ok)
+}
+
+// TestInspectTryParseInterfaceMethods_MissingFile — absent file
+// returns (nil, false).
+func TestInspectTryParseInterfaceMethods_MissingFile(t *testing.T) {
+	chdirTemp(t)
+	_, ok := tryParseInterfaceMethods(
+		"app/services/interfaces/missing.go", "MissingIface")
+	assert.False(t, ok)
+}
+
+// TestInspectTryParseInterfaceMethods_InterfaceNotFound — file
+// exists but doesn't declare the expected interface.
+func TestInspectTryParseInterfaceMethods_InterfaceNotFound(t *testing.T) {
+	chdirTemp(t)
+	path := filepath.Join("app", "services", "interfaces", "x.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("package interfaces\n"), 0o644))
+	_, ok := tryParseInterfaceMethods(path, "NoSuchInterface")
+	assert.False(t, ok)
+}
+
+// TestInspectTryParseControllerMethods_MissingFile — absent file
+// returns (nil, false).
+func TestInspectTryParseControllerMethods_MissingFile(t *testing.T) {
+	chdirTemp(t)
+	_, ok := tryParseControllerMethods(
+		"app/rest/controllers/missing.controller.go", "MissingController")
+	assert.False(t, ok)
+}
+
+// TestInspectTryParseDTOs_BadFile — malformed source returns nil.
+func TestInspectTryParseDTOs_BadFile(t *testing.T) {
+	chdirTemp(t)
+	dir := filepath.Join("app", "dtos")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "broken.dtos.go"),
+		[]byte("package broken not valid"), 0o644))
+	assert.Empty(t, tryParseDTOs("broken"))
+}
+
+// TestReadStructFields_EmbeddedField — embedded field (no name) is
+// skipped by the current implementation; only named fields surface.
+func TestReadStructFields_EmbeddedField(t *testing.T) {
+	src := `package p
+import "io"
+type T struct {
+	Name string
+	io.Reader
+}
+`
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.go")
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
+	f, err := parseGoFile(path)
+	require.NoError(t, err)
+	fields := findStructFields(f, "T")
+	names := make([]string, len(fields))
+	for i, fe := range fields {
+		names[i] = fe.Name
+	}
+	assert.Contains(t, names, "Name")
+}
