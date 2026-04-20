@@ -18,6 +18,7 @@ import (
 var (
 	httpGet              = http.Get
 	osExecutable         = os.Executable
+	osChmodFn            = os.Chmod
 	githubAPIURL         = "https://api.github.com/repos/gofastadev/cli/releases/latest"
 	githubDownloadURLFmt = "https://github.com/gofastadev/cli/releases/download/%s/%s"
 )
@@ -219,8 +220,12 @@ func upgradeViaGoInstall(rawTag, expectedVersion string) error {
 	return nil
 }
 
+// runtimeGOOS is a seam over runtime.GOOS so tests can exercise the
+// windows-suffix branch on any host.
+var runtimeGOOS = func() string { return runtime.GOOS }
+
 func upgradeViaBinary(execPath, version string) error {
-	goos := runtime.GOOS
+	goos := runtimeGOOS()
 	goarch := runtime.GOARCH
 
 	binary := fmt.Sprintf("gofasta-%s-%s", goos, goarch)
@@ -255,7 +260,7 @@ func upgradeViaBinary(execPath, version string) error {
 	}
 	_ = tmpFile.Close()
 
-	if err := os.Chmod(tmpPath, 0o755); err != nil {
+	if err := osChmodFn(tmpPath, 0o755); err != nil {
 		return fmt.Errorf("failed to set permissions: %w", err)
 	}
 

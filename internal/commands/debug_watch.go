@@ -76,6 +76,14 @@ func init() {
 	debugCmd.AddCommand(debugWatchCmd)
 }
 
+// watchNewContext is a seam so tests can supply a short-lived context
+// that cancels immediately — runDebugWatch then falls through to
+// runWatchLoop which returns on ctx.Done(). Production uses a context
+// wired to SIGINT / SIGTERM via signal.NotifyContext.
+var watchNewContext = func() (context.Context, context.CancelFunc) {
+	return signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+}
+
 // runDebugWatch is the main loop. Each ring gets its own high-water
 // mark (latest emitted time) so each tick only emits events strictly
 // newer than the last known.
@@ -92,7 +100,7 @@ func runDebugWatch() error {
 
 	// Signal handling — Ctrl+C sets ctx.Done() so the poll loop exits
 	// without printing a Go panic / stack.
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := watchNewContext()
 	defer cancel()
 
 	// High-water marks are per-channel to keep each stream
@@ -112,13 +120,28 @@ func runDebugWatch() error {
 	defer heartbeat.Stop()
 
 	fprintln(os.Stderr, termcolor.CDim("watching "+appURL+" — Ctrl+C to stop"))
+	runWatchLoop(ctx, ticker.C, heartbeat.C, appURL, &marks, emitter)
+	return nil
+}
+
+// runWatchLoop is the pure select loop pulled out of runDebugWatch so
+// tests can drive it with arbitrary channels. Returns when ctx is done.
+// Kept as a free function (not a method on watchMarks) so it composes
+// trivially in tests without touching private state.
+func runWatchLoop(
+	ctx context.Context,
+	tickerC, heartbeatC <-chan time.Time,
+	appURL string,
+	marks *watchMarks,
+	emitter *watchEmitter,
+) {
 	for {
 		select {
 		case <-ctx.Done():
-			return nil
-		case <-heartbeat.C:
+			return
+		case <-heartbeatC:
 			emitter.heartbeat()
-		case <-ticker.C:
+		case <-tickerC:
 			marks.pollAndEmit(appURL, emitter)
 		}
 	}

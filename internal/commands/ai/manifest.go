@@ -62,6 +62,11 @@ func LoadManifest(projectRoot string) (*Manifest, error) {
 	return &m, nil
 }
 
+// manifestMarshal is a package-level seam for json.MarshalIndent so
+// tests can force a serialize error. json.MarshalIndent never fails on
+// a valid Manifest, so without a seam this branch is unreachable.
+var manifestMarshal = json.MarshalIndent
+
 // Save writes the manifest atomically (write temp file + rename) so a
 // crashed CLI process never leaves a half-written file on disk.
 func (m *Manifest) Save(projectRoot string) error {
@@ -70,7 +75,7 @@ func (m *Manifest) Save(projectRoot string) error {
 		return clierr.Wrap(clierr.CodeAIManifestIO, err,
 			"could not create .gofasta/ directory")
 	}
-	data, err := json.MarshalIndent(m, "", "  ")
+	data, err := manifestMarshal(m, "", "  ")
 	if err != nil {
 		return clierr.Wrap(clierr.CodeAIManifestIO, err,
 			"could not serialize manifest")

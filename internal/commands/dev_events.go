@@ -83,11 +83,25 @@ func newDevEmitter(jsonMode bool) devEmitter {
 
 type jsonEmitter struct {
 	out io.Writer
+	// marshal is a seam so tests can inject a failing marshaler to
+	// exercise the "json.Marshal returned error" branch. Production
+	// always uses json.Marshal via jsonMarshal.
+	marshal func(any) ([]byte, error)
 }
+
+// jsonMarshal is the default marshaler used by jsonEmitter. Indirected
+// through this package-level var so tests could swap it out; kept as a
+// package-level function rather than directly assigning json.Marshal so
+// the linter's unused-import rules stay happy.
+var jsonMarshal = json.Marshal
 
 // emit marshals an event to JSON and writes it as a single line.
 func (e *jsonEmitter) emit(ev devEvent) {
-	b, err := json.Marshal(ev)
+	marshal := e.marshal
+	if marshal == nil {
+		marshal = jsonMarshal
+	}
+	b, err := marshal(ev)
 	if err != nil {
 		// Marshal of a plain struct cannot fail unless a field contains
 		// a non-marshalable type. Fall back to a bare error event so

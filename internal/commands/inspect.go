@@ -217,6 +217,14 @@ func tryParseDTOs(snake string) []dtoInfo {
 	if err != nil {
 		return nil
 	}
+	return extractDTOsFromAST(file, path)
+}
+
+// extractDTOsFromAST is the AST-walking half of tryParseDTOs,
+// factored out so tests can feed in synthetic ast.File values to
+// exercise the defensive "not a TypeSpec" branch (unreachable with
+// real Go source but possible with manually-constructed ASTs).
+func extractDTOsFromAST(file *ast.File, path string) []dtoInfo {
 	var out []dtoInfo
 	for _, decl := range file.Decls {
 		gd, ok := decl.(*ast.GenDecl)

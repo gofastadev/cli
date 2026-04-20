@@ -3,6 +3,7 @@ package commands
 import (
 	"context"
 	"os"
+	"os/exec"
 )
 
 // startLogStreamer runs `docker compose logs -f` for the selected
@@ -33,19 +34,9 @@ func startLogStreamer(services []string) (cancel func()) {
 	// the child via the returned ctx cancellation. This works even when
 	// execCommand is the real exec.Command; test stubs of execCommand
 	// that don't set Cancel will simply have a no-op cancel behavior.
-	cmd.Cancel = func() error {
-		if cmd.Process != nil {
-			return cmd.Process.Kill()
-		}
-		return nil
-	}
+	cmd.Cancel = makeLogStreamerCancel(cmd)
 
-	go func() {
-		<-ctx.Done()
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	}()
+	go func() { logStreamerWatch(ctx, cmd) }()
 
 	// Fire-and-forget: cmd.Run() blocks; we do not wait for it. If the
 	// streamer exits early (e.g. compose daemon disappeared) the dev
@@ -54,4 +45,29 @@ func startLogStreamer(services []string) (cancel func()) {
 	go func() { _ = cmd.Run() }()
 
 	return cancelCtx
+}
+
+// logStreamerCancel is the Cancel callback — isolated so tests can
+// exercise both the "process running" and "process nil" branches
+// without relying on os/exec's internal cancellation timing.
+func logStreamerCancel(cmd *exec.Cmd) error {
+	if cmd.Process != nil {
+		return cmd.Process.Kill()
+	}
+	return nil
+}
+
+// makeLogStreamerCancel is a thin constructor around logStreamerCancel.
+// Used by startLogStreamer so the closure body is trivially testable.
+func makeLogStreamerCancel(cmd *exec.Cmd) func() error {
+	return func() error { return logStreamerCancel(cmd) }
+}
+
+// logStreamerWatch is the background goroutine body — waits for ctx
+// to complete and then kills the child if it's still running.
+func logStreamerWatch(ctx context.Context, cmd *exec.Cmd) {
+	<-ctx.Done()
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+	}
 }

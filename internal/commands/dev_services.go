@@ -47,6 +47,10 @@ type devServices struct {
 	hasHealth map[string]bool // per-service: does compose.yaml define a healthcheck?
 }
 
+// composeAvailableFn is a package-level seam over composeAvailable so
+// tests can simulate docker being absent without clobbering PATH.
+var composeAvailableFn = composeAvailable
+
 // composeAvailable returns true when `docker compose` is both on PATH
 // and the daemon is reachable. Used by preflight to decide between the
 // orchestrated path and the "just run Air" fallback.

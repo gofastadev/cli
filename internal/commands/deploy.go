@@ -138,10 +138,18 @@ func init() {
 	rootCmd.AddCommand(deployCmd)
 }
 
+// deployMethodOverride is a test-only seam to force a cfg.Method value
+// not normally allowed by LoadDeployConfig. Used to exercise the
+// default-case in runDeploy's switch.
+var deployMethodOverride string
+
 func runDeploy(cmd *cobra.Command) error {
 	cfg, err := deploy.LoadDeployConfig(cmd)
 	if err != nil {
 		return err
+	}
+	if deployMethodOverride != "" {
+		cfg.Method = deployMethodOverride
 	}
 
 	fmt.Printf("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)

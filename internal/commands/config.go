@@ -2,7 +2,6 @@ package commands
 
 import (
 	"os"
-	"os/exec"
 	"path/filepath"
 
 	"github.com/gofastadev/cli/internal/clierr"
@@ -70,7 +69,7 @@ func runConfigSchema() error {
 			"./cmd/schema/ not found — is this a gofasta project? Run this command from the project root")
 	}
 
-	cmd := exec.Command("go", "run", "./"+helperPath)
+	cmd := execCommand("go", "run", "./"+helperPath)
 	// The subprocess writes JSON (pretty-printed by the helper) — both
 	// text and --json modes stream the same bytes, so no branching.
 	// Piping stdout through directly avoids buffering large schemas in

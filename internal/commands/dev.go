@@ -134,7 +134,7 @@ func runDev(flags devFlags) error {
 
 	// --- Stage 2: preflight ------------------------------------------------
 	if plan.orchestrate {
-		if !composeAvailable() {
+		if !composeAvailableFn() {
 			return clierr.New(clierr.CodeDevDockerUnavailable,
 				"docker or docker compose is not available")
 		}
@@ -386,12 +386,17 @@ func airURLs(port string) map[string]string {
 // invocation rebuilds from scratch rather than reusing a stale binary.
 // Air has no "force rebuild" flag of its own — deleting the tmp dir is
 // the officially-documented way.
+// removeAllFn is a package-level seam over os.RemoveAll so tests can
+// exercise the post-RemoveAll error branch (in practice RemoveAll("tmp")
+// rarely fails).
+var removeAllFn = os.RemoveAll
+
 func runAir(flags devFlags, teardown func(string)) error {
 	if flags.rebuild {
 		// tmp/ is Air's default build directory; projects that
 		// customize .air.toml may use a different path, but clearing
 		// the default is a safe best-effort.
-		if err := os.RemoveAll("tmp"); err != nil {
+		if err := removeAllFn("tmp"); err != nil {
 			// A missing tmp dir is the expected state on first run.
 			// Any other failure is non-fatal: Air will still run; the
 			// developer just won't get the forced-rebuild guarantee.
@@ -427,19 +432,13 @@ func runAir(flags devFlags, teardown func(string)) error {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if airCmd.Process != nil {
-			_ = airCmd.Process.Signal(os.Interrupt)
-		}
-		teardown("interrupted")
-	}()
+	go airSignalHandler(sigChan, airCmd, teardown)
 
 	err := airCmd.Run()
 	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
 	// exit as a successful shutdown rather than a pipeline failure.
 	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
-		if ws, ok := airCmd.ProcessState.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		if isSignaledExit(airCmd.ProcessState) {
 			return nil
 		}
 	}
@@ -450,6 +449,28 @@ func runAir(flags devFlags, teardown func(string)) error {
 	return nil
 }
 
+// isSignaledExit reports whether a process exited due to a signal.
+// Extracted from runAir so tests can stub it.
+var isSignaledExit = func(ps *os.ProcessState) bool {
+	if ps == nil {
+		return false
+	}
+	ws, ok := ps.Sys().(syscall.WaitStatus)
+	return ok && ws.Signaled()
+}
+
+// airSignalHandler is the goroutine body from runAir. Extracted into a
+// named function so tests can drive it directly without racing the
+// real air process. Sends SIGINT to the running air process (if any)
+// and then calls teardown to stop compose services.
+func airSignalHandler(sigChan <-chan os.Signal, airCmd *exec.Cmd, teardown func(string)) {
+	<-sigChan
+	if airCmd.Process != nil {
+		_ = airCmd.Process.Signal(os.Interrupt)
+	}
+	teardown("interrupted")
+}
+
 // appendTag merges a build tag into an existing GOFLAGS string. If the
 // existing value already contains a -tags= fragment, we splice the new
 // tag into it (comma-separated, no dupes). Otherwise we append a fresh
@@ -457,8 +478,6 @@ func runAir(flags devFlags, teardown func(string)) error {
 // and is suitable for dropping into os.Environ(). Kept generic (rather
 // than hard-coded to "devtools") so future stages can layer on other
 // tags — for instance, an observability-heavy `-tags=profiling` mode.
-//
-//nolint:unparam // tag is intentionally generic; only one caller today.
 func appendTag(existing, tag string) string {
 	// Normalize the incoming value. Both "GOFLAGS=..." and just "..."
 	// variants come through the test helpers; we always return a

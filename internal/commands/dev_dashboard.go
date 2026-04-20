@@ -35,6 +35,11 @@ var (
 	dashboardTemplateErr  error
 )
 
+// loadDashboardTemplateFn is a package-level seam so tests can force
+// the template-loader to return an error and exercise handleIndex's
+// fallback branch. Production wiring is loadDashboardTemplate.
+var loadDashboardTemplateFn = loadDashboardTemplate
+
 // loadDashboardTemplate parses the embedded HTML template once and
 // caches the result. Subsequent calls are lock-free reads of the
 // package-level pointer.
@@ -230,11 +235,14 @@ func startDashboard(port, appPort int, svc *devServices, emitter devEmitter) fun
 	}
 }
 
+// refresherTickInterval is the refresh cadence. Test-overridable.
+var refresherTickInterval = 5 * time.Second
+
 // refresherLoop updates the dashboard state every 5s. Sends a
 // notification to every SSE subscriber on each refresh so browsers
 // don't have to poll the snapshot endpoint.
 func (s *dashboardServer) refresherLoop(ctx context.Context) {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(refresherTickInterval)
 	defer ticker.Stop()
 	// Run one refresh immediately so the first SSE tick isn't delayed.
 	s.refresh()
@@ -520,7 +528,7 @@ func typeNameFromSchema(s *schemaRef) string {
 // values (route paths scraped from swagger, service names from compose)
 // can never break out of their tags.
 func (s *dashboardServer) handleIndex(w http.ResponseWriter, _ *http.Request) {
-	tmpl, err := loadDashboardTemplate()
+	tmpl, err := loadDashboardTemplateFn()
 	if err != nil {
 		http.Error(w, "dashboard template error: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -589,9 +597,17 @@ func (s *dashboardServer) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// writeSSEMarshal is a package-level seam for json.Marshal so tests
+// can force the marshal-error branch. Production uses json.Marshal.
+var writeSSEMarshal = json.Marshal
+
+// newReplayRequest is a seam over http.NewRequestWithContext so tests
+// can simulate a failed request construction.
+var newReplayRequest = http.NewRequestWithContext
+
 // writeSSE marshals one state snapshot as an SSE data: frame.
 func writeSSE(w http.ResponseWriter, flusher http.Flusher, st dashboardState) {
-	b, err := json.Marshal(st)
+	b, err := writeSSEMarshal(st)
 	if err != nil {
 		return
 	}
@@ -841,7 +857,7 @@ func (s *dashboardServer) handleReplay(w http.ResponseWriter, r *http.Request) {
 	if req.Body != "" {
 		body = strings.NewReader(req.Body)
 	}
-	upstream, err := http.NewRequestWithContext(r.Context(), method, target, body)
+	upstream, err := newReplayRequest(r.Context(), method, target, body)
 	if err != nil {
 		http.Error(w, "build upstream: "+err.Error(), http.StatusBadRequest)
 		return

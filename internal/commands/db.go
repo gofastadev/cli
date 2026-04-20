@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"os"
 
-	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/spf13/cobra"
 )
 
@@ -54,7 +53,7 @@ func init() {
 }
 
 func runDBReset(skipSeed bool) error {
-	dbURL := configutil.BuildMigrationURL()
+	dbURL := buildMigrationURL()
 	if dbURL == "" {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")
 	}

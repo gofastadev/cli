@@ -12,6 +12,10 @@ import (
 
 var debugHarOutput string
 
+// harOutOverride is a test-only seam to force a Writer that errors on
+// Write so the Encode-fail branch fires. Nil in production.
+var harOutOverride io.Writer
+
 // debugHarCmd exports the current request ring as HAR 1.2 JSON.
 // Reuses buildHAR from dev_dashboard.go so the CLI and the dashboard
 // emit identical shapes — importing either file into Chrome
@@ -64,6 +68,9 @@ func runDebugHar() error {
 		}
 		defer func() { _ = f.Close() }()
 		out = f
+	}
+	if harOutOverride != nil {
+		out = harOutOverride
 	}
 
 	enc := json.NewEncoder(out)

@@ -105,6 +105,14 @@ func Install(agent *Agent, projectRoot string, data InstallData, opts InstallOpt
 	return result, nil
 }
 
+// templateParse is a package-level seam for template.New().Parse so
+// tests can force a parse error on an otherwise-valid source. Every
+// shipped template parses; without a seam the error branch would be
+// unreachable.
+var templateParse = func(sourcePath string, raw []byte) (*template.Template, error) {
+	return template.New(filepath.Base(sourcePath)).Parse(string(raw))
+}
+
 // renderTemplate reads the embedded template and executes it with data.
 // Uses text/template (not html/template) — we're producing config files
 // and shell scripts, not HTML.
@@ -113,7 +121,7 @@ func renderTemplate(sourcePath string, data InstallData) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	tmpl, err := template.New(filepath.Base(sourcePath)).Parse(string(raw))
+	tmpl, err := templateParse(sourcePath, raw)
 	if err != nil {
 		return nil, err
 	}

@@ -249,9 +249,12 @@ func runWorkflow(name string, passed []string) error {
 // step's argv. Using the current binary path — not `gofasta` on $PATH
 // — means the workflow always invokes the exact version the user ran,
 // avoiding version-skew surprises when two gofasta binaries exist.
+//
+// Goes through the package-level execCommand seam so tests can inject
+// a fake command runner without re-invoking the test binary.
 func runGofastaStep(args []string) error {
 	binary := os.Args[0]
-	cmd := exec.Command(binary, args...)
+	cmd := execCommand(binary, args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin

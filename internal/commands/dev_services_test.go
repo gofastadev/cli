@@ -2,8 +2,10 @@ package commands
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestIsDBLike — DB-name heuristic covers the canonical service names
@@ -104,6 +106,18 @@ func TestParseServicesList(t *testing.T) {
 	assert.Equal(t, []string{"db", "cache"}, parseServicesList("db,cache"))
 	assert.Equal(t, []string{"db", "cache"}, parseServicesList(" db , cache "))
 	assert.Equal(t, []string{"db", "cache"}, parseServicesList("db,,cache"))
+}
+
+// TestWaitHealthy_WantedNotSeen — a wanted service never appears in
+// `docker compose ps` output → allReady=false → timeout. The
+// wanted-but-not-seen branch fires.
+func TestWaitHealthy_WantedNotSeen(t *testing.T) {
+	// Return an empty list so nothing matches.
+	out := `[]`
+	fakeExecOutput(t, out, 0)
+	err := waitHealthy([]string{"db"}, map[string]bool{"db": false},
+		700*time.Millisecond, nil)
+	require.Error(t, err)
 }
 
 // TestIsServiceReady — readiness rules per healthcheck declaration.

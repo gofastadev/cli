@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -242,6 +243,37 @@ func TestRunDebugWatch_UnreachableApp(t *testing.T) {
 	require.Error(t, runDebugWatch())
 }
 
+// TestWatchNewContext_Default — call the real default closure once
+// so its body is counted as covered.
+func TestWatchNewContext_Default(t *testing.T) {
+	// Ensure no test left a stub installed.
+	ctx, cancel := watchNewContext()
+	defer cancel()
+	// Cancel and return quickly.
+	assert.NotNil(t, ctx)
+}
+
+// TestRunDebugWatch_HappyExit — full runDebugWatch succeeds when the
+// context is pre-canceled (via the watchNewContext seam).
+func TestRunDebugWatch_HappyExit(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/errors":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+	})
+	withDebugAppURL(t, url)
+	resetWatchFlags()
+	// Pre-canceled ctx → runWatchLoop returns immediately.
+	orig := watchNewContext
+	watchNewContext = func() (context.Context, context.CancelFunc) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		return ctx, func() {}
+	}
+	t.Cleanup(func() { watchNewContext = orig })
+	err := runDebugWatch()
+	require.NoError(t, err)
+}
+
 // TestRunDebugWatch_BadInterval — rejects bogus --interval with
 // DEBUG_BAD_DURATION.
 func TestRunDebugWatch_BadInterval(t *testing.T) {
@@ -251,6 +283,59 @@ func TestRunDebugWatch_BadInterval(t *testing.T) {
 	debugWatchInterval = "not-a-duration"
 	t.Cleanup(resetWatchFlags)
 	require.Error(t, runDebugWatch())
+}
+
+// TestRunWatchLoop_CtxDone — the loop exits immediately when ctx is
+// already canceled.
+func TestRunWatchLoop_CtxDone(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	ticker := make(chan time.Time)
+	heartbeat := make(chan time.Time)
+	var buf bytes.Buffer
+	emitter := newWatchEmitter(&buf)
+	marks := &watchMarks{}
+	runWatchLoop(ctx, ticker, heartbeat, "http://irrelevant", marks, emitter)
+}
+
+// TestRunWatchLoop_Heartbeat — a heartbeat tick produces a heartbeat
+// event, then ctx cancellation exits the loop.
+func TestRunWatchLoop_Heartbeat(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := make(chan time.Time)
+	heartbeat := make(chan time.Time, 1)
+	heartbeat <- time.Now()
+	var buf bytes.Buffer
+	emitter := newWatchEmitter(&buf)
+	marks := &watchMarks{}
+	go func() {
+		// Give the heartbeat time to process, then cancel.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	runWatchLoop(ctx, ticker, heartbeat, "http://irrelevant", marks, emitter)
+	assert.Contains(t, buf.String(), "heartbeat")
+}
+
+// TestRunWatchLoop_Tick — a ticker tick calls pollAndEmit with the
+// app URL. We use an empty-ring fixture so no events fire but the
+// branch runs.
+func TestRunWatchLoop_Tick(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{})
+	ctx, cancel := context.WithCancel(context.Background())
+	ticker := make(chan time.Time, 1)
+	ticker <- time.Now()
+	heartbeat := make(chan time.Time)
+	var buf bytes.Buffer
+	emitter := newWatchEmitter(&buf)
+	marks := &watchMarks{}
+	resetWatchFlags()
+	t.Cleanup(resetWatchFlags)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+	}()
+	runWatchLoop(ctx, ticker, heartbeat, url, marks, emitter)
 }
 
 // TestWatchMarks_BaselineEmptyRings — every channel's ring is

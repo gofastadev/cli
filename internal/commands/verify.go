@@ -92,6 +92,21 @@ type verifyResult struct {
 	Duration int64         `json:"duration_ms"`
 }
 
+// verifyStepDef describes one step in the verify pipeline.
+type verifyStepDef struct {
+	name string
+	fn   func() (string, string, error) // message, output, err
+}
+
+// extraVerifySteps is a test-only seam that lets tests inject
+// additional steps into runVerify — used to exercise defensive
+// branches without shelling out.
+var extraVerifySteps []verifyStepDef
+
+// wireDriftInfoErr is a test-only seam that forces the d.Info err
+// branch inside stepWireDrift. Nil in production.
+var wireDriftInfoErr error
+
 // runVerify executes every verification step and emits the result. If any
 // step failed (unless keep-going was passed), returns a CodeVerifyFailed
 // error so the root command's error handler exits non-zero.
@@ -101,13 +116,13 @@ func runVerify(opts verifyOptions) error {
 	// Each step is {Name, Runner}. Runners return a verifyCheck with
 	// status/message/output already filled in — runVerify only times
 	// the run and aggregates results.
-	type stepDef struct {
-		name string
-		fn   func() (string, string, error) // message, output, err
-	}
+	type stepDef = verifyStepDef
 	steps := []stepDef{
 		{"gofmt", stepGofmt},
 		{"go vet", stepGoVet},
+	}
+	if extraVerifySteps != nil {
+		steps = append(steps, extraVerifySteps...)
 	}
 	if !opts.skipLint {
 		steps = append(steps, stepDef{"golangci-lint", stepGolangciLint})
@@ -198,6 +213,10 @@ func printVerifyStep(c verifyCheck) {
 
 // --- individual step runners -------------------------------------------------
 
+// runShellFn is a package-level seam over runShell so tests can
+// exercise the step functions without spawning real processes.
+var runShellFn = runShell
+
 // runShell runs name args... and returns (stdout+stderr, err). The combined
 // output is captured as a single stream because most Go tools write errors
 // to stderr but warnings to stdout — splitting makes the output harder to
@@ -215,7 +234,7 @@ func runShell(name string, args ...string) (string, error) {
 // gofmt prints the list of non-conforming files to stdout with exit 0, so
 // we check the output rather than the exit code.
 func stepGofmt() (message, output string, err error) {
-	out, runErr := runShell("gofmt", "-s", "-l", ".")
+	out, runErr := runShellFn("gofmt", "-s", "-l", ".")
 	if runErr != nil {
 		return "", out, runErr
 	}
@@ -227,22 +246,26 @@ func stepGofmt() (message, output string, err error) {
 }
 
 func stepGoVet() (message, output string, err error) {
-	out, err := runShell("go", "vet", "./...")
+	out, err := runShellFn("go", "vet", "./...")
 	if err != nil {
 		return "vet reported issues", out, err
 	}
 	return "", "", nil
 }
 
+// golangciLintLookPath is a seam over exec.LookPath for the linter so
+// tests can simulate "installed" vs "missing".
+var golangciLintLookPath = func() (string, error) { return exec.LookPath("golangci-lint") }
+
 // stepGolangciLint tries to run golangci-lint. If the binary is not on
 // $PATH it returns ("skip", "", nil) which the aggregator treats as
 // skipped, not failed — agents that lack the linter should not be
 // blocked by its absence.
 func stepGolangciLint() (message, output string, err error) {
-	if _, err := exec.LookPath("golangci-lint"); err != nil {
+	if _, err := golangciLintLookPath(); err != nil {
 		return "skip", "", nil
 	}
-	out, err := runShell("golangci-lint", "run")
+	out, err := runShellFn("golangci-lint", "run")
 	if err != nil {
 		return "lint reported issues", out, err
 	}
@@ -255,7 +278,7 @@ func stepGoTest(skipRace bool) (message, output string, err error) {
 		args = append(args, "-race")
 	}
 	args = append(args, "./...")
-	out, err := runShell("go", args...)
+	out, err := runShellFn("go", args...)
 	if err != nil {
 		return "tests failed", out, err
 	}
@@ -263,7 +286,7 @@ func stepGoTest(skipRace bool) (message, output string, err error) {
 }
 
 func stepGoBuild() (message, output string, err error) {
-	out, err := runShell("go", "build", "./...")
+	out, err := runShellFn("go", "build", "./...")
 	if err != nil {
 		return "build failed", out, err
 	}
@@ -298,6 +321,9 @@ func stepWireDrift() (message, output string, err error) {
 			return nil
 		}
 		info, err := d.Info()
+		if wireDriftInfoErr != nil {
+			err = wireDriftInfoErr
+		}
 		if err != nil {
 			return nil
 		}

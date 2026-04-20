@@ -3,6 +3,7 @@ package commands
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
 
@@ -51,12 +52,25 @@ func runConsole() error {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigChan
-		if cmd.Process != nil {
-			_ = cmd.Process.Signal(os.Interrupt)
-		}
-	}()
+	go forwardInterrupt(sigChan, consoleProcFn(cmd))
 
 	return cmd.Run()
+}
+
+// consoleProcFn returns a closure that reads cmd.Process. Extracted so
+// tests can invoke the resulting closure directly, exercising the body
+// without delivering a real signal.
+func consoleProcFn(cmd *exec.Cmd) func() *os.Process {
+	return func() *os.Process { return cmd.Process }
+}
+
+// forwardInterrupt blocks on sigChan for one signal and then sends
+// os.Interrupt to the process returned by procFn (if any). Extracted
+// out of runConsole's goroutine body so tests can exercise the
+// "cmd.Process is non-nil" branch directly.
+func forwardInterrupt(sigChan <-chan os.Signal, procFn func() *os.Process) {
+	<-sigChan
+	if proc := procFn(); proc != nil {
+		_ = proc.Signal(os.Interrupt)
+	}
 }

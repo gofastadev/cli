@@ -18,6 +18,10 @@ var (
 	debugProfileOutput   string
 )
 
+// debugProfileOutOverride is a test-only seam to force an io.Writer
+// that errors on Write, exercising the io.Copy failure branch.
+var debugProfileOutOverride io.Writer
+
 // debugProfileKinds is the whitelist of pprof profile names the
 // devtools handler forwards. Kept explicit so `gofasta debug profile
 // blahblah` produces a clean DEBUG_PROFILE_UNSUPPORTED error instead
@@ -125,6 +129,9 @@ func runDebugProfile(kind string) error {
 		}
 		defer func() { _ = f.Close() }()
 		out = f
+	}
+	if debugProfileOutOverride != nil {
+		out = debugProfileOutOverride
 	}
 
 	n, err := io.Copy(out, resp.Body)

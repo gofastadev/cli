@@ -255,6 +255,45 @@ func TestUpgradeViaBinary_Success(t *testing.T) {
 	assert.Equal(t, "fake-binary-bytes", string(content))
 }
 
+// TestUpgradeViaBinary_WindowsSuffix — force runtimeGOOS to return
+// "windows" so the .exe suffix branch fires.
+func TestUpgradeViaBinary_WindowsSuffix(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Assert the URL ends with .exe (confirming the branch fired).
+		assert.Contains(t, r.URL.Path, ".exe")
+		w.Write([]byte("exe-bytes"))
+	}))
+	t.Cleanup(srv.Close)
+	swapDownloadURL(t, srv.URL+"/%s/%s")
+	orig := runtimeGOOS
+	runtimeGOOS = func() string { return "windows" }
+	t.Cleanup(func() { runtimeGOOS = orig })
+	dir := t.TempDir()
+	execPath := filepath.Join(dir, "gofasta")
+	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
+	_ = upgradeViaBinary(execPath, "v1.0.0")
+}
+
+// TestUpgradeViaBinary_ChmodFails — inject a failing Chmod seam.
+func TestUpgradeViaBinary_ChmodFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("fake-binary-bytes"))
+	}))
+	t.Cleanup(srv.Close)
+	swapDownloadURL(t, srv.URL+"/%s/%s")
+
+	orig := osChmodFn
+	osChmodFn = func(_ string, _ os.FileMode) error { return fmt.Errorf("chmod failed") }
+	t.Cleanup(func() { osChmodFn = orig })
+
+	dir := t.TempDir()
+	execPath := filepath.Join(dir, "gofasta")
+	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
+	err := upgradeViaBinary(execPath, "v1.0.0")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "permissions")
+}
+
 func TestUpgradeViaBinary_HTTPError(t *testing.T) {
 	swapHTTP(t, func(url string) (*http.Response, error) {
 		return nil, fmt.Errorf("network fail")

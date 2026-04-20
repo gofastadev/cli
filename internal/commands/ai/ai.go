@@ -225,11 +225,16 @@ func printNextSteps(w io.Writer, agent *Agent) {
 	}
 }
 
+// getwd is a package-level seam over os.Getwd so tests can simulate a
+// process whose working directory has been deleted under it (a rare
+// condition that would otherwise be uncoverable).
+var getwd = os.Getwd
+
 // findProjectRoot walks up from the current directory looking for a go.mod
 // file. Returns the absolute path to the directory containing go.mod, or
 // a clierr if not inside a Go module.
 func findProjectRoot() (string, error) {
-	cwd, err := os.Getwd()
+	cwd, err := getwd()
 	if err != nil {
 		return "", clierr.Wrap(clierr.CodeFileIO, err, "could not determine current directory")
 	}
