@@ -57,6 +57,17 @@ func loadDashboardTemplate() (*template.Template, error) {
 					}
 					return *p
 				},
+				// dict constructs a map[string]any so sub-templates
+				// (the shared "initialPager") can accept multiple
+				// named fields without defining a Go struct per use.
+				"dict": func(kv ...any) map[string]any {
+					m := make(map[string]any, len(kv)/2)
+					for i := 0; i+1 < len(kv); i += 2 {
+						k, _ := kv[i].(string)
+						m[k] = kv[i+1]
+					}
+					return m
+				},
 			}).
 			Parse(dashboardTemplateSource)
 	})

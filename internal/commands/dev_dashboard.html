@@ -549,7 +549,8 @@
     if (!traces || traces.length === 0) {
       return '<div class="empty">No traces captured yet.</div>';
     }
-    var rows = traces.map(function (t) {
+    var p = paginate(traces, 'traces');
+    var rows = p.slice.map(function (t) {
       var pill = t.status === 'error'
         ? '<span class="pill err">error</span>'
         : '<span class="pill ok">ok</span>';
@@ -564,7 +565,7 @@
         '</tr>'
       );
     }).join('');
-    return '<table><thead><tr><th>Time</th><th>Root span</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th>Time</th><th>Root span</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'traces');
   }
   function renderMetrics(m) {
     if (!m || !m.metrics_ok) {
@@ -616,20 +617,46 @@
     }).join('');
     return '<table><thead><tr><th style="width: 10%;">Count</th><th>Top-of-stack</th><th style="width: 25%;">States</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
-  var requestsPage = 0;
-  var requestsPerPage = 10;
+  // Shared pagination. Each growing list section gets an entry in
+  // pagerState so its page survives SSE re-renders. Size is uniform
+  // across sections for visual consistency.
+  var pagerSize = 10;
+  var pagerState = {
+    requests: 0, queries: 0, traces: 0,
+    exceptions: 0, cacheOps: 0, nplusone: 0
+  };
+  function paginate(items, key) {
+    var total = items.length;
+    var pageCount = Math.max(1, Math.ceil(total / pagerSize));
+    if (pagerState[key] >= pageCount) pagerState[key] = pageCount - 1;
+    if (pagerState[key] < 0) pagerState[key] = 0;
+    var start = pagerState[key] * pagerSize;
+    var end = Math.min(start + pagerSize, total);
+    return {
+      slice: items.slice(start, end),
+      start: start, end: end, total: total,
+      page: pagerState[key], pageCount: pageCount
+    };
+  }
+  function renderPager(p, key) {
+    if (p.total <= pagerSize) return '';
+    var prevDisabled = p.page === 0 ? 'disabled' : '';
+    var nextDisabled = p.page >= p.pageCount - 1 ? 'disabled' : '';
+    return '<div class="requests-pager">' +
+      '<span class="requests-pager-info">showing ' + (p.start + 1) + '–' + p.end + ' of ' + p.total + '</span>' +
+      '<span class="requests-pager-controls">' +
+        '<button class="pager-btn" data-pager-key="' + key + '" data-pager-action="prev" ' + prevDisabled + '>‹ prev</button>' +
+        '<span class="requests-pager-page">page ' + (p.page + 1) + ' / ' + p.pageCount + '</span>' +
+        '<button class="pager-btn" data-pager-key="' + key + '" data-pager-action="next" ' + nextDisabled + '>next ›</button>' +
+      '</span>' +
+    '</div>';
+  }
   function renderRequests(reqs) {
     if (!reqs || reqs.length === 0) {
       return '<div class="empty">No captured requests yet — hit your app and they will appear here (requires the <code>devtools</code> build tag, which <code>gofasta dev</code> sets automatically).</div>';
     }
-    var total = reqs.length;
-    var pageCount = Math.max(1, Math.ceil(total / requestsPerPage));
-    if (requestsPage >= pageCount) requestsPage = pageCount - 1;
-    if (requestsPage < 0) requestsPage = 0;
-    var start = requestsPage * requestsPerPage;
-    var end = Math.min(start + requestsPerPage, total);
-    var pageRows = reqs.slice(start, end);
-    var rows = pageRows.map(function (r) {
+    var p = paginate(reqs, 'requests');
+    var rows = p.slice.map(function (r) {
       var cls = r.status < 300 ? 'ok' : (r.status < 500 ? 'warn' : 'err');
       var traceCell = r.trace_id
         ? '<a href="#" class="trace-jump" data-trace-id="' + esc(r.trace_id) + '">' + esc(String(r.trace_id).slice(0, 8)) + '…</a>'
@@ -644,39 +671,28 @@
         '<td><button class="replay-btn" data-method="' + esc(r.method) + '" data-path="' + esc(r.path) + '" data-body="' + esc(r.body || '') + '">replay</button></td>' +
       '</tr>';
     }).join('');
-    var prevDisabled = requestsPage === 0 ? 'disabled' : '';
-    var nextDisabled = requestsPage >= pageCount - 1 ? 'disabled' : '';
-    var pager =
-      '<div class="requests-pager">' +
-        '<span class="requests-pager-info">' +
-          'showing ' + (start + 1) + '–' + end + ' of ' + total +
-        '</span>' +
-        '<span class="requests-pager-controls">' +
-          '<button class="pager-btn" data-pager-action="prev" ' + prevDisabled + '>‹ prev</button>' +
-          '<span class="requests-pager-page">page ' + (requestsPage + 1) + ' / ' + pageCount + '</span>' +
-          '<button class="pager-btn" data-pager-action="next" ' + nextDisabled + '>next ›</button>' +
-        '</span>' +
-      '</div>';
-    return '<table><thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager;
+    return '<table><thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'requests');
   }
   function renderNPlusOne(items) {
     if (!items || items.length === 0) {
       return '<div class="empty">No N+1 patterns detected in recent traces.</div>';
     }
-    var rows = items.map(function (n) {
+    var p = paginate(items, 'nplusone');
+    var rows = p.slice.map(function (n) {
       return '<tr>' +
         '<td><span class="pill err">' + n.count + '×</span></td>' +
         '<td style="font-size: 11px; color: var(--fg);">' + esc(n.template) + '</td>' +
         '<td style="font-size: 10px;"><a href="#" class="trace-jump" data-trace-id="' + esc(n.trace_id) + '">' + esc(String(n.trace_id).slice(0, 8)) + '…</a></td>' +
       '</tr>';
     }).join('');
-    return '<table><thead><tr><th style="width: 10%;">Count</th><th>SQL template</th><th style="width: 25%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th style="width: 10%;">Count</th><th>SQL template</th><th style="width: 25%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'nplusone');
   }
   function renderQueries(qs) {
     if (!qs || qs.length === 0) {
       return '<div class="empty">No captured queries yet — GORM calls will appear here when <code>devtools.GormPlugin()</code> is active (auto-enabled by <code>gofasta dev</code>).</div>';
     }
-    var rows = qs.map(function (q) {
+    var p = paginate(qs, 'queries');
+    var rows = p.slice.map(function (q) {
       var sqlCell = q.error
         ? '<span class="pill err">error</span> ' + esc(q.sql)
         : esc(q.sql);
@@ -690,13 +706,14 @@
         '<td><button class="explain-btn" data-sql="' + esc(q.sql) + '" data-vars="' + varsAttr + '">EXPLAIN</button></td>' +
       '</tr>';
     }).join('');
-    return '<table><thead><tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'queries');
   }
   function renderExceptions(exs) {
     if (!exs || exs.length === 0) {
       return '<div class="empty">No exceptions recorded this session.</div>';
     }
-    var rows = exs.map(function (e) {
+    var p = paginate(exs, 'exceptions');
+    var rows = p.slice.map(function (e) {
       var traceCell = e.trace_id
         ? '<a href="#" class="trace-jump" data-trace-id="' + esc(e.trace_id) + '">' + esc(String(e.trace_id).slice(0, 8)) + '…</a>'
         : '—';
@@ -715,13 +732,14 @@
         '<td style="font-size: 10px;">' + traceCell + '</td>' +
       '</tr>' + stackRow;
     }).join('');
-    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Method</th><th style="width: 25%;">Path</th><th>Recovered</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Method</th><th style="width: 25%;">Path</th><th>Recovered</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'exceptions');
   }
   function renderCacheOps(ops) {
     if (!ops || ops.length === 0) {
       return '<div class="empty">No cache operations yet — they\'ll appear here once your app calls <code>container.CacheService</code>.</div>';
     }
-    var rows = ops.map(function (c) {
+    var p = paginate(ops, 'cacheOps');
+    var rows = p.slice.map(function (c) {
       var hitCell;
       if (c.op === 'get') {
         hitCell = c.hit ? '<span class="pill ok">hit</span>' : '<span class="pill warn">miss</span>';
@@ -740,7 +758,7 @@
         '<td style="font-size: 10px;">' + traceCell + '</td>' +
       '</tr>';
     }).join('');
-    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Op</th><th>Key</th><th style="width: 10%;">Hit</th><th style="width: 10%;">Duration</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Op</th><th>Key</th><th style="width: 10%;">Hit</th><th style="width: 10%;">Duration</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>' + renderPager(p, 'cacheOps');
   }
   function setHTML(id, html) {
     var el = document.getElementById(id);
@@ -952,11 +970,20 @@
     // unchanged.
     if (t && t.classList && t.classList.contains('pager-btn')) {
       if (t.hasAttribute('disabled')) return;
+      var key = t.getAttribute('data-pager-key');
       var action = t.getAttribute('data-pager-action');
-      if (action === 'prev') requestsPage--;
-      if (action === 'next') requestsPage++;
+      if (!key || !(key in pagerState)) return;
+      pagerState[key] += (action === 'next' ? 1 : -1);
       if (lastState) {
-        setHTML('requests', renderRequests(lastState.recent_requests));
+        var binding = {
+          requests:   ['requests',   renderRequests,   lastState.recent_requests],
+          queries:    ['queries',    renderQueries,    lastState.recent_queries],
+          traces:     ['traces',     renderTraces,     lastState.recent_traces],
+          exceptions: ['exceptions', renderExceptions, lastState.exceptions],
+          cacheOps:   ['cache-ops',  renderCacheOps,   lastState.cache_ops],
+          nplusone:   ['nplusone',   renderNPlusOne,   lastState.n_plus_one]
+        }[key];
+        if (binding) setHTML(binding[0], binding[1](binding[2]));
       }
       return;
     }
@@ -1268,14 +1295,7 @@
       </tbody>
     </table>
     {{- if gt $total 10 -}}
-      <div class="requests-pager">
-        <span class="requests-pager-info">showing 1–{{len $page}} of {{$total}}</span>
-        <span class="requests-pager-controls">
-          <button class="pager-btn" data-pager-action="prev" disabled>‹ prev</button>
-          <span class="requests-pager-page">page 1</span>
-          <button class="pager-btn" data-pager-action="next">next ›</button>
-        </span>
-      </div>
+      {{- template "initialPager" (dict "Key" "requests" "Total" $total "Shown" (len $page)) -}}
     {{- end -}}
   {{- else -}}
     <div class="empty">
@@ -1286,8 +1306,22 @@
   {{- end -}}
 {{end}}
 
+{{define "initialPager"}}
+  <div class="requests-pager">
+    <span class="requests-pager-info">showing 1–{{.Shown}} of {{.Total}}</span>
+    <span class="requests-pager-controls">
+      <button class="pager-btn" data-pager-key="{{.Key}}" data-pager-action="prev" disabled>‹ prev</button>
+      <span class="requests-pager-page">page 1</span>
+      <button class="pager-btn" data-pager-key="{{.Key}}" data-pager-action="next">next ›</button>
+    </span>
+  </div>
+{{end}}
+
 {{define "cacheOpsTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr>
@@ -1300,7 +1334,7 @@
         </tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr>
             <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
             <td><span class="method">{{.Op}}</span></td>
@@ -1324,6 +1358,9 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      {{- template "initialPager" (dict "Key" "cacheOps" "Total" $total "Shown" (len $page)) -}}
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No cache operations yet — they'll appear here once your app calls
@@ -1334,6 +1371,9 @@
 
 {{define "exceptionsTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr>
@@ -1345,7 +1385,7 @@
         </tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr>
             <td style="font-size: 10px;">{{.Time.Format "15:04:05.000"}}</td>
             <td><span class="method">{{.Method}}</span></td>
@@ -1368,6 +1408,9 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      {{- template "initialPager" (dict "Key" "exceptions" "Total" $total "Shown" (len $page)) -}}
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No exceptions recorded this session.
@@ -1377,6 +1420,9 @@
 
 {{define "nPlusOneTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr>
@@ -1386,7 +1432,7 @@
         </tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr>
             <td><span class="pill err">{{.Count}}×</span></td>
             <td style="font-size: 11px; color: var(--fg);">{{.Template}}</td>
@@ -1397,6 +1443,9 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      {{- template "initialPager" (dict "Key" "nplusone" "Total" $total "Shown" (len $page)) -}}
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No N+1 patterns detected in recent traces.
@@ -1485,6 +1534,9 @@
 
 {{define "tracesTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr>
@@ -1497,7 +1549,7 @@
         </tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr class="trace-row" data-trace-id="{{.TraceID}}">
             <td>{{.Time.Format "15:04:05.000"}}</td>
             <td>{{.RootName}}</td>
@@ -1515,6 +1567,9 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      {{- template "initialPager" (dict "Key" "traces" "Total" $total "Shown" (len $page)) -}}
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No traces captured yet — traces land here once
@@ -1526,12 +1581,15 @@
 
 {{define "queriesTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr>
             <td>{{.Time.Format "15:04:05.000"}}</td>
             <td>{{.Rows}}</td>
@@ -1554,6 +1612,9 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      {{- template "initialPager" (dict "Key" "queries" "Total" $total "Shown" (len $page)) -}}
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No captured queries yet — GORM calls will appear here when
