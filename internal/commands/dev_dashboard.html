@@ -784,25 +784,34 @@
     setHTML('queries', renderQueries(state.recent_queries));
     setHTML('exceptions', renderExceptions(state.exceptions));
     setHTML('cache-ops', renderCacheOps(state.cache_ops));
-    setHTML('traces', renderTraces(state.recent_traces));
-    restoreExpandedTraces();
+    renderTracesPreservingExpansions(state.recent_traces);
     document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
   }
-  // After the Traces table is re-rendered on each SSE tick, re-open
-  // every trace the user had expanded. IDs no longer in the snapshot
-  // (rotated out of the ring) are dropped from the set.
-  function restoreExpandedTraces() {
-    if (expandedTraces.size === 0) return;
-    expandedTraces.forEach(function (id) {
-      var row = document.querySelector('.trace-row[data-trace-id="' + id + '"]');
-      if (!row) {
-        expandedTraces.delete(id);
-        return;
+  // Rebuild the Traces section without losing any open waterfalls.
+  // We detach each existing `<tr class="trace-expanded">` before the
+  // table is re-rendered, then re-insert it after the refreshed row
+  // with the matching trace ID. Preserving the original DOM node
+  // means the captured waterfall / stacks / tab state survive
+  // verbatim — no refetch, no loading flicker, no timing race with
+  // an in-flight /api/trace request. Traces rotated out of the ring
+  // (row no longer exists after re-render) are dropped.
+  function renderTracesPreservingExpansions(traces) {
+    var tracesEl = document.getElementById('traces');
+    if (!tracesEl) return;
+    var saved = [];
+    tracesEl.querySelectorAll('tr.trace-expanded').forEach(function (exp) {
+      var prev = exp.previousElementSibling;
+      var id = prev && prev.getAttribute && prev.getAttribute('data-trace-id');
+      if (id) saved.push({ id: id, node: exp });
+    });
+    tracesEl.innerHTML = renderTraces(traces);
+    saved.forEach(function (s) {
+      var row = tracesEl.querySelector('.trace-row[data-trace-id="' + s.id + '"]');
+      if (row && row.parentNode) {
+        row.parentNode.insertBefore(s.node, row.nextSibling);
+      } else {
+        expandedTraces.delete(s.id);
       }
-      // toggleTrace toggles — since the row was just re-rendered
-      // without an .trace-expanded sibling, calling it will expand.
-      // It also re-adds the id to the set (no-op for a Set).
-      toggleTrace(id, row);
     });
   }
 
