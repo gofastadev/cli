@@ -222,6 +222,13 @@ func TestRunDev_Seed(t *testing.T) {
 func TestRunDev_SeedFails(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	// Pin the migrate lookup to success so the staged exec codes line up
+	// the same way on hosts where `migrate` is on $PATH and on CI where it
+	// is not — otherwise the migrate stage silently skips its exec call
+	// and every subsequent code shifts by one.
+	origLookPath := execLookPath
+	execLookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
+	t.Cleanup(func() { execLookPath = origLookPath })
 	// stagedFakeExec: migrate=0, seed=1, then air=0 (final code repeats).
 	stagedFakeExec(t, 0, 1, 0)
 	err := runDev(devFlags{envFile: ".env", noServices: true, seed: true})
