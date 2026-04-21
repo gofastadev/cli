@@ -351,6 +351,91 @@
     opacity: 0.35;
     cursor: not-allowed;
   }
+  /* Pinned trace row — visually a row of the Traces table but lives
+     in its own element, so the 5s SSE refresh can't blow it away. */
+  #pinned-trace:empty, #trace-detail-card:empty { display: none; }
+  #pinned-trace {
+    margin-bottom: -1px;
+  }
+  .pinned-trace-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border-top-left-radius: 8px;
+    border-top-right-radius: 8px;
+    overflow: hidden;
+    border: 1px solid rgba(79, 209, 229, 0.35);
+    border-bottom: none;
+  }
+  .pinned-trace-table td {
+    background: rgba(79, 209, 229, 0.08);
+    padding: 8px 12px;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 13px;
+    border-bottom: 1px solid rgba(79, 209, 229, 0.25);
+  }
+  .pinned-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--primary);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-right: 8px;
+  }
+  .pin-close {
+    background: transparent;
+    border: 1px solid rgba(138, 155, 160, 0.3);
+    color: var(--muted);
+    padding: 2px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 11px;
+  }
+  .pin-close:hover { color: var(--fg); border-color: var(--fg); }
+  /* Trace CTA button in Recent requests — small clickable chip that
+     opens the trace card instead of just jumping to a table row. */
+  .trace-cta {
+    background: rgba(79, 209, 229, 0.12);
+    border: 1px solid rgba(79, 209, 229, 0.3);
+    color: var(--primary);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .trace-cta:hover { background: rgba(79, 209, 229, 0.2); }
+  .trace-cta[disabled] {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  /* Dedicated trace-detail card below the Traces list. */
+  .trace-card {
+    margin-top: 16px;
+    background: var(--surface);
+    border: 1px solid rgba(79, 209, 229, 0.25);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .trace-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid rgba(138, 155, 160, 0.15);
+  }
+  .trace-card-title {
+    color: var(--primary);
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 14px;
+    word-break: break-all;
+  }
+  .trace-card-body { margin: 0; }
 </style>
 </head>
 <body>
@@ -493,9 +578,25 @@
     <span class="pill warn" style="margin-left: 8px;">devtools tag off</span>
   {{- end -}}
 </h2>
+<!--
+  Pinned trace banner. Populated by openTrace() when a developer
+  clicks a trace row (either in this table or via the Trace CTA in
+  Recent requests). Lives OUTSIDE #traces so the 5s SSE refresh
+  leaves it alone — whatever the developer is inspecting stays
+  visually anchored above the live list. Cleared by closeTrace().
+-->
+<div id="pinned-trace"></div>
 <div id="traces">
   {{- template "tracesTable" .RecentTraces -}}
 </div>
+<!--
+  Dedicated trace-detail card. Rendered below the traces list when
+  a trace is opened; contains the waterfall + logs tabs, same
+  content that used to expand inline. Completely owned by the
+  click handlers — apply() never writes to it, so the waterfall
+  the developer is reading survives every refresh tick.
+-->
+<div id="trace-detail-card"></div>
 
 <div class="footer">
   Updated
@@ -659,15 +760,15 @@
     var rows = p.slice.map(function (r) {
       var cls = r.status < 300 ? 'ok' : (r.status < 500 ? 'warn' : 'err');
       var traceCell = r.trace_id
-        ? '<a href="#" class="trace-jump" data-trace-id="' + esc(r.trace_id) + '">' + esc(String(r.trace_id).slice(0, 8)) + '…</a>'
-        : '—';
+        ? '<button class="trace-cta" data-trace-id="' + esc(r.trace_id) + '">trace</button>'
+        : '<button class="trace-cta" disabled>trace</button>';
       return '<tr>' +
         '<td>' + fmtTime(r.time) + '</td>' +
         '<td><span class="method">' + esc(r.method) + '</span></td>' +
         '<td>' + esc(r.path) + '</td>' +
         '<td><span class="pill ' + cls + '">' + r.status + '</span></td>' +
         '<td>' + r.duration_ms + ' ms</td>' +
-        '<td style="color: var(--muted); font-size: 10px;">' + traceCell + '</td>' +
+        '<td>' + traceCell + '</td>' +
         '<td><button class="replay-btn" data-method="' + esc(r.method) + '" data-path="' + esc(r.path) + '" data-body="' + esc(r.body || '') + '">replay</button></td>' +
       '</tr>';
     }).join('');
@@ -784,35 +885,8 @@
     setHTML('queries', renderQueries(state.recent_queries));
     setHTML('exceptions', renderExceptions(state.exceptions));
     setHTML('cache-ops', renderCacheOps(state.cache_ops));
-    renderTracesPreservingExpansions(state.recent_traces);
+    setHTML('traces', renderTraces(state.recent_traces));
     document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
-  }
-  // Rebuild the Traces section without losing any open waterfalls.
-  // We detach each existing `<tr class="trace-expanded">` before the
-  // table is re-rendered, then re-insert it after the refreshed row
-  // with the matching trace ID. Preserving the original DOM node
-  // means the captured waterfall / stacks / tab state survive
-  // verbatim — no refetch, no loading flicker, no timing race with
-  // an in-flight /api/trace request. Traces rotated out of the ring
-  // (row no longer exists after re-render) are dropped.
-  function renderTracesPreservingExpansions(traces) {
-    var tracesEl = document.getElementById('traces');
-    if (!tracesEl) return;
-    var saved = [];
-    tracesEl.querySelectorAll('tr.trace-expanded').forEach(function (exp) {
-      var prev = exp.previousElementSibling;
-      var id = prev && prev.getAttribute && prev.getAttribute('data-trace-id');
-      if (id) saved.push({ id: id, node: exp });
-    });
-    tracesEl.innerHTML = renderTraces(traces);
-    saved.forEach(function (s) {
-      var row = tracesEl.querySelector('.trace-row[data-trace-id="' + s.id + '"]');
-      if (row && row.parentNode) {
-        row.parentNode.insertBefore(s.node, row.nextSibling);
-      } else {
-        expandedTraces.delete(s.id);
-      }
-    });
   }
 
   // ── Trace waterfall drill-down ────────────────────────────────────
@@ -822,11 +896,12 @@
   // clicks are free. Span bars are positioned by offset_ms and
   // width-scaled by duration_ms.
   var traceCache = {};
-  // Trace IDs currently expanded in the UI. Persisted across SSE
-  // re-renders so a fresh snapshot doesn't collapse the waterfall
-  // the user is reading. apply() consults this set after it rebuilds
-  // the Traces table and re-expands each still-visible ID.
-  var expandedTraces = new Set();
+  // Currently pinned / open trace ID. Only one trace is inspected at
+  // a time — opening a second trace replaces the first. null when
+  // nothing is pinned. The pinned row + detail card live outside
+  // #traces and are therefore never touched by apply(), so refresh
+  // ticks can't clobber what the developer is reading.
+  var pinnedTraceID = null;
   function renderWaterfall(trace) {
     if (!trace || !trace.spans || trace.spans.length === 0) {
       return '<div class="empty">This trace carries no spans yet.</div>';
@@ -885,50 +960,115 @@
     }).join('');
     return rows;
   }
-  function toggleTrace(id, row) {
-    var existing = row.nextElementSibling;
-    if (existing && existing.classList && existing.classList.contains('trace-expanded')) {
-      existing.remove();
-      expandedTraces.delete(id);
-      return;
+  // Resolve a trace summary by ID from whatever the last SSE
+  // snapshot delivered — the pinned banner uses this to render the
+  // clicked row's stats (method, path, spans, duration) without
+  // needing a separate fetch. Returns null if the trace has rotated
+  // out of the ring between click and lookup.
+  function findTraceSummary(id) {
+    if (!lastState || !lastState.recent_traces) return null;
+    for (var i = 0; i < lastState.recent_traces.length; i++) {
+      if (lastState.recent_traces[i].trace_id === id) return lastState.recent_traces[i];
     }
-    expandedTraces.add(id);
-    var holder = document.createElement('tr');
-    holder.className = 'trace-expanded';
-    var cell = document.createElement('td');
-    cell.colSpan = 6;
-    cell.className = 'trace-detail';
-    cell.innerHTML = '<div class="empty">loading trace…</div>';
-    holder.appendChild(cell);
-    row.parentNode.insertBefore(holder, row.nextSibling);
-    var finalize = function (trace) {
-      var tabsHTML =
-        '<div class="trace-tabs">' +
-          '<button class="trace-tab active" data-tab="waterfall">Waterfall</button>' +
-          '<button class="trace-tab" data-tab="logs">Logs</button>' +
-        '</div>' +
-        '<div class="trace-tab-body" data-tab-body="waterfall">' +
-          renderWaterfall(trace) +
-        '</div>' +
-        '<div class="trace-tab-body" data-tab-body="logs" style="display:none;">' +
-          '<div class="empty" style="padding: 8px;">loading logs…</div>' +
-        '</div>';
-      cell.innerHTML = tabsHTML;
+    return null;
+  }
+  // Populate the pinned-row banner with a static snapshot of the
+  // clicked trace. Formatted as a single-row table that visually
+  // extends the live Traces list above it but is structurally
+  // separate so the refresh loop never mutates it.
+  function renderPinnedRow(summary) {
+    if (!summary) return '';
+    var pill = summary.status === 'error'
+      ? '<span class="pill err">error</span>'
+      : '<span class="pill ok">ok</span>';
+    return '<table class="pinned-trace-table"><tbody><tr class="pinned-row">' +
+      '<td colspan="6">' +
+        '<span class="pinned-label">📌 inspecting</span>' +
+        '<span class="method">' + esc(summary.root_name.split(' ')[0] || '') + '</span> ' +
+        '<span style="color: var(--fg);">' + esc(summary.root_name.split(' ').slice(1).join(' ') || summary.root_name) + '</span>' +
+        '<span style="color: var(--muted); margin-left: 12px;">' + summary.span_count + ' spans · ' + summary.duration_ms + ' ms</span>' +
+        '<span style="margin-left: 12px;">' + pill + '</span>' +
+        '<span style="color: var(--muted); font-size: 10px; margin-left: 12px;">' + esc(summary.trace_id) + '</span>' +
+        '<button class="pin-close" style="float: right;">close ✕</button>' +
+      '</td>' +
+    '</tr></tbody></table>';
+  }
+  // Render the card body for a fetched trace. Mirrors the old
+  // in-table expansion (Waterfall + Logs tabs) but lives in its
+  // own dedicated surface below the list.
+  function renderTraceCardBody(trace) {
+    return '<div class="trace-tabs">' +
+        '<button class="trace-tab active" data-tab="waterfall">Waterfall</button>' +
+        '<button class="trace-tab" data-tab="logs">Logs</button>' +
+      '</div>' +
+      '<div class="trace-tab-body" data-tab-body="waterfall">' +
+        renderWaterfall(trace) +
+      '</div>' +
+      '<div class="trace-tab-body" data-tab-body="logs" style="display:none;">' +
+        '<div class="empty" style="padding: 8px;">loading logs…</div>' +
+      '</div>';
+  }
+  // Paint a fresh trace card shell — header + loading placeholder.
+  // summary is optional and drives the header text; when it's
+  // missing (trace-jump from a request whose trace has already
+  // rotated out) we fall back to the raw ID.
+  function renderTraceCardShell(id, summary) {
+    var title;
+    if (summary) {
+      title = 'Trace · ' + esc(summary.root_name) + ' · ' + summary.duration_ms + ' ms';
+    } else {
+      title = 'Trace · ' + esc(id);
+    }
+    return '<div class="trace-card">' +
+      '<div class="trace-card-header">' +
+        '<div class="trace-card-title">' + title + '</div>' +
+        '<button class="pin-close">close ✕</button>' +
+      '</div>' +
+      '<div class="trace-card-body"><div class="empty">loading trace…</div></div>' +
+    '</div>';
+  }
+  // Open a trace. Populates the pinned row + detail card, fetches
+  // /api/trace/{id} (or uses the cache). Replaces whatever trace
+  // was previously open. Scrolls the card into view so the
+  // developer sees the result of their click without hunting.
+  function openTrace(id) {
+    pinnedTraceID = id;
+    var summary = findTraceSummary(id);
+    setHTML('pinned-trace', renderPinnedRow(summary));
+    var cardEl = document.getElementById('trace-detail-card');
+    if (!cardEl) return;
+    cardEl.innerHTML = renderTraceCardShell(id, summary);
+    var bodyEl = cardEl.querySelector('.trace-card-body');
+    if (!bodyEl) return;
+    var paint = function (trace) {
+      if (!trace) {
+        bodyEl.innerHTML = '<div class="empty">trace no longer available</div>';
+        return;
+      }
+      bodyEl.innerHTML = renderTraceCardBody(trace);
     };
     if (traceCache[id]) {
-      finalize(traceCache[id]);
-      return;
+      paint(traceCache[id]);
+    } else {
+      fetch('/api/trace/' + encodeURIComponent(id))
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (t) {
+          if (t) traceCache[id] = t;
+          // Race check — if user closed or opened another trace
+          // while this fetch was in flight, don't overwrite their
+          // current view.
+          if (pinnedTraceID === id) paint(t);
+        })
+        .catch(function () {
+          if (pinnedTraceID === id) bodyEl.innerHTML = '<div class="empty">fetch failed</div>';
+        });
     }
-    fetch('/api/trace/' + encodeURIComponent(id))
-      .then(function (r) { return r.ok ? r.json() : null; })
-      .then(function (t) {
-        if (!t) { cell.innerHTML = '<div class="empty">trace no longer available</div>'; return; }
-        traceCache[id] = t;
-        finalize(t);
-      })
-      .catch(function () {
-        cell.innerHTML = '<div class="empty">fetch failed</div>';
-      });
+    cardEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+  function closeTrace() {
+    pinnedTraceID = null;
+    setHTML('pinned-trace', '');
+    setHTML('trace-detail-card', '');
   }
 
   // Delegated click handler — works for both the server-rendered
@@ -945,15 +1085,17 @@
       }
       return;
     }
-    // Jump from a request row's trace link into the traces section.
-    if (t && t.classList && t.classList.contains('trace-jump')) {
+    // Trace CTA in Recent requests / jump link — opens the dedicated
+    // trace card for the referenced trace ID.
+    if (t && t.classList && (t.classList.contains('trace-cta') || t.classList.contains('trace-jump'))) {
       e.preventDefault();
       var tid = t.getAttribute('data-trace-id');
-      var row = document.querySelector('.trace-row[data-trace-id="' + tid + '"]');
-      if (row) {
-        row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        toggleTrace(tid, row);
-      }
+      if (tid) openTrace(tid);
+      return;
+    }
+    // Close the pinned trace card.
+    if (t && t.classList && t.classList.contains('pin-close')) {
+      closeTrace();
       return;
     }
     // Replay button in the requests table — open the inline editor.
@@ -1021,42 +1163,35 @@
       }
       return;
     }
-    // Waterfall / Logs tab switching inside an expanded trace.
+    // Waterfall / Logs tab switching inside the open trace card.
     if (t && t.classList && t.classList.contains('trace-tab')) {
       var tab = t.getAttribute('data-tab');
-      var detail = t.closest('.trace-detail');
-      if (!detail) return;
-      detail.querySelectorAll('.trace-tab').forEach(function (el) {
+      var card = t.closest('.trace-card');
+      if (!card) return;
+      card.querySelectorAll('.trace-tab').forEach(function (el) {
         el.classList.toggle('active', el === t);
       });
-      detail.querySelectorAll('.trace-tab-body').forEach(function (el) {
+      card.querySelectorAll('.trace-tab-body').forEach(function (el) {
         el.style.display = el.getAttribute('data-tab-body') === tab ? '' : 'none';
       });
       if (tab === 'logs') {
-        var body = detail.querySelector('[data-tab-body="logs"]');
-        if (body && !body.getAttribute('data-loaded')) {
-          // Resolve the trace ID by walking up to the row that opened
-          // this expansion.
-          var expanded = detail.closest('tr.trace-expanded');
-          var row = expanded && expanded.previousElementSibling;
-          var traceId = row && row.getAttribute('data-trace-id');
-          if (traceId) {
-            fetch('/api/logs?trace_id=' + encodeURIComponent(traceId))
-              .then(function (r) { return r.ok ? r.json() : []; })
-              .then(function (logs) {
-                body.innerHTML = renderLogs(logs);
-                body.setAttribute('data-loaded', '1');
-              })
-              .catch(function () { body.innerHTML = '<div class="empty">log fetch failed</div>'; });
-          }
+        var body = card.querySelector('[data-tab-body="logs"]');
+        if (body && !body.getAttribute('data-loaded') && pinnedTraceID) {
+          fetch('/api/logs?trace_id=' + encodeURIComponent(pinnedTraceID))
+            .then(function (r) { return r.ok ? r.json() : []; })
+            .then(function (logs) {
+              body.innerHTML = renderLogs(logs);
+              body.setAttribute('data-loaded', '1');
+            })
+            .catch(function () { body.innerHTML = '<div class="empty">log fetch failed</div>'; });
         }
       }
       return;
     }
-    // Expand / collapse the full trace waterfall.
+    // Clicking anywhere on a trace row opens that trace in the card.
     var row = t && (t.closest ? t.closest('.trace-row') : null);
-    if (row && !t.classList.contains('trace-jump')) {
-      toggleTrace(row.getAttribute('data-trace-id'), row);
+    if (row) {
+      openTrace(row.getAttribute('data-trace-id'));
     }
   });
 
@@ -1313,10 +1448,12 @@
               {{- end -}}
             </td>
             <td>{{.DurationMS}} ms</td>
-            <td style="color: var(--muted); font-size: 10px;">
+            <td>
               {{- if .TraceID -}}
-                <a href="#" class="trace-jump" data-trace-id="{{.TraceID}}">{{slice .TraceID 0 8}}…</a>
-              {{- else -}}—{{- end -}}
+                <button class="trace-cta" data-trace-id="{{.TraceID}}">trace</button>
+              {{- else -}}
+                <button class="trace-cta" disabled>trace</button>
+              {{- end -}}
             </td>
             <td>
               <button class="replay-btn"
