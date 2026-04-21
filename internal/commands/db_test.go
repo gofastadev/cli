@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDbCmd_Registered(t *testing.T) {
@@ -47,4 +48,15 @@ func TestRunDBReset_NoConfig(t *testing.T) {
 	err := runDBReset(false)
 	// Should fail because migrate binary is not available or DB unreachable
 	assert.Error(t, err)
+}
+
+// TestRunDBReset_EmptyURL — the buildMigrationURL seam returns "" so
+// the defensive "failed to load config" branch fires.
+func TestRunDBReset_EmptyURL(t *testing.T) {
+	orig := buildMigrationURL
+	buildMigrationURL = func() string { return "" }
+	t.Cleanup(func() { buildMigrationURL = orig })
+	err := runDBReset(true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load config")
 }

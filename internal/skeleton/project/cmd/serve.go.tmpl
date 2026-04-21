@@ -14,6 +14,7 @@ import (
 	"{{.ModulePath}}/app"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 {{- end}}
+	"{{.ModulePath}}/app/devtools"
 	"{{.ModulePath}}/app/di"
 	"{{.ModulePath}}/app/jobs"
 	"{{.ModulePath}}/app/rest/routes"
@@ -47,10 +48,18 @@ func startServer() error {
 	cfg := container.Config
 	logger := container.Logger
 
+	// Hand the DB to devtools so /debug/explain can issue EXPLAIN
+	// queries against captured SQL. No-op in production.
+	devtools.RegisterDB(container.DB)
+
 	// Initialize tracing (if enabled)
 	if cfg.Observability.TracingEnabled {
 		shutdown := observability.InitTracer(cfg.Observability.ServiceName)
 		defer shutdown()
+		// Devtools trace capture — hooks into the global tracer provider
+		// so every span also lands in the in-memory ring the dashboard
+		// scrapes. No-op in production builds (no `devtools` build tag).
+		devtools.RegisterTraceProcessor()
 	}
 
 	// Start WebSocket hub
@@ -85,13 +94,27 @@ func startServer() error {
 		mux.Handle(cfg.Observability.MetricsPath, observability.MetricsHandler())
 	}
 
+	// Devtools debug endpoints — /debug/requests, /debug/sql,
+	// /debug/health. Active only when the binary is built with the
+	// `devtools` build tag (set by `gofasta dev` via GOFLAGS). In
+	// production builds the handler responds {"devtools":"stub"} to
+	// /debug/health and 404 to everything else.
+	mux.Handle("/debug/", devtools.Handler())
+
 	// Build middleware chain
 	middlewares := []middleware.Middleware{
 		middleware.RequestID(),
 		middleware.RequestLogging(logger),
-		middleware.Recovery(logger),
+		// Devtools Recovery wraps the framework's Recovery: in devtools
+		// builds it captures the panic + stack + request into the
+		// exceptions ring (surfaced on the dashboard); in production
+		// it delegates straight to pkg/middleware.Recovery so behavior
+		// is unchanged.
+		middleware.Middleware(devtools.Recovery(middleware.Recovery(logger))),
 		middleware.CORS(cfg.Server.AllowedOrigins),
 		middleware.SecurityHeaders(cfg.Security),
+		// Devtools request-capture — pass-through no-op in production builds.
+		middleware.Middleware(devtools.Middleware),
 	}
 	if cfg.RateLimit.Enabled {
 		middlewares = append(middlewares, middleware.RateLimit(cfg.RateLimit))

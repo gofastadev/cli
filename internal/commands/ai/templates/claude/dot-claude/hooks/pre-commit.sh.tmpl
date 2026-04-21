@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Pre-commit hook for Claude Code agents working on this gofasta project.
+# Runs the full verify gauntlet before allowing a commit — fail fast on
+# any quality gate (gofmt, vet, lint, tests, build, wire drift, routes).
+#
+# Invoked by Claude Code when configured via .claude/settings.json hooks.
+# Safe to run manually too: `bash .claude/hooks/pre-commit.sh`.
+
+set -e
+
+echo "→ gofasta verify"
+gofasta verify --json

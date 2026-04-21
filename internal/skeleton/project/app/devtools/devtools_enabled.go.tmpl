@@ -1,0 +1,1061 @@
+//go:build devtools
+// +build devtools
+
+package devtools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	// Importing net/http/pprof for its side-effect: init() registers
+	// the profiler endpoints on http.DefaultServeMux. We then forward
+	// /debug/pprof/ paths to that mux from handlerImpl so they're only
+	// reachable under the devtools build tag — production binaries
+	// (no tag) don't pay the init cost or expose the endpoints.
+	_ "net/http/pprof"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gofastadev/gofasta/pkg/cache"
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+	"gorm.io/gorm"
+)
+
+// ringCapacity bounds the memory footprint of the request / query
+// buffers. 200 entries each is enough to inspect a few minutes of
+// development traffic; bigger would start to matter on a long-running
+// dev session. Mutate here if you want more retention.
+const ringCapacity = 200
+
+// traceRingCapacity is separate — traces hold whole span trees so
+// each entry is heavier. 50 retained traces covers the last few
+// minutes of interesting requests.
+const traceRingCapacity = 50
+
+// maxBodyCapture is the upper bound on how much of a request body we
+// stash for replay. 64KiB covers JSON payloads; anything larger is
+// usually an upload and we'd rather not duplicate it in memory.
+const maxBodyCapture = 64 * 1024
+
+// stackDepth caps how many call frames we snapshot per span. 20 frames
+// is deep enough to show controller → service → repository → GORM
+// without wasting memory on runtime internals.
+const stackDepth = 20
+
+// logRingCapacity bounds the slog ring. 500 entries covers the last
+// handful of requests at verbose levels without letting a chatty dev
+// session balloon memory.
+const logRingCapacity = 500
+
+// ── Request ring ──────────────────────────────────────────────────────
+
+type requestRing struct {
+	mu      sync.RWMutex
+	entries [ringCapacity]RequestEntry
+	head    int // next index to write
+	count   int // number of valid entries (up to ringCapacity)
+}
+
+var requests = &requestRing{}
+
+func (r *requestRing) push(e RequestEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % ringCapacity
+	if r.count < ringCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+// snapshot returns a slice of entries in newest-first order.
+func (r *requestRing) snapshot() []RequestEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]RequestEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + ringCapacity) % ringCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// ── Query ring ────────────────────────────────────────────────────────
+
+type queryRing struct {
+	mu      sync.RWMutex
+	entries [ringCapacity]QueryEntry
+	head    int
+	count   int
+}
+
+var queries = &queryRing{}
+
+func (r *queryRing) push(e QueryEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % ringCapacity
+	if r.count < ringCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+func (r *queryRing) snapshot() []QueryEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]QueryEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + ringCapacity) % ringCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// ── Middleware implementation ─────────────────────────────────────────
+
+// statusRecorder wraps a ResponseWriter so we can observe the status
+// code the handler wrote and tee the response body into a capped
+// buffer. The tee is size-limited (maxBodyCapture) so streaming
+// endpoints (file downloads, SSE) don't quietly duplicate MB of bytes
+// into the devtools ring. Anything beyond the cap passes through
+// untouched — the client still sees the full stream.
+type statusRecorder struct {
+	http.ResponseWriter
+	status  int
+	body    []byte
+	skipped bool
+}
+
+func (sr *statusRecorder) WriteHeader(code int) {
+	sr.status = code
+	sr.ResponseWriter.WriteHeader(code)
+}
+
+// Write captures up to maxBodyCapture bytes of the response body while
+// always delegating the full payload to the underlying writer. The
+// `skipped` flag short-circuits repeated capacity checks on large
+// payloads so the hot path stays branch-predictable.
+func (sr *statusRecorder) Write(p []byte) (int, error) {
+	if !sr.skipped {
+		remaining := maxBodyCapture - len(sr.body)
+		if remaining > 0 {
+			n := len(p)
+			if n > remaining {
+				n = remaining
+			}
+			sr.body = append(sr.body, p[:n]...)
+		}
+		if len(sr.body) >= maxBodyCapture {
+			sr.skipped = true
+		}
+	}
+	return sr.ResponseWriter.Write(p)
+}
+
+func middlewareImpl(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip the devtools endpoints themselves so they don't bloat the
+		// ring with their own polling traffic.
+		if len(r.URL.Path) >= 6 && r.URL.Path[:6] == "/debug" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		start := time.Now()
+
+		// Capture the request body up to maxBodyCapture. Re-wrap r.Body
+		// with a fresh ReadCloser over the captured bytes so downstream
+		// handlers read the same content we saved. Anything larger than
+		// the cap gets discarded from the capture (the real handler
+		// still sees the full stream via the teeing io.MultiReader).
+		var capturedBody string
+		if r.Body != nil && r.ContentLength != 0 {
+			limited := io.LimitReader(r.Body, maxBodyCapture+1)
+			buf, _ := io.ReadAll(limited)
+			remainder := r.Body
+			if len(buf) > maxBodyCapture {
+				capturedBody = string(buf[:maxBodyCapture])
+			} else {
+				capturedBody = string(buf)
+			}
+			// The original r.Body has been consumed up to the cap; feed
+			// the handler the captured bytes followed by whatever's left
+			// on the original stream.
+			r.Body = struct {
+				io.Reader
+				io.Closer
+			}{
+				Reader: io.MultiReader(strings.NewReader(string(buf)), remainder),
+				Closer: remainder,
+			}
+		}
+
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(rec, r)
+
+		// Extract the trace ID (if any) so the dashboard can link the
+		// request row to its trace. SpanContextFromContext returns a
+		// zero-value context when no tracer is configured, so TraceID()
+		// returns an all-zero ID in that case — skip it.
+		traceID := ""
+		if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+			traceID = sc.TraceID().String()
+		}
+
+		requests.push(RequestEntry{
+			Time:                start,
+			Method:              r.Method,
+			Path:                r.URL.Path,
+			Status:              rec.status,
+			DurationMS:          time.Since(start).Milliseconds(),
+			RemoteAddr:          r.RemoteAddr,
+			TraceID:             traceID,
+			Body:                capturedBody,
+			ResponseBody:        string(rec.body),
+			ResponseContentType: rec.Header().Get("Content-Type"),
+		})
+	})
+}
+
+// ── Handler implementation ────────────────────────────────────────────
+
+func handlerImpl() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/debug/requests", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(requests.snapshot())
+	})
+	mux.HandleFunc("/debug/sql", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(queries.snapshot())
+	})
+	mux.HandleFunc("/debug/traces", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(traces.snapshotSummaries())
+	})
+	// /debug/traces/{id} — one full trace by TraceID, including every
+	// span, its stack snapshot, and attached events. Path-prefix routing
+	// keeps us off any third-party path-parameter router.
+	mux.HandleFunc("/debug/traces/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/debug/traces/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		entry, ok := traces.byID(id)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(entry)
+	})
+	// /debug/logs — the slog ring. Supports ?trace_id=<id>&level=<INFO>
+	// so the dashboard can fetch exactly the logs for one expanded
+	// request without dragging the whole buffer across the wire.
+	mux.HandleFunc("/debug/logs", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		traceID := q.Get("trace_id")
+		levelStr := q.Get("level")
+		var minLevel slog.Level
+		hasLevel := false
+		if levelStr != "" {
+			minLevel = parsedLevel(levelStr)
+			hasLevel = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(logs.snapshot(traceID, minLevel, hasLevel))
+	})
+	// /debug/pprof/* — forwarded to http.DefaultServeMux where
+	// net/http/pprof's init() registered Index / Cmdline / Profile /
+	// Symbol / Trace and every named profile (heap, goroutine, mutex,
+	// block, allocs, threadcreate). Delegating rather than re-wiring
+	// those handlers manually means we pick up new profiles for free
+	// whenever the stdlib adds them.
+	mux.Handle("/debug/pprof/", http.DefaultServeMux)
+	mux.HandleFunc("/debug/errors", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(exceptions.snapshot())
+	})
+	mux.HandleFunc("/debug/cache", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(cacheOps.snapshot())
+	})
+	mux.HandleFunc("/debug/explain", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var req explainReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		res, err := runExplain(req)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(res)
+	})
+	mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+	})
+	return mux
+}
+
+// ── GORM plugin implementation ────────────────────────────────────────
+
+// GormPlugin returns a gorm.io/gorm Plugin that captures every executed
+// SQL statement into the ring buffer. Call it from the DB setup in the
+// scaffold:
+//
+//	db.Use(devtools.GormPlugin())
+//
+// Safe to call unconditionally — in stub builds this returns a plugin
+// that does nothing on Initialize.
+func GormPlugin() gorm.Plugin {
+	return &gormDevtools{}
+}
+
+type gormDevtools struct{}
+
+func (g *gormDevtools) Name() string { return "gofasta-devtools" }
+
+func (g *gormDevtools) Initialize(db *gorm.DB) error {
+	// Register a single "after every op" callback that reads the
+	// prepared SQL + rows-affected + error state out of the gorm.Statement.
+	after := func(tx *gorm.DB) {
+		start, ok := tx.Statement.Context.Value(gormStartKey{}).(time.Time)
+		if !ok {
+			start = time.Now()
+		}
+		errMsg := ""
+		if tx.Error != nil {
+			errMsg = tx.Error.Error()
+		}
+		// Propagate the trace ID from the request's context so the
+		// dashboard can group queries by request (N+1 detection,
+		// per-request SQL filter, EXPLAIN drill-down).
+		traceID := ""
+		if sc := trace.SpanContextFromContext(tx.Statement.Context); sc.IsValid() {
+			traceID = sc.TraceID().String()
+		}
+		// Stringify vars defensively: GORM hands us a []interface{}
+		// whose element types are driver-dependent. fmt.Sprint collapses
+		// everything to a printable form the dashboard can hand back to
+		// /debug/explain verbatim.
+		var vars []string
+		if n := len(tx.Statement.Vars); n > 0 {
+			vars = make([]string, n)
+			for i, v := range tx.Statement.Vars {
+				vars[i] = fmt.Sprint(v)
+			}
+		}
+		queries.push(QueryEntry{
+			Time:       start,
+			SQL:        tx.Statement.SQL.String(),
+			Rows:       tx.Statement.RowsAffected,
+			DurationMS: time.Since(start).Milliseconds(),
+			Error:      errMsg,
+			TraceID:    traceID,
+			Vars:       vars,
+		})
+	}
+
+	before := func(tx *gorm.DB) {
+		tx.Statement.Context = context.WithValue(
+			tx.Statement.Context, gormStartKey{}, time.Now(),
+		)
+	}
+
+	// Register against every operation so SELECTs, INSERTs, UPDATEs, and
+	// DELETEs all land in the ring.
+	for _, op := range []string{"create", "query", "update", "delete", "row", "raw"} {
+		if err := db.Callback().Query().Before("gorm:" + op).Register("devtools:before_"+op, before); err != nil {
+			// Ignore re-register errors — `Before` on some ops may conflict;
+			// we still want to proceed with the ones that worked.
+			_ = err
+		}
+		if err := db.Callback().Query().After("gorm:" + op).Register("devtools:after_"+op, after); err != nil {
+			_ = err
+		}
+	}
+	return nil
+}
+
+type gormStartKey struct{}
+
+// ── /debug/explain support ────────────────────────────────────────────
+//
+// EXPLAIN is a read-only operation (for SELECTs) so it's safe to expose
+// in dev. We guard behind a SELECT-prefix whitelist so a malicious or
+// mistakenly-captured INSERT/UPDATE/DELETE can never be re-executed by
+// clicking "EXPLAIN". Postgres' EXPLAIN on DML would run the statement;
+// we avoid that entirely by rejecting non-SELECTs at the edge.
+
+var (
+	explainDBMu sync.RWMutex
+	explainDB   *gorm.DB
+)
+
+func registerDBImpl(db interface{}) {
+	d, ok := db.(*gorm.DB)
+	if !ok {
+		return
+	}
+	explainDBMu.Lock()
+	explainDB = d
+	explainDBMu.Unlock()
+}
+
+// explainReq is the POST body for /debug/explain. Vars mirrors the
+// captured QueryEntry.Vars — strings here, coerced back into the
+// underlying query via GORM's Raw().
+type explainReq struct {
+	SQL  string   `json:"sql"`
+	Vars []string `json:"vars,omitempty"`
+}
+
+// explainResult wraps the EXPLAIN plan returned by the DB. Plan is a
+// newline-joined dump because different drivers format rows
+// differently; a plain string is the lowest-common-denominator.
+type explainResult struct {
+	Plan string `json:"plan"`
+}
+
+// runExplain executes EXPLAIN against the registered DB handle. It is
+// defensive against nil DB (explain not wired) and non-SELECT input
+// (rejected before the DB ever sees the statement).
+func runExplain(req explainReq) (explainResult, error) {
+	trimmed := strings.TrimSpace(req.SQL)
+	if !strings.HasPrefix(strings.ToUpper(trimmed), "SELECT") {
+		return explainResult{}, fmt.Errorf("only SELECT statements can be explained")
+	}
+	explainDBMu.RLock()
+	db := explainDB
+	explainDBMu.RUnlock()
+	if db == nil {
+		return explainResult{}, fmt.Errorf("devtools.RegisterDB was never called")
+	}
+	args := make([]interface{}, len(req.Vars))
+	for i, v := range req.Vars {
+		args[i] = v
+	}
+	var rows []map[string]interface{}
+	if err := db.Raw("EXPLAIN "+trimmed, args...).Scan(&rows).Error; err != nil {
+		return explainResult{}, err
+	}
+	// Render each row as "key: value" lines; join rows with newlines.
+	var b strings.Builder
+	for i, row := range rows {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		for k, v := range row {
+			fmt.Fprintf(&b, "%s: %v\n", k, v)
+		}
+	}
+	return explainResult{Plan: strings.TrimRight(b.String(), "\n")}, nil
+}
+
+// ── Trace ring ────────────────────────────────────────────────────────
+//
+// The trace ring stores whole TraceEntries keyed by TraceID. Insertion
+// is O(1) (push into a fixed-size circular buffer + write into the
+// index map); lookup by ID is O(1) (map read); newest-first snapshot is
+// O(n) bounded by traceRingCapacity.
+//
+// The ring is intentionally small (traceRingCapacity = 50) because each
+// entry may hold dozens of spans with stacks — a long-running dev
+// session would otherwise grow unbounded. Overwriting old traces
+// evicts them from the index map too so we don't leak references.
+
+type traceRing struct {
+	mu      sync.RWMutex
+	entries [traceRingCapacity]TraceEntry
+	ids     [traceRingCapacity]string // parallel to entries, for eviction bookkeeping
+	head    int
+	count   int
+	index   map[string]*TraceEntry // trace_id → pointer into entries
+}
+
+var traces = &traceRing{index: make(map[string]*TraceEntry)}
+
+// push inserts a completed trace. If the ring is full it evicts the
+// oldest slot and removes its ID from the index.
+func (r *traceRing) push(e TraceEntry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Evict whatever's about to be overwritten.
+	if r.count == traceRingCapacity {
+		if oldID := r.ids[r.head]; oldID != "" {
+			delete(r.index, oldID)
+		}
+	}
+
+	r.entries[r.head] = e
+	r.ids[r.head] = e.TraceID
+	r.index[e.TraceID] = &r.entries[r.head]
+	r.head = (r.head + 1) % traceRingCapacity
+	if r.count < traceRingCapacity {
+		r.count++
+	}
+}
+
+// snapshotSummaries returns trace summaries in newest-first order.
+// Spans are stripped so /debug/traces stays cheap to poll; the
+// dashboard drills into one full trace via /debug/traces/{id}.
+func (r *traceRing) snapshotSummaries() []TraceEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]TraceEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + traceRingCapacity) % traceRingCapacity
+		e := r.entries[idx]
+		e.Spans = nil
+		out[i] = e
+	}
+	return out
+}
+
+// byID returns a copy of the trace with the given ID, including spans.
+func (r *traceRing) byID(id string) (TraceEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ptr, ok := r.index[id]
+	if !ok {
+		return TraceEntry{}, false
+	}
+	return *ptr, true
+}
+
+// ── TraceRecorder (OpenTelemetry SpanProcessor) ──────────────────────
+//
+// TraceRecorder implements sdktrace.SpanProcessor. It batches
+// completed spans by trace ID, snapshots a Go call stack at OnStart,
+// and flushes the full trace to the ring once every span has ended.
+//
+// Buffering per-trace rather than per-span keeps the ring honest: the
+// dashboard always shows complete traces, never partial ones, and the
+// order in the ring matches the order traces completed (by root-span
+// end time).
+//
+// Thread safety: every exported SpanProcessor method takes the mutex.
+// The hot path (OnStart / OnEnd) is short-lived and contended only by
+// concurrent in-flight requests, which is the expected dev workload.
+
+type traceBuffer struct {
+	root  *TraceSpan
+	spans map[trace.SpanID]*TraceSpan
+	// openCount tracks how many spans in this trace are still live.
+	// The trace flushes to the ring when openCount returns to 0.
+	openCount int
+	// rootStart captures the root span's wall-clock start time so we
+	// can compute per-span offsets in milliseconds relative to it.
+	rootStart time.Time
+}
+
+type traceRecorder struct {
+	mu     sync.Mutex
+	buffer map[trace.TraceID]*traceBuffer
+}
+
+func newTraceRecorder() *traceRecorder {
+	return &traceRecorder{buffer: make(map[trace.TraceID]*traceBuffer)}
+}
+
+// OnStart captures a call-stack snapshot the moment the span opens.
+// This is the "where in the code did this span come from?" signal the
+// dashboard renders when a developer clicks a span. Skip the first few
+// frames so the displayed stack starts at user code, not OTel plumbing.
+func (tr *traceRecorder) OnStart(_ context.Context, s sdktrace.ReadWriteSpan) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	sc := s.SpanContext()
+	tid := sc.TraceID()
+	buf, ok := tr.buffer[tid]
+	if !ok {
+		buf = &traceBuffer{spans: make(map[trace.SpanID]*TraceSpan)}
+		tr.buffer[tid] = buf
+	}
+
+	span := &TraceSpan{
+		SpanID: sc.SpanID().String(),
+		Name:   s.Name(),
+		Kind:   s.SpanKind().String(),
+		Stack:  captureStack(3, stackDepth),
+	}
+	if parent := s.Parent(); parent.IsValid() {
+		span.ParentID = parent.SpanID().String()
+	} else {
+		// First span we see for this trace becomes the root.
+		buf.root = span
+		buf.rootStart = s.StartTime()
+	}
+	buf.spans[sc.SpanID()] = span
+	buf.openCount++
+}
+
+// OnEnd finishes out a span's metadata (duration, status, attributes,
+// events) and, when the last open span in a trace closes, hands the
+// whole TraceEntry off to the ring.
+func (tr *traceRecorder) OnEnd(s sdktrace.ReadOnlySpan) {
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+
+	sc := s.SpanContext()
+	tid := sc.TraceID()
+	buf, ok := tr.buffer[tid]
+	if !ok {
+		return
+	}
+	span, ok := buf.spans[sc.SpanID()]
+	if !ok {
+		return
+	}
+
+	span.OffsetMS = s.StartTime().Sub(buf.rootStart).Milliseconds()
+	span.DurationMS = s.EndTime().Sub(s.StartTime()).Milliseconds()
+
+	// Span status — OTel reports an enum; stringify to "ok" / "error"
+	// for the dashboard. Unset counts as ok.
+	switch s.Status().Code.String() {
+	case "Error":
+		span.Status = "error"
+	default:
+		span.Status = "ok"
+	}
+
+	if attrs := s.Attributes(); len(attrs) > 0 {
+		span.Attributes = make(map[string]string, len(attrs))
+		for _, kv := range attrs {
+			span.Attributes[string(kv.Key)] = kv.Value.Emit()
+		}
+	}
+
+	if events := s.Events(); len(events) > 0 {
+		span.Events = make([]TraceEvent, 0, len(events))
+		for _, ev := range events {
+			te := TraceEvent{
+				Name:     ev.Name,
+				OffsetMS: ev.Time.Sub(buf.rootStart).Milliseconds(),
+			}
+			if len(ev.Attributes) > 0 {
+				te.Attributes = make(map[string]string, len(ev.Attributes))
+				for _, kv := range ev.Attributes {
+					te.Attributes[string(kv.Key)] = kv.Value.Emit()
+				}
+			}
+			span.Events = append(span.Events, te)
+		}
+	}
+
+	buf.openCount--
+	if buf.openCount > 0 {
+		return
+	}
+
+	// Last span closed — flush. Pull all spans (root first) into an
+	// ordered slice and build the TraceEntry.
+	delete(tr.buffer, tid)
+	if buf.root == nil {
+		return
+	}
+
+	ordered := make([]TraceSpan, 0, len(buf.spans))
+	ordered = append(ordered, *buf.root)
+	for id, sp := range buf.spans {
+		if id == s.SpanContext().SpanID() && sp == buf.root {
+			continue
+		}
+		if sp == buf.root {
+			continue
+		}
+		ordered = append(ordered, *sp)
+	}
+
+	status := "ok"
+	for _, sp := range ordered {
+		if sp.Status == "error" {
+			status = "error"
+			break
+		}
+	}
+
+	traces.push(TraceEntry{
+		TraceID:    tid.String(),
+		RootName:   buf.root.Name,
+		Time:       buf.rootStart,
+		DurationMS: s.EndTime().Sub(buf.rootStart).Milliseconds(),
+		Status:     status,
+		SpanCount:  len(ordered),
+		Spans:      ordered,
+	})
+}
+
+// Shutdown and ForceFlush satisfy sdktrace.SpanProcessor. No external
+// resources to release — the ring lives in process memory and dies
+// with it.
+func (tr *traceRecorder) Shutdown(_ context.Context) error   { return nil }
+func (tr *traceRecorder) ForceFlush(_ context.Context) error { return nil }
+
+// captureStack returns file:line:function strings for the current
+// goroutine's stack, skipping the first `skip` frames (to hide OTel
+// plumbing) and capping at `max` frames. Used by OnStart to snapshot
+// where each span was opened.
+func captureStack(skip, max int) []string {
+	pcs := make([]uintptr, max)
+	n := runtime.Callers(skip+1, pcs)
+	if n == 0 {
+		return nil
+	}
+	frames := runtime.CallersFrames(pcs[:n])
+	out := make([]string, 0, n)
+	for {
+		f, more := frames.Next()
+		out = append(out, fmt.Sprintf("%s:%d %s", f.File, f.Line, f.Function))
+		if !more {
+			break
+		}
+	}
+	return out
+}
+
+// registerTraceProcessorImpl hooks the TraceRecorder into the global
+// tracer provider. The type assertion protects against no-op providers
+// (e.g. when observability is disabled entirely); a missing provider
+// resolves to a silent skip rather than a panic.
+func registerTraceProcessorImpl() {
+	tp, ok := otel.GetTracerProvider().(*sdktrace.TracerProvider)
+	if !ok {
+		return
+	}
+	tp.RegisterSpanProcessor(newTraceRecorder())
+}
+
+// ── Cache ring + decorator ────────────────────────────────────────────
+
+// cacheRingCapacity caps how many cache ops we retain. 200 is
+// consistent with the request / query rings — enough to cover a
+// handful of recent requests without ballooning memory.
+const cacheRingCapacity = 200
+
+type cacheRing struct {
+	mu      sync.RWMutex
+	entries [cacheRingCapacity]CacheEntry
+	head    int
+	count   int
+}
+
+var cacheOps = &cacheRing{}
+
+func (r *cacheRing) push(e CacheEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % cacheRingCapacity
+	if r.count < cacheRingCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+func (r *cacheRing) snapshot() []CacheEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]CacheEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + cacheRingCapacity) % cacheRingCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// cacheDecorator wraps a cache.CacheService. Every method delegates to
+// the inner implementation and also pushes a CacheEntry summarizing
+// the call. Read operations report Hit=true on success, Hit=false on
+// a cache miss so the dashboard can compute hit-rate.
+type cacheDecorator struct {
+	inner cache.CacheService
+}
+
+func wrapCacheImpl(inner cache.CacheService) cache.CacheService {
+	if inner == nil {
+		return nil
+	}
+	return &cacheDecorator{inner: inner}
+}
+
+func (c *cacheDecorator) recordEntry(ctx context.Context, op, key string, hit bool, start time.Time, err error) {
+	entry := CacheEntry{
+		Time:       start,
+		Op:         op,
+		Key:        key,
+		Hit:        hit,
+		DurationMS: time.Since(start).Milliseconds(),
+	}
+	if err != nil {
+		entry.Error = err.Error()
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		entry.TraceID = sc.TraceID().String()
+	}
+	cacheOps.push(entry)
+}
+
+func (c *cacheDecorator) Get(ctx context.Context, key string) (string, error) {
+	start := time.Now()
+	v, err := c.inner.Get(ctx, key)
+	// "Hit" is subtly backend-dependent: the memory/redis backends
+	// return ("", nil) on miss for some shapes and ("", err) for
+	// others. A non-empty value without an error is the unambiguous
+	// hit case; anything else counts as a miss from the dashboard's
+	// perspective.
+	hit := err == nil && v != ""
+	c.recordEntry(ctx, "get", key, hit, start, err)
+	return v, err
+}
+
+func (c *cacheDecorator) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+	start := time.Now()
+	err := c.inner.Set(ctx, key, value, ttl)
+	c.recordEntry(ctx, "set", key, false, start, err)
+	return err
+}
+
+func (c *cacheDecorator) Delete(ctx context.Context, key string) error {
+	start := time.Now()
+	err := c.inner.Delete(ctx, key)
+	c.recordEntry(ctx, "delete", key, false, start, err)
+	return err
+}
+
+func (c *cacheDecorator) Flush(ctx context.Context) error {
+	start := time.Now()
+	err := c.inner.Flush(ctx)
+	c.recordEntry(ctx, "flush", "", false, start, err)
+	return err
+}
+
+func (c *cacheDecorator) Ping(ctx context.Context) error {
+	start := time.Now()
+	err := c.inner.Ping(ctx)
+	c.recordEntry(ctx, "ping", "", false, start, err)
+	return err
+}
+
+// ── Exception ring + Recovery middleware ─────────────────────────────
+
+// exceptionRingCapacity bounds retained exceptions. 50 is plenty for a
+// dev session; beyond that, older panics are usually irrelevant to the
+// bug the developer is currently investigating.
+const exceptionRingCapacity = 50
+
+type exceptionRing struct {
+	mu      sync.RWMutex
+	entries [exceptionRingCapacity]ExceptionEntry
+	head    int
+	count   int
+}
+
+var exceptions = &exceptionRing{}
+
+func (r *exceptionRing) push(e ExceptionEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % exceptionRingCapacity
+	if r.count < exceptionRingCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+func (r *exceptionRing) snapshot() []ExceptionEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]ExceptionEntry, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + exceptionRingCapacity) % exceptionRingCapacity
+		out[i] = r.entries[idx]
+	}
+	return out
+}
+
+// recoveryImpl captures panics into the ring and also writes a 500
+// response. The fallback middleware is intentionally ignored here —
+// the devtools Recovery is a superset of pkg/middleware.Recovery (it
+// logs + responds + records) so double-wrapping would only cause a
+// panic to be processed twice. Developers get a single canonical
+// record per incident.
+func recoveryImpl(_ func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rv := recover(); rv != nil {
+					stack := captureStack(3, stackDepth)
+					traceID := ""
+					if sc := trace.SpanContextFromContext(r.Context()); sc.IsValid() {
+						traceID = sc.TraceID().String()
+					}
+					exceptions.push(ExceptionEntry{
+						Time:      time.Now(),
+						Path:      r.URL.Path,
+						Method:    r.Method,
+						Status:    http.StatusInternalServerError,
+						Recovered: fmt.Sprint(rv),
+						Stack:     stack,
+						TraceID:   traceID,
+					})
+					http.Error(w, "internal server error", http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ── Log ring + slog handler ───────────────────────────────────────────
+
+type logRing struct {
+	mu      sync.RWMutex
+	entries [logRingCapacity]LogEntry
+	head    int
+	count   int
+}
+
+var logs = &logRing{}
+
+func (r *logRing) push(e LogEntry) {
+	r.mu.Lock()
+	r.entries[r.head] = e
+	r.head = (r.head + 1) % logRingCapacity
+	if r.count < logRingCapacity {
+		r.count++
+	}
+	r.mu.Unlock()
+}
+
+// snapshot returns entries newest-first, optionally filtered by trace
+// ID and/or minimum level. An empty traceID or zero level means "no
+// filter on that dimension".
+func (r *logRing) snapshot(traceID string, minLevel slog.Level, includeLevels bool) []LogEntry {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]LogEntry, 0, r.count)
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + logRingCapacity) % logRingCapacity
+		e := r.entries[idx]
+		if traceID != "" && e.TraceID != traceID {
+			continue
+		}
+		if includeLevels {
+			if parsedLevel(e.Level) < minLevel {
+				continue
+			}
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// parsedLevel maps a human level string back to slog.Level. Defaults
+// to slog.LevelInfo on an unrecognized input so a malformed filter
+// never silently discards every record.
+func parsedLevel(s string) slog.Level {
+	switch strings.ToUpper(s) {
+	case "DEBUG":
+		return slog.LevelDebug
+	case "INFO":
+		return slog.LevelInfo
+	case "WARN", "WARNING":
+		return slog.LevelWarn
+	case "ERROR":
+		return slog.LevelError
+	}
+	return slog.LevelInfo
+}
+
+// devtoolsLogHandler wraps an existing slog.Handler. Every record is
+// delegated to the inner handler unchanged (so slog output on stdout
+// stays identical to production) AND teed into the devtools log ring
+// with its trace ID attached.
+type devtoolsLogHandler struct {
+	inner slog.Handler
+	// attrs + group track the WithAttrs / WithGroup chain so teed
+	// records carry the same context the inner handler sees. We keep
+	// a flat copy of structured attrs for the ring, which doesn't
+	// model groups — the dashboard doesn't need that nuance yet.
+	attrs []slog.Attr
+	group string
+}
+
+func wrapLoggerImpl(h slog.Handler) slog.Handler {
+	if h == nil {
+		return nil
+	}
+	return &devtoolsLogHandler{inner: h}
+}
+
+func (h *devtoolsLogHandler) Enabled(ctx context.Context, lvl slog.Level) bool {
+	return h.inner.Enabled(ctx, lvl)
+}
+
+func (h *devtoolsLogHandler) Handle(ctx context.Context, r slog.Record) error {
+	// Capture into the ring first — doing it before the inner handler
+	// means a broken downstream formatter doesn't swallow debug-visible
+	// records. Errors from the inner handler still propagate to the
+	// caller so production observability stays strict.
+	entry := LogEntry{
+		Time:    r.Time,
+		Level:   r.Level.String(),
+		Message: r.Message,
+	}
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
+		entry.TraceID = sc.TraceID().String()
+	}
+	// Inline attrs from the record itself …
+	if r.NumAttrs() > 0 {
+		entry.Attrs = make(map[string]string, r.NumAttrs())
+		r.Attrs(func(a slog.Attr) bool {
+			entry.Attrs[a.Key] = a.Value.String()
+			return true
+		})
+	}
+	// … merged with any WithAttrs baggage this handler carries.
+	if len(h.attrs) > 0 {
+		if entry.Attrs == nil {
+			entry.Attrs = make(map[string]string, len(h.attrs))
+		}
+		for _, a := range h.attrs {
+			entry.Attrs[a.Key] = a.Value.String()
+		}
+	}
+	logs.push(entry)
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *devtoolsLogHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := *h
+	next.inner = h.inner.WithAttrs(attrs)
+	next.attrs = append(append([]slog.Attr{}, h.attrs...), attrs...)
+	return &next
+}
+
+func (h *devtoolsLogHandler) WithGroup(name string) slog.Handler {
+	next := *h
+	next.inner = h.inner.WithGroup(name)
+	next.group = name
+	return &next
+}

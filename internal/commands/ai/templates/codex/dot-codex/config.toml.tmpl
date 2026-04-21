@@ -1,0 +1,22 @@
+# OpenAI Codex project configuration for a gofasta project. Codex reads
+# AGENTS.md at the project root for primary guidance; this file adds
+# gofasta-specific workspace paths and trusted command allowlists.
+#
+# Docs: https://developers.openai.com/codex/guides/agents-md
+
+[project]
+name = "{{.ProjectName}}"
+primary_doc = "AGENTS.md"
+
+[commands]
+# Commands Codex is pre-authorized to run without per-invocation prompts.
+allow = [
+  "gofasta *",
+  "make *",
+  "go build *",
+  "go test *",
+  "go vet *",
+  "go mod tidy",
+  "go mod download",
+  "gofmt *",
+]

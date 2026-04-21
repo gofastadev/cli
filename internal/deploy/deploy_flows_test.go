@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -821,3 +822,141 @@ func TestLookPathSetters(t *testing.T) {
 var _ = httptest.NewServer
 var _ = http.StatusOK
 var _ = filepath.Join
+
+// ─────────────────────────────────────────────────────────────────────
+// Coverage for internal/deploy uncovered error paths. Uses the
+// withFakeExec / stagedFakeExec / withFailOnArg helpers already in
+// the package to inject exec failures at specific steps.
+// ─────────────────────────────────────────────────────────────────────
+
+// TestDeployBinary_SymlinkFails — the symlink step runs via RunRemote
+// which invokes ssh. We fail on "ln -sfn" substring.
+func TestDeployBinary_SymlinkFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	withFailOnArg(t, "ln -sfn")
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+}
+
+// TestDeployBinary_CopyBinaryScpFails — fail only the scp command
+// (name == "scp"). Target only those whose destination path ends with
+// the app name (not .env/.yaml).
+func TestDeployBinary_CopyBinaryScpFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		code := 0
+		if name == "scp" && len(args) > 0 {
+			last := args[len(args)-1]
+			// Binary dest ends with "/testapp" and is not the service file.
+			if strings.HasSuffix(last, "/testapp") {
+				code = 1
+			}
+		}
+		return fakeExecCommand(code, "")(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+	lpOrig := execLookPath
+	execLookPath = func(n string) (string, error) { return "/usr/bin/" + n, nil }
+	t.Cleanup(func() { execLookPath = lpOrig })
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to copy binary")
+}
+
+// TestDeployBinary_CopySharedFails — make copySharedFiles fail.
+// copySharedFiles uses scp to send .env and config.yaml.
+func TestDeployBinary_CopySharedFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// Fail scp of .env → copySharedFiles returns err.
+	withFailOnArg(t, ".env")
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+}
+
+// TestDeployBinary_CopyServiceFileFails — serviceFile exists and scp
+// fails for it. Use substring matching the service file destination.
+func TestDeployBinary_CopyServiceFileFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// Fail the scp with destination "/tmp/testapp.service".
+	withFailOnArg(t, "testapp.service")
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+}
+
+// TestDeployBinary_CleanupWarn — CleanupOldReleases fails → printed
+// as a warning, DeployBinary still returns nil.
+func TestDeployBinary_CleanupWarn(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// Fail the "ls -1t" which CleanupOldReleases runs.
+	withFailOnArg(t, "ls -1t")
+	assert.NoError(t, DeployBinary(cfg))
+}
+
+// TestDeployDocker_CopyComposeFails — docker deploy needs the compose
+// file copied; we fail the scp that uploads it.
+func TestDeployDocker_CopyComposeFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	withFailOnArg(t, "compose.yaml")
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+}
+
+// TestCopySharedFiles_ConfigYamlCopyFails — config.yaml exists in the
+// project but the scp copy fails → copySharedFiles returns the error.
+func TestCopySharedFiles_ConfigYamlCopyFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	withFailOnArg(t, "config.yaml")
+	err := copySharedFiles(cfg)
+	require.Error(t, err)
+	assert.Contains(t, strings.ToLower(err.Error()), "config.yaml")
+}
+
+// TestRollback_NoPreviousRelease — no previous release found → error.
+// Empty listing fires the singleton-only check.
+func TestRollback_NoPreviousRelease(t *testing.T) {
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	withFakeExecStdout(t, 0, "")
+	err := Rollback(cfg)
+	require.Error(t, err)
+}
+
+// TestRollback_PreviousEmpty — every listed release equals current →
+// previous stays "" → error.
+func TestRollback_PreviousEmpty(t *testing.T) {
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	stagedFakeExec(t, []int{0, 0}, []string{"r1\nr1\n", "r1\n"})
+	err := Rollback(cfg)
+	require.Error(t, err)
+}
+
+// TestCheckHealth_RetriesThenFails — health endpoint always returns
+// non-2xx so CheckHealth retries then fails. Keep HealthTimeout small
+// to avoid slowing the test.
+func TestCheckHealth_RetriesThenFails(t *testing.T) {
+	cfg := newTestCfg("binary")
+	cfg.HealthTimeout = 1 // 1 second total budget
+	cfg.DryRun = false
+	// Provide an unreachable endpoint so the loop iterates then fails.
+	cfg.Host = "127.0.0.1"
+	cfg.ServerPort = "1" // definitely nothing listening here
+	err := CheckHealth(cfg)
+	require.Error(t, err)
+}

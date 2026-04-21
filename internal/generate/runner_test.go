@@ -2,6 +2,8 @@ package generate
 
 import (
 	"errors"
+	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,4 +77,41 @@ func TestRunGqlgen_FailsWithoutGoTool(t *testing.T) {
 	// Without gqlgen installed as a tool, it should fail
 	err := RunGqlgen(ScaffoldData{})
 	assert.Error(t, err)
+}
+
+// TestAutoVerify_Success — exec seam returns 0 → nil.
+func TestAutoVerify_Success(t *testing.T) {
+	orig := execCommand
+	execCommand = fakeExec(0)
+	t.Cleanup(func() { execCommand = orig })
+	assert.NoError(t, AutoVerify())
+}
+
+// TestAutoVerify_Failure — exec seam returns non-zero → wrapped error.
+func TestAutoVerify_Failure(t *testing.T) {
+	orig := execCommand
+	execCommand = fakeExec(1)
+	t.Cleanup(func() { execCommand = orig })
+	err := AutoVerify()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not compile")
+}
+
+// TestAutoVerify_FailureWithStdout — exec seam writes stdout AND
+// returns non-zero. Exercises the "output != """ branch.
+func TestAutoVerify_FailureWithStdout(t *testing.T) {
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cs := append([]string{"-test.run=TestHelperSub", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GENERATE_HELPER=1",
+			"GENERATE_EXIT=1",
+			"GENERATE_STDOUT=compilation failed\n",
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+	err := AutoVerify()
+	require.Error(t, err)
 }

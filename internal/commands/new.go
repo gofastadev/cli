@@ -109,6 +109,15 @@ func resolveProjectPaths(nameOrPath string) (projectDir, projectName, modulePath
 	return
 }
 
+// projectFSOverride is a package-level seam so tests can swap the
+// embedded skeleton FS with a synthetic one that triggers specific
+// walk-error / read-error branches. Nil in production → real embed.
+var projectFSOverride fs.FS
+
+// osChdir is a seam over os.Chdir so tests can force the "chdir failed"
+// branch without racing the actual filesystem.
+var osChdir = os.Chdir
+
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
 func runNew(nameOrPath string, includeGraphQL bool) error {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
@@ -142,10 +151,10 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	// Change into the new directory
 	origDir, _ := os.Getwd()
-	if err := os.Chdir(projectDir); err != nil {
+	if err := osChdir(projectDir); err != nil {
 		return err
 	}
-	defer func() { _ = os.Chdir(origDir) }()
+	defer func() { _ = osChdir(origDir) }()
 
 	// Initialize go module
 	termcolor.PrintStep("📦 Initializing Go module: %s", modulePath)
@@ -165,7 +174,10 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 
 	// Walk embedded skeleton and generate files
 	termcolor.PrintStep("🏗  Creating project structure...")
-	projectFS := skeleton.ProjectFS
+	projectFS := projectFSOverride
+	if projectFS == nil {
+		projectFS = skeleton.ProjectFS
+	}
 	err := fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err

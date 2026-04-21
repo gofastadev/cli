@@ -1,0 +1,36 @@
+---
+description: Gofasta project conventions — read before making any change.
+globs: ["**/*.go", "**/*.mdx", "config.yaml"]
+alwaysApply: true
+---
+
+# Gofasta project rules
+
+This project was scaffolded by [gofasta](https://gofasta.dev) and follows
+the conventions documented in `AGENTS.md` at the project root. Read
+`AGENTS.md` first for the full briefing.
+
+## Summary
+
+- **Layered architecture.** Request → Controller → Service → Repository → Database. No layer skipping.
+- **Interfaces at each boundary.** Higher layers depend on interfaces from the layer below.
+- **DTOs for the API, models for the DB.** Never expose a GORM model in a response.
+- **Compile-time DI via Google Wire.** Edit `app/di/wire.go`, then run `gofasta wire`. Never edit `app/di/wire_gen.go`.
+- **Config over constants.** Read from `config.yaml` via `pkg/config`. Env var overrides use the project's prefix.
+
+## Must-run commands
+
+- `gofasta g scaffold <Name> <fields>` — generate a full REST resource
+- `gofasta wire` — regenerate Wire
+- `gofasta verify` — full preflight check (required before claiming done)
+- `gofasta routes --json` — inventory of registered routes
+
+Full CLI reference: https://gofasta.dev/docs/cli-reference/new
+
+## Never
+
+- Edit `app/di/wire_gen.go` directly — it's generated.
+- Add business logic to controllers.
+- Call the database from a service — call the repository interface.
+- Skip migrations when model fields change.
+- Reorganize the directory layout without explicit approval.

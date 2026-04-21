@@ -57,8 +57,13 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 }
 
+// buildMigrationURL is a package-level seam over
+// configutil.BuildMigrationURL so tests can drive the empty-URL
+// defensive branch.
+var buildMigrationURL = configutil.BuildMigrationURL
+
 func runMigration(direction string) error {
-	dbURL := configutil.BuildMigrationURL()
+	dbURL := buildMigrationURL()
 	if dbURL == "" {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")
 	}

@@ -121,9 +121,15 @@ func LoadDeployConfig(cmd *cobra.Command) (*DeployConfig, error) {
 	return cfg, nil
 }
 
+// loadDeployConfigForLax is a seam over LoadDeployConfig so tests can
+// exercise the "host-required swallow" branch in LoadDeployConfigLax
+// — the current LoadDeployConfig never returns a non-nil cfg alongside
+// that error, so the branch is otherwise defensive.
+var loadDeployConfigForLax = LoadDeployConfig
+
 // LoadDeployConfigLax loads config without requiring Host (for setup/status commands that get host from flag).
 func LoadDeployConfigLax(cmd *cobra.Command) (*DeployConfig, error) {
-	cfg, err := LoadDeployConfig(cmd)
+	cfg, err := loadDeployConfigForLax(cmd)
 	if err != nil && cfg == nil {
 		return nil, err
 	}

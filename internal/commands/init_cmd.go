@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -84,7 +83,7 @@ func runInit() error {
 	// Step 6: Run migrations
 	fmt.Println()
 	termcolor.PrintStep("🗄  Running database migrations...")
-	dbURL := configutil.BuildMigrationURL()
+	dbURL := buildMigrationURL()
 	if dbURL != "" {
 		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		migrateCmd.Stdout = os.Stdout

@@ -84,6 +84,19 @@ func init() {
 	for _, cmd := range []*cobra.Command{scaffoldCmd, controllerCmd} {
 		cmd.Flags().Bool("swagger", false, "Add Swagger/OpenAPI annotations to the generated controller")
 	}
+
+	// Register --no-verify flag on commands that produce a full
+	// compilable unit and auto-run `go build ./...` afterwards. Used
+	// intentionally when scaffolding into a known-broken state that
+	// won't compile until subsequent changes land.
+	scaffoldCmd.Flags().BoolVar(&scaffoldNoVerify, "no-verify", false,
+		"Skip the post-generation `go build ./...` check")
+
+	// Register --dry-run on commands that produce a full resource. In
+	// dry-run mode nothing is written to disk; every planned action is
+	// reported so agents and humans can preview before applying.
+	scaffoldCmd.Flags().BoolVar(&scaffoldDryRun, "dry-run", false,
+		"Show the files that would be created and patched without writing to disk")
 }
 
 // --- Step chain builders ---
@@ -161,6 +174,7 @@ func controllerSteps(d ScaffoldData) []Step {
 		{"DTOs", GenDTOs},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
+		{"controller test", GenControllerTestFile},
 		{"routes", GenRoutes},
 	}
 	if d.IncludeGraphQL {
@@ -199,6 +213,7 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		{"DTOs", GenDTOs},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
+		{"controller test", GenControllerTestFile},
 		{"routes", GenRoutes},
 	}
 	if d.IncludeGraphQL {
@@ -313,8 +328,27 @@ logic in app/services/<name>.service.go.`,
 		d.IncludeController = true
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
+
+		// Dry-run mode swaps disk writes for in-memory plan recording.
+		// Skip Wire regeneration (it inspects real files on disk) and
+		// auto-verify (it runs `go build` against the untouched tree).
+		if scaffoldDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := RunSteps(d, scaffoldStepsWithoutRegeneration(d)); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+
 		if err := RunSteps(d, scaffoldSteps(d)); err != nil {
 			return err
+		}
+		if !scaffoldNoVerify {
+			if err := AutoVerify(); err != nil {
+				return err
+			}
 		}
 		fmt.Println()
 		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
@@ -325,6 +359,52 @@ logic in app/services/<name>.service.go.`,
 		}
 		return nil
 	},
+}
+
+// scaffoldNoVerify disables the post-generation `go build ./...` check.
+// Use it when intentionally scaffolding into a broken state that won't
+// compile until subsequent changes are made (rare, but legitimate).
+var scaffoldNoVerify bool
+
+// scaffoldDryRun switches the scaffold command into plan-only mode —
+// every filesystem write is recorded instead of executed. The plan is
+// printed at the end (as JSON with --json, as a table otherwise) so
+// callers can preview what a run would do before applying it.
+var scaffoldDryRun bool
+
+// scaffoldStepsWithoutRegeneration is scaffoldSteps minus the final
+// `gofasta wire` / `gofasta gqlgen` regeneration steps, which can't run
+// meaningfully in dry-run mode — their input files aren't on disk. The
+// plan is otherwise identical.
+func scaffoldStepsWithoutRegeneration(d ScaffoldData) []Step {
+	all := scaffoldSteps(d)
+	out := make([]Step, 0, len(all))
+	for _, s := range all {
+		if s.Label == "regenerate Wire" || s.Label == "regenerate gqlgen" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// printPlanResult writes the recorded plan to stdout. In --json mode
+// the full []PlannedAction is emitted; otherwise the human table is.
+// Called at the end of a successful dry-run.
+func printPlanResult(cmd *cobra.Command) {
+	// Import cycle avoidance: generate package can't import cliout
+	// directly (cliout is in internal/, generate is in internal/ too
+	// — same level — but importing would cross the dependency graph
+	// that tests rely on). Use Cobra's OutOrStdout + check the --json
+	// flag manually.
+	jsonMode, _ := cmd.Root().PersistentFlags().GetBool("json")
+	w := cmd.OutOrStdout()
+	if jsonMode {
+		enc := jsonEncoder{}
+		enc.WriteTo(w, Plan())
+		return
+	}
+	PrintPlanText(w)
 }
 
 var modelCmd = &cobra.Command{

@@ -4,6 +4,7 @@ import (
 	"log/slog"
 
 	"github.com/google/wire"
+	"{{.ModulePath}}/app/devtools"
 	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
@@ -45,14 +46,14 @@ var CoreSet = wire.NewSet(
 	ProvideStorageConfig,
 	ProvideQueueConfig,
 	// Infrastructure
-	config.SetupDB,
-	logger.NewLogger,
+	ProvideDB,
+	ProvideLogger,
 	validators.NewAppValidator,
 	ProvideTemplateRenderer,
 	mailer.NewEmailSender,
 	auth.NewJWTService,
 	auth.NewRBACService,
-	cache.NewCacheService,
+	ProvideCacheService,
 	storage.NewStorageService,
 	queue.NewQueueService,
 	// Newly wired
@@ -64,6 +65,45 @@ var CoreSet = wire.NewSet(
 )
 
 // --- Config extractors ---
+
+// ProvideDB wraps config.SetupDB with the devtools GORM plugin so SQL
+// queries are captured into the dev dashboard's ring buffer when the
+// binary is built with the `devtools` tag. In production builds the
+// plugin is a no-op (see app/devtools/devtools_stub.go). Safe to call
+// unconditionally.
+func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
+	db := config.SetupDB(cfg)
+	if err := db.Use(devtools.GormPlugin()); err != nil {
+		slog.Warn("failed to install devtools GORM plugin", "error", err)
+	}
+	return db
+}
+
+// ProvideCacheService wraps cache.NewCacheService with the devtools
+// cache decorator so every Get/Set/Delete/Flush/Ping op is teed into
+// the dev-dashboard cache-ops ring. Stub builds return the inner
+// cache unchanged, so the call costs one indirection per op in dev
+// and zero in production.
+func ProvideCacheService(cfg *config.CacheConfig, log *slog.Logger) (cache.CacheService, error) {
+	inner, err := cache.NewCacheService(cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	return devtools.WrapCache(inner), nil
+}
+
+// ProvideLogger wraps logger.NewLogger with the devtools slog
+// decorator. Every log record continues to flow to stdout through the
+// framework's handler (text or JSON, level from config) AND is teed
+// into the dev-dashboard's log ring keyed by trace ID. In production
+// builds (no `devtools` build tag) the wrapper is identity, so the
+// cost is zero.
+func ProvideLogger(cfg *config.LogConfig) *slog.Logger {
+	base := logger.NewLogger(cfg)
+	wrapped := slog.New(devtools.WrapLogger(base.Handler()))
+	slog.SetDefault(wrapped)
+	return wrapped
+}
 
 func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }
 func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig           { return &cfg.Log }

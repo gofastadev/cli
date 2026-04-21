@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -218,4 +219,51 @@ func TestDeployConfig_PathsFilepath(t *testing.T) {
 	assert.Contains(t, cfg.ReleasePath(), "tag1")
 	assert.Contains(t, cfg.SharedPath(), "shared")
 	assert.Contains(t, cfg.CurrentPath(), "current")
+}
+
+// TestLoadDeployConfigLax_HostRequiredSwallow — use the seam to
+// return (non-nil cfg, host-required err) → the swallow branch fires.
+func TestLoadDeployConfigLax_HostRequiredSwallow(t *testing.T) {
+	orig := loadDeployConfigForLax
+	loadDeployConfigForLax = func(cmd *cobra.Command) (*DeployConfig, error) {
+		return &DeployConfig{AppName: "t"}, fmt.Errorf("deploy host is required")
+	}
+	t.Cleanup(func() { loadDeployConfigForLax = orig })
+	cfg, err := LoadDeployConfigLax(&cobra.Command{})
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+}
+
+// TestLoadDeployConfigLax_HostRequired — LoadDeployConfig returns
+// (nil, err) when host is missing, so LoadDeployConfigLax returns
+// the nil+err path directly.
+func TestLoadDeployConfigLax_HostRequired(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, os.WriteFile("go.mod",
+		[]byte("module example.com/t\n\ngo 1.25.0\n"), 0o644))
+
+	cmd := newDeployCmdFlags()
+	cfg, err := LoadDeployConfigLax(cmd)
+	// Under the current LoadDeployConfig, cfg is nil when host is
+	// missing, so Lax returns (nil, err).
+	assert.Nil(t, cfg)
+	assert.Error(t, err)
+}
+
+// newDeployCmdFlags builds a cobra.Command with the deployment flags
+// LoadDeployConfig expects. No values set → host missing.
+func newDeployCmdFlags() *cobra.Command {
+	cmd := &cobra.Command{}
+	f := cmd.Flags()
+	f.String("host", "", "")
+	f.String("user", "", "")
+	f.Int("port", 22, "")
+	f.String("method", "", "")
+	f.String("path", "", "")
+	f.String("arch", "", "")
+	f.Bool("dry-run", false, "")
+	return cmd
 }

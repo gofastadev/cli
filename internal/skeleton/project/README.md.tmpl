@@ -1,0 +1,216 @@
+# {{.ProjectName}}
+
+A Go backend service scaffolded with [gofasta](https://gofasta.dev) —
+layered architecture, code generators for CRUD, and a one-command VPS
+deploy flow.
+
+Module: `{{.ModulePath}}`
+
+## Prerequisites
+
+- [Go 1.25+](https://go.dev/dl/) (toolchain auto-downloads if needed — see `.go-version`)
+- [Docker](https://docs.docker.com/get-docker/) (for `make up` and `gofasta deploy --method docker`)
+- [gofasta CLI](https://gofasta.dev/docs/getting-started/installation) — `go install github.com/gofastadev/cli/cmd/gofasta@latest`
+
+Run `gofasta doctor` to verify every prerequisite is in place.
+
+## Quick start
+
+```bash
+# Install deps + generate Wire / Swagger artifacts (one-time).
+gofasta init
+
+# Option A — everything in Docker
+make up
+
+# Option B — app on host with hot reload, database in Docker
+make up-db
+gofasta dev
+```
+
+The server listens on the port set in `config.yaml` (8080 by default).
+Visit `/swagger/index.html` for the auto-generated OpenAPI UI and
+`/health` for the liveness probe.
+
+## Project structure
+
+Layered architecture — one directory per technical concern, one file per
+resource inside each directory. See [`AGENTS.md`](./AGENTS.md) for a full
+tree and the rules each layer follows.
+
+```
+app/
+├── models/          # GORM models
+├── dtos/            # API request/response shapes
+├── repositories/    # Data access (interfaces + impl)
+├── services/        # Business logic (interfaces + impl)
+├── rest/
+│   ├── controllers/ # HTTP handlers
+│   └── routes/      # chi.Router registration
+├── validators/      # Input validation rules
+├── di/              # Google Wire (compile-time DI)
+├── jobs/            # Cron jobs
+└── tasks/           # Async task handlers (asynq)
+```
+
+A `User` resource ships pre-scaffolded so the project compiles and runs
+out of the box. Use `gofasta g scaffold <Resource> <field>:<type>...` to
+add more — see **Common tasks** below.
+
+## Common tasks
+
+Every `make` target wraps the equivalent `gofasta` command. Pick whichever
+entry point you prefer.
+
+| Task | Command |
+|------|---------|
+| Start app + db in Docker | `make up` |
+| Start db only (for `make dev`) | `make up-db` |
+| Start app with hot reload | `make dev` or `gofasta dev` |
+| Run tests | `make test` (unit) / `make test-integration` |
+| Run with race detector | `go test -race ./...` |
+| Build production binary | `make build` |
+| Regenerate Wire | `make wire` or `gofasta wire` |
+| Generate a full resource | `gofasta g scaffold Product name:string price:float` |
+| Generate a cron job | `gofasta g job cleanup-tokens "0 0 * * *"` |
+| Generate an async task | `gofasta g task send-welcome-email` |
+| Apply migrations | `make migrate-up` |
+| Roll back last migration | `make migrate-down` |
+| Run seeders | `make seed` |
+| List every REST route | `gofasta routes` |
+| Regenerate OpenAPI docs | `gofasta swagger` |
+| **Run full preflight check** | `gofasta verify` |
+| **Report project drift** | `gofasta status` |
+| **Inspect a resource** | `gofasta inspect User` |
+| **Emit `config.yaml` JSON Schema** | `gofasta config schema` |
+| **Run a named workflow** | `gofasta do new-rest-endpoint Invoice total:float` |
+| **Install AI agent config** | `gofasta ai claude` (or `cursor`, `codex`, `aider`, `windsurf`) |
+| Lint | `make lint` |
+| Diagnose setup | `make doctor` or `gofasta doctor` |
+
+Every command that emits structured output honors the global `--json`
+flag for machine-parseable consumption by agents and CI.
+
+Full CLI reference: https://gofasta.dev/docs/cli-reference/new
+
+## Configuration
+
+Application config lives in `config.yaml`. Every value is overridable via
+environment variable using the `{{.ProjectNameUpper}}_` prefix with
+underscore-separated section and key names. Examples:
+
+```bash
+export {{.ProjectNameUpper}}_DATABASE_HOST=db.internal
+export {{.ProjectNameUpper}}_SERVER_PORT=9090
+export {{.ProjectNameUpper}}_JWT_SECRET=changeme
+```
+
+Local development reads additional values from `.env` (copied from
+`.env.example` by `gofasta init`). Never commit `.env` — it's in
+`.gitignore`.
+
+See the [configuration guide](https://gofasta.dev/docs/guides/configuration)
+for the full schema.
+
+## Testing
+
+```bash
+# Unit tests (fast, no external services)
+make test
+
+# Integration tests (spins up a real Postgres container via testcontainers-go)
+make test-integration
+
+# Everything, with race detector
+go test -race ./...
+```
+
+Integration tests require Docker to be running locally. See the
+[testing guide](https://gofasta.dev/docs/guides/testing) for mocking
+patterns, fixture helpers, and the testcontainers setup.
+
+## Deployment
+
+`gofasta deploy` ships a release to a Linux VPS over SSH. Two packaging
+methods:
+
+- `--method docker` (default) — build a Docker image, transfer via SSH,
+  run with Docker Compose on the server.
+- `--method binary` — cross-compile a static binary, transfer via SCP,
+  manage with systemd.
+
+```bash
+# One-time: prepare a fresh Ubuntu/Debian server
+gofasta deploy setup --host deploy@api.example.com
+
+# Deploy, observe, roll back
+gofasta deploy
+gofasta deploy status
+gofasta deploy logs
+gofasta deploy rollback
+```
+
+Configure the target in `config.yaml` under `deploy:`. See the
+[deployment guide](https://gofasta.dev/docs/guides/deployment) for the
+full flow, the release directory layout, nginx config, systemd unit, and
+the GitHub Actions workflow templates shipped under `deployments/ci/`.
+
+## AI coding agents
+
+This project ships an [`AGENTS.md`](./AGENTS.md) at the root, read
+automatically by Claude Code, OpenAI Codex, Cursor, Aider, and other
+MCP-aware agents. It covers the directory layout, every command, the
+conventions each layer must follow, common failure modes (especially
+around Wire), and a pre-commit self-check list. If an agent is working
+on this codebase, point it there first.
+
+To install per-agent configuration (permission allowlists, pre-commit
+hooks, slash commands, conventions files), run:
+
+```bash
+gofasta ai claude       # Claude Code: .claude/ settings + hooks + slash commands
+gofasta ai cursor       # Cursor: .cursor/rules/gofasta.mdc
+gofasta ai codex        # OpenAI Codex: .codex/config.toml
+gofasta ai aider        # Aider: .aider.conf.yml + .aider/CONVENTIONS.md
+gofasta ai windsurf     # Windsurf: .windsurfrules
+
+gofasta ai list         # every supported agent
+gofasta ai status       # what's currently installed
+```
+
+Every installer is idempotent — re-run after a gofasta update to pick up
+improved configs. See [the docs](https://gofasta.dev/docs/cli-reference/ai)
+for full details.
+
+### Agent-friendly commands built into the CLI
+
+- `gofasta verify` — full preflight gauntlet in one command (gofmt, vet,
+  lint, test with race, build, Wire drift, routes). Every step reported
+  with `--json`.
+- `gofasta status` — offline drift detection (Wire stale, Swagger stale,
+  pending migrations, uncommitted generated files, `go.sum` freshness).
+- `gofasta inspect <Resource>` — single AST-parsed structured report of a
+  resource's model, DTOs, service interface, controller, and routes.
+- `gofasta config schema` — JSON Schema for `config.yaml`, emitted by a
+  project-local helper so it always matches the pinned gofasta version.
+  Feed to VS Code YAML / JetBrains for autocomplete.
+- `gofasta do <workflow>` — named command chains (`new-rest-endpoint`,
+  `rebuild`, `fresh-start`, `clean-slate`, `health-check`).
+
+Every CLI error carries a stable `{code, message, hint, docs}` payload
+when emitted in `--json` mode — agents pattern-match on the code
+instead of regex-parsing strings.
+
+## Documentation
+
+- **Docs home:** https://gofasta.dev/docs
+- **Quick start:** https://gofasta.dev/docs/getting-started/quick-start
+- **Project structure deep-dive:** https://gofasta.dev/docs/getting-started/project-structure
+- **Guides** (REST, auth, DB, deploy, testing): https://gofasta.dev/docs/guides/rest-api
+- **CLI reference:** https://gofasta.dev/docs/cli-reference/new
+- **`pkg/*` API reference:** https://gofasta.dev/docs/api-reference/config
+- **White paper** (architecture + design philosophy): https://gofasta.dev/docs/white-paper
+
+## License
+
+TODO — add a license file (e.g. `LICENSE`) and update this section.

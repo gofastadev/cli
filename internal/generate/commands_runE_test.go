@@ -36,6 +36,34 @@ func TestGenHelperProcess(t *testing.T) {
 	os.Exit(code)
 }
 
+// fakeExec returns an execCommand that runs a TestHelperSub
+// subprocess with the configured exit code. Mirrors the pattern used
+// in the commands package and powers the AutoVerify + scaffold-RunE
+// coverage tests.
+func fakeExec(exitCode int) func(name string, args ...string) *exec.Cmd {
+	return func(name string, args ...string) *exec.Cmd {
+		cs := append([]string{"-test.run=TestHelperSub", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GENERATE_HELPER=1",
+			"GENERATE_EXIT="+strconv.Itoa(exitCode),
+		)
+		return cmd
+	}
+}
+
+// TestHelperSub is the subprocess entry point used by fakeExec.
+func TestHelperSub(t *testing.T) {
+	if os.Getenv("GENERATE_HELPER") != "1" {
+		return
+	}
+	if out := os.Getenv("GENERATE_STDOUT"); out != "" {
+		_, _ = os.Stdout.WriteString(out)
+	}
+	code, _ := strconv.Atoi(os.Getenv("GENERATE_EXIT"))
+	os.Exit(code)
+}
+
 // setupFullProject creates a temp project with all files that patchers + generators need.
 func setupFullProject(t *testing.T) {
 	setupTempProject(t)
@@ -268,4 +296,55 @@ func TestHasSwaggerFlag(t *testing.T) {
 	scaffoldCmd.Flags().Set("swagger", "true")
 	assert.True(t, hasSwaggerFlag(scaffoldCmd))
 	scaffoldCmd.Flags().Set("swagger", "false")
+}
+
+// TestScaffoldCmd_RunE_DryRun — --dry-run branch of scaffoldCmd's
+// RunE is currently uncovered; exercise it here.
+func TestScaffoldCmd_RunE_DryRun(t *testing.T) {
+	setupFullProject(t) // dry-run still runs patchers → need real files
+	orig := execCommand
+	execCommand = fakeExec(0)
+	t.Cleanup(func() { execCommand = orig })
+	require.NoError(t, scaffoldCmd.Flags().Set("dry-run", "true"))
+	t.Cleanup(func() { _ = scaffoldCmd.Flags().Set("dry-run", "false") })
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"DryWidget", "name:string"})
+	require.NoError(t, err)
+}
+
+// TestScaffoldCmd_RunE_DryRun_StepFails — dry-run but the step chain
+// errors (no container.go to patch). Exercises the "return err"
+// branch inside the dry-run block.
+func TestScaffoldCmd_RunE_DryRun_StepFails(t *testing.T) {
+	setupTempProject(t)
+	require.NoError(t, scaffoldCmd.Flags().Set("dry-run", "true"))
+	t.Cleanup(func() { _ = scaffoldCmd.Flags().Set("dry-run", "false") })
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"BrokenDry", "x:string"})
+	require.Error(t, err)
+}
+
+// TestScaffoldCmd_RunE_AutoVerifyFails — the scaffold succeeds but
+// AutoVerify fails. RunSteps runs `go tool wire` before reaching
+// AutoVerify's `go build`; the fake exec succeeds for tool invocations
+// and fails only for `go build`.
+func TestScaffoldCmd_RunE_AutoVerifyFails(t *testing.T) {
+	setupFullProject(t)
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		exit := "0"
+		if len(args) > 0 && args[0] == "build" {
+			exit = "1"
+		}
+		cs := append([]string{"-test.run=TestHelperSub", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GENERATE_HELPER=1",
+			"GENERATE_EXIT="+exit,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+	require.NoError(t, scaffoldCmd.Flags().Set("dry-run", "false"))
+	err := scaffoldCmd.RunE(scaffoldCmd, []string{"AVFail", "name:string"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not compile")
 }

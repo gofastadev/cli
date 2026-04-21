@@ -261,3 +261,11 @@ func TestVisibleSubcommands_FiltersHelpAndHidden(t *testing.T) {
 		assert.False(t, s.Hidden, "hidden commands should be filtered")
 	}
 }
+
+// TestShouldSkipBanner_JSON — jsonOutput=true returns true.
+func TestShouldSkipBanner_JSON(t *testing.T) {
+	orig := jsonOutput
+	jsonOutput = true
+	t.Cleanup(func() { jsonOutput = orig })
+	assert.True(t, shouldSkipBanner(rootCmd))
+}

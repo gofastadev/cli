@@ -1,0 +1,36 @@
+// Binary schema prints the JSON Schema (Draft 7) for this project's
+// config.yaml, derived by reflecting over the AppConfig type in
+// github.com/gofastadev/gofasta/pkg/config.
+//
+// Invoked by `gofasta config schema` via `go run ./cmd/schema`. Running
+// in-project (rather than embedded in the gofasta CLI binary) means the
+// emitted schema always matches the exact library version this project
+// pins in its go.mod — no version skew between the CLI and the
+// installed pkg/config.
+//
+// You can also invoke it directly:
+//
+//	go run ./cmd/schema > config.schema.json
+//
+// and point an editor at the result via a YAML language server directive
+// at the top of config.yaml:
+//
+//	# yaml-language-server: $schema=./config.schema.json
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/gofastadev/gofasta/pkg/config"
+)
+
+func main() {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(config.JSONSchema()); err != nil {
+		fmt.Fprintf(os.Stderr, "schema: %v\n", err)
+		os.Exit(1)
+	}
+}
