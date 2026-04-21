@@ -277,3 +277,114 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = orig
 	return strings.TrimSpace(<-done)
 }
+
+// assertError is a tiny string error used by the seam-based error
+// tests that inject custom failures into template parsers and marshal
+// calls.
+type assertError string
+
+func (e assertError) Error() string { return string(e) }
+
+// TestRunInstall_FindProjectRootError — outside any Go module,
+// runInstall returns the error from findProjectRoot without trying
+// to install.
+func TestRunInstall_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	// t.TempDir is under /var which has no go.mod.
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+}
+
+// TestRunInstall_LoadManifestError — corrupt manifest makes
+// LoadManifest fail after Install succeeds.
+func TestRunInstall_LoadManifestError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	// Pre-populate a corrupt manifest file.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
+		[]byte("not-json"), 0o644))
+	_ = captureStdout(t, func() {
+		err := runInstall("claude", false, false)
+		require.Error(t, err)
+	})
+}
+
+// TestRunInstall_ManifestSaveError — after successful install+load,
+// Save fails because .gofasta is read-only.
+func TestRunInstall_ManifestSaveError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	gofastaDir := filepath.Join(dir, ".gofasta")
+	require.NoError(t, os.MkdirAll(gofastaDir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(gofastaDir, 0o755) })
+	_ = captureStdout(t, func() {
+		err := runInstall("claude", false, false)
+		require.Error(t, err)
+	})
+}
+
+// TestRunInstall_BuildInstallDataError — unreadable go.mod causes
+// buildInstallData to fail after findProjectRoot succeeded.
+func TestRunInstall_BuildInstallDataError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+}
+
+// TestRunStatus_LoadManifestError — corrupt manifest makes runStatus
+// fail.
+func TestRunStatus_LoadManifestError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
+		[]byte("not-json"), 0o644))
+	err := runStatus()
+	require.Error(t, err)
+}
+
+// TestRunStatus_FindProjectRootError — runStatus outside a Go module.
+func TestRunStatus_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := runStatus()
+	require.Error(t, err)
+}
+
+// TestFindProjectRoot_GetwdError — forces the os.Getwd branch via
+// the getwd seam.
+func TestFindProjectRoot_GetwdError(t *testing.T) {
+	orig := getwd
+	getwd = func() (string, error) { return "", assertError("boom") }
+	t.Cleanup(func() { getwd = orig })
+	_, err := findProjectRoot()
+	require.Error(t, err)
+}
+
+// TestRunInstall_InstallError — a conflicting destination file with
+// differing content triggers Install to return an error, which
+// runInstall propagates.
+func TestRunInstall_InstallError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	agent := AgentByKey("claude")
+	require.NotNil(t, agent)
+	files, err := TemplateFiles(agent)
+	require.NoError(t, err)
+	// Pre-populate the first destination with conflicting bytes.
+	dst := filepath.Join(dir, files[0].DestPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o755))
+	require.NoError(t, os.WriteFile(dst, []byte("conflict"), 0o644))
+	err = runInstall("claude", false, false)
+	require.Error(t, err)
+}

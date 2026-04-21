@@ -100,3 +100,19 @@ func TestWriteTemplate_AbsolutePath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "package sub", string(data))
 }
+
+// TestWriteTemplate_UsesTimestamp — a template that calls
+// {{timestamp}} resolves and writes the file. Previously uncovered
+// the `timestamp` function inside the FuncMap because no shipped
+// template references it.
+func TestWriteTemplate_UsesTimestamp(t *testing.T) {
+	setupTempProject(t)
+	path := filepath.Join(t.TempDir(), "out.txt")
+	data := sampleScaffoldData()
+	err := WriteTemplate(path, "t", `{{timestamp}} {{lbrace}} x {{rbrace}}`, data)
+	require.NoError(t, err)
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
+	// RFC3339 timestamp starts with 4-digit year. Just check the closing brace.
+	assert.Contains(t, string(body), "{ x }")
+}

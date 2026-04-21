@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"net/http"
 	"testing"
 	"time"
 
@@ -94,4 +95,69 @@ func TestRenderWaterfall_EmptySpans(t *testing.T) {
 	var buf bytes.Buffer
 	renderWaterfall(&buf, 0, nil, false)
 	assert.Contains(t, buf.String(), "no spans")
+}
+
+// TestRunDebugTracesList_DevtoolsError — unreachable app URL short-
+// circuits the requireDevtools pre-check.
+func TestRunDebugTracesList_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	resetTraceFlags()
+	require.Error(t, runDebugTracesList())
+}
+
+// TestRunDebugTracesList_GetJSONError — /debug/traces returns 500.
+func TestRunDebugTracesList_GetJSONError(t *testing.T) {
+	url := debug500(t, "/debug/traces")
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	require.Error(t, runDebugTracesList())
+}
+
+// TestRunDebugTracesList_LimitTrims — --limit shortens the output.
+func TestRunDebugTracesList_LimitTrims(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleTraces()) },
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	debugTracesLimit = 1
+	t.Cleanup(resetTraceFlags)
+	require.NoError(t, runDebugTracesList())
+}
+
+// TestRunDebugTracesList_EmptyFiltered — no traces match but filters
+// were present; renderer reports the empty set.
+func TestRunDebugTracesList_EmptyFiltered(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedTrace{}) },
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	// Set a filter so the filters map is populated.
+	debugTracesStatus = "error"
+	t.Cleanup(resetTraceFlags)
+	require.NoError(t, runDebugTracesList())
+}
+
+// TestRunDebugTraceDetail_DevtoolsError — unreachable app URL short-
+// circuits the requireDevtools pre-check.
+func TestRunDebugTraceDetail_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	require.Error(t, runDebugTraceDetail("t1"))
+}
+
+// TestDebugTracesCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugTracesCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugTracesCmd.RunE(debugTracesCmd, nil))
+}
+
+// TestDebugTraceDetailCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugTraceDetailCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugTraceCmd.RunE(debugTraceCmd, []string{"t1"}))
 }

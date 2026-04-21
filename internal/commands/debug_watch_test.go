@@ -362,3 +362,15 @@ func TestWatchMarks_BaselineEmptyRings(t *testing.T) {
 	assert.True(t, m.cacheMark.IsZero())
 	assert.True(t, m.trace.IsZero())
 }
+
+// TestDebugWatchCmd_RunE — runDebugWatch rejects a bogus interval;
+// the test drives it with one so runDebugWatch returns quickly without
+// entering the polling loop.
+func TestDebugWatchCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetWatchFlags()
+	debugWatchInterval = "bogus"
+	t.Cleanup(resetWatchFlags)
+	require.Error(t, debugWatchCmd.RunE(debugWatchCmd, nil))
+}

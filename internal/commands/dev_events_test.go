@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,4 +130,19 @@ func TestJSONEmitter_EmitHappyPath(t *testing.T) {
 	e := &jsonEmitter{out: &buf}
 	e.emit(devEvent{Event: "info", Message: "ok"})
 	assert.Contains(t, buf.String(), `"info"`)
+}
+
+// TestJSONEmitter_EmitMarshalFails — inject a marshaler that always
+// errors via the marshal seam. Exercises the fallback branch that
+// emits an "event:error" line describing the marshal failure.
+func TestJSONEmitter_EmitMarshalFails(t *testing.T) {
+	var buf strings.Builder
+	e := &jsonEmitter{
+		out:     &buf,
+		marshal: func(any) ([]byte, error) { return nil, fmt.Errorf("boom") },
+	}
+	e.emit(devEvent{Event: "info", Message: "ok"})
+	out := buf.String()
+	assert.Contains(t, out, `"event":"error"`)
+	assert.Contains(t, out, `"boom"`)
 }

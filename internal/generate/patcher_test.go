@@ -1,6 +1,8 @@
 package generate
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -266,4 +268,24 @@ func TestPatchServeFile_SkipsIfExists(t *testing.T) {
 
 	err := PatchServeFile(d)
 	require.NoError(t, err)
+}
+
+// TestPatchResolver_NoConstructor — the source has no Resolver
+// constructor body so PatchResolver returns an error.
+func TestPatchResolver_NoConstructor(t *testing.T) {
+	setupTempProject(t)
+	// Create a GraphQL resolver file with NewResolver but WITHOUT the
+	// expected "return &Resolver{" block so PatchResolver's body-
+	// finder fails.
+	dir := filepath.Join("app", "graphql", "resolvers")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+	path := filepath.Join(dir, "resolver.go")
+	require.NoError(t, os.WriteFile(path, []byte(
+		"package resolvers\n"+
+			"type Resolver struct{}\n\n"+
+			"// NewResolver\n"+
+			"func NewResolver() *Resolver { /* no return &Resolver here */ }\n"), 0o644))
+	err := PatchResolver(sampleScaffoldData())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Resolver constructor body")
 }

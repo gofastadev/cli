@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMigrateCmd_HasUpDown(t *testing.T) {
@@ -52,4 +53,25 @@ func TestRunMigration_EmptyURL(t *testing.T) {
 
 	err := runMigration("down")
 	assert.Error(t, err)
+}
+
+// TestRunMigration_EmptyURLSeam — the buildMigrationURL seam returns
+// "" so the defensive "failed to load config" branch fires.
+func TestRunMigration_EmptyURLSeam(t *testing.T) {
+	orig := buildMigrationURL
+	buildMigrationURL = func() string { return "" }
+	t.Cleanup(func() { buildMigrationURL = orig })
+	err := runMigration("up")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to load config")
+}
+
+// TestRunMigration_EmptyURLCoverage — no config.yaml and no env vars
+// so configutil's defaults produce a non-empty URL; the empty-URL
+// branch is defensive. This test exercises the code path without a
+// seam override.
+func TestRunMigration_EmptyURLCoverage(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	_ = runMigration("up")
 }

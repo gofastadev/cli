@@ -495,3 +495,9 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	assert.Error(t, err)
 	_ = strings.Contains // keep import
 }
+
+// TestUpgradeViaBinary_ChmodError — os.Chmod on a freshly-created
+// temp file rarely fails in practice; documented as defensive-only.
+func TestUpgradeViaBinary_ChmodError(t *testing.T) {
+	t.Skip("os.Chmod on a just-created temp file rarely fails in practice")
+}

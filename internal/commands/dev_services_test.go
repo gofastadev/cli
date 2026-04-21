@@ -138,3 +138,44 @@ func TestIsServiceReady(t *testing.T) {
 		assert.False(t, isServiceReady(serviceState{State: "exited"}, false))
 	})
 }
+
+// TestDetectComposeServices_WithProfile — profile != "" adds --profile.
+func TestDetectComposeServices_WithProfile(t *testing.T) {
+	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
+	_, _, err := detectComposeServices("cache")
+	require.NoError(t, err)
+}
+
+// TestQueryServiceStates_EmptyLinesSkipped — line-format stdout with
+// blank lines between entries still parses.
+func TestQueryServiceStates_EmptyLinesSkipped(t *testing.T) {
+	out := `{"Service":"db","State":"running"}
+
+{"Service":"cache","State":"running"}
+`
+	fakeExecOutput(t, out, 0)
+	states, err := queryServiceStates()
+	require.NoError(t, err)
+	require.Len(t, states, 2)
+}
+
+// TestWaitHealthy_QueryErrorPropagates — queryServiceStates fails.
+func TestWaitHealthy_QueryErrorPropagates(t *testing.T) {
+	// fakeExecOutput with non-JSON stdout makes parse fail inside
+	// queryServiceStates.
+	fakeExecOutput(t, "not-json", 0)
+	err := waitHealthy([]string{"db"}, map[string]bool{"db": false},
+		time.Second, nil)
+	require.Error(t, err)
+}
+
+// TestWaitHealthy_UnknownServiceFilteredOut — states returned include
+// a service not in wanted set. The continue branch runs.
+func TestWaitHealthy_UnknownServiceFilteredOut(t *testing.T) {
+	out := `[{"Service":"extra","State":"running"},
+	        {"Service":"db","State":"running","Health":""}]`
+	fakeExecOutput(t, out, 0)
+	err := waitHealthy([]string{"db"}, map[string]bool{"db": false},
+		2*time.Second, nil)
+	require.NoError(t, err)
+}

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -73,4 +74,41 @@ func TestCacheHitRate(t *testing.T) {
 func TestCacheHitRate_NoGets(t *testing.T) {
 	ops := []scrapedCache{{Op: "set"}, {Op: "delete"}}
 	assert.Equal(t, 0.0, cacheHitRate(ops))
+}
+
+// TestRunDebugCache_DevtoolsError — unreachable app URL short-circuits
+// at the requireDevtools pre-check.
+func TestRunDebugCache_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	resetCacheFlags()
+	require.Error(t, runDebugCache())
+}
+
+// TestRunDebugCache_GetJSONError — /debug/cache returns 500.
+func TestRunDebugCache_GetJSONError(t *testing.T) {
+	url := debug500(t, "/debug/cache")
+	withDebugAppURL(t, url)
+	resetCacheFlags()
+	require.Error(t, runDebugCache())
+}
+
+// TestRunDebugCache_LimitTrims — --limit N shortens the output set.
+func TestRunDebugCache_LimitTrims(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/cache": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleCacheOps()) },
+	})
+	withDebugAppURL(t, url)
+	resetCacheFlags()
+	debugCacheLimit = 1
+	t.Cleanup(resetCacheFlags)
+	require.NoError(t, runDebugCache())
+}
+
+// TestDebugCacheCmd_RunE — exercises the Cobra RunE wrapper, counted
+// separately from the underlying runDebugCache it delegates to.
+func TestDebugCacheCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugCacheCmd.RunE(debugCacheCmd, nil))
 }

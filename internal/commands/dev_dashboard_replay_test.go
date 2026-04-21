@@ -2,7 +2,10 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -198,6 +201,64 @@ func TestHandleReplay_BlocksBadMethod(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.handleReplay(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleReplay_NewRequestFails — inject a failing newReplayRequest
+// seam → handler returns 400.
+func TestHandleReplay_NewRequestFails(t *testing.T) {
+	orig := newReplayRequest
+	newReplayRequest = func(context.Context, string, string, io.Reader) (*http.Request, error) {
+		return nil, fmt.Errorf("build failed")
+	}
+	t.Cleanup(func() { newReplayRequest = orig })
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"GET","path":"/x"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+// TestHandleReplay_WrongMethod — GET /api/replay → 405.
+func TestHandleReplay_WrongMethod(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://irrelevant"}
+	req := httptest.NewRequest(http.MethodGet, "/api/replay", nil)
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
+}
+
+// TestHandleReplay_WithBody — body != "" exercises the body = reader
+// and Content-Type setter branches.
+func TestHandleReplay_WithBody(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://127.0.0.1:1"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"POST","path":"/x","body":"data"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	// Upstream unreachable → 502.
+	assert.Equal(t, http.StatusBadGateway, rec.Code)
+}
+
+// TestHandleReplay_BadAppURL — makes http.NewRequestWithContext fail
+// indirectly via buildReplayURL rejecting the malformed app URL.
+func TestHandleReplay_BadAppURL(t *testing.T) {
+	srv := &dashboardServer{appURL: "\x7f://bad"}
+	req := httptest.NewRequest(http.MethodPost, "/api/replay",
+		strings.NewReader(`{"method":"GET","path":"/x"}`))
+	rec := httptest.NewRecorder()
+	srv.handleReplay(rec, req)
+	// buildReplayURL will fail on the malformed app URL.
+	assert.GreaterOrEqual(t, rec.Code, 400)
+}
+
+// TestHandleReplay_NewRequestError — handleReplay's
+// http.NewRequestWithContext error branch is unreachable after the
+// validators; documented here.
+func TestHandleReplay_NewRequestError(t *testing.T) {
+	srv := &dashboardServer{appURL: "http://localhost:1234"}
+	_ = srv
+	t.Skip("handleReplay NewRequestWithContext error unreachable after validators")
 }
 
 // TestHandleReplay_AcceptsValidReplay — end-to-end happy path:

@@ -248,6 +248,50 @@ func TestNumToStr(t *testing.T) {
 	}
 }
 
+// TestRequireDevtools_Non2xx — /debug/health returns 500.
+func TestRequireDevtools_Non2xx(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	require.Error(t, requireDevtools(srv.URL))
+}
+
+// TestRequireDevtools_MalformedJSON — 200 but body isn't JSON.
+func TestRequireDevtools_MalformedJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not-json"))
+	}))
+	defer srv.Close()
+	require.Error(t, requireDevtools(srv.URL))
+}
+
+// TestPostJSON_BadResponse — server returns malformed JSON body;
+// postJSON propagates the decode error.
+func TestPostJSON_BadResponse(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("not-json"))
+	}))
+	defer srv.Close()
+	var out map[string]interface{}
+	require.Error(t, postJSON(srv.URL, "/x", map[string]int{"a": 1}, &out))
+}
+
+// TestPostJSON_MarshalError — an input that can't be JSON-marshaled
+// (channel) triggers the first error branch.
+func TestPostJSON_MarshalError(t *testing.T) {
+	var out map[string]interface{}
+	require.Error(t, postJSON("http://irrelevant", "/x", make(chan int), &out))
+}
+
+// TestPostJSON_NewRequestError — an appURL with invalid characters
+// makes http.NewRequest fail.
+func TestPostJSON_NewRequestError(t *testing.T) {
+	var out map[string]interface{}
+	// A control character in the URL trips NewRequest validation.
+	require.Error(t, postJSON("\x7f://bad", "/x", map[string]int{}, &out))
+}
+
 // stripANSI removes any ESC-[…m escape sequence so tests don't have
 // to hardcode the color codes termcolor emits on TTY output.
 func stripANSI(s string) string {

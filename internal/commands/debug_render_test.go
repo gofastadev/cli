@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -186,4 +187,43 @@ func TestWaterfallBar_ClampsOverflow(t *testing.T) {
 	plain := stripANSI(got)
 	// Bar track width is waterfallBarWidth + 2 bracket chars.
 	assert.Equal(t, waterfallBarWidth+2, len([]rune(plain)))
+}
+
+// TestRenderWaterfallNode_WithKind — a span whose Kind field is set
+// emits the " (kind)" suffix. Drives the higher-level
+// runDebugTraceDetail so rendering fires against a real trace.
+func TestRenderWaterfallNode_WithKind(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces/t1": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, scrapedTrace{
+				TraceID: "t1", RootName: "GET /x",
+				DurationMS: 100, SpanCount: 1,
+				Spans: []scrapedSpan{
+					{SpanID: "a", Name: "root", DurationMS: 100, Kind: "SERVER"},
+					{SpanID: "b", ParentID: "a", Name: "child", DurationMS: 50, OffsetMS: 0},
+				},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	require.NoError(t, runDebugTraceDetail("t1"))
+}
+
+// TestRenderWaterfallNode_NegativeOffset — a span with negative
+// offset (duration longer than parent) → startCell < 0 clamp.
+func TestRenderWaterfallNode_NegativeOffset(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces/t2": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, scrapedTrace{
+				TraceID: "t2", RootName: "X", DurationMS: 100, SpanCount: 1,
+				Spans: []scrapedSpan{
+					{SpanID: "a", Name: "root", DurationMS: 100, OffsetMS: -10},
+				},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	require.NoError(t, runDebugTraceDetail("t2"))
 }

@@ -139,3 +139,10 @@ func TestRunWorkflow_ListIsSpecial(t *testing.T) {
 	err := runWorkflow("list", nil)
 	require.NoError(t, err)
 }
+
+// TestDoCmd_RunE_Unknown — exercises the Cobra RunE wrapper with an
+// unknown workflow name.
+func TestDoCmd_RunE_Unknown(t *testing.T) {
+	err := doCmd.RunE(doCmd, []string{"nonexistent-workflow"})
+	require.Error(t, err)
+}

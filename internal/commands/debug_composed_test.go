@@ -335,3 +335,42 @@ func TestRunDebugLastError_FailedFetch(t *testing.T) {
 	resetLastErrorFlags()
 	require.Error(t, runDebugLastError())
 }
+
+// TestRunDebugLastError_DevtoolsError — unreachable app URL short-
+// circuits the requireDevtools pre-check.
+func TestRunDebugLastError_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	require.Error(t, runDebugLastError())
+}
+
+// TestRunDebugLastSlow_DevtoolsError — unreachable app URL short-
+// circuits the requireDevtools pre-check.
+func TestRunDebugLastSlow_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	require.Error(t, runDebugLastSlow())
+}
+
+// TestEnrichLastSlowReport_NoTraceID — picked has no trace ID →
+// function returns early without populating any sub-field.
+func TestEnrichLastSlowReport_NoTraceID(t *testing.T) {
+	report := &lastSlowReport{}
+	picked := &scrapedRequest{} // no TraceID
+	enrichLastSlowReport("http://irrelevant", report, picked)
+	assert.Empty(t, report.Trace)
+}
+
+// TestDebugLastErrorCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugLastErrorCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugLastErrorCmd.RunE(debugLastErrorCmd, nil))
+}
+
+// TestDebugLastSlowCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugLastSlowCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugLastSlowCmd.RunE(debugLastSlowCmd, nil))
+}

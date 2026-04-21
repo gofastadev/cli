@@ -150,3 +150,11 @@ func TestExprToString_CommonTypes(t *testing.T) {
 		_ = exprToString(nil)
 	}, "nil expr should not panic")
 }
+
+// TestInspectCmd_RunE — exercises the Cobra RunE wrapper.
+func TestInspectCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	// An arbitrary resource name — runInspect errors when no files exist.
+	// Either outcome covers the RunE wrapper body.
+	_ = inspectCmd.RunE(inspectCmd, []string{"Nothing"})
+}

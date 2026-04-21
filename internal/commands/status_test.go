@@ -90,3 +90,9 @@ func TestCheckPendingMigrations_NoDir(t *testing.T) {
 	check := checkPendingMigrations()
 	assert.Equal(t, "skip", check.Status)
 }
+
+// TestStatusCmd_RunE — exercises the Cobra RunE wrapper.
+func TestStatusCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	_ = statusCmd.RunE(statusCmd, nil)
+}

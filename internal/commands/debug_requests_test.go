@@ -166,3 +166,44 @@ func TestParseStatusExplicitRange_TrailingDashEmpty(t *testing.T) {
 	assert.True(t, ok)
 	require.Error(t, err)
 }
+
+// TestRunDebugRequests_GetJSONError — /debug/requests returns 500.
+func TestRunDebugRequests_GetJSONError(t *testing.T) {
+	url := debug500(t, "/debug/requests")
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	require.Error(t, runDebugRequests())
+}
+
+// TestRunDebugRequests_DevtoolsError — unreachable app URL short-
+// circuits the requireDevtools pre-check.
+func TestRunDebugRequests_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	resetRequestFlags()
+	require.Error(t, runDebugRequests())
+}
+
+// TestCompileRequestFilters_BadStatus — parseStatusRange fails, error
+// propagates.
+func TestCompileRequestFilters_BadStatus(t *testing.T) {
+	resetRequestFlags()
+	debugRequestsStatus = "not-a-number"
+	t.Cleanup(resetRequestFlags)
+	_, err := compileRequestFilters()
+	require.Error(t, err)
+}
+
+// TestParseStatusCommaList_Invalid — comma-separated entry that isn't
+// an integer.
+func TestParseStatusCommaList_Invalid(t *testing.T) {
+	_, _, _, err := parseStatusCommaList("200,abc")
+	require.Error(t, err)
+}
+
+// TestDebugRequestsCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugRequestsCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugRequestsCmd.RunE(debugRequestsCmd, nil))
+}

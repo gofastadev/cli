@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -179,4 +180,40 @@ func TestDryRun_IsolatedBetweenTests(t *testing.T) {
 	// future refactors that accidentally write during planning).
 	_, err := os.Stat(filepath.Join(t.TempDir(), "junk.go"))
 	assert.True(t, os.IsNotExist(err))
+}
+
+// TestWriteOrRecordPatch_WriteFails — point at an unwritable path
+// (chmod the parent read-only) so os.WriteFile returns an error.
+func TestWriteOrRecordPatch_WriteFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	setupTempProject(t)
+	dir := filepath.Join("ro")
+	require.NoError(t, os.MkdirAll(dir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	err := writeOrRecordPatch(filepath.Join(dir, "file.go"), "test", []byte("x"))
+	require.Error(t, err)
+}
+
+// TestPrintPlanText_EmptyDetail — a plan action with an empty Detail
+// value uses the "in-place edit" fallback.
+func TestPrintPlanText_EmptyDetail(t *testing.T) {
+	// SetDryRun(true) clears planned. Add a patch with empty detail.
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+	recordPatch("file.go", "", 0)
+	var buf bytes.Buffer
+	PrintPlanText(&buf)
+	out := buf.String()
+	assert.Contains(t, out, "in-place edit")
+}
+
+// TestDescribePatch_Truncates — a fragment longer than 60 chars is
+// truncated with "..." suffix.
+func TestDescribePatch_Truncates(t *testing.T) {
+	long := strings.Repeat("a", 100)
+	got := describePatch(long)
+	assert.Len(t, got, 60)
+	assert.True(t, strings.HasSuffix(got, "..."))
 }

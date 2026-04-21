@@ -163,3 +163,75 @@ func TestContainsSubstring_EdgeCases(t *testing.T) {
 	assert.True(t, containsSubstring([]byte("abc-xyz"), "xyz"))
 	assert.True(t, containsSubstring([]byte("abc"), "abc"))
 }
+
+// TestDebugHealthCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugHealthCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugHealthCmd.RunE(debugHealthCmd, nil))
+}
+
+// TestReadDevtoolsState_Unreachable — closed server → "unreachable".
+func TestReadDevtoolsState_Unreachable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	url := srv.URL
+	srv.Close()
+	assert.Equal(t, "unreachable", readDevtoolsState(url))
+}
+
+// TestReadDevtoolsState_Non200 — server returns 500.
+func TestReadDevtoolsState_Non200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	assert.Equal(t, "unreachable", readDevtoolsState(srv.URL))
+}
+
+// TestRunDebugHealth_UnreachableCoverage — entire app is unreachable.
+// The !report.Reachable branch fires in printDebugHealthText.
+func TestRunDebugHealth_UnreachableCoverage(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	_ = runDebugHealth()
+}
+
+// TestRunDebugHealth_StubDevtools — /debug/health says devtools=stub,
+// exercising the "stub" case in printDebugHealthText.
+func TestRunDebugHealth_StubDevtools(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/health": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"devtools":"stub"}`))
+		},
+		"/debug/requests":        func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/sql":             func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces":          func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/logs":            func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/errors":          func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":           func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/":          func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) },
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("")) },
+	})
+	withDebugAppURL(t, url)
+	_ = runDebugHealth()
+}
+
+// TestRunDebugHealth_MixedEndpointStatuses — endpoints return 0 /
+// 404 / other to exercise each case in printDebugHealthText.
+func TestRunDebugHealth_MixedEndpointStatuses(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/health": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+		},
+		"/debug/requests":        func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/sql":             func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNotFound) },
+		"/debug/traces":          func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
+		"/debug/logs":            func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/errors":          func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":           func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/":          func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) },
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("")) },
+	})
+	withDebugAppURL(t, url)
+	_ = runDebugHealth()
+}

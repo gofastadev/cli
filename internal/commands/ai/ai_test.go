@@ -194,3 +194,39 @@ func TestModuleName(t *testing.T) {
 	assert.Equal(t, "myapp", moduleName("github.com/acme/myapp"))
 	assert.Equal(t, "", moduleName(""))
 }
+
+// TestCmdRunE_NoArgs — Cmd.RunE with zero args delegates to cmd.Help().
+func TestCmdRunE_NoArgs(t *testing.T) {
+	Cmd.SetOut(os.Stderr)
+	Cmd.SetErr(os.Stderr)
+	require.NoError(t, Cmd.RunE(Cmd, nil))
+}
+
+// TestCmdRunE_WithArg — Cmd.RunE with an unknown agent name returns
+// the UNKNOWN_AGENT clierr via runInstall.
+func TestCmdRunE_WithArg(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := Cmd.RunE(Cmd, []string{"nonexistent-agent"})
+	require.Error(t, err)
+}
+
+// TestListCmdRunE — listCmd.RunE delegates to runList.
+func TestListCmdRunE(t *testing.T) {
+	_ = captureStdout(t, func() {
+		require.NoError(t, listCmd.RunE(listCmd, nil))
+	})
+}
+
+// TestStatusCmdRunE — statusCmd.RunE delegates to runStatus; outside
+// a Go module it returns an error.
+func TestStatusCmdRunE(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := statusCmd.RunE(statusCmd, nil)
+	require.Error(t, err)
+}

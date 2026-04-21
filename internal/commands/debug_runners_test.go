@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -42,6 +43,17 @@ func debugFixture(t *testing.T, handlers map[string]http.HandlerFunc) (url strin
 	return srv.URL
 }
 
+// debug500 stands up a fixture whose named debug endpoint returns 500.
+// /debug/health still returns {"devtools":"enabled"} so requireDevtools
+// passes and runDebug* reaches the getJSON call.
+func debug500(t *testing.T, path string) string {
+	return debugFixture(t, map[string]http.HandlerFunc{
+		path: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+	})
+}
+
 // withDebugAppURL sets the global --app-url for the duration of a
 // test. Keeps test isolation without plumbing a real cobra cmd.
 func withDebugAppURL(t *testing.T, url string) {
@@ -56,6 +68,53 @@ func withDebugAppURL(t *testing.T, url string) {
 func writeJSON(w http.ResponseWriter, payload interface{}) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// errWriter returns an error on every Write; used by debug tests to
+// force encoder / io.Copy errors.
+type errWriter struct{}
+
+func (errWriter) Write(_ []byte) (int, error) { return 0, fmt.Errorf("write boom") }
+
+// debugFixtureAll serves an "everything succeeds" upstream app so any
+// runDebug* invocation that doesn't care about the filter arguments
+// returns nil. Individual tests can narrow this down if needed.
+func debugFixtureAll(t *testing.T) string {
+	return debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/sql":        func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces/t1":  func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"trace_id":"t1"}`)) },
+		"/debug/errors":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":      func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/logs":       func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) },
+		"/debug/pprof/heap": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("heap-bytes")) },
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+		"/debug/explain": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"plan":"ok"}`)) },
+	})
+}
+
+// resetAllDebugFlags — set every command's flags back to init()
+// defaults so tests don't leak filters between them.
+func resetAllDebugFlags() {
+	resetRequestFlags()
+	resetSQLFlags()
+	resetTraceFlags()
+	resetCacheFlags()
+	debugErrorsLimit = 0
+	debugErrorsContains = ""
+	debugLogsTrace = ""
+	debugLogsLevel = ""
+	debugLogsContains = ""
+	debugGoroutinesFilter = ""
+	debugGoroutinesMinCount = 0
+	debugExplainVars = nil
+	debugProfileDuration = ""
+	debugProfileOutput = ""
+	debugHarOutput = ""
 }
 
 // ── runDebugHealth ───────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -77,4 +78,53 @@ func TestApplySQLFilters_BadDuration(t *testing.T) {
 func TestOneLine_CollapsesWhitespace(t *testing.T) {
 	in := "SELECT *\n  FROM users\n  WHERE id = ?"
 	assert.Equal(t, "SELECT * FROM users WHERE id = ?", oneLine(in))
+}
+
+// TestRunDebugSQL_DevtoolsError — unreachable app URL short-circuits
+// the requireDevtools pre-check.
+func TestRunDebugSQL_DevtoolsError(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	resetSQLFlags()
+	require.Error(t, runDebugSQL())
+}
+
+// TestRunDebugSQL_GetJSONError — /debug/sql returns 500.
+func TestRunDebugSQL_GetJSONError(t *testing.T) {
+	url := debug500(t, "/debug/sql")
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	require.Error(t, runDebugSQL())
+}
+
+// TestRunDebugSQL_LimitTrims — --limit shortens the output.
+func TestRunDebugSQL_LimitTrims(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleQueries()) },
+	})
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	debugSQLLimit = 1
+	t.Cleanup(resetSQLFlags)
+	require.NoError(t, runDebugSQL())
+}
+
+// TestRunDebugSQL_EmptyWithFilters — no rows match but filters were
+// present; renderer reports the empty set.
+func TestRunDebugSQL_EmptyWithFilters(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedQuery{}) },
+	})
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	debugSQLContains = "xyz" // any filter value to make the filters map populated
+	t.Cleanup(resetSQLFlags)
+	require.NoError(t, runDebugSQL())
+}
+
+// TestDebugSQLCmd_RunE — exercises the Cobra RunE wrapper.
+func TestDebugSQLCmd_RunE(t *testing.T) {
+	url := debugFixtureAll(t)
+	withDebugAppURL(t, url)
+	resetAllDebugFlags()
+	require.NoError(t, debugSQLCmd.RunE(debugSQLCmd, nil))
 }

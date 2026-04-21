@@ -1,6 +1,10 @@
 package ai
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
 
 func TestUndotPrefix(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -26,4 +30,13 @@ func TestUndotPrefix(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestUndotPrefix_EdgeCases — additional edge cases collected while
+// reviewing the transform.
+func TestUndotPrefix_EdgeCases(t *testing.T) {
+	assert.Equal(t, "", undotPrefix(""))
+	assert.Equal(t, ".config", undotPrefix("dot-config"))
+	assert.Equal(t, ".config/x", undotPrefix("dot-config/x"))
+	assert.Equal(t, "normal/x", undotPrefix("normal/x"))
 }

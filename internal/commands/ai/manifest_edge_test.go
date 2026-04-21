@@ -78,3 +78,43 @@ func TestManifest_RecordInstall_InitializesMap(t *testing.T) {
 	assert.Len(t, m.Installed, 1)
 	assert.Equal(t, "v2.0.0", m.Installed["cursor"].CLIVersion)
 }
+
+// TestLoadManifest_ReadFileError — file exists but can't be read.
+func TestLoadManifest_ReadFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	path := filepath.Join(dir, manifestPath)
+	require.NoError(t, os.WriteFile(path, []byte(`{}`), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+	_, err := LoadManifest(dir)
+	require.Error(t, err)
+}
+
+// TestManifest_Save_RenameFails — tmp file writes ok but Rename fails
+// because the target path already exists as a directory.
+func TestManifest_Save_RenameFails(t *testing.T) {
+	dir := t.TempDir()
+	// .gofasta dir exists, and we put a SUBDIR at the manifest path so
+	// Rename attempting to overwrite it fails.
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, manifestPath), 0o755))
+	m := &Manifest{Version: 1, Installed: map[string]InstallRecord{}}
+	err := m.Save(dir)
+	require.Error(t, err)
+}
+
+// TestManifest_Save_MarshalError — forces the json.MarshalIndent error
+// branch via the manifestMarshal seam.
+func TestManifest_Save_MarshalError(t *testing.T) {
+	orig := manifestMarshal
+	manifestMarshal = func(_ any, _, _ string) ([]byte, error) {
+		return nil, assertError("marshal boom")
+	}
+	t.Cleanup(func() { manifestMarshal = orig })
+	dir := t.TempDir()
+	m := &Manifest{Version: 1}
+	err := m.Save(dir)
+	require.Error(t, err)
+}
