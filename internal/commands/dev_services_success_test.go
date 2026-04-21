@@ -155,3 +155,39 @@ func TestWaitHealthy_NoHealthcheckRunningIsEnough(t *testing.T) {
 		2*time.Second, nil)
 	require.NoError(t, err)
 }
+
+// TestWaitHealthy_SleepBranch — covers the poll-interval sleep line.
+// First poll returns "starting" (not ready, sleep runs); second poll
+// returns "healthy" so the loop exits without blocking on the real
+// 500ms poll interval.
+func TestWaitHealthy_SleepBranch(t *testing.T) {
+	orig := execCommand
+	call := 0
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		out := `[{"Service":"db","State":"running","Health":"starting"}]`
+		if call > 0 {
+			out = `[{"Service":"db","State":"running","Health":"healthy"}]`
+		}
+		call++
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+out,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	origSleep := timeSleepFn
+	var sleepCalls int
+	timeSleepFn = func(_ time.Duration) { sleepCalls++ }
+	t.Cleanup(func() { timeSleepFn = origSleep })
+
+	err := waitHealthy([]string{"db"}, map[string]bool{"db": true},
+		5*time.Second, nil)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, sleepCalls, 1,
+		"expected the poll-interval sleep to run between polls")
+}

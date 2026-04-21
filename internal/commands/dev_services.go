@@ -37,6 +37,10 @@ const appServiceName = "app"
 // 30s is generous enough for slow laptops or Docker-starting-cold.
 const defaultWaitTimeout = 30 * time.Second
 
+// timeSleepFn is a package-level seam over time.Sleep so tests can
+// cover the waitHealthy poll-interval branch without blocking.
+var timeSleepFn = time.Sleep
+
 // devServices holds resolved orchestration configuration for one run
 // of `gofasta dev`. Built once in runDev and passed down; never mutated
 // after construction.
@@ -339,7 +343,7 @@ func waitHealthy(
 			return fmt.Errorf("services did not become healthy within %s: %s",
 				timeout, strings.Join(stuck, ", "))
 		}
-		time.Sleep(500 * time.Millisecond)
+		timeSleepFn(500 * time.Millisecond)
 	}
 }
 
