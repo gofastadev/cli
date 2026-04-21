@@ -52,6 +52,8 @@
     font-size: 18px;
     margin-top: 4px;
     font-family: ui-monospace, Menlo, monospace;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
   a { color: var(--primary); text-decoration: none; }
   a:hover { text-decoration: underline; }
@@ -314,6 +316,41 @@
     line-height: 1.5;
     white-space: pre-wrap;
   }
+  .requests-pager {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 8px;
+    padding: 6px 4px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: ui-monospace, Menlo, monospace;
+  }
+  .requests-pager-controls {
+    display: inline-flex;
+    gap: 8px;
+    align-items: center;
+  }
+  .requests-pager-page {
+    min-width: 80px;
+    text-align: center;
+    color: var(--fg);
+  }
+  .pager-btn {
+    background: rgba(79, 209, 229, 0.1);
+    border: 1px solid rgba(79, 209, 229, 0.25);
+    color: var(--primary);
+    padding: 3px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace;
+    font-size: 11px;
+  }
+  .pager-btn:hover:not([disabled]) { background: rgba(79, 209, 229, 0.2); }
+  .pager-btn[disabled] {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
 </style>
 </head>
 <body>
@@ -529,16 +566,207 @@
     }).join('');
     return '<table><thead><tr><th>Time</th><th>Root span</th><th>Spans</th><th>Duration</th><th>Status</th><th>Trace ID</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
+  function renderMetrics(m) {
+    if (!m || !m.metrics_ok) {
+      return '<div class="empty">/metrics not reachable yet — start the app (and make sure cfg.Observability.MetricsEnabled is true).</div>';
+    }
+    var cards = '' +
+      '<div class="card"><div class="label">Requests (total)</div><div class="value">' + (m.requests_total || 0) + '</div></div>' +
+      '<div class="card"><div class="label">In-flight</div><div class="value">' + (m.in_flight || 0) + '</div></div>';
+    if (m.latency_p50_ms != null) {
+      cards += '<div class="card"><div class="label">Avg latency</div><div class="value">' + m.latency_p50_ms.toFixed(1) + ' ms</div></div>';
+    }
+    return '<div class="grid">' + cards + '</div>';
+  }
+  function renderProfiles(pprofURL) {
+    if (!pprofURL) {
+      return '<div class="empty">pprof endpoints require the <code>devtools</code> build tag — start the app via <code>gofasta dev</code> to enable.</div>';
+    }
+    var items = [
+      ['Heap',        'heap?debug=1',      '→ snapshot'],
+      ['Goroutines',  'goroutine?debug=2', '→ dump'],
+      ['CPU (30s)',   'profile?seconds=30','→ .pprof'],
+      ['Allocations', 'allocs?debug=1',    '→ snapshot'],
+      ['Mutex',       'mutex?debug=1',     '→ contention'],
+      ['Block',       'block?debug=1',     '→ blocking ops'],
+      ['Trace (5s)',  'trace?seconds=5',   '→ .trace'],
+      ['Index',       '',                  '→ all profiles']
+    ];
+    var cards = items.map(function (it) {
+      return '<a class="card" href="' + esc(pprofURL + it[1]) + '" target="_blank" rel="noopener">' +
+        '<div class="label">' + it[0] + '</div>' +
+        '<div class="value" style="font-size: 14px; color: var(--primary);">' + it[2] + '</div>' +
+      '</a>';
+    }).join('');
+    return '<div class="grid" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));">' + cards + '</div>';
+  }
+  function renderGoroutines(g) {
+    if (!g || !g.groups || g.groups.length === 0) {
+      return '<div class="empty">Goroutines require the <code>devtools</code> build tag (<code>/debug/pprof/goroutine</code>) — start the app via <code>gofasta dev</code>.</div>';
+    }
+    var rows = g.groups.map(function (gr) {
+      var states = (gr.states || []).map(function (s) {
+        return '<span class="pill warn" style="margin-right: 4px;">' + esc(s) + '</span>';
+      }).join('');
+      return '<tr>' +
+        '<td><span class="pill ok">' + gr.count + '</span></td>' +
+        '<td style="font-size: 11px; color: var(--fg);">' + esc(gr.top) + '</td>' +
+        '<td>' + states + '</td>' +
+      '</tr>';
+    }).join('');
+    return '<table><thead><tr><th style="width: 10%;">Count</th><th>Top-of-stack</th><th style="width: 25%;">States</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  var requestsPage = 0;
+  var requestsPerPage = 10;
+  function renderRequests(reqs) {
+    if (!reqs || reqs.length === 0) {
+      return '<div class="empty">No captured requests yet — hit your app and they will appear here (requires the <code>devtools</code> build tag, which <code>gofasta dev</code> sets automatically).</div>';
+    }
+    var total = reqs.length;
+    var pageCount = Math.max(1, Math.ceil(total / requestsPerPage));
+    if (requestsPage >= pageCount) requestsPage = pageCount - 1;
+    if (requestsPage < 0) requestsPage = 0;
+    var start = requestsPage * requestsPerPage;
+    var end = Math.min(start + requestsPerPage, total);
+    var pageRows = reqs.slice(start, end);
+    var rows = pageRows.map(function (r) {
+      var cls = r.status < 300 ? 'ok' : (r.status < 500 ? 'warn' : 'err');
+      var traceCell = r.trace_id
+        ? '<a href="#" class="trace-jump" data-trace-id="' + esc(r.trace_id) + '">' + esc(String(r.trace_id).slice(0, 8)) + '…</a>'
+        : '—';
+      return '<tr>' +
+        '<td>' + fmtTime(r.time) + '</td>' +
+        '<td><span class="method">' + esc(r.method) + '</span></td>' +
+        '<td>' + esc(r.path) + '</td>' +
+        '<td><span class="pill ' + cls + '">' + r.status + '</span></td>' +
+        '<td>' + r.duration_ms + ' ms</td>' +
+        '<td style="color: var(--muted); font-size: 10px;">' + traceCell + '</td>' +
+        '<td><button class="replay-btn" data-method="' + esc(r.method) + '" data-path="' + esc(r.path) + '" data-body="' + esc(r.body || '') + '">replay</button></td>' +
+      '</tr>';
+    }).join('');
+    var prevDisabled = requestsPage === 0 ? 'disabled' : '';
+    var nextDisabled = requestsPage >= pageCount - 1 ? 'disabled' : '';
+    var pager =
+      '<div class="requests-pager">' +
+        '<span class="requests-pager-info">' +
+          'showing ' + (start + 1) + '–' + end + ' of ' + total +
+        '</span>' +
+        '<span class="requests-pager-controls">' +
+          '<button class="pager-btn" data-pager-action="prev" ' + prevDisabled + '>‹ prev</button>' +
+          '<span class="requests-pager-page">page ' + (requestsPage + 1) + ' / ' + pageCount + '</span>' +
+          '<button class="pager-btn" data-pager-action="next" ' + nextDisabled + '>next ›</button>' +
+        '</span>' +
+      '</div>';
+    return '<table><thead><tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr></thead><tbody>' + rows + '</tbody></table>' + pager;
+  }
+  function renderNPlusOne(items) {
+    if (!items || items.length === 0) {
+      return '<div class="empty">No N+1 patterns detected in recent traces.</div>';
+    }
+    var rows = items.map(function (n) {
+      return '<tr>' +
+        '<td><span class="pill err">' + n.count + '×</span></td>' +
+        '<td style="font-size: 11px; color: var(--fg);">' + esc(n.template) + '</td>' +
+        '<td style="font-size: 10px;"><a href="#" class="trace-jump" data-trace-id="' + esc(n.trace_id) + '">' + esc(String(n.trace_id).slice(0, 8)) + '…</a></td>' +
+      '</tr>';
+    }).join('');
+    return '<table><thead><tr><th style="width: 10%;">Count</th><th>SQL template</th><th style="width: 25%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function renderQueries(qs) {
+    if (!qs || qs.length === 0) {
+      return '<div class="empty">No captured queries yet — GORM calls will appear here when <code>devtools.GormPlugin()</code> is active (auto-enabled by <code>gofasta dev</code>).</div>';
+    }
+    var rows = qs.map(function (q) {
+      var sqlCell = q.error
+        ? '<span class="pill err">error</span> ' + esc(q.sql)
+        : esc(q.sql);
+      var varsAttr = (q.vars || []).map(esc).join('|');
+      if (varsAttr) { varsAttr += '|'; }
+      return '<tr>' +
+        '<td>' + fmtTime(q.time) + '</td>' +
+        '<td>' + q.rows + '</td>' +
+        '<td>' + q.duration_ms + ' ms</td>' +
+        '<td>' + sqlCell + '</td>' +
+        '<td><button class="explain-btn" data-sql="' + esc(q.sql) + '" data-vars="' + varsAttr + '">EXPLAIN</button></td>' +
+      '</tr>';
+    }).join('');
+    return '<table><thead><tr><th>Time</th><th>Rows</th><th>Duration</th><th>SQL</th><th style="width: 80px;">Plan</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function renderExceptions(exs) {
+    if (!exs || exs.length === 0) {
+      return '<div class="empty">No exceptions recorded this session.</div>';
+    }
+    var rows = exs.map(function (e) {
+      var traceCell = e.trace_id
+        ? '<a href="#" class="trace-jump" data-trace-id="' + esc(e.trace_id) + '">' + esc(String(e.trace_id).slice(0, 8)) + '…</a>'
+        : '—';
+      var stackRow = '';
+      if (e.stack && e.stack.length) {
+        stackRow = '<tr><td colspan="5" style="padding: 0 12px 8px 12px;">' +
+          '<pre style="margin: 0; padding: 6px 8px; background: rgba(10, 28, 36, 0.9); border-radius: 4px; font-size: 10px; color: var(--muted); max-height: 180px; overflow: auto;">' +
+          esc(e.stack.join('\n')) +
+          '</pre></td></tr>';
+      }
+      return '<tr>' +
+        '<td style="font-size: 10px;">' + fmtTime(e.time) + '</td>' +
+        '<td><span class="method">' + esc(e.method || '') + '</span></td>' +
+        '<td style="font-size: 11px;">' + esc(e.path || '') + '</td>' +
+        '<td style="color: var(--err); font-size: 11px;">' + esc(e.recovered) + '</td>' +
+        '<td style="font-size: 10px;">' + traceCell + '</td>' +
+      '</tr>' + stackRow;
+    }).join('');
+    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Method</th><th style="width: 25%;">Path</th><th>Recovered</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function renderCacheOps(ops) {
+    if (!ops || ops.length === 0) {
+      return '<div class="empty">No cache operations yet — they\'ll appear here once your app calls <code>container.CacheService</code>.</div>';
+    }
+    var rows = ops.map(function (c) {
+      var hitCell;
+      if (c.op === 'get') {
+        hitCell = c.hit ? '<span class="pill ok">hit</span>' : '<span class="pill warn">miss</span>';
+      } else {
+        hitCell = '—';
+      }
+      var traceCell = c.trace_id
+        ? '<a href="#" class="trace-jump" data-trace-id="' + esc(c.trace_id) + '">' + esc(String(c.trace_id).slice(0, 8)) + '…</a>'
+        : '—';
+      return '<tr>' +
+        '<td style="font-size: 10px;">' + fmtTime(c.time) + '</td>' +
+        '<td><span class="method">' + esc(c.op) + '</span></td>' +
+        '<td style="font-size: 11px;">' + esc(c.key || '') + '</td>' +
+        '<td>' + hitCell + '</td>' +
+        '<td>' + c.duration_ms + ' ms</td>' +
+        '<td style="font-size: 10px;">' + traceCell + '</td>' +
+      '</tr>';
+    }).join('');
+    return '<table><thead><tr><th style="width: 10%;">Time</th><th style="width: 10%;">Op</th><th>Key</th><th style="width: 10%;">Hit</th><th style="width: 10%;">Duration</th><th style="width: 15%;">Trace</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  function setHTML(id, html) {
+    var el = document.getElementById(id);
+    if (el) el.innerHTML = html;
+  }
+  var lastState = null;
   function apply(state) {
+    lastState = state;
     document.getElementById('app-url').textContent = state.app_url;
     document.getElementById('health').innerHTML = renderHealth(state.health);
     document.getElementById('port').textContent = state.app_port;
     document.getElementById('swagger').innerHTML = renderLink(state.swagger_url);
     document.getElementById('graphql').innerHTML = renderLink(state.graphql_url);
-    document.getElementById('services').innerHTML = renderServices(state.services);
-    document.getElementById('routes').innerHTML = renderRoutes(state.routes);
-    var tracesEl = document.getElementById('traces');
-    if (tracesEl) tracesEl.innerHTML = renderTraces(state.recent_traces);
+    var asynqmonEl = document.getElementById('asynqmon');
+    if (asynqmonEl) asynqmonEl.innerHTML = renderLink(state.asynqmon_url);
+    setHTML('services', renderServices(state.services));
+    setHTML('routes', renderRoutes(state.routes));
+    setHTML('metrics', renderMetrics(state.metrics));
+    setHTML('profiles', renderProfiles(state.pprof_url));
+    setHTML('goroutines', renderGoroutines(state.goroutines));
+    setHTML('requests', renderRequests(state.recent_requests));
+    setHTML('nplusone', renderNPlusOne(state.n_plus_one));
+    setHTML('queries', renderQueries(state.recent_queries));
+    setHTML('exceptions', renderExceptions(state.exceptions));
+    setHTML('cache-ops', renderCacheOps(state.cache_ops));
+    setHTML('traces', renderTraces(state.recent_traces));
     document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
   }
 
@@ -716,6 +944,20 @@
     if (t && t.id === 'explain-close') {
       var modal = document.getElementById('explain-modal');
       if (modal) modal.remove();
+      return;
+    }
+    // Requests pager prev/next — re-render the requests section from
+    // the cached state so clicks don't have to wait for the next SSE
+    // tick. Pagination is purely client-side; the ring itself is
+    // unchanged.
+    if (t && t.classList && t.classList.contains('pager-btn')) {
+      if (t.hasAttribute('disabled')) return;
+      var action = t.getAttribute('data-pager-action');
+      if (action === 'prev') requestsPage--;
+      if (action === 'next') requestsPage++;
+      if (lastState) {
+        setHTML('requests', renderRequests(lastState.recent_requests));
+      }
       return;
     }
     // Waterfall / Logs tab switching inside an expanded trace.
@@ -974,7 +1216,7 @@
       <div class="card"><div class="label">Requests (total)</div><div class="value">{{.RequestsTotal}}</div></div>
       <div class="card"><div class="label">In-flight</div><div class="value">{{.InFlight}}</div></div>
       {{- if .LatencyP50MS }}
-        <div class="card"><div class="label">Avg latency</div><div class="value">{{printf "%.1f" .LatencyP50MS}} ms</div></div>
+        <div class="card"><div class="label">Avg latency</div><div class="value">{{printf "%.1f" (deref .LatencyP50MS)}} ms</div></div>
       {{- end }}
     </div>
   {{- else -}}
@@ -987,12 +1229,15 @@
 
 {{define "requestsTable"}}
   {{- if . -}}
+    {{- $total := len . -}}
+    {{- $page := . -}}
+    {{- if gt $total 10 -}}{{- $page = slice . 0 10 -}}{{- end -}}
     <table>
       <thead>
         <tr><th>Time</th><th>Method</th><th>Path</th><th>Status</th><th>Duration</th><th>Trace</th><th>Replay</th></tr>
       </thead>
       <tbody>
-        {{- range . -}}
+        {{- range $page -}}
           <tr>
             <td>{{.Time.Format "15:04:05.000"}}</td>
             <td><span class="method">{{.Method}}</span></td>
@@ -1022,6 +1267,16 @@
         {{- end -}}
       </tbody>
     </table>
+    {{- if gt $total 10 -}}
+      <div class="requests-pager">
+        <span class="requests-pager-info">showing 1–{{len $page}} of {{$total}}</span>
+        <span class="requests-pager-controls">
+          <button class="pager-btn" data-pager-action="prev" disabled>‹ prev</button>
+          <span class="requests-pager-page">page 1</span>
+          <button class="pager-btn" data-pager-action="next">next ›</button>
+        </span>
+      </div>
+    {{- end -}}
   {{- else -}}
     <div class="empty">
       No captured requests yet — hit your app and they will appear here

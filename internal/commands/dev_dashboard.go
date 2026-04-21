@@ -47,6 +47,17 @@ func loadDashboardTemplate() (*template.Template, error) {
 	dashboardTemplateOnce.Do(func() {
 		dashboardTemplate, dashboardTemplateErr = template.
 			New("dashboard").
+			Funcs(template.FuncMap{
+				// deref lets the template format a *float64 via printf.
+				// The template only reaches this branch after `if
+				// .LatencyP50MS` so nil is defensive, not expected.
+				"deref": func(p *float64) float64 {
+					if p == nil {
+						return 0
+					}
+					return *p
+				},
+			}).
 			Parse(dashboardTemplateSource)
 	})
 	return dashboardTemplate, dashboardTemplateErr
