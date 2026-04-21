@@ -11,7 +11,15 @@ import (
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/utils"
+	"go.opentelemetry.io/otel"
 )
+
+// userServiceTracerName is the OpenTelemetry tracer scope for this
+// service. Every method opens a span under this scope so the dev
+// dashboard's trace waterfall shows a proper controller → service →
+// repository breakdown. Matches the pattern `gofasta g service` emits
+// for newly generated resources.
+const userServiceTracerName = "{{.ModulePath}}/app/services/user"
 
 // Compile-time check that UserService implements UserServiceInterface.
 var _ svcInterfaces.UserServiceInterface = (*UserService)(nil)
@@ -29,6 +37,9 @@ func NewUserService(userRepo repoInterfaces.UserRepositoryInterface, appValidato
 }
 
 func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.UserFiltersDto) (*dtos.TUsersResponseDto, error) {
+	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.FindUsersWithFilters")
+	defer span.End()
+
 	paginator := utils.PreparePaginating{PageFilters: filters.Pagination, Sorting: filters.Sorting}
 	page := paginator.GetPage()
 	limit := paginator.GetLimit()
@@ -37,6 +48,7 @@ func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.Use
 	filterMap := utils.ConvertStructToMap(filters.Fields)
 	users, totalCount, err := u.UserRepo.FindWithFilters(ctx, filterMap, page, limit, sort)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 
@@ -64,11 +76,15 @@ func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.Use
 }
 
 func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto) (*dtos.TUserResponseDto, error) {
+	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.CreateUser")
+	defer span.End()
+
 	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
 		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
 	}
 	randomPassword, err := utils.GeneratePassword(16)
 	if err != nil {
+		span.RecordError(err)
 		slog.Error("failed to generate random password", "error", err)
 		return nil, err
 	}
@@ -80,13 +96,20 @@ func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto)
 		Password:    randomPassword,
 	}
 	if err := u.UserRepo.Create(ctx, userData); err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	user, err := castUserModelToUserDto(userData)
+	if err != nil {
+		span.RecordError(err)
+	}
 	return &dtos.TUserResponseDto{Data: user}, err
 }
 
 func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForUpdateDto) (*dtos.TUserResponseDto, error) {
+	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.UpdateUser")
+	defer span.End()
+
 	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
 		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
 	}
@@ -98,39 +121,51 @@ func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForU
 	}
 	userDataForUpdate := utils.ConvertStructToMap(input)
 	if err := u.UserRepo.Update(ctx, input.ID, userDataForUpdate); err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	foundUser, err := u.UserRepo.FindByID(ctx, input.ID)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	dto, err := castUserModelToUserDto(foundUser)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	return &dtos.TUserResponseDto{Data: dto}, nil
 }
 
 func (u *UserService) FindUserByID(ctx context.Context, filters dtos.TFindUserByIDDto) (*dtos.TUserResponseDto, error) {
+	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.FindUserByID")
+	defer span.End()
+
 	if validationErrors := u.Validator.ValidateStruct(filters); len(validationErrors) > 0 {
 		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
 	}
 	user, err := u.UserRepo.FindByID(ctx, filters.UserID)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	dto, err := castUserModelToUserDto(user)
 	if err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	return &dtos.TUserResponseDto{Data: dto}, nil
 }
 
 func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.TCommonResponseDto, error) {
+	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.ArchiveUser")
+	defer span.End()
+
 	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
 		return &dtos.TCommonResponseDto{Errors: validationErrors}, nil
 	}
 	if err := u.UserRepo.SoftDelete(ctx, input.UserID); err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	status := 200
