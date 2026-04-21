@@ -785,7 +785,25 @@
     setHTML('exceptions', renderExceptions(state.exceptions));
     setHTML('cache-ops', renderCacheOps(state.cache_ops));
     setHTML('traces', renderTraces(state.recent_traces));
+    restoreExpandedTraces();
     document.getElementById('updated').textContent = new Date(state.last_updated_ms).toLocaleTimeString();
+  }
+  // After the Traces table is re-rendered on each SSE tick, re-open
+  // every trace the user had expanded. IDs no longer in the snapshot
+  // (rotated out of the ring) are dropped from the set.
+  function restoreExpandedTraces() {
+    if (expandedTraces.size === 0) return;
+    expandedTraces.forEach(function (id) {
+      var row = document.querySelector('.trace-row[data-trace-id="' + id + '"]');
+      if (!row) {
+        expandedTraces.delete(id);
+        return;
+      }
+      // toggleTrace toggles — since the row was just re-rendered
+      // without an .trace-expanded sibling, calling it will expand.
+      // It also re-adds the id to the set (no-op for a Set).
+      toggleTrace(id, row);
+    });
   }
 
   // ── Trace waterfall drill-down ────────────────────────────────────
@@ -795,6 +813,11 @@
   // clicks are free. Span bars are positioned by offset_ms and
   // width-scaled by duration_ms.
   var traceCache = {};
+  // Trace IDs currently expanded in the UI. Persisted across SSE
+  // re-renders so a fresh snapshot doesn't collapse the waterfall
+  // the user is reading. apply() consults this set after it rebuilds
+  // the Traces table and re-expands each still-visible ID.
+  var expandedTraces = new Set();
   function renderWaterfall(trace) {
     if (!trace || !trace.spans || trace.spans.length === 0) {
       return '<div class="empty">This trace carries no spans yet.</div>';
@@ -857,8 +880,10 @@
     var existing = row.nextElementSibling;
     if (existing && existing.classList && existing.classList.contains('trace-expanded')) {
       existing.remove();
+      expandedTraces.delete(id);
       return;
     }
+    expandedTraces.add(id);
     var holder = document.createElement('tr');
     holder.className = 'trace-expanded';
     var cell = document.createElement('td');
