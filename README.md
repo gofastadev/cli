@@ -8,7 +8,7 @@ The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go
 
 The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` at `cmd/gofasta/`. It is not the same as the `github.com/gofastadev/gofasta` library, which your generated projects import as a dependency. You install one, you import the other.
 
-**Option A — `go install` (recommended for Go developers, requires Go 1.25.0+):**
+**Option A — `go install` (recommended for Go developers, requires Go 1.25.0+, install Go: <https://go.dev/doc/install>):**
 
 ```bash
 go install github.com/gofastadev/cli/cmd/gofasta@latest
@@ -129,7 +129,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
 3. Copies ~78 template files, replacing placeholders with your project name
-4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies (Wire, gqlgen, Air, swag)
+4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
 7. Generates GraphQL resolver code
@@ -137,7 +137,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 
 ## Start Developing
 
-After creating a project:
+After creating a project, you have two ways to run it. Either path requires **Docker** (install: <https://docs.docker.com/get-docker/>) — the recommended path runs the entire stack in containers; the host-machine path uses Docker only for PostgreSQL and runs the app on the host.
 
 ```bash
 cd myapp
@@ -145,9 +145,9 @@ cd myapp
 # Option 1: Docker (recommended — starts app + PostgreSQL)
 make up
 
-# Option 2: Host machine (requires local PostgreSQL)
+# Option 2: Host machine (requires local PostgreSQL or Docker for the DB)
 docker compose up db -d    # Start just the database
-make dev                   # Run with hot reload
+make dev                   # Run with hot reload (uses Air, fetched as a go.mod tool)
 ```
 
 Your app is now running:
@@ -429,7 +429,7 @@ cli/
 │   │   ├── serve.go              # Passthrough to project serve
 │   │   ├── seed.go               # Passthrough to project seed
 │   │   ├── swagger.go            # Swagger generation
-│   │   └── configutil/           # Reads config.yaml without framework import
+│   │   └── configutil/           # Reads config.yaml without importing the gofasta library
 │   ├── generate/                  # Code generation engine
 │   │   ├── commands.go           # Generate subcommands and step chains
 │   │   ├── types.go              # ScaffoldData, Field, Step types
@@ -449,6 +449,10 @@ cli/
 ├── go.mod
 └── README.md
 ```
+
+## Maintenance and sustainability
+
+Gofasta is currently maintained by one person; sustainability planning — release cadence, security SLOs, the solo-to-team transition, and the automation arc that retires manual steps as the project matures — is documented in the [release coordination repo](https://github.com/gofastadev/release), specifically in [`CADENCE.md`](https://github.com/gofastadev/release/blob/main/CADENCE.md), [`RELEASING.md`](https://github.com/gofastadev/release/blob/main/RELEASING.md), and [`COMMUNITY.md`](https://github.com/gofastadev/release/blob/main/COMMUNITY.md). Read those three together for the full picture.
 
 ## License
 

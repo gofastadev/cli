@@ -1,0 +1,104 @@
+# GoReleaser configuration for the gofasta CLI.
+# Docs: https://goreleaser.com
+# Run locally: goreleaser release --snapshot --clean
+
+version: 2
+
+project_name: gofasta
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: gofasta
+    main: ./cmd/gofasta
+    binary: gofasta
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.Version={{.Version}}
+      - -X main.Commit={{.Commit}}
+      - -X main.BuildDate={{.Date}}
+
+archives:
+  - id: gofasta
+    ids: [gofasta]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - LICENSE
+      - README.md
+      - CHANGELOG.md
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Documentation
+      regexp: '^.*?docs(\(.+\))??!?:.+$'
+      order: 2
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^chore:"
+      - "^ci:"
+      - "^test:"
+      - "merge conflict"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: gofastadev
+    name: cli
+  draft: false
+  prerelease: auto
+  mode: replace
+  header: |
+    ## Gofasta CLI {{ .Tag }}
+
+    Install or upgrade with the shell installer (no Go toolchain required):
+
+    ```bash
+    curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
+    ```
+
+    Or with Go installed:
+
+    ```bash
+    go install github.com/gofastadev/cli/cmd/gofasta@{{ .Tag }}
+    ```
+
+    Verify a downloaded archive against `checksums.txt`:
+
+    ```bash
+    sha256sum --check --ignore-missing checksums.txt
+    ```
+  footer: |
+    See [`CHANGELOG.md`](https://github.com/gofastadev/cli/blob/{{ .Tag }}/CHANGELOG.md) for the curated changelog and [`COMPATIBILITY.md`](https://github.com/gofastadev/release/blob/main/COMPATIBILITY.md) for the (cli, gofasta) pairing this release supports.
