@@ -429,7 +429,7 @@ cli/
 │   │   ├── serve.go              # Passthrough to project serve
 │   │   ├── seed.go               # Passthrough to project seed
 │   │   ├── swagger.go            # Swagger generation
-│   │   └── configutil/           # Reads config.yaml without framework import
+│   │   └── configutil/           # Reads config.yaml without importing the gofasta library
 │   ├── generate/                  # Code generation engine
 │   │   ├── commands.go           # Generate subcommands and step chains
 │   │   ├── types.go              # ScaffoldData, Field, Step types
