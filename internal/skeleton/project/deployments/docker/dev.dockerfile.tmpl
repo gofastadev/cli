@@ -14,6 +14,12 @@ WORKDIR /{{.ProjectNameLower}}
 COPY go.mod go.sum ./
 RUN go mod download
 
+# Inside a container the app must listen on all interfaces so the
+# published port is reachable from the host. The framework default is
+# loopback — fine on the host (skips macOS firewall popup during Air
+# rebuilds), wrong inside a container.
+ENV {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
+
 EXPOSE ${PORT:-8080}
 
 CMD ["sh", "-c", "\

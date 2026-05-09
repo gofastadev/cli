@@ -1,4 +1,11 @@
 server:
+  # Bind address. The default 127.0.0.1 keeps the dev server on loopback,
+  # which on macOS skips the firewall popup that would otherwise fire on
+  # every Air rebuild. For Docker / production set host to 0.0.0.0 — the
+  # scaffold's Dockerfile and compose manifests do this via env var
+  # ({{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0), so you usually don't
+  # need to change it here.
+  host: "127.0.0.1"
   port: "8080"
   shutdown_timeout: 15s
   allowed_origins:

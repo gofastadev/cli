@@ -16,6 +16,12 @@ services:
       - go_build_cache:/root/.cache/go-build
     environment:
       - PORT=${PORT:-8080}
+      # Listen on all interfaces inside the container so the host can reach
+      # the published port. The framework's default Server.Host is the
+      # loopback 127.0.0.1 (which sidesteps macOS's firewall prompt during
+      # host-side Air rebuilds), so the dockerized dev container has to
+      # opt out of that default explicitly.
+      - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
       - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=5432

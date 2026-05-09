@@ -33,6 +33,12 @@ COPY config.yaml /config.yaml
 COPY templates /templates
 
 ENV PORT=8080
+# Container apps must listen on all interfaces so the published port is
+# reachable from outside the container. The framework default is 127.0.0.1
+# (loopback) to avoid the macOS firewall prompt during local Air rebuilds;
+# inside a container that default would make the app unreachable, hence
+# this override.
+ENV {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
 EXPOSE 8080
 
 ENTRYPOINT ["/app"]

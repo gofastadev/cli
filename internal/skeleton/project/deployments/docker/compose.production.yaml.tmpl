@@ -11,6 +11,11 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     environment:
+      # Container apps must bind to all interfaces so the published port is
+      # reachable from outside. The framework default is loopback (127.0.0.1)
+      # to keep the macOS firewall quiet during local Air rebuilds; we
+      # override it here so production containers actually serve traffic.
+      - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
       - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=5432

@@ -127,8 +127,14 @@ func startServer() error {
 	}
 	rootHandler := middleware.Chain(mux, middlewares...)
 
+	// Bind to cfg.Server.Host:Port. The default host (set in pkg/config) is
+	// 127.0.0.1, which keeps macOS's firewall quiet during local Air rebuilds —
+	// the OS only prompts for permission on non-loopback listeners. Production
+	// containers and VPS deploys override this via env var (e.g.
+	// {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0); the scaffold's Dockerfile and
+	// compose manifests do this already.
 	srv := &http.Server{
-		Addr:    ":" + cfg.Server.Port,
+		Addr:    cfg.Server.Host + ":" + cfg.Server.Port,
 		Handler: rootHandler,
 	}
 
@@ -149,7 +155,7 @@ func startServer() error {
 	defer stop()
 
 	go func() {
-		slog.Info("server starting", "port", cfg.Server.Port)
+		slog.Info("server starting", "host", cfg.Server.Host, "port", cfg.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)
