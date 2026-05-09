@@ -1,15 +1,13 @@
 # golangci-lint configuration for gofasta-scaffolded projects.
 #
-# This config is intentionally relaxed compared to the gofasta toolkit's
-# own .golangci.yml — generated projects start as a curated default and
-# are expected to be heavily edited by the developer. Linters that fight
-# scaffold patterns (revive's exported-doc-comment requirement, dupl,
-# unused, unparam) are disabled here so a freshly-scaffolded project is
-# preflight-clean out of the box. Re-enable any of them as the project
-# matures and a stricter bar becomes useful.
+# Mirrors the gofasta toolkit's own .golangci.yml — same linters, same
+# rule set, same thresholds. The intent is that a freshly-scaffolded
+# project starts at the quality bar a senior Go engineer would write,
+# and stays there as it grows. Re-running `make preflight` is the gate
+# for "is this work shippable?".
 #
 # Linter version is pinned in the Makefile (GOLANGCI_LINT_VERSION) and
-# must match .github/workflows/test.yml.
+# must match .github/workflows/test.yml. Bump them together.
 
 version: "2"
 
@@ -23,33 +21,32 @@ linters:
     - staticcheck
     - govet
     - ineffassign
+    - unused
 
     # Complexity (nudges away from overly tangled funcs)
     - gocyclo
     - gocognit
 
+    # Duplication (catches CRUD copy-paste — diverge or extract)
+    - dupl
+
     # Style / structure
     - gocritic
+    - revive
     - misspell
     - unconvert
+    - unparam
     - nakedret
     - prealloc
     - nolintlint
-
-  # Disable defaults that are too strict for a scaffold. golangci-lint v2
-  # enables a base set automatically; "enable" adds to it. The list below
-  # explicitly turns OFF the noisy ones for early-stage projects:
-  #   - unused: the scaffold ships starter helpers (e.g. validator funcs)
-  #     that aren't called from main yet but exist for the developer to
-  #     wire up. Re-enable as the project matures.
-  disable:
-    - unused
 
   settings:
     gocyclo:
       min-complexity: 15
     gocognit:
       min-complexity: 30
+    dupl:
+      threshold: 150
     gocritic:
       enabled-tags:
         - diagnostic
@@ -58,6 +55,30 @@ linters:
       disabled-checks:
         - hugeParam
         - rangeValCopy
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: context-keys-type
+        - name: dot-imports
+        - name: error-return
+        - name: error-strings
+        - name: error-naming
+        - name: exported
+          arguments:
+            - "checkPrivateReceivers"
+        - name: if-return
+        - name: increment-decrement
+        - name: var-naming
+        - name: var-declaration
+        - name: range
+        - name: receiver-naming
+        - name: time-naming
+        - name: unexported-return
+        - name: indent-error-flow
+        - name: errorf
+        - name: superfluous-else
+        - name: unreachable-code
     misspell:
       locale: US
     nakedret:
@@ -77,13 +98,19 @@ linters:
     rules:
       - path: _test\.go
         linters:
+          - dupl
           - gocritic
           - gocyclo
           - gocognit
           - errcheck
       - path: testutil/mocks/
         linters:
+          # Mocks intentionally satisfy interfaces with stubbed/no-op
+          # behavior — exported-doc-comment, errcheck, and dupl rules
+          # don't add value here.
           - errcheck
+          - revive
+          - dupl
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
       # writes the type defs after the methods that reference them. That's
       # gqlgen's intentional output — we don't get to reformat it without
@@ -91,6 +118,7 @@ linters:
       - path: app/graphql/resolvers/
         linters:
           - gocritic
+          - revive
 
 formatters:
   enable:

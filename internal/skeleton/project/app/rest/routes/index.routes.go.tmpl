@@ -10,6 +10,11 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 
 	"{{.ModulePath}}/app/rest/controllers"
+
+	// Importing the generated docs package for its side-effect: its
+	// init() registers the swagger spec with httpSwagger so the /swagger
+	// route can serve it. The package exposes no callable API; the
+	// blank import is the documented swag/http-swagger pattern.
 	_ "{{.ModulePath}}/docs"
 )
 
@@ -20,7 +25,12 @@ type RouteConfig struct {
 	WebSocketHub     *websocket.Hub
 }
 
-func InitApiRoutes(config *RouteConfig) *chi.Mux {
+// InitAPIRoutes wires every REST route the project exposes onto a fresh
+// chi.Mux: health/liveness/readiness, swagger UI, the websocket
+// endpoint, and the /api/v1 sub-router with the per-resource routes.
+// New resources scaffolded via `gofasta g scaffold` register their
+// routes inside the api sub-router below.
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Health checks

@@ -25,11 +25,16 @@ const userServiceTracerName = "{{.ModulePath}}/app/services/user"
 // Compile-time check that UserService implements UserServiceInterface.
 var _ svcInterfaces.UserServiceInterface = (*UserService)(nil)
 
+// UserService implements the user-domain business logic on top of the
+// repository layer. It owns input validation, optimistic-locking checks,
+// and the model→DTO mapping the controller returns to clients.
 type UserService struct {
 	UserRepo  repoInterfaces.UserRepositoryInterface
 	Validator *validators.AppValidator
 }
 
+// NewUserService constructs a UserService bound to the supplied
+// repository + validator. Wire calls this at app startup.
 func NewUserService(userRepo repoInterfaces.UserRepositoryInterface, appValidator *validators.AppValidator) *UserService {
 	return &UserService{
 		UserRepo:  userRepo,
@@ -37,6 +42,9 @@ func NewUserService(userRepo repoInterfaces.UserRepositoryInterface, appValidato
 	}
 }
 
+// FindUsersWithFilters returns the paginated set of users matching the
+// supplied filters, alongside pagination metadata the client needs to
+// render page controls.
 func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.UserFiltersDto) (*dtos.TUsersResponseDto, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.FindUsersWithFilters")
 	defer span.End()
@@ -54,13 +62,9 @@ func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.Use
 	}
 
 	// Convert models to DTOs
-	var userDtos []*dtos.User
+	userDtos := make([]*dtos.User, 0, len(users))
 	for _, user := range users {
-		dto, err := castUserModelToUserDto(user)
-		if err != nil {
-			return nil, err
-		}
-		userDtos = append(userDtos, dto)
+		userDtos = append(userDtos, castUserModelToUserDto(user))
 	}
 
 	totalRecords := int(totalCount)
@@ -76,6 +80,10 @@ func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.Use
 	}, nil
 }
 
+// CreateUser validates the input, generates a random initial password,
+// inserts the user, and returns the freshly-persisted record. Validation
+// failures come back as Errors in the response (HTTP 200 with a body)
+// rather than as a Go error — only infrastructure failures bubble up.
 func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto) (*dtos.TUserResponseDto, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.CreateUser")
 	defer span.End()
@@ -100,13 +108,13 @@ func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto)
 		span.RecordError(err)
 		return nil, err
 	}
-	user, err := castUserModelToUserDto(userData)
-	if err != nil {
-		span.RecordError(err)
-	}
-	return &dtos.TUserResponseDto{Data: user}, err
+	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(userData)}, nil
 }
 
+// UpdateUser applies a partial update under optimistic locking. The
+// caller's RecordVersion must match the persisted version or the update
+// is rejected with a structured error — preventing two concurrent edits
+// from silently overwriting each other.
 func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForUpdateDto) (*dtos.TUserResponseDto, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.UpdateUser")
 	defer span.End()
@@ -130,14 +138,11 @@ func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForU
 		span.RecordError(err)
 		return nil, err
 	}
-	dto, err := castUserModelToUserDto(foundUser)
-	if err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
-	return &dtos.TUserResponseDto{Data: dto}, nil
+	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(foundUser)}, nil
 }
 
+// FindUserByID returns the user identified by filters.UserID. Returns
+// validation errors in-band; surfaces repository errors as Go errors.
 func (u *UserService) FindUserByID(ctx context.Context, filters dtos.TFindUserByIDDto) (*dtos.TUserResponseDto, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.FindUserByID")
 	defer span.End()
@@ -150,14 +155,12 @@ func (u *UserService) FindUserByID(ctx context.Context, filters dtos.TFindUserBy
 		span.RecordError(err)
 		return nil, err
 	}
-	dto, err := castUserModelToUserDto(user)
-	if err != nil {
-		span.RecordError(err)
-		return nil, err
-	}
-	return &dtos.TUserResponseDto{Data: dto}, nil
+	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(user)}, nil
 }
 
+// ArchiveUser soft-deletes the user identified by input.UserID, after
+// running the is_record_deletable validator to guard rows that should
+// not be archivable (system accounts, etc.).
 func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.TCommonResponseDto, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.ArchiveUser")
 	defer span.End()
@@ -174,8 +177,12 @@ func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDt
 	return &dtos.TCommonResponseDto{Status: status, Message: &message}, nil
 }
 
-func castUserModelToUserDto(user *models.User) (*dtos.User, error) {
-	foundUser := &dtos.User{
+// castUserModelToUserDto maps a persisted User onto its public-facing
+// DTO. The mapping is total and infallible — callers don't need to
+// handle errors. If a future field requires conversion that can fail,
+// reintroduce an error return at that point.
+func castUserModelToUserDto(user *models.User) *dtos.User {
+	return &dtos.User{
 		ID:            user.ID,
 		RecordVersion: user.RecordVersion,
 		FirstName:     user.FirstName,
@@ -188,5 +195,4 @@ func castUserModelToUserDto(user *models.User) (*dtos.User, error) {
 		IsDeletable:   user.IsDeletable,
 		DeletedAt:     &user.DeletedAt,
 	}
-	return foundUser, nil
 }

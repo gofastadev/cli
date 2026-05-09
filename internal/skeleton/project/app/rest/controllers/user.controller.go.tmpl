@@ -116,7 +116,7 @@ func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) err
 //	@Failure		500		{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [put]
 func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
@@ -125,7 +125,7 @@ func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) err
 	if err := json.NewDecoder(r.Body).Decode(&dataForUpdate); err != nil {
 		return apperrors.NewBadRequest("invalid request payload", nil)
 	}
-	dataForUpdate.ID = userId
+	dataForUpdate.ID = userID
 
 	updatedUser, err := uc.UserService.UpdateUser(r.Context(), dataForUpdate)
 	if err != nil {
@@ -147,12 +147,12 @@ func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) err
 //	@Failure		500	{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [get]
 func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
 
-	user, err := uc.UserService.FindUserByID(r.Context(), dtos.TFindUserByIDDto{UserID: userId})
+	user, err := uc.UserService.FindUserByID(r.Context(), dtos.TFindUserByIDDto{UserID: userID})
 	if err != nil {
 		return apperrors.NewInternal("failed to find user", err)
 	}
@@ -172,12 +172,12 @@ func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error 
 //	@Failure		500	{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users/{id} [delete]
 func (uc *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
-	userId, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
 
-	res, err := uc.UserService.ArchiveUser(r.Context(), dtos.TArchiveUserDto{UserID: userId})
+	res, err := uc.UserService.ArchiveUser(r.Context(), dtos.TArchiveUserDto{UserID: userID})
 	if err != nil {
 		return apperrors.NewInternal("failed to archive user", err)
 	}

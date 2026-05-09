@@ -74,7 +74,7 @@ func startServer() error {
 
 	// Build REST router
 	healthController := health.NewController(container.DB, container.CacheService)
-	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
 		UserController:   container.UserController,
 		HealthController: healthController,
 		WebSocketHub:     container.WebSocketHub,

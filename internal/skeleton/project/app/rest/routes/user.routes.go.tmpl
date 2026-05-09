@@ -7,6 +7,9 @@ import (
 	"{{.ModulePath}}/app/rest/controllers"
 )
 
+// UserRoutes registers the REST surface for the User resource on the
+// supplied chi router. Generated routes follow the standard scaffold
+// layout: list / create / get / update / archive.
 func UserRoutes(r chi.Router, uc *controllers.UserController) {
 	r.Get("/users", httputil.Handle(uc.ListUsers))
 	r.Post("/users", httputil.Handle(uc.CreateUser))

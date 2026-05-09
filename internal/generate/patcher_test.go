@@ -207,7 +207,7 @@ type RouteConfig struct {
 	HealthController *health.Controller
 }
 
-func InitApiRoutes(config *RouteConfig) *chi.Mux {
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 	api := chi.NewRouter()
 	r.Mount("/api/v1", api)
@@ -243,7 +243,7 @@ func TestPatchServeFile_AddsController(t *testing.T) {
 
 	serveContent := `package cmd
 
-	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
 		HealthController: healthController,
 	})
 `

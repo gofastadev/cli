@@ -112,26 +112,56 @@ func ProvideLogger(cfg *config.LogConfig) *slog.Logger {
 	return wrapped
 }
 
-func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }
-func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig           { return &cfg.Log }
-func ProvideEmailConfig(cfg *config.AppConfig) *config.EmailConfig       { return &cfg.Email }
-func ProvideSlackConfig(cfg *config.AppConfig) *config.SlackConfig       { return &cfg.Slack }
+// The functions below pluck a typed sub-config off the loaded AppConfig.
+// Wire needs each as a separate provider so packages that only depend on
+// (say) DatabaseConfig don't transitively pull AppConfig into their
+// build graph.
+
+// ProvideDBConfig exposes the Database section of AppConfig as a Wire provider.
+func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig { return &cfg.Database }
+
+// ProvideLogConfig exposes the Log section of AppConfig as a Wire provider.
+func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig { return &cfg.Log }
+
+// ProvideEmailConfig exposes the Email section of AppConfig as a Wire provider.
+func ProvideEmailConfig(cfg *config.AppConfig) *config.EmailConfig { return &cfg.Email }
+
+// ProvideSlackConfig exposes the Slack section of AppConfig as a Wire provider.
+func ProvideSlackConfig(cfg *config.AppConfig) *config.SlackConfig { return &cfg.Slack }
+
+// ProvideWhatsAppConfig exposes the WhatsApp section of AppConfig as a Wire provider.
 func ProvideWhatsAppConfig(cfg *config.AppConfig) *config.WhatsAppConfig { return &cfg.WhatsApp }
-func ProvideAuthConfig(cfg *config.AppConfig) *config.AuthConfig         { return &cfg.Auth }
-func ProvideCacheConfig(cfg *config.AppConfig) *config.CacheConfig       { return &cfg.Cache }
-func ProvideStorageConfig(cfg *config.AppConfig) *config.StorageConfig   { return &cfg.Storage }
-func ProvideQueueConfig(cfg *config.AppConfig) *config.QueueConfig       { return &cfg.Queue }
+
+// ProvideAuthConfig exposes the Auth section of AppConfig as a Wire provider.
+func ProvideAuthConfig(cfg *config.AppConfig) *config.AuthConfig { return &cfg.Auth }
+
+// ProvideCacheConfig exposes the Cache section of AppConfig as a Wire provider.
+func ProvideCacheConfig(cfg *config.AppConfig) *config.CacheConfig { return &cfg.Cache }
+
+// ProvideStorageConfig exposes the Storage section of AppConfig as a Wire provider.
+func ProvideStorageConfig(cfg *config.AppConfig) *config.StorageConfig { return &cfg.Storage }
+
+// ProvideQueueConfig exposes the Queue section of AppConfig as a Wire provider.
+func ProvideQueueConfig(cfg *config.AppConfig) *config.QueueConfig { return &cfg.Queue }
 
 // --- Complex providers ---
 
+// ProvideTemplateRenderer constructs the HTML email template renderer
+// rooted at templates/emails and stamps every email with the configured
+// From-name as the default sender.
 func ProvideTemplateRenderer(cfg *config.AppConfig) *mailer.TemplateRenderer {
 	return mailer.NewTemplateRenderer("templates/emails", cfg.Email.FromName)
 }
 
+// ProvideWebSocketHub constructs the framework's WebSocket hub used for
+// real-time fan-out (rooms, broadcasts, per-connection state).
 func ProvideWebSocketHub(log *slog.Logger) *websocket.Hub {
 	return websocket.NewHub(log)
 }
 
+// ProvideNotifier wires a multi-channel notifier with email + database
+// channels enabled by default. Add channels (Slack, SMS, etc.) here as
+// the project grows.
 func ProvideNotifier(log *slog.Logger, emailSender mailer.EmailSender, db *gorm.DB) *notify.Notifier {
 	return notify.NewNotifier(log,
 		notify.NewEmailChannel(emailSender),
@@ -139,10 +169,16 @@ func ProvideNotifier(log *slog.Logger, emailSender mailer.EmailSender, db *gorm.
 	)
 }
 
+// ProvideI18nService constructs the i18n service backed by the locales
+// directory + default language declared in config.
 func ProvideI18nService(cfg *config.AppConfig) *i18n.I18nService {
 	return i18n.NewI18nService(cfg.I18n.LocalesDir, cfg.I18n.DefaultLanguage)
 }
 
+// ProvideEncrypter constructs the AES-256-GCM encrypter used for
+// at-rest field encryption. Returns nil if no key is configured or if
+// the key fails to parse — callers should treat a nil encrypter as
+// "encryption disabled" rather than panic.
 func ProvideEncrypter(cfg *config.AppConfig) *encryption.Encrypter {
 	if cfg.Encryption.Key == "" {
 		return nil
@@ -154,6 +190,9 @@ func ProvideEncrypter(cfg *config.AppConfig) *encryption.Encrypter {
 	return enc
 }
 
+// ProvideSessionStore constructs the session store named by config —
+// filesystem-backed when sessions need to survive a process restart,
+// cookie-backed (the default) when statelessness is preferred.
 func ProvideSessionStore(cfg *config.AppConfig) *session.Store {
 	sc := cfg.Session
 	if sc.Driver == "filesystem" {

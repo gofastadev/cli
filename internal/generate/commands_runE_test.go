@@ -103,7 +103,7 @@ type RouteConfig struct {
 	// controllers
 }
 
-func InitApiRoutes(config *RouteConfig) *chi.Mux {
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 	api := chi.NewRouter()
 	r.Mount("/api/v1", api)

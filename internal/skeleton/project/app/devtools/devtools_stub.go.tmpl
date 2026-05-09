@@ -76,5 +76,9 @@ func GormPlugin() gorm.Plugin {
 
 type stubGormPlugin struct{}
 
-func (s *stubGormPlugin) Name() string                { return "gofasta-devtools-stub" }
+// Name returns the GORM plugin identifier.
+func (s *stubGormPlugin) Name() string { return "gofasta-devtools-stub" }
+
+// Initialize is a no-op so the production build pays nothing for the
+// devtools hook surface.
 func (s *stubGormPlugin) Initialize(_ *gorm.DB) error { return nil }

@@ -1,14 +1,32 @@
+// Package dtos defines the request and response shapes the project's
+// REST/GraphQL surfaces accept and return. The aliases below re-export
+// the framework's shared DTO types under a project-local name so handler
+// signatures don't drag a `gofastadev/gofasta/pkg/types` import into
+// every controller.
 package dtos
 
 import "github.com/gofastadev/gofasta/pkg/types"
 
+// TPaginationInputDto carries page + limit on list-style requests.
 type TPaginationInputDto = types.TPaginationInputDto
+
+// TSortingInputDto carries the sort field + orientation on list-style requests.
 type TSortingInputDto = types.TSortingInputDto
+
+// TPaginationObjectDto is the pagination block returned alongside list responses.
 type TPaginationObjectDto = types.TPaginationObjectDto
+
+// TCommonAPIErrorDto is the per-field error shape used in validation responses.
 type TCommonAPIErrorDto = types.TCommonAPIErrorDto
+
+// TCommonResponseDto is the envelope used by endpoints that return a status + message only.
 type TCommonResponseDto = types.TCommonResponseDto
+
+// SortOrientation enumerates the directions a sort can take (ASC / DESC).
 type SortOrientation = types.SortOrientation
 
+// Sort orientation constants re-exported from the framework. Use these
+// when constructing TSortingInputDto values.
 const (
 	SortOrientationAsc  = types.SortOrientationAsc
 	SortOrientationDesc = types.SortOrientationDesc
