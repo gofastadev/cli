@@ -1,7 +1,14 @@
 # .github/workflows/test.yml
 # Copy this file to .github/workflows/test.yml
 #
-# Runs on every push and PR: lint, test, build.
+# Runs the project's full preflight on every push and PR. The preflight
+# target (in the project's Makefile) chains: gofmt check, go vet,
+# golangci-lint with the pinned version, race tests, and a build —
+# mirroring gofasta's own development workflow so a green local
+# preflight predicts a green CI run.
+#
+# The pinned golangci-lint version below MUST match GOLANGCI_LINT_VERSION
+# in the Makefile. Bump them together when upgrading.
 
 name: Test
 
@@ -12,7 +19,7 @@ on:
     branches: [main, develop]
 
 jobs:
-  test:
+  preflight:
     runs-on: ubuntu-latest
 
     services:
@@ -30,6 +37,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      {{.ProjectNameUpper}}_DATABASE_HOST: localhost
+      {{.ProjectNameUpper}}_DATABASE_PORT: "5432"
+      {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+
     steps:
       - uses: actions/checkout@v4
 
@@ -40,14 +54,14 @@ jobs:
       - name: Install dependencies
         run: go mod download
 
-      - name: Build
-        run: go build ./...
+      # Install the linter at the version the Makefile pins, so CI and a
+      # developer's `make preflight` agree on the ruleset.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.4
+          install-mode: binary
+          args: --version
 
-      - name: Run tests
-        run: go test ./... -v
-        env:
-          {{.ProjectNameUpper}}_DATABASE_HOST: localhost
-          {{.ProjectNameUpper}}_DATABASE_PORT: "5432"
-          {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
-          {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
-          {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+      - name: Preflight
+        run: make preflight

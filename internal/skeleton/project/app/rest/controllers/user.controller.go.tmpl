@@ -5,12 +5,13 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/gorilla/schema"
-	"{{.ModulePath}}/app/dtos"
-	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
-	"github.com/gofastadev/gofasta/pkg/utils"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/httputil"
+	"github.com/gofastadev/gofasta/pkg/utils"
+	"github.com/gorilla/schema"
+
+	"{{.ModulePath}}/app/dtos"
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 )
 
 var decoder = schema.NewDecoder()

@@ -3,9 +3,6 @@ package providers
 import (
 	"log/slog"
 
-	"github.com/google/wire"
-	"{{.ModulePath}}/app/devtools"
-	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
 	"github.com/gofastadev/gofasta/pkg/config"
@@ -14,13 +11,17 @@ import (
 	"github.com/gofastadev/gofasta/pkg/logger"
 	"github.com/gofastadev/gofasta/pkg/mailer"
 	"github.com/gofastadev/gofasta/pkg/notify"
-	"github.com/gofastadev/gofasta/pkg/slack"
-	"github.com/gofastadev/gofasta/pkg/whatsapp"
 	"github.com/gofastadev/gofasta/pkg/queue"
 	"github.com/gofastadev/gofasta/pkg/session"
+	"github.com/gofastadev/gofasta/pkg/slack"
 	"github.com/gofastadev/gofasta/pkg/storage"
 	"github.com/gofastadev/gofasta/pkg/websocket"
+	"github.com/gofastadev/gofasta/pkg/whatsapp"
+	"github.com/google/wire"
 	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/validators"
 )
 
 // LoadConfig reads configuration for this project.
@@ -127,12 +128,12 @@ func ProvideTemplateRenderer(cfg *config.AppConfig) *mailer.TemplateRenderer {
 	return mailer.NewTemplateRenderer("templates/emails", cfg.Email.FromName)
 }
 
-func ProvideWebSocketHub(logger *slog.Logger) *websocket.Hub {
-	return websocket.NewHub(logger)
+func ProvideWebSocketHub(log *slog.Logger) *websocket.Hub {
+	return websocket.NewHub(log)
 }
 
-func ProvideNotifier(logger *slog.Logger, emailSender mailer.EmailSender, db *gorm.DB) *notify.Notifier {
-	return notify.NewNotifier(logger,
+func ProvideNotifier(log *slog.Logger, emailSender mailer.EmailSender, db *gorm.DB) *notify.Notifier {
+	return notify.NewNotifier(log,
 		notify.NewEmailChannel(emailSender),
 		notify.NewDatabaseChannel(db),
 	)

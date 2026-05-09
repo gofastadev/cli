@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+
 	// Importing net/http/pprof for its side-effect: init() registers
 	// the profiler endpoints on http.DefaultServeMux. We then forward
 	// /debug/pprof/ paths to that mux from handlerImpl so they're only
@@ -382,12 +383,12 @@ func (g *gormDevtools) Initialize(db *gorm.DB) error {
 	// Register against every operation so SELECTs, INSERTs, UPDATEs, and
 	// DELETEs all land in the ring.
 	for _, op := range []string{"create", "query", "update", "delete", "row", "raw"} {
-		if err := db.Callback().Query().Before("gorm:" + op).Register("devtools:before_"+op, before); err != nil {
+		if err := db.Callback().Query().Before("gorm:"+op).Register("devtools:before_"+op, before); err != nil {
 			// Ignore re-register errors — `Before` on some ops may conflict;
 			// we still want to proceed with the ones that worked.
 			_ = err
 		}
-		if err := db.Callback().Query().After("gorm:" + op).Register("devtools:after_"+op, after); err != nil {
+		if err := db.Callback().Query().After("gorm:"+op).Register("devtools:after_"+op, after); err != nil {
 			_ = err
 		}
 	}

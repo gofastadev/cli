@@ -49,7 +49,13 @@ coverage:
 build:
 	go build -o bin/gofasta ./cmd/gofasta/
 
-## Run integration test (build + scaffold + compile)
+## Run integration test (build CLI → scaffold project → run scaffold's preflight)
+##
+## `go build ./...` alone is too weak a check: a template change can break
+## the scaffold's gofmt-cleanliness, lint compliance, or race-test suite
+## without breaking compilation. Running the scaffold's own `make preflight`
+## here catches those regressions locally before they hit CI on a
+## downstream user's project.
 ##
 ## By default the scaffold runs `go get github.com/gofastadev/gofasta@latest`
 ## which pulls whatever is published on the framework module proxy. Two
@@ -73,7 +79,7 @@ integration: build
 	else \
 		./bin/gofasta new /tmp/gofasta-integration-test; \
 	fi
-	cd /tmp/gofasta-integration-test && go build ./...
+	cd /tmp/gofasta-integration-test && make preflight
 
 ## Remove build artifacts
 clean:

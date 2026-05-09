@@ -4,12 +4,13 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	httpSwagger "github.com/swaggo/http-swagger/v2"
-	"{{.ModulePath}}/app/rest/controllers"
-	_ "{{.ModulePath}}/docs"
 	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 	"github.com/gofastadev/gofasta/pkg/websocket"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	"{{.ModulePath}}/app/rest/controllers"
+	_ "{{.ModulePath}}/docs"
 )
 
 // RouteConfig holds all controllers needed for route registration.

@@ -5,10 +5,11 @@ import (
 	"os"
 	"os/exec"
 
-	"{{.ModulePath}}/db/seeds"
 	"github.com/gofastadev/gofasta/pkg/config"
 	"github.com/gofastadev/gofasta/pkg/logger"
 	"github.com/spf13/cobra"
+
+	"{{.ModulePath}}/db/seeds"
 )
 
 var seedCmd = &cobra.Command{
@@ -40,7 +41,11 @@ func runSeed(fresh bool) error {
 		dropCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "down", "-all")
 		dropCmd.Stdout = os.Stdout
 		dropCmd.Stderr = os.Stderr
-		dropCmd.Run() // ignore errors (may be empty)
+		// Errors are intentionally ignored: an empty / not-yet-migrated
+		// database returns "no change" or "Dirty database" here, both of
+		// which are fine for a `seed --fresh` run that immediately re-applies
+		// migrations below.
+		_ = dropCmd.Run()
 
 		upCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
 		upCmd.Stdout = os.Stdout

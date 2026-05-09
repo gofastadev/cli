@@ -43,11 +43,11 @@ type TUserFieldsForUpdateDto struct {
 }
 
 type TCreateUserDto struct {
-	FirstName      string    `json:"firstName" validate:"required,min=1,max=50"`
-	OtherNames     string    `json:"otherNames" validate:"required,min=1,max=150"`
-	Email          string    `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
-	PhoneNumber    string    `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
-	ProfilePicture *string   `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
+	FirstName      string  `json:"firstName" validate:"required,min=1,max=50"`
+	OtherNames     string  `json:"otherNames" validate:"required,min=1,max=150"`
+	Email          string  `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber    string  `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
+	ProfilePicture *string `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
 }
 
 type TArchiveUserDto struct {

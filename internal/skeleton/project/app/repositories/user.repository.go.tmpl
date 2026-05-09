@@ -4,12 +4,13 @@ import (
 	"context"
 	"time"
 
-	"github.com/google/uuid"
-	"{{.ModulePath}}/app/models"
-	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"github.com/gofastadev/gofasta/pkg/utils"
+	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 )
 
 // userRepositoryTracerName is the OpenTelemetry tracer scope for this

@@ -32,6 +32,7 @@ func TestProjectFS_ContainsExpectedFiles(t *testing.T) {
 		"project/cmd/root.go.tmpl",
 		"project/Makefile.tmpl",
 		"project/Dockerfile.tmpl",
+		"project/.golangci.yml",
 		"project/dot-gitignore",
 		"project/dot-go-version",
 	}

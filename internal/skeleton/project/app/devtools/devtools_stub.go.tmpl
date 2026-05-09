@@ -76,5 +76,5 @@ func GormPlugin() gorm.Plugin {
 
 type stubGormPlugin struct{}
 
-func (s *stubGormPlugin) Name() string            { return "gofasta-devtools-stub" }
+func (s *stubGormPlugin) Name() string                { return "gofasta-devtools-stub" }
 func (s *stubGormPlugin) Initialize(_ *gorm.DB) error { return nil }

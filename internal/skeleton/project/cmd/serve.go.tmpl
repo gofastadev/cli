@@ -8,21 +8,20 @@ import (
 	"os/signal"
 	"syscall"
 
-{{- if .GraphQL}}
-	"github.com/99designs/gqlgen/graphql/handler"
+{{if .GraphQL}}	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/playground"
-	"{{.ModulePath}}/app"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
-{{- end}}
-	"{{.ModulePath}}/app/devtools"
-	"{{.ModulePath}}/app/di"
-	"{{.ModulePath}}/app/jobs"
-	"{{.ModulePath}}/app/rest/routes"
-	"github.com/gofastadev/gofasta/pkg/health"
+{{end}}	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
 	"github.com/gofastadev/gofasta/pkg/scheduler"
 	"github.com/spf13/cobra"
+
+{{if .GraphQL}}	"{{.ModulePath}}/app"
+{{end}}	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/di"
+	"{{.ModulePath}}/app/jobs"
+	"{{.ModulePath}}/app/rest/routes"
 )
 
 var serveCmd = &cobra.Command{
@@ -179,7 +178,9 @@ func startServer() error {
 	}
 
 	if sqlDB, err := container.DB.DB(); err == nil {
-		sqlDB.Close()
+		if err := sqlDB.Close(); err != nil {
+			slog.Error("closing database connection", "error", err)
+		}
 	}
 
 	slog.Info("server stopped")
