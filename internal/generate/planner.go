@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"bytes"
 	"fmt"
 	"go/format"
 	"io"
@@ -13,12 +14,19 @@ import (
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
-// formatGoIfNeeded runs gofmt on body when path looks like Go source.
+// formatGoIfNeeded runs gofmt on body when path looks like Go source
+// AND body is a full Go file (starts with a `package` declaration).
 // Patcher output and generator template output are both string-built,
 // which routinely produces fields with mis-aligned tabs and operator
 // spacing that fail `gofmt -s -l`. Running format.Source here makes the
 // scaffold's preflight pass on the first try without requiring every
 // patcher / template author to format by hand.
+//
+// The package-declaration guard exists because format.Source happily
+// reformats partial source — labels, decls, expressions — which is
+// surprising for snippets that happen to be saved with a `.go`
+// extension (e.g. unit-test fixtures). Restricting formatting to full
+// files preserves caller intent for non-package text.
 //
 // On any format error (e.g. the patcher accidentally produced invalid
 // Go), we fall back to the unformatted body — the resulting file will
@@ -26,6 +34,9 @@ import (
 // than silently swallowing the source.
 func formatGoIfNeeded(path string, body []byte) []byte {
 	if !strings.HasSuffix(path, ".go") {
+		return body
+	}
+	if !bytes.HasPrefix(bytes.TrimLeft(body, " \t\r\n"), []byte("package ")) {
 		return body
 	}
 	formatted, err := format.Source(body)

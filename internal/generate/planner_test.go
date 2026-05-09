@@ -76,7 +76,8 @@ import (
 )
 
 type Container struct {
-	Resolver       *resolvers.Resolver
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	require.NoError(t, os.WriteFile("app/di/container.go", []byte(container), 0644))
