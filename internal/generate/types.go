@@ -35,6 +35,18 @@ type ScaffoldData struct {
 	ModulePath        string // Go module path read from go.mod (e.g., "github.com/myorg/myapp")
 }
 
+// HasTimeField reports whether any field on this resource is `time.Time`.
+// Used by templates that must emit `import "time"` only when needed —
+// otherwise gofmt/imports complains about an unused import.
+func (s ScaffoldData) HasTimeField() bool {
+	for _, f := range s.Fields {
+		if f.GoType == "time.Time" {
+			return true
+		}
+	}
+	return false
+}
+
 // Step is a single unit of work in a generator pipeline.
 type Step struct {
 	Label string

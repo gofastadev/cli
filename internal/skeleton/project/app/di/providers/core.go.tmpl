@@ -14,6 +14,8 @@ import (
 	"github.com/gofastadev/gofasta/pkg/logger"
 	"github.com/gofastadev/gofasta/pkg/mailer"
 	"github.com/gofastadev/gofasta/pkg/notify"
+	"github.com/gofastadev/gofasta/pkg/slack"
+	"github.com/gofastadev/gofasta/pkg/whatsapp"
 	"github.com/gofastadev/gofasta/pkg/queue"
 	"github.com/gofastadev/gofasta/pkg/session"
 	"github.com/gofastadev/gofasta/pkg/storage"
@@ -41,6 +43,8 @@ var CoreSet = wire.NewSet(
 	ProvideDBConfig,
 	ProvideLogConfig,
 	ProvideEmailConfig,
+	ProvideSlackConfig,
+	ProvideWhatsAppConfig,
 	ProvideAuthConfig,
 	ProvideCacheConfig,
 	ProvideStorageConfig,
@@ -51,6 +55,8 @@ var CoreSet = wire.NewSet(
 	validators.NewAppValidator,
 	ProvideTemplateRenderer,
 	mailer.NewEmailSender,
+	slack.NewSlackSender,
+	whatsapp.NewSender,
 	auth.NewJWTService,
 	auth.NewRBACService,
 	ProvideCacheService,
@@ -108,6 +114,8 @@ func ProvideLogger(cfg *config.LogConfig) *slog.Logger {
 func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }
 func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig           { return &cfg.Log }
 func ProvideEmailConfig(cfg *config.AppConfig) *config.EmailConfig       { return &cfg.Email }
+func ProvideSlackConfig(cfg *config.AppConfig) *config.SlackConfig       { return &cfg.Slack }
+func ProvideWhatsAppConfig(cfg *config.AppConfig) *config.WhatsAppConfig { return &cfg.WhatsApp }
 func ProvideAuthConfig(cfg *config.AppConfig) *config.AuthConfig         { return &cfg.Auth }
 func ProvideCacheConfig(cfg *config.AppConfig) *config.CacheConfig       { return &cfg.Cache }
 func ProvideStorageConfig(cfg *config.AppConfig) *config.StorageConfig   { return &cfg.Storage }

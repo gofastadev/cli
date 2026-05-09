@@ -20,8 +20,8 @@ import (
 	"{{.ModulePath}}/app/models"
 	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/utils"
-	"github.com/gofastadev/gofasta/pkg/validators"
 	"go.opentelemetry.io/otel"
 )
 

@@ -25,7 +25,6 @@ type ProjectData struct {
 // graphqlOnlyPaths lists skeleton paths that should be skipped for REST-only projects.
 var graphqlOnlyPaths = []string{
 	"app/graphql/",
-	"app/generated_stub.go.tmpl",
 	"app/di/providers/graphql.go.tmpl",
 	"gqlgen.yml.tmpl",
 }

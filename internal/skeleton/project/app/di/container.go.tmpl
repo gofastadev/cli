@@ -13,6 +13,8 @@ import (
 	"github.com/gofastadev/gofasta/pkg/i18n"
 	"github.com/gofastadev/gofasta/pkg/mailer"
 	"github.com/gofastadev/gofasta/pkg/notify"
+	"github.com/gofastadev/gofasta/pkg/slack"
+	"github.com/gofastadev/gofasta/pkg/whatsapp"
 	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"{{.ModulePath}}/app/rest/controllers"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
@@ -31,6 +33,8 @@ type ServiceContainer struct {
 	Logger         *slog.Logger
 	Validator      *validators.AppValidator
 	EmailSender    mailer.EmailSender
+	SlackSender    slack.Sender
+	WhatsAppSender whatsapp.Sender
 	CacheService   cache.CacheService
 	JWTService     *auth.JWTService
 	RBACService    *auth.RBACService
