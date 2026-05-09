@@ -1,0 +1,102 @@
+# golangci-lint configuration for gofasta-scaffolded projects.
+#
+# This config is intentionally relaxed compared to the gofasta toolkit's
+# own .golangci.yml — generated projects start as a curated default and
+# are expected to be heavily edited by the developer. Linters that fight
+# scaffold patterns (revive's exported-doc-comment requirement, dupl,
+# unused, unparam) are disabled here so a freshly-scaffolded project is
+# preflight-clean out of the box. Re-enable any of them as the project
+# matures and a stricter bar becomes useful.
+#
+# Linter version is pinned in the Makefile (GOLANGCI_LINT_VERSION) and
+# must match .github/workflows/test.yml.
+
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    # Bugs / correctness
+    - errcheck
+    - staticcheck
+    - govet
+    - ineffassign
+
+    # Complexity (nudges away from overly tangled funcs)
+    - gocyclo
+    - gocognit
+
+    # Style / structure
+    - gocritic
+    - misspell
+    - unconvert
+    - nakedret
+    - prealloc
+    - nolintlint
+
+  # Disable defaults that are too strict for a scaffold. golangci-lint v2
+  # enables a base set automatically; "enable" adds to it. The list below
+  # explicitly turns OFF the noisy ones for early-stage projects:
+  #   - unused: the scaffold ships starter helpers (e.g. validator funcs)
+  #     that aren't called from main yet but exist for the developer to
+  #     wire up. Re-enable as the project matures.
+  disable:
+    - unused
+
+  settings:
+    gocyclo:
+      min-complexity: 15
+    gocognit:
+      min-complexity: 30
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - style
+        - performance
+      disabled-checks:
+        - hugeParam
+        - rangeValCopy
+    misspell:
+      locale: US
+    nakedret:
+      max-func-lines: 30
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+
+  exclusions:
+    paths:
+      # Generated code — Wire and gqlgen output should be authoritative,
+      # not lint-driven. They are regenerated, not hand-edited.
+      - app/di/wire_gen.go
+      - app/graphql/generated.go
+      - docs/docs.go
+      - docs/swagger.go
+    rules:
+      - path: _test\.go
+        linters:
+          - gocritic
+          - gocyclo
+          - gocognit
+          - errcheck
+      - path: testutil/mocks/
+        linters:
+          - errcheck
+      # gqlgen owns the layout of files under app/graphql/resolvers/ and
+      # writes the type defs after the methods that reference them. That's
+      # gqlgen's intentional output — we don't get to reformat it without
+      # losing the regenerate-on-schema-change workflow.
+      - path: app/graphql/resolvers/
+        linters:
+          - gocritic
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
