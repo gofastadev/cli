@@ -79,6 +79,15 @@ integration: build
 	else \
 		./bin/gofasta new /tmp/gofasta-integration-test; \
 	fi
+	@# Exercise the generators against the fresh scaffold so a regression
+	@# in `gofasta g <X>` can't slide past local preflight. Each command
+	@# is a representative of its category — scaffold (full CRUD stack),
+	@# job (cron), task (async queue handler). If one of these breaks
+	@# compilation or lint, scaffold's preflight below catches it.
+	cd /tmp/gofasta-integration-test && \
+		$(CURDIR)/bin/gofasta g scaffold Product name:string price:float description:text active:bool && \
+		$(CURDIR)/bin/gofasta g job cleanup-tokens "0 0 0 * * *" && \
+		$(CURDIR)/bin/gofasta g task send-welcome
 	cd /tmp/gofasta-integration-test && make preflight
 
 ## Remove build artifacts

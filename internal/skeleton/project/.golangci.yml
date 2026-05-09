@@ -111,6 +111,20 @@ linters:
           - errcheck
           - revive
           - dupl
+      # CRUD scaffolds (`gofasta g scaffold`) produce service and
+      # repository methods with very similar shapes — Update, FindByID,
+      # SoftDelete, etc. — across resources. dupl flags these as
+      # duplicates even though the duplication is intentional and goes
+      # away as the developer adds resource-specific logic. Disable dupl
+      # on these paths so a fresh `gofasta g scaffold Product` run stays
+      # preflight-green; re-enable on a per-file basis if you want stricter
+      # checks once a service has accumulated significant business logic.
+      - path: app/services/
+        linters:
+          - dupl
+      - path: app/repositories/
+        linters:
+          - dupl
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
       # writes the type defs after the methods that reference them. That's
       # gqlgen's intentional output — we don't get to reformat it without

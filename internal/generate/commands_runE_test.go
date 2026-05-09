@@ -72,7 +72,7 @@ func setupFullProject(t *testing.T) {
 	require.NoError(t, os.WriteFile("app/di/container.go", []byte(`package di
 
 type Container struct {
-	// services
+	// gofasta:scaffold:container-fields
 }
 
 func NewContainer() *Container {
@@ -89,7 +89,7 @@ package di
 import "github.com/google/wire"
 
 var ProviderSet = wire.NewSet(
-	// providers
+		// gofasta:scaffold:wire-providers
 )
 `), 0644))
 
@@ -100,12 +100,13 @@ var ProviderSet = wire.NewSet(
 import "github.com/go-chi/chi/v5"
 
 type RouteConfig struct {
-	// controllers
+	// gofasta:scaffold:route-config-fields
 }
 
 func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
 	r.Mount("/api/v1", api)
 	return r
 }
@@ -118,6 +119,7 @@ func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 
 func startServer() {
 	cfg := &routes.RouteConfig{
+		// gofasta:scaffold:routeconfig-init
 		HealthController: healthController,
 	}
 	_ = cfg

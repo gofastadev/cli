@@ -75,7 +75,8 @@ func startServer() error {
 	// Build REST router
 	healthController := health.NewController(container.DB, container.CacheService)
 	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
-		UserController:   container.UserController,
+		UserController: container.UserController,
+		// gofasta:scaffold:routeconfig-init — `gofasta g scaffold` inserts new <Name>Controller: container.<Name>Controller, lines above this. Don't remove the marker.
 		HealthController: healthController,
 		WebSocketHub:     container.WebSocketHub,
 	})

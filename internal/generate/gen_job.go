@@ -3,7 +3,6 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/termcolor"
@@ -16,20 +15,15 @@ func GenJob(d ScaffoldData) error {
 		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 
 	content := jobTemplate
 	content = strings.ReplaceAll(content, "__NAME__", d.Name)
 	content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
 	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	termcolor.PrintCreate(path)
-	return nil
+	// writeOrRecordCreate handles MkdirAll + format.Source for .go files,
+	// so the emitted job file is preflight-clean by construction.
+	return writeOrRecordCreate(path, []byte(content))
 }
 
 // PatchJobRegistry adds the new job to the registry in cmd/serve.go.
@@ -65,8 +59,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 		)
 	}
 
-	termcolor.PrintPatch(path, "job registry")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path, "job registry", []byte(s))
 }
 
 // PatchJobConfig adds the job schedule to config.yaml.
@@ -100,8 +93,7 @@ func PatchJobConfig(d ScaffoldData) error {
 		s += "\njobs:\n" + entry
 	}
 
-	termcolor.PrintPatch(path, "job schedule")
-	return os.WriteFile(path, []byte(s), 0o644)
+	return writeOrRecordPatch(path, "job schedule", []byte(s))
 }
 
 const jobTemplate = `package jobs

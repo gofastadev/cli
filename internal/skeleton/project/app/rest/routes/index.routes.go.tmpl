@@ -20,7 +20,8 @@ import (
 
 // RouteConfig holds all controllers needed for route registration.
 type RouteConfig struct {
-	UserController   *controllers.UserController
+	UserController *controllers.UserController
+	// gofasta:scaffold:route-config-fields — `gofasta g scaffold` inserts new <Name>Controller fields above this line. Don't remove the marker.
 	HealthController *health.Controller
 	WebSocketHub     *websocket.Hub
 }
@@ -54,6 +55,7 @@ func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	// API v1 routes — register new resource routes above the Mount call.
 	api := chi.NewRouter()
 	UserRoutes(api, config.UserController)
+	// gofasta:scaffold:route-registrations — `gofasta g scaffold` inserts new <Name>Routes(api, ...) calls above this line. Don't remove the marker.
 	r.Mount("/api/v1", api)
 
 	return r

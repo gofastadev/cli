@@ -47,7 +47,8 @@ type ServiceContainer struct {
 	UserRepo       repoInterfaces.UserRepositoryInterface
 	UserService    svcInterfaces.UserServiceInterface
 	UserController *controllers.UserController
+	// gofasta:scaffold:container-fields — `gofasta g scaffold` inserts new resource fields above this line. Don't remove the marker; the CLI relies on it to find the insertion point.
 {{- if .GraphQL}}
-	Resolver       *resolvers.Resolver
+	Resolver *resolvers.Resolver
 {{- end}}
 }

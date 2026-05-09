@@ -2,6 +2,7 @@ package generate
 
 import (
 	"fmt"
+	"go/format"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,28 @@ import (
 
 	"github.com/gofastadev/cli/internal/termcolor"
 )
+
+// formatGoIfNeeded runs gofmt on body when path looks like Go source.
+// Patcher output and generator template output are both string-built,
+// which routinely produces fields with mis-aligned tabs and operator
+// spacing that fail `gofmt -s -l`. Running format.Source here makes the
+// scaffold's preflight pass on the first try without requiring every
+// patcher / template author to format by hand.
+//
+// On any format error (e.g. the patcher accidentally produced invalid
+// Go), we fall back to the unformatted body — the resulting file will
+// still compile or fail loudly at the build step, which is more helpful
+// than silently swallowing the source.
+func formatGoIfNeeded(path string, body []byte) []byte {
+	if !strings.HasSuffix(path, ".go") {
+		return body
+	}
+	formatted, err := format.Source(body)
+	if err != nil {
+		return body
+	}
+	return formatted
+}
 
 // Planned-action support: when dry-run mode is active, every generator
 // and patcher records what it WOULD do on disk instead of actually
@@ -101,6 +124,7 @@ func recordPatch(path, detail string, newSize int) {
 // planned action. Every caller should prefer this over os.WriteFile
 // directly so dry-run mode stays consistent across the package.
 func writeOrRecordCreate(path string, body []byte) error {
+	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordCreate(path, len(body))
 		termcolor.PrintCreate(path + " (dry-run)")
@@ -120,6 +144,7 @@ func writeOrRecordCreate(path string, body []byte) error {
 // files. Detail is a short human-readable description of the change —
 // agents see it in --json output.
 func writeOrRecordPatch(path, detail string, body []byte) error {
+	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordPatch(path, detail, len(body))
 		termcolor.PrintPatch(path+" (dry-run)", detail)

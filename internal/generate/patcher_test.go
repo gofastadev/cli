@@ -23,8 +23,9 @@ import (
 )
 
 type Container struct {
-	Resolver       *resolvers.Resolver
 	UserController *controllers.UserController
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -53,7 +54,8 @@ import (
 )
 
 type Container struct {
-	Resolver       *resolvers.Resolver
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -76,7 +78,8 @@ func TestPatchContainer_SkipsIfAlreadyWired(t *testing.T) {
 
 type Container struct {
 	ProductService svcInterfaces.ProductServiceInterface
-	Resolver       *resolvers.Resolver
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -95,6 +98,7 @@ func TestPatchWireFile_AddsProviderSet(t *testing.T) {
 func InitializeContainer() *Container {
 	wire.Build(
 		providers.CoreSet,
+		// gofasta:scaffold:wire-providers
 		providers.GraphQLSet,
 	)
 	return nil
@@ -204,12 +208,14 @@ import (
 )
 
 type RouteConfig struct {
+	// gofasta:scaffold:route-config-fields
 	HealthController *health.Controller
 }
 
 func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
 	r.Mount("/api/v1", api)
 	return r
 }
@@ -244,6 +250,7 @@ func TestPatchServeFile_AddsController(t *testing.T) {
 	serveContent := `package cmd
 
 	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		// gofasta:scaffold:routeconfig-init
 		HealthController: healthController,
 	})
 `
