@@ -38,6 +38,13 @@ pass --no-cache / --no-queue to skip them. Pass --all-in-docker to
 run Air inside the app container instead of on the host — supporting
 services run detached and the app's stdout streams to the foreground.
 
+While the pipeline is running, the terminal accepts these single-key
+shortcuts (disable with --no-keyboard, auto-disabled when stdin is
+not a TTY):
+  r, R    restart the entire pipeline from scratch (re-runs every stage)
+  q, Q    quit gofasta dev (same as Ctrl+C)
+  h, H, ? print the keybinding help
+
 Pipeline (each stage can be opted out independently):
   1. Preflight        — verify docker + docker compose availability
   2. Fresh volumes    — optional; drops every compose volume (--fresh)
