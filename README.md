@@ -2,7 +2,19 @@
 
 [![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![CodeQL](https://github.com/gofastadev/cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/codeql.yml) [![codecov](https://codecov.io/gh/gofastadev/cli/graph/badge.svg)](https://codecov.io/gh/gofastadev/cli) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
 
-The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go backend toolkit. The CLI is a standalone binary that creates new projects, generates code, and runs common development tasks. It does not import the gofasta library — it only manipulates files on disk.
+The `gofasta` binary — the command-line tool for [Gofasta](https://gofasta.dev), a Go backend toolkit. It creates new projects, generates code, runs the development loop (`gofasta dev`), and ships first-class agent integration. It is a standalone Go binary that does **not** import the gofasta library at runtime — it only manipulates files on disk.
+
+## The Gofasta project
+
+Gofasta is split across three independent repositories. Each has its own release cycle and `go.mod` / `package.json`.
+
+| Repo | Role |
+|------|------|
+| [`gofastadev/cli`](https://github.com/gofastadev/cli) | **You are here.** The `gofasta` binary — `gofasta new`, code generation, and the dev loop. |
+| [`gofastadev/gofasta`](https://github.com/gofastadev/gofasta) | The library your project imports — every package under `pkg/*`. |
+| [`gofastadev/website`](https://github.com/gofastadev/website) | The docs site at **[gofasta.dev](https://gofasta.dev)**. |
+
+For full documentation — every command's flags, every package's API, every guide — visit **[gofasta.dev](https://gofasta.dev)**. This README covers CLI installation, scaffolding, and the most common workflows; everything else is on the website.
 
 ## Install the CLI
 
@@ -261,6 +273,8 @@ gofasta g task process-payment
 gofasta g email-template order-confirmation
 # Creates templates/emails/order-confirmation.html
 ```
+
+> **Per-command reference.** Every `gofasta` command has a dedicated page on [gofasta.dev/docs/cli-reference](https://gofasta.dev/docs/cli-reference) with all its flags, error codes, and recipes. The README below is a tour of the most common workflows; the website is the source of truth for flag-level detail.
 
 ## Other Commands
 
