@@ -504,7 +504,7 @@ func TestRunAir_SignaledExit(t *testing.T) {
 	isSignaledExit = func(_ *os.ProcessState) bool { return true }
 	t.Cleanup(func() { isSignaledExit = orig })
 	withFakeExec(t, 1) // exec fails with exit 1
-	err := runAir(devFlags{}, func(string) {})
+	_, err := runAir(devFlags{}, func(string) {}, nil)
 	// isSignaledExit returns true → runAir returns nil.
 	assert.NoError(t, err)
 }
@@ -631,7 +631,7 @@ func TestRunAir_RemoveAllFails(t *testing.T) {
 	removeAllFn = func(_ string) error { return fmt.Errorf("boom") }
 	t.Cleanup(func() { removeAllFn = orig })
 	withFakeExec(t, 0)
-	err := runAir(devFlags{rebuild: true}, func(string) {})
+	_, err := runAir(devFlags{rebuild: true}, func(string) {}, nil)
 	// Air succeeds despite RemoveAll failing.
 	assert.NoError(t, err)
 }
@@ -650,7 +650,7 @@ func TestRunAir_EnvNilBranch(t *testing.T) {
 	}
 	t.Cleanup(func() { execCommand = orig })
 	// runAir will fail; we only care about coverage.
-	_ = runAir(devFlags{}, func(string) {})
+	_, _ = runAir(devFlags{}, func(string) {}, nil)
 }
 
 // TestRunAir_Rebuild_RemovesTmp — rebuild flag triggers the RemoveAll
@@ -658,7 +658,7 @@ func TestRunAir_EnvNilBranch(t *testing.T) {
 func TestRunAir_Rebuild_RemovesTmp(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
-	err := runAir(devFlags{rebuild: true}, func(string) {})
+	_, err := runAir(devFlags{rebuild: true}, func(string) {}, nil)
 	assert.NoError(t, err)
 }
 
@@ -668,7 +668,7 @@ func TestRunAir_GoNotOnPath(t *testing.T) {
 	origLookPath := execLookPath
 	execLookPath = func(name string) (string, error) { return "", os.ErrNotExist }
 	t.Cleanup(func() { execLookPath = origLookPath })
-	err := runAir(devFlags{}, func(string) {})
+	_, err := runAir(devFlags{}, func(string) {}, nil)
 	require.Error(t, err)
 }
 
@@ -688,7 +688,7 @@ func TestAirSignalHandler_NilProcess(t *testing.T) {
 	airCmd := exec.Command("true")
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, airCmd, func(r string) { called = r })
+	airSignalHandler(sigChan, nil, airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -701,8 +701,37 @@ func TestAirSignalHandler_WithProcess(t *testing.T) {
 	t.Cleanup(func() { _ = airCmd.Wait() })
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, airCmd, func(r string) { called = r })
+	airSignalHandler(sigChan, nil, airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
+}
+
+// TestAirSignalHandler_KeyboardRestart — pressing R sends sigKeyboardRestart;
+// the handler SIGINTs Air, calls teardown with reason "restart", and sets
+// the restart flag so runAir returns restart=true.
+func TestAirSignalHandler_KeyboardRestart(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("true")
+	var called string
+	flag := &atomicBool{}
+	keyCh <- sigKeyboardRestart
+	airSignalHandler(sigChan, keyCh, airCmd, func(r string) { called = r }, flag)
+	assert.Equal(t, "restart", called)
+	assert.True(t, flag.Load())
+}
+
+// TestAirSignalHandler_KeyboardQuit — pressing Q is the same teardown
+// path as Ctrl+C; restart flag stays false.
+func TestAirSignalHandler_KeyboardQuit(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("true")
+	var called string
+	flag := &atomicBool{}
+	keyCh <- sigKeyboardQuit
+	airSignalHandler(sigChan, keyCh, airCmd, func(r string) { called = r }, flag)
+	assert.Equal(t, "quit", called)
+	assert.False(t, flag.Load())
 }
 
 // TestParseServicesInList — parseServicesList trims spaces and

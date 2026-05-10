@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -107,20 +108,58 @@ func init() {
 		"port for the dev dashboard HTTP server")
 	f.BoolVar(&devFlagValues.allInDocker, "all-in-docker", false,
 		"run the entire stack inside docker compose, including the app + Air; supporting services run detached and the app container's stdout streams to the foreground for live hot-reload logs")
+	f.BoolVar(&devFlagValues.noKeyboard, "no-keyboard", false,
+		"disable the interactive keyboard layer (r=restart, q=quit, h=help); use when stdin is piped or for non-interactive sessions")
 }
 
-// runDev is the orchestration entrypoint. Broken into clearly-named
-// stages so the pipeline reads top-to-bottom. Each stage consults flags
-// to decide whether to execute; each emits one or more events via the
-// devEmitter so humans see status lines and agents see JSON events.
+// runDev is the orchestration entrypoint. It owns three top-level
+// concerns:
 //
-//nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
+//   - the keyboard listener (raw-mode stdin → restart/quit signals),
+//     which must persist across pipeline iterations so the user can
+//     press R again immediately after a restart completes;
+//   - the restart loop, which re-runs runDevPipeline from scratch each
+//     time the pipeline returns restart=true (i.e. the user pressed R);
+//   - exit-time terminal restoration (deferred), so a panic does not
+//     leave the user's terminal in raw mode.
+//
+// Tests that exercise the pipeline shape call runDev directly — under
+// `go test`, os.Stdin is a pipe (not a TTY) so the keyboard layer
+// auto-skips and runDev behaves exactly like the old single-pass body.
 func runDev(flags devFlags) error {
+	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, flags.noKeyboard)
+	defer restoreKB()
+
 	emitter := newDevEmitter(jsonOutput)
 
+	for iter := 1; ; iter++ {
+		if iter > 1 {
+			emitter.Info(fmt.Sprintf("⟳ restarting from scratch (iteration %d)", iter))
+		}
+		restart, err := runDevPipeline(flags, keySignals, emitter)
+		if err != nil {
+			return err
+		}
+		if !restart {
+			return nil
+		}
+	}
+}
+
+// runDevPipeline is the single-pass dev pipeline. Each call goes
+// through every stage from .env load to Stage 8, then either exits
+// (restart=false) or signals the outer loop to re-run (restart=true).
+//
+// Broken into clearly-named stages so the pipeline reads top-to-bottom.
+// Each stage consults flags to decide whether to execute; each emits
+// one or more events via the devEmitter so humans see status lines and
+// agents see JSON events.
+//
+//nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
+func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter devEmitter) (bool, error) {
 	// --- Stage 0: load .env ------------------------------------------------
-	// Keep the existing behavior: load .env first so subsequent stages see
-	// the developer's local overrides for DATABASE_HOST / PORT / etc.
+	// Re-loaded each iteration so editing .env and pressing R picks
+	// up the new values without re-invoking gofasta dev from outside.
 	if loaded, err := loadDotEnv(flags.envFile); err != nil {
 		emitter.Warn(fmt.Sprintf("%s present but could not be loaded: %v", flags.envFile, err))
 	} else if loaded > 0 {
@@ -136,18 +175,18 @@ func runDev(flags devFlags) error {
 	// effects.
 	plan, err := resolveDevPlan(flags)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if flags.dryRun {
 		printDevPlan(plan, emitter)
-		return nil
+		return false, nil
 	}
 
 	// --- Stage 2: preflight ------------------------------------------------
 	if plan.orchestrate {
 		if !composeAvailableFn() {
-			return clierr.New(clierr.CodeDevDockerUnavailable,
+			return false, clierr.New(clierr.CodeDevDockerUnavailable,
 				"docker or docker compose is not available")
 		}
 		docker, compose := detectVersions()
@@ -168,7 +207,7 @@ func runDev(flags devFlags) error {
 			emitter.ServiceStart(name)
 		}
 		if err := startServices(plan.services.selected, plan.profiles); err != nil {
-			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
+			return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
 				"failed to start compose services")
 		}
 
@@ -178,7 +217,7 @@ func runDev(flags devFlags) error {
 					emitter.ServiceHealthy(name, elapsed)
 				}
 			}); err != nil {
-			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err, err.Error())
+			return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err, err.Error())
 		}
 	}
 
@@ -282,35 +321,53 @@ func runDev(flags devFlags) error {
 		}
 		streamerCancel := startLogStreamer(streamServices)
 		sideCancels = append(sideCancels, streamerCancel)
-		runInDockerSupervisor(runTeardown)
+		restart := runInDockerSupervisor(runTeardown, keySignals)
 		for _, c := range sideCancels {
 			c()
 		}
-		return nil
+		return restart, nil
 	}
 
 	emitter.Air(portInt, urls)
-	err = runAir(flags, runTeardown)
+	restart, err := runAir(flags, runTeardown, keySignals)
 	for _, c := range sideCancels {
 		c()
 	}
-	return err
+	return restart, err
 }
 
-// runInDockerSupervisor blocks until SIGINT/SIGTERM, then calls
-// teardown to stop the compose stack. Used by --all-in-docker mode in
-// place of runAir — there's no host-side Air subprocess to babysit, so
-// the supervisor just waits for the developer's Ctrl+C and forwards
-// shutdown to compose. Returning no error matches runAir's
-// signaled-exit semantics: a clean Ctrl+C is a successful shutdown.
+// runInDockerSupervisor blocks until one of:
+//
+//   - SIGINT/SIGTERM (Ctrl+C from the terminal or `kill`)
+//   - sigKeyboardQuit on keySignals (the user pressed Q)
+//   - sigKeyboardRestart on keySignals (the user pressed R)
+//
+// Then calls teardown to stop the compose stack. Used by
+// --all-in-docker mode in place of runAir — there's no host-side Air
+// subprocess to babysit, so the supervisor just waits for the
+// developer's signal and forwards shutdown to compose. Returns true
+// only when the user pressed R, in which case the outer pipeline loop
+// re-runs from scratch.
 //
 // Extracted into a named function so tests can drive it without racing
 // the OS signal subsystem.
-func runInDockerSupervisor(teardown func(string)) {
+func runInDockerSupervisor(teardown func(string), keySignals <-chan keyboardSignal) bool {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	<-sigChan
-	teardown("interrupted")
+	defer signal.Stop(sigChan)
+
+	select {
+	case <-sigChan:
+		teardown("interrupted")
+		return false
+	case sig := <-keySignals:
+		if sig == sigKeyboardRestart {
+			teardown("restart")
+			return true
+		}
+		teardown("quit")
+		return false
+	}
 }
 
 // devPlan is what resolveDevPlan builds before any side effect runs.
@@ -513,7 +570,7 @@ func airURLs(port string) map[string]string {
 // rarely fails).
 var removeAllFn = os.RemoveAll
 
-func runAir(flags devFlags, teardown func(string)) error {
+func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
 	if flags.rebuild {
 		// tmp/ is Air's default build directory; projects that
 		// customize .air.toml may use a different path, but clearing
@@ -528,14 +585,19 @@ func runAir(flags devFlags, teardown func(string)) error {
 	args := []string{"tool", "air"}
 
 	if _, err := execLookPath("go"); err != nil {
-		return clierr.New(clierr.CodeDevAirNotInstalled,
+		return false, clierr.New(clierr.CodeDevAirNotInstalled,
 			"Go toolchain not on $PATH")
 	}
 
 	airCmd := execCommand("go", args...)
 	airCmd.Stdout = os.Stdout
 	airCmd.Stderr = os.Stderr
-	airCmd.Stdin = os.Stdin
+	// Deliberately do NOT pipe os.Stdin to Air. The keyboard listener
+	// in dev_keyboard.go owns stdin (in raw mode) for r/q/h shortcuts,
+	// and Air does not read stdin for any interactive feature — it
+	// reloads on filesystem events. Letting Air keep stdin would either
+	// fight the listener for bytes or, depending on terminal mode,
+	// cause Air to burn CPU on EOF.
 
 	// Inject GOFLAGS=-tags=devtools so Air's internal `go build`
 	// compiles the scaffold's app/devtools/devtools_enabled.go file
@@ -554,21 +616,29 @@ func runAir(flags devFlags, teardown func(string)) error {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go airSignalHandler(sigChan, airCmd, teardown)
+	defer signal.Stop(sigChan)
+
+	// restartFlag is set by the signal-handler goroutine when the
+	// caller pressed R. Read by the post-Run block to decide whether
+	// to return restart=true and let the outer loop re-run the
+	// pipeline.
+	var restartFlag atomicBool
+	go airSignalHandler(sigChan, keySignals, airCmd, teardown, &restartFlag)
 
 	err := airCmd.Run()
+	restart := restartFlag.Load()
 	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
 	// exit as a successful shutdown rather than a pipeline failure.
 	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
 		if isSignaledExit(airCmd.ProcessState) {
-			return nil
+			return restart, nil
 		}
 	}
 	if err != nil {
-		return clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+		return restart, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
 			"air exited with error")
 	}
-	return nil
+	return restart, nil
 }
 
 // isSignaledExit reports whether a process exited due to a signal.
@@ -583,15 +653,64 @@ var isSignaledExit = func(ps *os.ProcessState) bool {
 
 // airSignalHandler is the goroutine body from runAir. Extracted into a
 // named function so tests can drive it directly without racing the
-// real air process. Sends SIGINT to the running air process (if any)
-// and then calls teardown to stop compose services.
-func airSignalHandler(sigChan <-chan os.Signal, airCmd *exec.Cmd, teardown func(string)) {
-	<-sigChan
-	if airCmd.Process != nil {
-		_ = airCmd.Process.Signal(os.Interrupt)
+// real air process.
+//
+// Multiplexes three kinds of input:
+//
+//   - sigChan (OS SIGINT/SIGTERM): SIGINT the Air process and tear
+//     down. Pipeline exits cleanly.
+//   - keySignals = sigKeyboardRestart: same as Ctrl+C semantics but
+//     sets restartFlag so the outer loop re-runs the pipeline.
+//   - keySignals = sigKeyboardQuit: same as Ctrl+C semantics, no
+//     restart.
+//
+// restartFlag is the seam through which runAir learns whether the
+// child's SIGINT was caused by the user pressing R; it is the cleanest
+// way to communicate from a goroutine without wrapping the return path
+// in extra channels.
+func airSignalHandler(
+	sigChan <-chan os.Signal,
+	keySignals <-chan keyboardSignal,
+	airCmd *exec.Cmd,
+	teardown func(string),
+	restartFlag *atomicBool,
+) {
+	select {
+	case <-sigChan:
+		if airCmd.Process != nil {
+			_ = airCmd.Process.Signal(os.Interrupt)
+		}
+		teardown("interrupted")
+	case sig := <-keySignals:
+		if sig == sigKeyboardRestart {
+			restartFlag.Store(true)
+			if airCmd.Process != nil {
+				_ = airCmd.Process.Signal(os.Interrupt)
+			}
+			teardown("restart")
+			return
+		}
+		if airCmd.Process != nil {
+			_ = airCmd.Process.Signal(os.Interrupt)
+		}
+		teardown("quit")
 	}
-	teardown("interrupted")
 }
+
+// atomicBool is a tiny sync/atomic.Bool stand-in scoped to the
+// runAir/airSignalHandler exchange. We keep our own type rather than
+// pulling sync/atomic across the call sites so the goroutine
+// interaction stays obvious in this file (and so runAir's signature
+// does not pollute call sites with sync/atomic.Bool pointers).
+type atomicBool struct {
+	v atomic.Bool
+}
+
+// Store atomically writes b.
+func (a *atomicBool) Store(b bool) { a.v.Store(b) }
+
+// Load atomically returns the current value.
+func (a *atomicBool) Load() bool { return a.v.Load() }
 
 // appendTag merges a build tag into an existing GOFLAGS string. If the
 // existing value already contains a -tags= fragment, we splice the new

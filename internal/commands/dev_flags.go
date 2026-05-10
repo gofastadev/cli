@@ -31,6 +31,7 @@ type devFlags struct {
 	dashboard     bool          // start the local dev dashboard on dashboardPort
 	dashboardPort int           // debug port for the dev dashboard (default 9090)
 	allInDocker   bool          // run the entire stack inside docker compose, including Air; host streams the app's logs to the foreground
+	noKeyboard    bool          // disable the interactive keyboard layer (r/q/h); use when stdin is needed elsewhere or in tests
 }
 
 // parseServicesList splits a comma-separated string into a non-empty
