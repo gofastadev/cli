@@ -16,6 +16,23 @@ import (
 // helpers that build GOFASTA_FAKE_EXIT env values.
 func strconvItoa(i int) string { return strconv.Itoa(i) }
 
+// hasComposeSub reports whether `args` represents a `docker compose
+// [--profile X]... <sub> ...` invocation. The exec stubs in this file
+// matched the subcommand by literal positional index before
+// runDev started prepending profile flags; this helper restores the
+// match logic to "subcommand-by-content" so multi-profile invocations
+// route to the correct stub.
+func hasComposeSub(args []string, sub string) bool {
+	if len(args) < 2 || args[0] != "compose" {
+		return false
+	}
+	i := 1
+	for i+1 < len(args) && args[i] == "--profile" {
+		i += 2
+	}
+	return i < len(args) && args[i] == sub
+}
+
 func TestDevCmd_Registered(t *testing.T) {
 	found := false
 	for _, c := range rootCmd.Commands() {
@@ -257,11 +274,11 @@ func TestRunDev_WithComposeOrchestration(t *testing.T) {
 			stdout = ""
 		} else if len(args) >= 2 && args[0] == "version" {
 			stdout = "28.0\n"
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "version" {
+		} else if hasComposeSub(args, "version") {
 			stdout = "v2.26\n"
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		} else if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -292,9 +309,9 @@ func TestRunDev_Fresh_WithCompose(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -326,11 +343,11 @@ func TestRunDev_Fresh_ResetVolumesFails(t *testing.T) {
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "down" && args[2] == "-v" {
+		} else if hasComposeSub(args, "down") {
 			exitCode = 1 // resetVolumes fails
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -363,7 +380,7 @@ func TestRunDev_ComposeUnavailable(t *testing.T) {
 	execOrig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -391,9 +408,9 @@ func TestRunDev_StartServicesFails(t *testing.T) {
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "up" {
+		} else if hasComposeSub(args, "up") {
 			exitCode = 1
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -420,9 +437,9 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}}}}`
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = `[{"Service":"db","State":"running","Health":"starting"}]`
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -451,11 +468,11 @@ func TestRunDev_KeepVolumesFalseDestroys(t *testing.T) {
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = `[{"Service":"db","State":"running","Health":""}]`
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "down" && args[2] == "-v" {
+		} else if hasComposeSub(args, "down") {
 			exitCode = 1 // Make teardown fail → emitter.Shutdown(mode+"-failed", 1).
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -526,9 +543,9 @@ func TestRunDev_AttachLogs(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)

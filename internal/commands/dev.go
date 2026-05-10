@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -31,14 +32,23 @@ command: start the compose services (database, cache, queue),
 health-check each one, apply pending migrations, then launch Air
 for hot reload of the host-side app.
 
+The cache and queue compose profiles are auto-activated by default;
+pass --no-cache / --no-queue to skip them. Pass --all-in-docker to
+run Air inside the app container instead of on the host — supporting
+services run detached and the app's stdout streams to the foreground.
+
 Pipeline (each stage can be opted out independently):
   1. Preflight        — verify docker + docker compose availability
   2. Fresh volumes    — optional; drops every compose volume (--fresh)
   3. Service start    — docker compose up -d <resolved services>
   4. Health-wait      — poll each service until healthy (timeout 30s)
   5. Migrate          — migrate up against the now-healthy database
+                        (skipped under --all-in-docker — the dev container
+                        runs migrate itself before Air starts)
   6. Seed             — optional; runs ` + "`gofasta seed`" + ` after migrations
-  7. Air              — exec ` + "`go tool air`" + ` against .air.toml
+  7. Air              — exec ` + "`go tool air`" + ` against .air.toml on the host,
+                        OR (under --all-in-docker) tail the app container's
+                        stdout to the foreground via ` + "`docker compose logs -f`" + `
   8. Teardown         — on SIGINT/SIGTERM, stop services (volumes preserved)
 
 Projects without compose.yaml get steps 1–4 short-circuited and fall
@@ -62,9 +72,9 @@ func init() {
 	f.BoolVar(&devFlagValues.noDB, "no-db", false,
 		"skip DB-like services (postgres, mysql, clickhouse, …)")
 	f.BoolVar(&devFlagValues.noCache, "no-cache", false,
-		"skip cache-like services (redis, valkey, …)")
+		"skip the cache service (default: cache compose profile is auto-activated)")
 	f.BoolVar(&devFlagValues.noQueue, "no-queue", false,
-		"skip queue-like services (asynq, nats, rabbitmq, …)")
+		"skip the queue service (default: queue compose profile is auto-activated)")
 	f.BoolVar(&devFlagValues.noMigrate, "no-migrate", false,
 		"skip running migrate up after services become healthy")
 	f.BoolVar(&devFlagValues.noTeardown, "no-teardown", false,
@@ -76,7 +86,7 @@ func init() {
 	f.StringVar(&devServicesRaw, "services", "",
 		"comma-separated list of compose services to start (overrides --no-* flags)")
 	f.StringVar(&devFlagValues.profile, "profile", "",
-		"docker compose profile to activate (e.g. cache, queue)")
+		"additional docker compose profile to activate (cache and queue are auto-on unless --no-cache / --no-queue)")
 	f.DurationVar(&devFlagValues.waitTimeout, "wait-timeout", defaultWaitTimeout,
 		"how long to wait for compose services to report healthy")
 	f.StringVar(&devFlagValues.envFile, "env-file", ".env",
@@ -95,6 +105,8 @@ func init() {
 		"start the local dev dashboard — an HTML debug page with routes, health, and live service state")
 	f.IntVar(&devFlagValues.dashboardPort, "dashboard-port", 9090,
 		"port for the dev dashboard HTTP server")
+	f.BoolVar(&devFlagValues.allInDocker, "all-in-docker", false,
+		"run the entire stack inside docker compose, including the app + Air; supporting services run detached and the app container's stdout streams to the foreground for live hot-reload logs")
 }
 
 // runDev is the orchestration entrypoint. Broken into clearly-named
@@ -155,7 +167,7 @@ func runDev(flags devFlags) error {
 		for _, name := range plan.services.selected {
 			emitter.ServiceStart(name)
 		}
-		if err := startServices(plan.services.selected, flags.profile); err != nil {
+		if err := startServices(plan.services.selected, plan.profiles); err != nil {
 			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
 				"failed to start compose services")
 		}
@@ -202,7 +214,15 @@ func runDev(flags devFlags) error {
 	defer runTeardown("clean")
 
 	// --- Stage 5: migrations -----------------------------------------------
-	if !flags.noMigrate {
+	// Under --all-in-docker the app container's CMD already runs
+	// migrate against db:5432 before starting Air (see
+	// deployments/docker/dev.dockerfile.tmpl), so a host-side run would
+	// be a wasteful double-attempt and would force the user to have
+	// `migrate` on $PATH. Skip explicitly and emit a MigrateSkipped
+	// event so the JSON consumer still sees the decision.
+	if flags.allInDocker {
+		emitter.MigrateSkipped("running inside the app container")
+	} else if !flags.noMigrate {
 		if applied, err := runMigrationsWithCount(); err != nil {
 			emitter.MigrateSkipped(err.Error())
 		} else {
@@ -223,9 +243,16 @@ func runDev(flags devFlags) error {
 	// --attach-logs: stream docker compose logs alongside Air output.
 	// --dashboard:   spin up the debug HTTP server on dashboardPort.
 	// Both register shutdown hooks so they stop cleanly with the pipeline.
+	//
+	// Under --all-in-docker the foreground stream IS the app container's
+	// log stream (set up below in Stage 8), so an explicit --attach-logs
+	// here would just duplicate work; warn and let Stage 8 own it.
 	var sideCancels []func()
-	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 {
+	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 && !flags.allInDocker {
 		sideCancels = append(sideCancels, startLogStreamer(plan.services.selected))
+	}
+	if flags.attachLogs && flags.allInDocker {
+		emitter.Warn("--attach-logs is implicit under --all-in-docker (the app's logs are already in the foreground); pass --attach-logs to multiplex db/cache/queue alongside")
 	}
 
 	// --- Stage 8: Air ------------------------------------------------------
@@ -235,12 +262,34 @@ func runDev(flags devFlags) error {
 	}
 	portInt, _ := strconv.Atoi(port)
 	urls := airURLs(port)
-	emitter.Air(portInt, urls)
 
 	if flags.dashboard {
 		sideCancels = append(sideCancels, startDashboard(flags.dashboardPort, portInt, &plan.services, emitter))
 	}
 
+	if plan.inDocker {
+		// Containerized mode: the app container is already running
+		// (Stage 4 brought it up with `compose up -d`), and Air is
+		// running inside it. Tail its stdout so the developer sees
+		// live hot-reload output exactly as they would on the host.
+		// When --attach-logs is also set, multiplex every selected
+		// service's logs (compose prefixes each line with the service
+		// name) so the foreground shows the full picture.
+		emitter.AirInDocker(portInt, urls)
+		streamServices := []string{appServiceName}
+		if flags.attachLogs {
+			streamServices = plan.services.selected
+		}
+		streamerCancel := startLogStreamer(streamServices)
+		sideCancels = append(sideCancels, streamerCancel)
+		runInDockerSupervisor(runTeardown)
+		for _, c := range sideCancels {
+			c()
+		}
+		return nil
+	}
+
+	emitter.Air(portInt, urls)
 	err = runAir(flags, runTeardown)
 	for _, c := range sideCancels {
 		c()
@@ -248,15 +297,79 @@ func runDev(flags devFlags) error {
 	return err
 }
 
+// runInDockerSupervisor blocks until SIGINT/SIGTERM, then calls
+// teardown to stop the compose stack. Used by --all-in-docker mode in
+// place of runAir — there's no host-side Air subprocess to babysit, so
+// the supervisor just waits for the developer's Ctrl+C and forwards
+// shutdown to compose. Returning no error matches runAir's
+// signaled-exit semantics: a clean Ctrl+C is a successful shutdown.
+//
+// Extracted into a named function so tests can drive it without racing
+// the OS signal subsystem.
+func runInDockerSupervisor(teardown func(string)) {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	<-sigChan
+	teardown("interrupted")
+}
+
 // devPlan is what resolveDevPlan builds before any side effect runs.
 // Passed to both the dry-run printer and the real execution path, so
 // both paths see an identical picture of what's about to happen.
 type devPlan struct {
 	orchestrate bool        // run the compose pipeline at all
+	inDocker    bool        // --all-in-docker: app + Air run inside the app container
+	profiles    []string    // compose profiles to activate (cache + queue auto-on, plus --profile)
 	services    devServices // resolved service set (may be empty)
 }
 
+// resolveProfiles builds the list of compose profiles to activate for
+// this run. cache + queue are auto-on so the existing --no-cache /
+// --no-queue opt-outs do real work; the user-supplied --profile (if
+// any) is merged in. Order is stable for deterministic test assertions
+// and the resulting slice has duplicates removed.
+func resolveProfiles(flags devFlags) []string {
+	candidates := make([]string, 0, 3)
+	if flags.profile != "" {
+		candidates = append(candidates, flags.profile)
+	}
+	if !flags.noCache {
+		candidates = append(candidates, "cache")
+	}
+	if !flags.noQueue {
+		candidates = append(candidates, "queue")
+	}
+	seen := make(map[string]bool, len(candidates))
+	out := make([]string, 0, len(candidates))
+	for _, p := range candidates {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 func resolveDevPlan(flags devFlags) (devPlan, error) {
+	// --all-in-docker is incompatible with several opt-outs; surface a
+	// clean error before we touch the filesystem so the user sees the
+	// conflict in the dry-run output too.
+	if flags.allInDocker {
+		if flags.noServices {
+			return devPlan{}, clierr.New(clierr.CodeDevFlagConflict,
+				"--all-in-docker and --no-services are mutually exclusive")
+		}
+		if flags.noDB {
+			return devPlan{}, clierr.New(clierr.CodeDevFlagConflict,
+				"--all-in-docker and --no-db are mutually exclusive (the in-container app needs the database)")
+		}
+		if !composeFileExists() {
+			return devPlan{}, clierr.New(clierr.CodeDevComposeNotFound,
+				"--all-in-docker requires a compose.yaml in the project root")
+		}
+	}
+
 	// If the user opts out of orchestration entirely, or there's no
 	// compose.yaml in sight, fall straight through to the Air-only path.
 	if flags.noServices || !composeFileExists() {
@@ -267,18 +380,27 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 		return devPlan{orchestrate: false}, nil
 	}
 
-	available, hasHealth, err := detectComposeServices(flags.profile)
+	profiles := resolveProfiles(flags)
+	available, hasHealth, err := detectComposeServices(profiles, flags.allInDocker)
 	if err != nil {
 		return devPlan{}, clierr.Wrap(clierr.CodeDevComposeNotFound, err,
 			"could not read compose configuration")
 	}
+
+	if flags.allInDocker && !slices.Contains(available, appServiceName) {
+		return devPlan{}, clierr.New(clierr.CodeDevFlagConflict,
+			"--all-in-docker requires an `app` service in compose.yaml")
+	}
+
 	selected := resolveSelectedServices(available, flags)
 	return devPlan{
 		orchestrate: true,
+		inDocker:    flags.allInDocker,
+		profiles:    profiles,
 		services: devServices{
 			available: available,
 			selected:  selected,
-			profile:   flags.profile,
+			profiles:  profiles,
 			hasHealth: hasHealth,
 		},
 	}, nil
@@ -286,8 +408,8 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 
 func printDevPlan(plan devPlan, emitter devEmitter) {
 	if plan.orchestrate {
-		emitter.Info(fmt.Sprintf("orchestrate=true profile=%q services=%v",
-			plan.services.profile, plan.services.selected))
+		emitter.Info(fmt.Sprintf("orchestrate=true in_docker=%t profiles=%v selected=%v",
+			plan.inDocker, plan.profiles, plan.services.selected))
 	} else {
 		emitter.Info("orchestrate=false (no compose.yaml or --no-services)")
 	}

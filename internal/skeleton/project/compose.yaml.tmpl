@@ -59,16 +59,20 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # cache (redis) is profile-gated. Start it on demand with
-  #   gofasta dev --profile cache
-  # or
+  # cache (redis) is active when EITHER the `cache` or `queue` profile
+  # is enabled. Both profiles are needed because the asynqmon `queue`
+  # service depends_on cache, and Compose requires a depended-upon
+  # service to share its dependent's profile (or be unprofiled). See:
+  # https://docs.docker.com/compose/how-tos/profiles/
+  #
+  # gofasta dev auto-activates both profiles; pass --no-cache /
+  # --no-queue to opt out. With raw docker compose, start it on demand:
   #   docker compose --profile cache up -d
-  # Not started by default so projects that don't use pkg/cache don't
-  # pay the memory cost.
+  #   docker compose --profile queue up -d   # also brings cache up
   cache:
     image: redis:7-alpine
     container_name: {{.ProjectNameLower}}_cache
-    profiles: [cache]
+    profiles: [cache, queue]
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:

@@ -36,6 +36,7 @@ func (q *quietEmitter) ServiceUnhealthy(_, _ string)             {}
 func (q *quietEmitter) MigrateOK(_ int)                          {}
 func (q *quietEmitter) MigrateSkipped(_ string)                  {}
 func (q *quietEmitter) Air(_ int, _ map[string]string)           {}
+func (q *quietEmitter) AirInDocker(_ int, _ map[string]string)   {}
 func (q *quietEmitter) Shutdown(_ string, _ int)                 {}
 func (q *quietEmitter) Info(_ string)                            { q.info.Add(1) }
 func (q *quietEmitter) Warn(_ string)                            { q.warn.Add(1) }

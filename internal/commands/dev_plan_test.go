@@ -67,7 +67,8 @@ func TestPrintDevPlan_Orchestrate(t *testing.T) {
 	emitter := &quietEmitter{}
 	printDevPlan(devPlan{
 		orchestrate: true,
-		services:    devServices{selected: []string{"db"}, profile: "cache"},
+		profiles:    []string{"cache"},
+		services:    devServices{selected: []string{"db"}, profiles: []string{"cache"}},
 	}, emitter)
 	assert.Greater(t, emitter.info.Load(), int32(0))
 }
@@ -107,4 +108,106 @@ func TestDetectVersions_EmptyStdout(t *testing.T) {
 	docker, compose := detectVersions()
 	assert.Equal(t, "unknown", docker)
 	assert.Equal(t, "unknown", compose)
+}
+
+// TestResolveDevPlan_AllInDockerWithoutCompose — --all-in-docker set
+// but no compose.yaml → CodeDevComposeNotFound.
+func TestResolveDevPlan_AllInDockerWithoutCompose(t *testing.T) {
+	chdirTemp(t)
+	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "compose.yaml")
+}
+
+// TestResolveDevPlan_AllInDockerNoServicesConflict — mutual-exclusion
+// guard: --all-in-docker + --no-services is incoherent.
+func TestResolveDevPlan_AllInDockerNoServicesConflict(t *testing.T) {
+	chdirTemp(t)
+	_, err := resolveDevPlan(devFlags{allInDocker: true, noServices: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+// TestResolveDevPlan_AllInDockerNoDBConflict — the in-container app
+// needs the db; --no-db with --all-in-docker is rejected.
+func TestResolveDevPlan_AllInDockerNoDBConflict(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	_, err := resolveDevPlan(devFlags{allInDocker: true, noDB: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mutually exclusive")
+}
+
+// TestResolveDevPlan_AllInDockerWithoutAppService — compose.yaml has
+// no `app` service → CodeDevFlagConflict so the user gets a clear
+// "your compose.yaml is missing the app service" message instead of a
+// silent empty-services run.
+func TestResolveDevPlan_AllInDockerWithoutAppService(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
+	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "`app` service")
+}
+
+// TestResolveDevPlan_DefaultProfilesIncludeCacheAndQueue — the
+// behavior change at the heart of this work: default mode auto-on
+// activates the cache + queue compose profiles. Without this, the
+// existing --no-cache / --no-queue flags can never do real work.
+func TestResolveDevPlan_DefaultProfilesIncludeCacheAndQueue(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"cache":{},"queue":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{})
+	require.NoError(t, err)
+	assert.Contains(t, plan.profiles, "cache")
+	assert.Contains(t, plan.profiles, "queue")
+}
+
+// TestResolveDevPlan_NoCacheRemovesCacheProfile — opt-out for cache
+// drops the cache profile but leaves queue alone.
+func TestResolveDevPlan_NoCacheRemovesCacheProfile(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"queue":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{noCache: true})
+	require.NoError(t, err)
+	assert.NotContains(t, plan.profiles, "cache")
+	assert.Contains(t, plan.profiles, "queue")
+}
+
+// TestResolveDevPlan_NoQueueRemovesQueueProfile — symmetric.
+func TestResolveDevPlan_NoQueueRemovesQueueProfile(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"cache":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{noQueue: true})
+	require.NoError(t, err)
+	assert.Contains(t, plan.profiles, "cache")
+	assert.NotContains(t, plan.profiles, "queue")
+}
+
+// TestResolveDevPlan_UserProfileMergesWithDefaults — user's --profile
+// is merged with the auto-on cache + queue. Order matters for
+// deterministic assertions; ElementsMatch covers it.
+func TestResolveDevPlan_UserProfileMergesWithDefaults(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"cache":{},"queue":{},"observability":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{profile: "observability"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"observability", "cache", "queue"}, plan.profiles)
+}
+
+// TestResolveDevPlan_UserProfileDuplicatesDeduped — user passes
+// --profile cache; default also adds cache; the result has cache only
+// once.
+func TestResolveDevPlan_UserProfileDuplicatesDeduped(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"cache":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{profile: "cache"})
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"cache", "queue"}, plan.profiles)
 }

@@ -13,9 +13,14 @@ PORT=8080
 #   before launching Air, so the host-running app connects to the dockerized
 #   db on localhost:5433 out of the box.
 #
-# For OPTION A (`docker compose up -d` — everything in Docker), compose.yaml
-# overrides HOST and PORT in the app container to `db:5432` (the Docker
-# network address), so these values are ignored inside the container.
+# For OPTION A (everything in Docker — including Air), use:
+#   gofasta dev --all-in-docker
+# or, equivalently, raw compose:
+#   docker compose up -d
+# In both cases, compose.yaml overrides HOST and PORT in the app container
+# to `db:5432` (the Docker network address), so these values are ignored
+# inside the container. --all-in-docker streams the app's stdout to the
+# foreground so you still see Air's hot-reload output live.
 #
 # For OPTION C (everything on host with your own postgres), change HOST/PORT
 # below to wherever your db lives — typically `localhost:5432`.
@@ -31,20 +36,19 @@ DB_HOST_PORT=5433
 {{.ProjectNameUpper}}_LOG_LEVEL=debug
 {{.ProjectNameUpper}}_LOG_FORMAT=text
 
-# Cache (Redis) — only active when the `cache` compose profile is on.
-#
-# Start it with:
-#   gofasta dev --profile cache
-# or:
-#   docker compose --profile cache up -d
+# Cache (Redis) — `gofasta dev` auto-activates the `cache` compose
+# profile by default; pass --no-cache to skip. With raw docker compose,
+# start it on demand with `docker compose --profile cache up -d`.
 #
 # Host-run app talks to the dockerized redis on localhost:REDIS_HOST_PORT.
 # Inside the app container (compose profile), REDIS_ADDR=cache:6379.
 {{.ProjectNameUpper}}_REDIS_URL=redis://localhost:6379/0
 REDIS_HOST_PORT=6379
 
-# Queue dashboard (asynqmon) — only active when the `queue` compose
-# profile is on. Serves the Asynq monitoring UI on :ASYNQMON_HOST_PORT.
+# Queue dashboard (asynqmon) — `gofasta dev` auto-activates the `queue`
+# compose profile by default (which also brings cache up since the
+# dashboard depends on it). Pass --no-queue to skip. Serves the Asynq
+# monitoring UI on :ASYNQMON_HOST_PORT.
 ASYNQMON_HOST_PORT=8081
 
 # Email (configure when needed)

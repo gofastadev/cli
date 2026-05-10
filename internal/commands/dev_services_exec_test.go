@@ -57,23 +57,30 @@ func TestComposeAvailable_DaemonDown(t *testing.T) {
 
 // TestStartServices_Empty — nil / empty names is a no-op.
 func TestStartServices_Empty(t *testing.T) {
-	assert.NoError(t, startServices(nil, ""))
-	assert.NoError(t, startServices([]string{}, "cache"))
+	assert.NoError(t, startServices(nil, nil))
+	assert.NoError(t, startServices([]string{}, []string{"cache"}))
 }
 
 func TestStartServices_HappyPath(t *testing.T) {
 	withFakeExec(t, 0)
-	assert.NoError(t, startServices([]string{"db"}, ""))
+	assert.NoError(t, startServices([]string{"db"}, nil))
 }
 
 func TestStartServices_WithProfile(t *testing.T) {
 	withFakeExec(t, 0)
-	assert.NoError(t, startServices([]string{"cache"}, "cache"))
+	assert.NoError(t, startServices([]string{"cache"}, []string{"cache"}))
+}
+
+func TestStartServices_MultipleProfiles(t *testing.T) {
+	withFakeExec(t, 0)
+	// Multi-profile activation per the compose docs is additive — we
+	// just verify the call doesn't error when both profiles are passed.
+	assert.NoError(t, startServices([]string{"cache", "queue"}, []string{"cache", "queue"}))
 }
 
 func TestStartServices_DockerFails(t *testing.T) {
 	withFakeExec(t, 1)
-	err := startServices([]string{"db"}, "")
+	err := startServices([]string{"db"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "docker compose up")
 }
@@ -110,7 +117,7 @@ func TestQueryServiceStates_ExecFails(t *testing.T) {
 
 func TestDetectComposeServices_ExecFails(t *testing.T) {
 	withFakeExec(t, 1)
-	_, _, err := detectComposeServices("")
+	_, _, err := detectComposeServices(nil, false)
 	require.Error(t, err)
 }
 

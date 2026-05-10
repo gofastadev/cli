@@ -99,6 +99,7 @@ const (
 	CodeDevMigrationFailed   Code = "DEV_MIGRATION_FAILED"
 	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
+	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -292,6 +293,10 @@ var registry = map[Code]meta{
 	},
 	CodeDevPortInUse: {
 		Hint: "another process is already bound to the configured PORT; stop it, pick a different port with `--port`, or update `server.port` in config.yaml",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevFlagConflict: {
+		Hint: "two flags requested incompatible behavior — see the message above; run `gofasta dev --help` for the flag matrix",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 

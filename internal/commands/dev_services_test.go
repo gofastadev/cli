@@ -96,6 +96,29 @@ func TestResolveSelectedServices(t *testing.T) {
 		got := resolveSelectedServices(available, devFlags{})
 		assert.ElementsMatch(t, available, got)
 	})
+
+	t.Run("default mode strips app even when present in available", func(t *testing.T) {
+		availableWithApp := []string{"app", "db", "cache"}
+		got := resolveSelectedServices(availableWithApp, devFlags{})
+		assert.NotContains(t, got, "app")
+		assert.Contains(t, got, "db")
+	})
+
+	t.Run("all-in-docker keeps app in default selection", func(t *testing.T) {
+		availableWithApp := []string{"app", "db", "cache"}
+		got := resolveSelectedServices(availableWithApp, devFlags{allInDocker: true})
+		assert.Contains(t, got, "app")
+		assert.Contains(t, got, "db")
+		assert.Contains(t, got, "cache")
+	})
+
+	t.Run("all-in-docker keeps app in explicit list", func(t *testing.T) {
+		got := resolveSelectedServices([]string{"db", "cache"}, devFlags{
+			allInDocker:  true,
+			servicesList: []string{"db", "app"},
+		})
+		assert.Equal(t, []string{"db", "app"}, got)
+	})
 }
 
 // TestParseServicesList — input normalization for --services.
@@ -139,10 +162,11 @@ func TestIsServiceReady(t *testing.T) {
 	})
 }
 
-// TestDetectComposeServices_WithProfile — profile != "" adds --profile.
+// TestDetectComposeServices_WithProfile — non-empty profiles list adds
+// one --profile arg per entry.
 func TestDetectComposeServices_WithProfile(t *testing.T) {
 	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
-	_, _, err := detectComposeServices("cache")
+	_, _, err := detectComposeServices([]string{"cache"}, false)
 	require.NoError(t, err)
 }
 

@@ -45,9 +45,9 @@ var timeSleepFn = time.Sleep
 // of `gofasta dev`. Built once in runDev and passed down; never mutated
 // after construction.
 type devServices struct {
-	available []string        // every service in compose.yaml except the app
+	available []string        // every service in compose.yaml; excludes "app" unless --all-in-docker is on
 	selected  []string        // services we'll actually start (post-flag resolution)
-	profile   string          // docker compose --profile value, empty if not set
+	profiles  []string        // docker compose --profile values; empty if no profiles active
 	hasHealth map[string]bool // per-service: does compose.yaml define a healthcheck?
 }
 
@@ -79,14 +79,28 @@ func composeFileExists() bool {
 }
 
 // detectComposeServices returns every service name declared in
-// compose.yaml (minus the app service), plus a per-service flag
-// indicating whether it declares a healthcheck block. Uses
-// `docker compose config --format json` so we get the fully-resolved
-// configuration including merged overrides and applied profiles.
-func detectComposeServices(profile string) (available []string, hasHealth map[string]bool, err error) {
+// compose.yaml plus a per-service flag indicating whether it declares a
+// healthcheck block. Uses `docker compose config --format json` so we
+// get the fully-resolved configuration including merged overrides and
+// applied profiles.
+//
+// The "app" service is filtered out of the result unless includeApp is
+// true — gofasta dev's default mode runs Air on the host, so the app
+// container is not part of the orchestrated set; --all-in-docker flips
+// that and needs the app service to be discoverable.
+//
+// `profiles` is the list of compose profiles to activate during config
+// resolution; each entry becomes a `--profile <name>` arg. Compose v2
+// only emits services whose profile is active (or who have no profile
+// at all), so the right call here is "pass every profile this run wants
+// to enable" before reading the result.
+func detectComposeServices(profiles []string, includeApp bool) (available []string, hasHealth map[string]bool, err error) {
 	args := []string{"compose"}
-	if profile != "" {
-		args = append(args, "--profile", profile)
+	for _, p := range profiles {
+		if p == "" {
+			continue
+		}
+		args = append(args, "--profile", p)
 	}
 	args = append(args, "config", "--format", "json")
 
@@ -111,7 +125,7 @@ func detectComposeServices(profile string) (available []string, hasHealth map[st
 
 	hasHealth = make(map[string]bool, len(parsed.Services))
 	for name, svc := range parsed.Services {
-		if name == appServiceName {
+		if name == appServiceName && !includeApp {
 			continue
 		}
 		available = append(available, name)
@@ -127,16 +141,23 @@ func detectComposeServices(profile string) (available []string, hasHealth map[st
 //  1. --no-services        → start nothing
 //  2. --services=a,b,c     → start exactly these (overrides --no-db etc.)
 //  3. default              → start everything in `available` minus --no-* filters
+//
+// The `app` service is filtered out of every branch unless --all-in-docker
+// is set, since the default workflow runs Air on the host. With
+// --all-in-docker the app container is part of the orchestrated set and
+// must survive both the explicit-list and default-loop branches.
 func resolveSelectedServices(available []string, flags devFlags) []string {
 	if flags.noServices {
 		return nil
 	}
 	if len(flags.servicesList) > 0 {
 		// Trust the explicit list but still filter out `app` if the user
-		// accidentally included it (dev always runs app on host).
+		// accidentally included it (host-Air mode runs app off-cluster).
+		// In --all-in-docker mode the app IS part of the cluster, so
+		// keep it.
 		result := make([]string, 0, len(flags.servicesList))
 		for _, s := range flags.servicesList {
-			if s == appServiceName {
+			if s == appServiceName && !flags.allInDocker {
 				continue
 			}
 			result = append(result, s)
@@ -146,6 +167,9 @@ func resolveSelectedServices(available []string, flags devFlags) []string {
 
 	filtered := make([]string, 0, len(available))
 	for _, s := range available {
+		if s == appServiceName && !flags.allInDocker {
+			continue
+		}
 		if flags.noDB && isDBLike(s) {
 			continue
 		}
@@ -183,15 +207,24 @@ func isQueueLike(name string) bool {
 		strings.HasSuffix(n, "-queue")
 }
 
-// startServices runs `docker compose up -d <names>`. Returns the combined
-// stderr output on failure so the caller can surface it to the user.
-func startServices(names []string, profile string) error {
+// startServices runs `docker compose up -d <names>` with one
+// `--profile <p>` arg per entry in profiles. Returns the combined stderr
+// output on failure so the caller can surface it to the user.
+//
+// Multi-profile activation is documented at
+// https://docs.docker.com/compose/how-tos/profiles/ — passing
+// `--profile a --profile b` is additive (union), and any service whose
+// declared profile set intersects this list is eligible to start.
+func startServices(names, profiles []string) error {
 	if len(names) == 0 {
 		return nil
 	}
 	args := []string{"compose"}
-	if profile != "" {
-		args = append(args, "--profile", profile)
+	for _, p := range profiles {
+		if p == "" {
+			continue
+		}
+		args = append(args, "--profile", p)
 	}
 	args = append(args, "up", "-d")
 	args = append(args, names...)

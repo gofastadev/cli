@@ -42,17 +42,37 @@ func fakeExecOutput(t *testing.T, stdout string, exitCode int) {
 }
 
 // TestDetectComposeServices_HappyPath — fake compose config returns
-// two services with one healthcheck. Parser should surface them.
+// three services with one healthcheck. Parser should surface them, and
+// "app" is filtered out by default (host-Air mode).
 func TestDetectComposeServices_HappyPath(t *testing.T) {
-	// The canonical `docker compose config --format json` shape.
 	out := `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}},"cache":{},"app":{}}}`
 	fakeExecOutput(t, out, 0)
-	available, hasHealth, err := detectComposeServices("")
+	available, hasHealth, err := detectComposeServices(nil, false)
 	require.NoError(t, err)
-	// "app" is the special-cased service name and gets filtered out.
 	assert.ElementsMatch(t, []string{"db", "cache"}, available)
 	assert.True(t, hasHealth["db"])
 	assert.False(t, hasHealth["cache"])
+}
+
+// TestDetectComposeServices_IncludeAppFlag — --all-in-docker mode
+// passes includeApp=true so the app service survives the filter.
+func TestDetectComposeServices_IncludeAppFlag(t *testing.T) {
+	out := `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}},"app":{}}}`
+	fakeExecOutput(t, out, 0)
+	available, _, err := detectComposeServices(nil, true)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"db", "app"}, available)
+}
+
+// TestDetectComposeServices_MultiProfile — passing multiple profiles
+// is valid; we only assert the call returns cleanly. Compose v2's
+// additive --profile semantics are the contract; the CLI just forwards
+// the list.
+func TestDetectComposeServices_MultiProfile(t *testing.T) {
+	fakeExecOutput(t, `{"services":{"db":{},"cache":{},"queue":{}}}`, 0)
+	available, _, err := detectComposeServices([]string{"cache", "queue"}, false)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"db", "cache", "queue"}, available)
 }
 
 // TestDetectComposeServices_MalformedJSON — docker compose config
@@ -60,7 +80,7 @@ func TestDetectComposeServices_HappyPath(t *testing.T) {
 // parse error cleanly.
 func TestDetectComposeServices_MalformedJSON(t *testing.T) {
 	fakeExecOutput(t, "not-json", 0)
-	_, _, err := detectComposeServices("")
+	_, _, err := detectComposeServices(nil, false)
 	require.Error(t, err)
 }
 

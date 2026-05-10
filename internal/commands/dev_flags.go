@@ -30,6 +30,7 @@ type devFlags struct {
 	attachLogs    bool          // stream `docker compose logs -f` alongside Air
 	dashboard     bool          // start the local dev dashboard on dashboardPort
 	dashboardPort int           // debug port for the dev dashboard (default 9090)
+	allInDocker   bool          // run the entire stack inside docker compose, including Air; host streams the app's logs to the foreground
 }
 
 // parseServicesList splits a comma-separated string into a non-empty

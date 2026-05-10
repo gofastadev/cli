@@ -89,6 +89,21 @@ func TestJSONEmitter_AirURLs(t *testing.T) {
 	assert.Equal(t, "http://x", urls["rest"])
 }
 
+// TestJSONEmitter_AirInDocker — the in-docker variant emits the same
+// "air" event but with status="running-in-docker" so JSON consumers
+// can branch on host vs containerized runtime without adding a new
+// event name.
+func TestJSONEmitter_AirInDocker(t *testing.T) {
+	var buf bytes.Buffer
+	e := &jsonEmitter{out: &buf}
+	e.AirInDocker(8080, map[string]string{"rest": "http://localhost:8080"})
+	var got map[string]interface{}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
+	assert.Equal(t, "air", got["event"])
+	assert.Equal(t, "running-in-docker", got["status"])
+	assert.Equal(t, float64(8080), got["port"])
+}
+
 // TestHumanEmitter_DoesNotPanic — every method runs without panicking
 // under a TTY-less test environment. We don't assert on stdout
 // content because the output is intentionally human-formatted (colors,
@@ -103,6 +118,7 @@ func TestHumanEmitter_DoesNotPanic(t *testing.T) {
 	h.MigrateOK(0) // zero-applied branch — "up to date"
 	h.MigrateSkipped("flag")
 	h.Air(8080, map[string]string{"rest": "http://localhost:8080"})
+	h.AirInDocker(8080, map[string]string{"rest": "http://localhost:8080"})
 	h.Shutdown("stopped", 0)
 	h.Info("message")
 	h.Warn("warning")

@@ -64,6 +64,7 @@ type devEmitter interface {
 	MigrateOK(applied int)
 	MigrateSkipped(reason string)
 	Air(port int, urls map[string]string)
+	AirInDocker(port int, urls map[string]string)
 	Shutdown(teardown string, exit int)
 	Info(msg string)
 	Warn(msg string)
@@ -153,6 +154,14 @@ func (e *jsonEmitter) Air(port int, urls map[string]string) {
 	e.emit(devEvent{Event: "air", Status: "running", Port: port, URLs: urls})
 }
 
+// AirInDocker — the app + Air launched inside the compose stack; the same
+// URL set is reachable on the host via the published ports. The status
+// discriminator lets JSON consumers branch on host vs. in-docker without
+// adding a new event name.
+func (e *jsonEmitter) AirInDocker(port int, urls map[string]string) {
+	e.emit(devEvent{Event: "air", Status: "running-in-docker", Port: port, URLs: urls})
+}
+
 // Shutdown — pipeline exited; reports teardown result and exit code.
 func (e *jsonEmitter) Shutdown(teardown string, exit int) {
 	e.emit(devEvent{Event: "shutdown", Teardown: teardown, Exit: exit})
@@ -210,6 +219,19 @@ func (h *humanEmitter) MigrateSkipped(reason string) {
 func (h *humanEmitter) Air(port int, urls map[string]string) {
 	fmt.Println()
 	termcolor.PrintStep("🚀 Air running on :%d", port)
+	for label, url := range urls {
+		fmt.Printf("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
+	}
+	fmt.Println()
+}
+
+// AirInDocker prints the post-start URL banner when Air is running inside
+// the app container. Same URL set as Air — published ports make it
+// reachable on localhost — but the banner names the runtime so the
+// developer is not surprised that `tmp/main` does not exist on the host.
+func (h *humanEmitter) AirInDocker(port int, urls map[string]string) {
+	fmt.Println()
+	termcolor.PrintStep("🚀 app running in docker on :%d (Air logs streaming below)", port)
 	for label, url := range urls {
 		fmt.Printf("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
 	}

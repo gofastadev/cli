@@ -31,5 +31,11 @@ CMD ["sh", "-c", "\
     echo '    GraphQL:    http://localhost:'${PORT:-8080}'/graphql' && \
     echo '    Playground: http://localhost:'${PORT:-8080}'/graphql-playground' && \
 {{- end}}
-    go tool air \
+    exec go tool air \
 "]
+# `exec` makes go tool air replace the parent shell as PID 1 so SIGTERM
+# from `docker compose stop` propagates directly. Without it, Alpine's
+# /bin/sh sits as PID 1 and does not forward signals — Compose then
+# waits the full 10s grace period before SIGKILL. See:
+#   https://hynek.me/articles/docker-signals/
+#   https://petermalmgren.com/signal-handling-docker/
