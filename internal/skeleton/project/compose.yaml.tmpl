@@ -89,6 +89,13 @@ services:
   #   gofasta dev --profile queue
   queue:
     image: hibiken/asynqmon:latest
+    # hibiken/asynqmon publishes only a linux/amd64 manifest on Docker
+    # Hub — there is no arm64 build. Pinning the platform makes Apple
+    # Silicon (M-series) and other arm64 hosts run it under emulation
+    # (Rosetta 2 on macOS) rather than fail the pull with
+    # `no matching manifest for linux/arm64/v8`. Native amd64 hosts
+    # (Intel Macs, Linux CI, Windows/WSL on Intel) are unaffected.
+    platform: linux/amd64
     container_name: {{.ProjectNameLower}}_queue
     profiles: [queue]
     ports:
