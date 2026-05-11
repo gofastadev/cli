@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -150,15 +151,21 @@ func TestReadKeyboardLoop_MixedSequence(t *testing.T) {
 // (sigKeyboardRestart on the channel), the supervisor calls teardown
 // with reason "restart" and returns true so the outer pipeline loop
 // re-runs from scratch.
+//
+// Subtle: `exited` MUST NOT be ready at the moment the outer select
+// fires, or Go's random-case selection can pick it over keySignals
+// (50% failure rate). We deliver to it from a delayed goroutine so
+// the outer select definitively picks keySignals first; the inner
+// `<-exited` (after interruptCompose) then unblocks on the delivery.
 func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
 	keyCh := make(chan keyboardSignal, 1)
 	exited := make(chan error, 1)
-	var called string
 	keyCh <- sigKeyboardRestart
-	// The fake `exited` channel must complete after the supervisor
-	// signals the compose process; we close it immediately so the
-	// internal `<-exited` blocking call returns without a real child.
-	close(exited)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		exited <- nil
+	}()
+	var called string
 	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
 	assert.True(t, restart)
 	assert.Equal(t, "restart", called)
@@ -166,12 +173,16 @@ func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
 
 // TestRunInDockerSupervisor_QuitSignal — Q press is the same teardown
 // path as Ctrl+C; restart=false so the outer loop exits.
+// Same delayed-exited pattern as the Restart test (see comment above).
 func TestRunInDockerSupervisor_QuitSignal(t *testing.T) {
 	keyCh := make(chan keyboardSignal, 1)
 	exited := make(chan error, 1)
-	var called string
 	keyCh <- sigKeyboardQuit
-	close(exited)
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		exited <- nil
+	}()
+	var called string
 	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
 	assert.False(t, restart)
 	assert.Equal(t, "quit", called)
