@@ -209,16 +209,27 @@ func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter de
 	}
 
 	// --- Stage 4: start services -------------------------------------------
-	if plan.orchestrate && len(plan.services.selected) > 0 {
-		for _, name := range plan.services.selected {
+	// Under --all-in-docker we deliberately START the app in foreground
+	// later (Stage 8) instead of as a detached daemon. The app's stdout
+	// then attaches directly to the user's terminal — same UX as running
+	// Air on the host, just inside a container. So filter the app out of
+	// the detached-up list here; supporting services (db, cache, queue)
+	// stay daemonized because their output isn't useful in the foreground.
+	detachedServices := plan.services.selected
+	if plan.inDocker {
+		detachedServices = removeService(plan.services.selected, appServiceName)
+	}
+
+	if plan.orchestrate && len(detachedServices) > 0 {
+		for _, name := range detachedServices {
 			emitter.ServiceStart(name)
 		}
-		if err := startServices(plan.services.selected, plan.profiles); err != nil {
+		if err := startServices(detachedServices, plan.profiles); err != nil {
 			return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
 				"failed to start compose services")
 		}
 
-		if err := waitHealthy(plan.services.selected, plan.services.hasHealth, flags.waitTimeout,
+		if err := waitHealthy(detachedServices, plan.services.hasHealth, flags.waitTimeout,
 			func(name, state string, elapsed time.Duration) {
 				if strings.HasPrefix(state, "running/healthy") || state == "running/" {
 					emitter.ServiceHealthy(name, elapsed)
@@ -317,25 +328,27 @@ func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter de
 	}
 
 	if plan.inDocker {
-		// Containerized mode: the app container is already running
-		// (Stage 4 brought it up with `compose up -d`), and Air is
-		// running inside it. Tail its stdout so the developer sees
-		// live hot-reload output exactly as they would on the host.
-		// When --attach-logs is also set, multiplex every selected
-		// service's logs (compose prefixes each line with the service
-		// name) so the foreground shows the full picture.
+		// Containerized mode: supporting services are already running
+		// (Stage 4 brought them up with `compose up -d` minus the app).
+		// Now we start the app in the FOREGROUND via `compose up app`
+		// so its stdout/stderr attach directly to the user's terminal.
+		// The container's CMD runs migrate then Air; both stream live
+		// into the dev terminal — same UX as host-mode Air, just inside
+		// a container.
+		//
+		// --attach-logs additionally tails the supporting services'
+		// stdout via a sideband `compose logs -f` streamer so multi-
+		// service debugging works without leaving the foreground.
 		emitter.AirInDocker(portInt, urls)
-		streamServices := []string{appServiceName}
 		if flags.attachLogs {
-			streamServices = plan.services.selected
+			supporting := removeService(plan.services.selected, appServiceName)
+			sideCancels = append(sideCancels, startLogStreamer(supporting))
 		}
-		streamerCancel := startLogStreamer(streamServices)
-		sideCancels = append(sideCancels, streamerCancel)
-		restart := runInDockerSupervisor(runTeardown, keySignals)
+		restart, err := runInDockerForeground(runTeardown, keySignals)
 		for _, c := range sideCancels {
 			c()
 		}
-		return restart, nil
+		return restart, err
 	}
 
 	emitter.Air(portInt, urls)
@@ -346,36 +359,87 @@ func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter de
 	return restart, err
 }
 
-// runInDockerSupervisor blocks until one of:
+// runInDockerForeground starts `docker compose up <app>` as a
+// foreground child whose stdout/stderr inherit gofasta dev's terminal.
+// The container's CMD (migrate + Air) then streams directly to the
+// user's screen — same UX as host-mode Air, no log-streamer middleman.
+//
+// The function blocks until one of:
 //
 //   - SIGINT/SIGTERM (Ctrl+C from the terminal or `kill`)
 //   - sigKeyboardQuit on keySignals (the user pressed Q)
 //   - sigKeyboardRestart on keySignals (the user pressed R)
+//   - the foreground compose process exits on its own (app crashed,
+//     compose itself died, or the container's CMD returned)
 //
-// Then calls teardown to stop the compose stack. Used by
-// --all-in-docker mode in place of runAir — there's no host-side Air
-// subprocess to babysit, so the supervisor just waits for the
-// developer's signal and forwards shutdown to compose. Returns true
-// only when the user pressed R, in which case the outer pipeline loop
-// re-runs from scratch.
+// Returns true only when the user pressed R. All other paths return
+// false so the outer pipeline loop exits cleanly.
 //
-// Extracted into a named function so tests can drive it without racing
-// the OS signal subsystem.
-func runInDockerSupervisor(teardown func(string), keySignals <-chan keyboardSignal) bool {
+// Stdin is deliberately NOT piped to the child. The keyboard listener
+// in dev_keyboard.go owns stdin in cbreak mode; piping it through
+// would either race the listener for bytes or confuse `docker compose
+// up`'s own (unused) stdin handling.
+func runInDockerForeground(teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
+	cmd := execCommand("docker", "compose", "up", appServiceName)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// cmd.Stdin intentionally left nil — see function doc.
+
+	if err := cmd.Start(); err != nil {
+		return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
+			"failed to start app container in foreground")
+	}
+
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	return runInDockerSupervisor(cmd, exited, teardown, keySignals), nil
+}
+
+// runInDockerSupervisor blocks on a select over four channels and
+// translates each event into a teardown reason. Extracted from
+// runInDockerForeground so tests can drive every branch with an
+// already-started (or fake) *exec.Cmd plus a synthesized `exited`
+// channel — no real docker process required.
+//
+// Returns true only when the user pressed R, so the outer pipeline
+// loop knows to re-run. Every other path returns false (clean exit).
+func runInDockerSupervisor(
+	cmd *exec.Cmd,
+	exited <-chan error,
+	teardown func(string),
+	keySignals <-chan keyboardSignal,
+) bool {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
+	interruptCompose := func() {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Signal(os.Interrupt)
+		}
+	}
+
 	select {
 	case <-sigChan:
+		interruptCompose()
+		<-exited
 		teardown("interrupted")
 		return false
 	case sig := <-keySignals:
+		interruptCompose()
+		<-exited
 		if sig == sigKeyboardRestart {
 			teardown("restart")
 			return true
 		}
 		teardown("quit")
+		return false
+	case <-exited:
+		// Compose / the app container exited on its own — crash, OOM,
+		// or the container's CMD returned. Tear down the rest of the
+		// stack so a half-up state doesn't linger.
+		teardown("app-exited")
 		return false
 	}
 }

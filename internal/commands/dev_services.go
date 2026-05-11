@@ -207,6 +207,20 @@ func isQueueLike(name string) bool {
 		strings.HasSuffix(n, "-queue")
 }
 
+// removeService returns a new slice with `target` filtered out. Used
+// by --all-in-docker mode to peel the app off the detached-up list so
+// it can be started in the foreground separately.
+func removeService(services []string, target string) []string {
+	out := make([]string, 0, len(services))
+	for _, s := range services {
+		if s == target {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
 // startServices runs `docker compose up -d <names>` with one
 // `--profile <p>` arg per entry in profiles. Returns the combined stderr
 // output on failure so the caller can surface it to the user.

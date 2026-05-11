@@ -152,9 +152,14 @@ func TestReadKeyboardLoop_MixedSequence(t *testing.T) {
 // re-runs from scratch.
 func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
 	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
 	var called string
 	keyCh <- sigKeyboardRestart
-	restart := runInDockerSupervisor(func(r string) { called = r }, keyCh)
+	// The fake `exited` channel must complete after the supervisor
+	// signals the compose process; we close it immediately so the
+	// internal `<-exited` blocking call returns without a real child.
+	close(exited)
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
 	assert.True(t, restart)
 	assert.Equal(t, "restart", called)
 }
@@ -163,9 +168,26 @@ func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
 // path as Ctrl+C; restart=false so the outer loop exits.
 func TestRunInDockerSupervisor_QuitSignal(t *testing.T) {
 	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
 	var called string
 	keyCh <- sigKeyboardQuit
-	restart := runInDockerSupervisor(func(r string) { called = r }, keyCh)
+	close(exited)
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
 	assert.False(t, restart)
 	assert.Equal(t, "quit", called)
+}
+
+// TestRunInDockerSupervisor_ChildExits — if the foreground compose
+// process exits on its own (app crashed, container died), the
+// supervisor must call teardown("app-exited") and return false so the
+// outer loop exits cleanly. This is the path the user gets when the
+// app inside the container crashes.
+func TestRunInDockerSupervisor_ChildExits(t *testing.T) {
+	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
+	exited <- nil // child exited cleanly
+	var called string
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.Equal(t, "app-exited", called)
 }
