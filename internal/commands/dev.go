@@ -432,6 +432,24 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 			return devPlan{}, clierr.New(clierr.CodeDevComposeNotFound,
 				"--all-in-docker requires a compose.yaml in the project root")
 		}
+
+		// A relative-path replace directive in go.mod (typical for
+		// cross-repo development against an unreleased framework
+		// checkout) is invisible inside the docker build context — the
+		// dev.dockerfile only COPYs the project's own files, so
+		// `go mod download` in the container fails with a cryptic
+		// "no such file or directory" pointing at the replaced module's
+		// go.mod. Detect and surface this up-front rather than letting
+		// the user wade through the docker build output.
+		if replaces, _ := findLocalReplacesFn("go.mod"); len(replaces) > 0 {
+			lines := make([]string, 0, len(replaces))
+			for _, r := range replaces {
+				lines = append(lines, fmt.Sprintf("    %s => %s", r.Module, r.Path))
+			}
+			return devPlan{}, clierr.New(clierr.CodeDevLocalReplace,
+				fmt.Sprintf("go.mod has filesystem-path replace directives that the docker build cannot resolve:\n%s",
+					strings.Join(lines, "\n")))
+		}
 	}
 
 	// If the user opts out of orchestration entirely, or there's no

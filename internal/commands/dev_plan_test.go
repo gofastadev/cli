@@ -138,6 +138,31 @@ func TestResolveDevPlan_AllInDockerNoDBConflict(t *testing.T) {
 	assert.Contains(t, err.Error(), "mutually exclusive")
 }
 
+// TestResolveDevPlan_AllInDockerLocalReplace — a filesystem-path
+// replace in go.mod (the common cross-repo dev case) cannot be
+// resolved inside the docker build context. Detect it before docker
+// compose runs and surface a clear message naming the offending
+// module + path, rather than letting buildkit emit
+// "reading /foo/go.mod: no such file or directory".
+func TestResolveDevPlan_AllInDockerLocalReplace(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+
+	origFn := findLocalReplacesFn
+	t.Cleanup(func() { findLocalReplacesFn = origFn })
+	findLocalReplacesFn = func(_ string) ([]localReplace, error) {
+		return []localReplace{
+			{Module: "github.com/example/foo", Path: "../../foo"},
+		}, nil
+	}
+
+	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "filesystem-path replace")
+	assert.Contains(t, err.Error(), "github.com/example/foo")
+	assert.Contains(t, err.Error(), "../../foo")
+}
+
 // TestResolveDevPlan_AllInDockerWithoutAppService — compose.yaml has
 // no `app` service → CodeDevFlagConflict so the user gets a clear
 // "your compose.yaml is missing the app service" message instead of a

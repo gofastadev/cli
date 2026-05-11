@@ -100,6 +100,7 @@ const (
 	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
 	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
+	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -297,6 +298,10 @@ var registry = map[Code]meta{
 	},
 	CodeDevFlagConflict: {
 		Hint: "two flags requested incompatible behavior — see the message above; run `gofasta dev --help` for the flag matrix",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevLocalReplace: {
+		Hint: "filesystem-path replaces (e.g. `replace ... => ../foo`) only resolve on the host — the docker build context cannot see paths outside the project. Either run without --all-in-docker (host mode handles local replaces fine), drop the replace and `go get` a published version, or vendor with `go mod vendor` so the replaced module is bundled into the build context.",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 
