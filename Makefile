@@ -57,28 +57,15 @@ build:
 ## here catches those regressions locally before they hit CI on a
 ## downstream user's project.
 ##
-## By default the scaffold runs `go get github.com/gofastadev/gofasta@latest`
-## which pulls whatever is published on the framework module proxy. Two
-## escape hatches for local development:
-##
-##   GOFASTA_LOCAL=/abs/path/to/gofasta make integration
-##     Passes the path through as GOFASTA_REPLACE to the scaffold command
-##     so `gofasta new` wires gofasta in via a `replace` directive pointing
-##     at your local checkout — bypassing the module proxy + sum DB for
-##     gofasta entirely. Use this when testing skeleton changes against
-##     unreleased framework changes, or when the Go checksum database
-##     hasn't yet indexed a freshly-published framework release.
-##
-##   GOFASTA_LOCAL unset: the scaffold fetches gofasta@latest normally.
-##     This is the path CI exercises for release-readiness.
+## The scaffold runs `go get github.com/gofastadev/gofasta@latest`, which
+## pulls whatever is currently published on the framework module proxy.
+## A scaffold that fails here usually means the framework's most recent
+## release isn't yet indexed by sum.golang.org (the proxy and sum DB are
+## eventually-consistent); wait a few minutes and retry, or temporarily
+## pin GOPROXY=direct,off if the sum DB is the hold-up.
 integration: build
 	rm -rf /tmp/gofasta-integration-test
-	@if [ -n "$$GOFASTA_LOCAL" ]; then \
-		echo "  → using local framework replace: $$GOFASTA_LOCAL"; \
-		GOFASTA_REPLACE=$$GOFASTA_LOCAL ./bin/gofasta new /tmp/gofasta-integration-test; \
-	else \
-		./bin/gofasta new /tmp/gofasta-integration-test; \
-	fi
+	./bin/gofasta new /tmp/gofasta-integration-test
 	@# Exercise the generators against the fresh scaffold so a regression
 	@# in `gofasta g <X>` can't slide past local preflight. Each command
 	@# is a representative of its category — scaffold (full CRUD stack),

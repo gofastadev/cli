@@ -24,7 +24,6 @@ const (
 	CodeGoModInitFailed Code = "GO_MOD_INIT_FAILED"
 	CodeGoModTidyFailed Code = "GO_MOD_TIDY_FAILED"
 	CodeGofastaInstall  Code = "GOFASTA_INSTALL_FAILED"
-	CodeGofastaReplace  Code = "GOFASTA_REPLACE_INVALID"
 	CodeGoBuildFailed   Code = "GO_BUILD_FAILED"
 	CodeGoTestFailed    Code = "GO_TEST_FAILED"
 	CodeGoVetFailed     Code = "GO_VET_FAILED"
@@ -138,11 +137,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/getting-started/installation",
 	},
 	CodeGofastaInstall: {
-		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or set GOFASTA_REPLACE=/path/to/local/gofasta to bypass the proxy entirely",
-		Docs: "https://gofasta.dev/docs/cli-reference/new",
-	},
-	CodeGofastaReplace: {
-		Hint: "GOFASTA_REPLACE must point to a directory containing a valid gofasta checkout (go.mod present)",
+		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or run `go get github.com/gofastadev/gofasta@latest` inside the generated project once the sum DB catches up",
 		Docs: "https://gofasta.dev/docs/cli-reference/new",
 	},
 	CodeGoBuildFailed: {
