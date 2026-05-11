@@ -46,12 +46,20 @@ const (
 	sigKeyboardQuit
 )
 
-// termIsTerminalFn / termMakeRawFn / termRestoreFn are package-level
+// termIsTerminalFn / termSetCbreakFn / termRestoreFn are package-level
 // seams over the corresponding x/term helpers so tests can stub them
 // without needing a real PTY. Production assigns the real functions.
+//
+// termSetCbreakFn deliberately points at makeCbreak rather than
+// term.MakeRaw. MakeRaw clears OPOST, which disables newline →
+// carriage-return-newline translation; subprocesses like Air and the
+// project's own logger then produce "staircase" output where each
+// successive line starts at the column the previous line ended at.
+// makeCbreak only clears ICANON+ECHO (so single-key shortcuts still
+// work) and leaves OPOST/ISIG/etc. alone.
 var (
 	termIsTerminalFn = term.IsTerminal
-	termMakeRawFn    = term.MakeRaw
+	termSetCbreakFn  = makeCbreak
 	termRestoreFn    = term.Restore
 )
 
@@ -82,7 +90,7 @@ func startKeyboardListener(in keyboardReader, disabled bool) (signals <-chan key
 	if !termIsTerminalFn(fd) {
 		return nil, func() {}, false
 	}
-	oldState, err := termMakeRawFn(fd)
+	oldState, err := termSetCbreakFn(fd)
 	if err != nil {
 		// Raw-mode failure is non-fatal — drop into the no-listener
 		// path so the rest of the pipeline still runs.

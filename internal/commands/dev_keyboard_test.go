@@ -16,7 +16,7 @@ import (
 //
 // startKeyboardListener depends on x/term primitives that need a real
 // PTY — fine in production, hostile to `go test`. We stub via the
-// package-level seams (termIsTerminalFn / termMakeRawFn / termRestoreFn)
+// package-level seams (termIsTerminalFn / termSetCbreakFn / termRestoreFn)
 // so the listener's branching logic can be exercised without a TTY.
 // ─────────────────────────────────────────────────────────────────────
 
@@ -38,14 +38,14 @@ func newFakeKB(input string) *fakeKeyboardReader {
 // startKeyboardListener passed.
 func withTerminalStubs(t *testing.T, isTTY bool, makeRawErr error) {
 	t.Helper()
-	origIs, origMake, origRestore := termIsTerminalFn, termMakeRawFn, termRestoreFn
+	origIs, origMake, origRestore := termIsTerminalFn, termSetCbreakFn, termRestoreFn
 	t.Cleanup(func() {
 		termIsTerminalFn = origIs
-		termMakeRawFn = origMake
+		termSetCbreakFn = origMake
 		termRestoreFn = origRestore
 	})
 	termIsTerminalFn = func(_ int) bool { return isTTY }
-	termMakeRawFn = func(_ int) (*term.State, error) {
+	termSetCbreakFn = func(_ int) (*term.State, error) {
 		if makeRawErr != nil {
 			return nil, makeRawErr
 		}
