@@ -264,10 +264,13 @@ func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter de
 	// migrate against db:5432 before starting Air (see
 	// deployments/docker/dev.dockerfile.tmpl), so a host-side run would
 	// be a wasteful double-attempt and would force the user to have
-	// `migrate` on $PATH. Skip explicitly and emit a MigrateSkipped
-	// event so the JSON consumer still sees the decision.
+	// the `migrate` CLI on $PATH. We emit MigrateDelegated (NOT
+	// MigrateSkipped) so the message reflects what's really happening:
+	// migrations ARE running — just inside the container, and their
+	// output streams to the foreground via Stage 8's `docker compose
+	// logs -f`.
 	if flags.allInDocker {
-		emitter.MigrateSkipped("running inside the app container")
+		emitter.MigrateDelegated("running inside the app container")
 	} else if !flags.noMigrate {
 		if applied, err := runMigrationsWithCount(); err != nil {
 			emitter.MigrateSkipped(err.Error())

@@ -63,6 +63,7 @@ type devEmitter interface {
 	ServiceUnhealthy(name, reason string)
 	MigrateOK(applied int)
 	MigrateSkipped(reason string)
+	MigrateDelegated(reason string)
 	Air(port int, urls map[string]string)
 	AirInDocker(port int, urls map[string]string)
 	Shutdown(teardown string, exit int)
@@ -149,6 +150,13 @@ func (e *jsonEmitter) MigrateSkipped(reason string) {
 	e.emit(devEvent{Event: "migrate", Status: "skipped", Message: reason})
 }
 
+// MigrateDelegated — migrations are running inside another process (the
+// app container's CMD under --all-in-docker). Distinct from "skipped"
+// because they ARE running — just not from the host CLI.
+func (e *jsonEmitter) MigrateDelegated(reason string) {
+	e.emit(devEvent{Event: "migrate", Status: "delegated", Message: reason})
+}
+
 // Air — Air launched successfully; emits the URL set for the running app.
 func (e *jsonEmitter) Air(port int, urls map[string]string) {
 	e.emit(devEvent{Event: "air", Status: "running", Port: port, URLs: urls})
@@ -213,6 +221,15 @@ func (h *humanEmitter) MigrateOK(applied int) {
 // MigrateSkipped prints the reason migrations were skipped.
 func (h *humanEmitter) MigrateSkipped(reason string) {
 	termcolor.PrintWarn("migrations skipped: %s", reason)
+}
+
+// MigrateDelegated prints a positive checkmark line: migrations are
+// running, just inside the app container's CMD rather than on the
+// host. Distinct from "skipped" because the work is still being done;
+// the user just sees the output via the foreground docker logs stream
+// instead of inline.
+func (h *humanEmitter) MigrateDelegated(reason string) {
+	termcolor.PrintStep("✓ migrations delegated to app container (%s) — output appears in the log stream below", reason)
 }
 
 // Air prints the post-start URL banner for the running app.

@@ -32,13 +32,14 @@ func TestJSONEmitter_AllEvents(t *testing.T) {
 	e.ServiceUnhealthy("cache", "timeout")
 	e.MigrateOK(3)
 	e.MigrateSkipped("--no-migrate")
+	e.MigrateDelegated("running inside the app container")
 	e.Air(8080, map[string]string{"rest": "http://localhost:8080"})
 	e.Shutdown("stopped", 0)
 	e.Info("air starting")
 	e.Warn("dashboard died")
 
 	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte{'\n'})
-	require.Len(t, lines, 10)
+	require.Len(t, lines, 11)
 
 	expected := []struct {
 		event  string
@@ -50,6 +51,7 @@ func TestJSONEmitter_AllEvents(t *testing.T) {
 		{"service", "unhealthy"},
 		{"migrate", "ok"},
 		{"migrate", "skipped"},
+		{"migrate", "delegated"},
 		{"air", "running"},
 		{"shutdown", ""},
 		{"info", ""},
@@ -117,6 +119,7 @@ func TestHumanEmitter_DoesNotPanic(t *testing.T) {
 	h.MigrateOK(3)
 	h.MigrateOK(0) // zero-applied branch — "up to date"
 	h.MigrateSkipped("flag")
+	h.MigrateDelegated("running inside the app container")
 	h.Air(8080, map[string]string{"rest": "http://localhost:8080"})
 	h.AirInDocker(8080, map[string]string{"rest": "http://localhost:8080"})
 	h.Shutdown("stopped", 0)
