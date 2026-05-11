@@ -40,3 +40,39 @@ func TestGoToolInstallHint(t *testing.T) {
 	assert.Contains(t, goToolInstallHint("wire"), "google/wire")
 	assert.Contains(t, goToolInstallHint("unknown"), "unknown@latest")
 }
+
+// TestRunDoctor_LoadsDotEnvBeforeDBCheck — regression for the bug
+// where `gofasta doctor` always reported "database not reachable"
+// because it built the migration URL from config.yaml only (host-port
+// defaults: 5432) without overlaying the project's `.env` (which
+// remaps to the docker-mapped host port, e.g. 5433). This test
+// confirms doctor's .env-loading step actually mutates the process
+// env BEFORE the migration URL gets built.
+func TestRunDoctor_LoadsDotEnvBeforeDBCheck(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	_ = os.Chdir(dir)
+
+	// Minimal scaffold-shaped layout: config.yaml present, .env present
+	// with a value that doctor must read into the process env.
+	require := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("setup: %v", err)
+		}
+	}
+	require(os.WriteFile("config.yaml", []byte("database:\n  driver: postgres\n  host: localhost\n  port: \"5432\"\n"), 0o644))
+	require(os.WriteFile(".env", []byte("GOFASTA_DATABASE_PORT=5433\n"), 0o644))
+
+	t.Cleanup(func() { _ = os.Unsetenv("GOFASTA_DATABASE_PORT") })
+	_ = os.Unsetenv("GOFASTA_DATABASE_PORT")
+
+	assert.NotPanics(t, func() { _ = runDoctor() })
+
+	// The bug was that doctor never loaded .env at all; this assertion
+	// proves the side-effect (the env var IS now set in the process)
+	// regardless of whether the migrate child process succeeded.
+	assert.Equal(t, "5433", os.Getenv("GOFASTA_DATABASE_PORT"),
+		"doctor must load .env so the DB-reachability probe uses the host-mapped port, not config.yaml's in-container default")
+}
