@@ -100,6 +100,8 @@ const (
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
 	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
+	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
+	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELLED"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -297,6 +299,14 @@ var registry = map[Code]meta{
 	},
 	CodeDevLocalReplace: {
 		Hint: "filesystem-path replaces (e.g. `replace ... => ../foo`) only resolve on the host — the docker build context cannot see paths outside the project. Either run without --all-in-docker (host mode handles local replaces fine), drop the replace and `go get` a published version, or vendor with `go mod vendor` so the replaced module is bundled into the build context.",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevServiceUnknown: {
+		Hint: "the name passed to --services is not declared in compose.yaml; check `docker compose config --services` for the list of valid names",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevPreflightCancel: {
+		Hint: "preflight was cancelled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 

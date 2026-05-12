@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -189,6 +190,10 @@ func resolveSelectedServices(available []string, flags devFlags) []string {
 // to know the exact service names the scaffold used. The heuristics are
 // intentionally narrow to avoid false positives in user-authored
 // compose files.
+//
+// These three helpers are slated for removal alongside the --no-*
+// flag set in the upcoming --services-only redesign; kept for now so
+// resolveSelectedServices keeps compiling during the cutover.
 func isDBLike(name string) bool {
 	n := strings.ToLower(name)
 	return n == "db" || n == "database" || n == "postgres" || n == "mysql" ||
@@ -205,6 +210,73 @@ func isQueueLike(name string) bool {
 	n := strings.ToLower(name)
 	return n == "queue" || n == "asynq" || n == "nats" || n == "rabbitmq" ||
 		strings.HasSuffix(n, "-queue")
+}
+
+// selectServices is the new (host-first model) validator for the
+// `--services <names>` flag.
+//
+//   - raw == "" → returns ([], nil). No services in compose; the app
+//     runs on host with Air.
+//   - raw == "all" → returns the entire `available` list verbatim.
+//     Pulls in `app` too if compose.yaml declares it, which is how
+//     `--services all` reaches full-stack-in-docker.
+//   - raw == "a,b,c" → validates each name against `available`. On
+//     a typo, returns a clierr.New(CodeDevServiceUnknown, ...) with a
+//     human-readable hint that lists available services and (when a
+//     Levenshtein match is close enough) suggests the likely correct
+//     name.
+//
+// The function takes the canonical `available` list from
+// detectComposeServices so it doesn't need to know about specific
+// service-name conventions — a custom `lavinmq` service declared in
+// compose.yaml is valid the moment compose.yaml mentions it.
+//
+// Returns the resolved list with input order preserved (so `db,app`
+// brings db up before the foreground app start in callers that care
+// about ordering).
+func selectServices(available []string, raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	if strings.EqualFold(raw, "all") {
+		out := make([]string, len(available))
+		copy(out, available)
+		return out, nil
+	}
+
+	availableSet := make(map[string]bool, len(available))
+	for _, s := range available {
+		availableSet[s] = true
+	}
+
+	requested := parseServicesList(raw)
+	out := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if !availableSet[name] {
+			return nil, fmt.Errorf("%s", formatUnknownServiceError(name, available))
+		}
+		out = append(out, name)
+	}
+	return out, nil
+}
+
+// formatUnknownServiceError builds the multi-line error message for a
+// service name that wasn't found in compose.yaml. Includes the
+// available list (sorted, comma-joined) and, when applicable, a
+// "Did you mean: X?" suggestion via Levenshtein matching.
+func formatUnknownServiceError(typo string, available []string) string {
+	sorted := make([]string, len(available))
+	copy(sorted, available)
+	sort.Strings(sorted)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "compose.yaml has no service named %q.\n", typo)
+	fmt.Fprintf(&b, "  Available services: %s", strings.Join(sorted, ", "))
+	if guess, ok := suggestClosest(typo, available); ok {
+		fmt.Fprintf(&b, "\n  Did you mean: %s?", guess)
+	}
+	return b.String()
 }
 
 // removeService returns a new slice with `target` filtered out. Used

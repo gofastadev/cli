@@ -69,6 +69,62 @@ func ReadDBDriver() string {
 	return driver
 }
 
+// BuildCacheEndpoint reads cache.* from config.yaml + env vars and
+// returns the cache backend's host:port endpoint, plus an `enabled`
+// flag indicating whether the app actually wants a network cache.
+//
+// `enabled` is false when `cache.driver` is "memory" or empty —
+// memory-backed caches don't connect anywhere, and the dev preflight
+// must skip the probe entirely rather than report "unreachable" and
+// nag a user who explicitly opted out of Redis.
+//
+// When enabled is true but host/port can't be assembled, the returned
+// endpoint is empty and the caller should treat that as a config
+// error (not as "unreachable").
+func BuildCacheEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	driver := strings.ToLower(strings.TrimSpace(k.String("cache.driver")))
+	if driver == "" || driver == "memory" {
+		return "", false
+	}
+	host := k.String("cache.redis.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("cache.redis.port")
+	if port == "" {
+		port = "6379"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
+}
+
+// BuildQueueEndpoint reads queue.* from config.yaml + env vars and
+// returns the queue backend's host:port endpoint, plus an `enabled`
+// flag.
+//
+// `enabled` follows `queue.enabled` directly. When false (the
+// scaffold's default), the preflight skips the probe so a project
+// that doesn't use the queue doesn't get a spurious "unreachable"
+// warning at every `gofasta dev` invocation.
+//
+// The queue's Redis defaults to host=localhost port=6379 when not
+// explicitly configured, matching pkg/queue's own resolution.
+func BuildQueueEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	if !k.Bool("queue.enabled") {
+		return "", false
+	}
+	host := k.String("queue.redis.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("queue.redis.port")
+	if port == "" {
+		port = "6379"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
+}
+
 func loadConfig() *koanf.Koanf {
 	k := koanf.New(".")
 	if _, err := os.Stat("config.yaml"); err == nil {
