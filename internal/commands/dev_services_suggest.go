@@ -64,10 +64,10 @@ func suggestClosest(typo string, available []string) (string, bool) {
 // and O(min(len(a), len(b))) space — small enough for service names
 // (typically < 30 chars).
 func levenshtein(a, b string) int {
-	if len(a) == 0 {
+	if a == "" {
 		return len(b)
 	}
-	if len(b) == 0 {
+	if b == "" {
 		return len(a)
 	}
 
@@ -86,9 +86,9 @@ func levenshtein(a, b string) int {
 				cost = 0
 			}
 			curr[j] = minOfThree(
-				curr[j-1]+1,      // insertion
-				prev[j]+1,        // deletion
-				prev[j-1]+cost,   // substitution
+				curr[j-1]+1,    // insertion
+				prev[j]+1,      // deletion
+				prev[j-1]+cost, // substitution
 			)
 		}
 		prev, curr = curr, prev

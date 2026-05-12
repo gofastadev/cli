@@ -101,7 +101,7 @@ const (
 	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
 	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
-	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELLED"
+	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -306,7 +306,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 	CodeDevPreflightCancel: {
-		Hint: "preflight was cancelled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
+		Hint: "preflight was canceled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 

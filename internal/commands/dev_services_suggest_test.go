@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -92,4 +93,80 @@ func TestMinOfThree(t *testing.T) {
 	assert.Equal(t, 1, minOfThree(2, 1, 3))
 	assert.Equal(t, 1, minOfThree(3, 2, 1))
 	assert.Equal(t, 0, minOfThree(0, 0, 0))
+}
+
+// ── selectServices ──────────────────────────────────────────────────
+
+func TestSelectServices_EmptyRawReturnsEmpty(t *testing.T) {
+	got, err := selectServices([]string{"app", "db", "cache"}, "")
+	assert.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestSelectServices_WhitespaceRawReturnsEmpty(t *testing.T) {
+	got, err := selectServices([]string{"app", "db"}, "  \t  ")
+	assert.NoError(t, err)
+	assert.Empty(t, got)
+}
+
+func TestSelectServices_AllAliasReturnsEverything(t *testing.T) {
+	got, err := selectServices([]string{"app", "db", "cache", "queue"}, "all")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"app", "db", "cache", "queue"}, got)
+}
+
+func TestSelectServices_AllAliasCaseInsensitive(t *testing.T) {
+	got, err := selectServices([]string{"app", "db"}, "ALL")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"app", "db"}, got)
+}
+
+func TestSelectServices_ExplicitListAllValid(t *testing.T) {
+	got, err := selectServices([]string{"app", "db", "cache", "queue"}, "db,cache")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"db", "cache"}, got)
+}
+
+func TestSelectServices_PreservesInputOrder(t *testing.T) {
+	got, err := selectServices([]string{"app", "db", "cache", "queue"}, "queue,db,cache")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"queue", "db", "cache"}, got)
+}
+
+func TestSelectServices_AppIsValidName(t *testing.T) {
+	got, err := selectServices([]string{"app", "db"}, "db,app")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"db", "app"}, got)
+}
+
+func TestSelectServices_UnknownNameErrorsWithSuggestion(t *testing.T) {
+	_, err := selectServices([]string{"app", "db", "cache", "queue", "lavinmq"}, "lavinmw")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no service named "lavinmw"`)
+	assert.Contains(t, err.Error(), "Available services:")
+	assert.Contains(t, err.Error(), "Did you mean: lavinmq?")
+}
+
+func TestSelectServices_UnknownNameNoSuggestionWhenFar(t *testing.T) {
+	_, err := selectServices([]string{"app", "db"}, "elasticsearch")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `no service named "elasticsearch"`)
+	assert.NotContains(t, err.Error(), "Did you mean")
+}
+
+func TestSelectServices_StopsAtFirstUnknown(t *testing.T) {
+	// "db" is valid, "redes" is a typo for "redis" but redis isn't in
+	// available, so the error mentions "redes" and lists what IS
+	// available. We don't try to be clever about "process the valid
+	// ones and report the invalid one separately" — the dev's command
+	// line is wrong, surface that.
+	_, err := selectServices([]string{"app", "db", "cache"}, "db,redes")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"redes"`)
+}
+
+func TestSelectServices_HandlesWhitespaceAroundNames(t *testing.T) {
+	got, err := selectServices([]string{"app", "db", "cache"}, "  db ,  cache  ")
+	assert.NoError(t, err)
+	assert.Equal(t, []string{"db", "cache"}, got)
 }
