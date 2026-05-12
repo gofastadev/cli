@@ -140,17 +140,19 @@ func init() {
 // Tests that exercise the pipeline shape call runDev directly — under
 // `go test`, os.Stdin is a pipe (not a TTY) so the keyboard layer
 // auto-skips and runDev behaves exactly like the old single-pass body.
+//
+// The keyboard listener is started INSIDE the pipeline, after the
+// preflight menu has resolved — otherwise the listener's cbreak-mode
+// stdin grab would steal every keystroke from the menu's line reader
+// and the user would see no echo / no input registered.
 func runDev(flags devFlags) error {
-	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, flags.noKeyboard)
-	defer restoreKB()
-
 	emitter := newDevEmitter(jsonOutput)
 
 	for iter := 1; ; iter++ {
 		if iter > 1 {
 			emitter.Info(fmt.Sprintf("⟳ restarting from scratch (iteration %d)", iter))
 		}
-		restart, err := runDevPipeline(flags, keySignals, emitter)
+		restart, err := runDevPipeline(flags, emitter)
 		if err != nil {
 			return err
 		}
@@ -170,7 +172,7 @@ func runDev(flags devFlags) error {
 // agents see JSON events.
 //
 //nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
-func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter devEmitter) (bool, error) {
+func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// --- Stage 0: load .env ------------------------------------------------
 	// Re-loaded each iteration so editing .env and pressing R picks
 	// up the new values without re-invoking gofasta dev from outside.
@@ -371,6 +373,15 @@ func runDevPipeline(flags devFlags, keySignals <-chan keyboardSignal, emitter de
 	if flags.dashboard {
 		sideCancels = append(sideCancels, startDashboard(flags.dashboardPort, portInt, &plan.services, emitter))
 	}
+
+	// Start the keyboard listener NOW (Stage 8b) — after preflight + the
+	// menu have resolved. Earlier startup would have put stdin in cbreak
+	// mode while the menu's bufio.Reader was waiting on a newline, with
+	// the listener silently swallowing every byte. The listener is only
+	// needed for Air's interactive r/q/h shortcuts; the preflight menu
+	// has its own [4] cancel option.
+	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, flags.noKeyboard)
+	defer restoreKB()
 
 	if plan.inDocker {
 		// Containerized mode: supporting services are already running
