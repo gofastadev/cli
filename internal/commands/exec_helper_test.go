@@ -43,11 +43,46 @@ func fakeExecCommandWithVersion(exitCode int, version string) func(name string, 
 
 // withFakeExec swaps execCommand to a fake with the given exit code for the
 // duration of the test and restores the original afterwards.
+//
+// It ALSO stubs the three preflight probe functions to return probeOK.
+// Before the migrate-version → TCP-probe refactor, the DB probe shelled
+// out to `migrate` and was fully covered by execCommand's fake — so
+// every dev/runDev test got an "OK" probe automatically just by calling
+// withFakeExec. After the refactor the DB probe is a `net.DialTimeout`
+// that bypasses execCommand, which would dial real localhost:5432
+// during tests and fail. Stubbing the seams here preserves the implicit
+// contract every dev test was already relying on: withFakeExec means
+// "all deps are happy, focus the test on the shell-out path".
 func withFakeExec(t *testing.T, exitCode int) {
 	t.Helper()
 	orig := execCommand
 	execCommand = fakeExecCommand(exitCode)
 	t.Cleanup(func() { execCommand = orig })
+	stubProbesOK(t)
+}
+
+// stubProbesOK swaps all three preflight probe functions to report OK
+// for the duration of the test. Tests that want to exercise the
+// preflight menu directly assign their own probe stubs *after*
+// calling withFakeExec (the last assignment wins; t.Cleanup restores
+// the original on exit either way).
+func stubProbesOK(t *testing.T) {
+	t.Helper()
+	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeOK, Endpoint: "stubbed"}
+	}
+	probeCacheFn = func() probeResult {
+		return probeResult{Dep: "cache", Status: probeNotConfigured}
+	}
+	probeQueueFn = func() probeResult {
+		return probeResult{Dep: "queue", Status: probeNotConfigured}
+	}
+	t.Cleanup(func() {
+		probeDatabaseFn = origDB
+		probeCacheFn = origCache
+		probeQueueFn = origQueue
+	})
 }
 
 // withFakeExecVersion is withFakeExec with a scripted --version response.

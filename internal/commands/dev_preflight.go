@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -12,14 +11,11 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 // Preflight — dep connectivity probes for `gofasta dev`.
 //
-// Three probes:
+// Three probes, all TCP-based:
 //
-//   - probeDatabase — runs `migrate -database <url> version` (same
-//     shape `gofasta doctor` uses). Verifies the DSN parses, the host
-//     is reachable, the credentials work, and the schema_migrations
-//     table is accessible. Slower than a TCP-only probe but catches
-//     real config errors (wrong password, wrong db name) that TCP
-//     can't see.
+//   - probeDatabase — TCP-connect to database.host:port. Skipped
+//     entirely when database.driver is "sqlite"/"sqlite3" (file-
+//     backed, no network endpoint).
 //
 //   - probeCache — TCP-connect to cache.redis.host:port. Skipped
 //     entirely when cache.driver is "memory" or empty.
@@ -30,6 +26,14 @@ import (
 // Each probe returns a probeResult; the three are aggregated by
 // runPreflight and handed to the interactive menu when any probe
 // reports unreachable.
+//
+// Why TCP-only for the DB: an earlier version used `migrate version`
+// which double-checks "DSN parses AND schema_migrations table
+// exists". That false-positive'd as "unreachable" the first time a
+// fresh Postgres container came up via menu option [2], because the
+// table doesn't exist yet — looping the menu forever. Real schema
+// validation belongs in Stage 6's `migrate up`, not the preflight
+// probe.
 // ─────────────────────────────────────────────────────────────────────
 
 // probeStatus is the verdict of a single preflight probe. Three states:
@@ -74,11 +78,6 @@ var (
 	probeCacheFn    = probeCache
 	probeQueueFn    = probeQueue
 
-	// migrateProbeRunner is the seam over the actual `migrate version`
-	// invocation. Production uses execCommand("migrate", ...) under the
-	// hood; tests swap to a function returning canned outcomes.
-	migrateProbeRunner = runMigrateVersionProbe
-
 	// tcpDialFn is the seam over net.DialTimeout. Tests use httptest
 	// listeners or canned errors to drive the three probe outcomes.
 	tcpDialFn = net.DialTimeout
@@ -99,37 +98,54 @@ func runPreflight() []probeResult {
 	return results
 }
 
-// probeDatabase resolves the DSN via configutil.BuildMigrationURL()
-// (already used by doctor + dev's migrate step) and runs `migrate
-// version` against it. An empty DSN is treated as not-configured
-// because the scaffold always sets one; if it's empty the user has
-// explicitly stripped the config.
+// probeDatabase TCP-connects to the DB backend at the host:port
+// resolved from config.yaml + env vars. File-backed drivers
+// (sqlite/sqlite3) are reported as probeNotConfigured because they
+// have no network endpoint — a TCP probe makes no sense for them.
+//
+// We intentionally do NOT use `migrate version` as the probe. That
+// command requires the target database to exist AND a
+// schema_migrations table to be present, both of which are FALSE
+// the first time a Postgres container comes up via menu option [2].
+// Using it as a reachability check caused the menu to loop forever
+// after option [2] succeeded: the DB was up, but `migrate version`
+// returned exit 1 because the schema_migrations table didn't exist
+// yet, so the menu re-classified the DB as unreachable.
+//
+// A plain TCP dial answers the question the menu actually asks: "is
+// the DB accepting connections?". Stage 6 of the pipeline then runs
+// the real `migrate up`, which creates the database/schema as
+// needed.
+//
+// The displayed Endpoint stays the full migration URL so error
+// messages remain copy-pasteable and the developer immediately sees
+// user/database/driver. The reachability decision is independent of
+// that string.
 func probeDatabase() probeResult {
-	dsn := configutil.BuildMigrationURL()
-	if dsn == "" {
+	endpoint, enabled := configutil.BuildDatabaseEndpoint()
+	if !enabled {
 		return probeResult{Dep: "database", Status: probeNotConfigured}
 	}
-	if err := migrateProbeRunner(dsn); err != nil {
+	if endpoint == "" {
+		return probeResult{
+			Dep:    "database",
+			Status: probeUnreachable,
+			Reason: "database configuration is incomplete",
+		}
+	}
+	display := configutil.BuildMigrationURL()
+	if display == "" {
+		display = endpoint
+	}
+	if err := tcpProbe(endpoint); err != nil {
 		return probeResult{
 			Dep:      "database",
 			Status:   probeUnreachable,
-			Endpoint: dsn,
+			Endpoint: display,
 			Reason:   err.Error(),
 		}
 	}
-	return probeResult{Dep: "database", Status: probeOK, Endpoint: dsn}
-}
-
-// runMigrateVersionProbe shells out to `migrate -database <dsn>
-// version`. Returns nil on success; the wrapped error on failure
-// includes migrate's stderr so the menu can surface "connection
-// refused" / "auth failed" / etc.
-func runMigrateVersionProbe(dsn string) error {
-	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dsn, "version")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("migrate version: %w", err)
-	}
-	return nil
+	return probeResult{Dep: "database", Status: probeOK, Endpoint: display}
 }
 
 // probeCache TCP-connects to the cache backend (Redis) at the host:port

@@ -85,6 +85,12 @@ func TestRunDBReset_DropFails(t *testing.T) {
 
 // stagedFakeExec returns a fake that exits with code[i] on the i-th call,
 // repeating the final code if there are more calls than codes.
+//
+// Like withFakeExec, this also stubs the preflight probes to report OK
+// — every dev pipeline test using stagedFakeExec needs the preflight
+// to pass so the staged exit codes can drive the actual shell-out
+// sequence under test. See the comment on withFakeExec for the
+// migrate-version → TCP-probe refactor history.
 func stagedFakeExec(t *testing.T, codes ...int) {
 	t.Helper()
 	orig := execCommand
@@ -98,6 +104,7 @@ func stagedFakeExec(t *testing.T, codes ...int) {
 		return fakeExecCommand(code)(name, args...)
 	}
 	t.Cleanup(func() { execCommand = orig })
+	stubProbesOK(t)
 }
 
 func TestRunDBReset_UpFails(t *testing.T) {

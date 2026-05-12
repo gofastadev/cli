@@ -257,6 +257,7 @@ func TestRunDev_SeedFails(t *testing.T) {
 func TestRunDev_WithComposeOrchestration(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	// compose.yaml makes plan.orchestrate true.
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
@@ -302,6 +303,7 @@ func TestRunDev_WithComposeOrchestration(t *testing.T) {
 func TestRunDev_Fresh_WithCompose(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`
@@ -335,6 +337,7 @@ func TestRunDev_Fresh_WithCompose(t *testing.T) {
 func TestRunDev_Fresh_ResetVolumesFails(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`
@@ -482,6 +485,7 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 func TestRunDev_KeepVolumesFalseDestroys(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	orig := execCommand
@@ -556,6 +560,7 @@ func TestRunDev_ResolveDevPlanFails(t *testing.T) {
 func TestRunDev_AttachLogs(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`

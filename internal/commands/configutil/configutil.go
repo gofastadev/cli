@@ -49,6 +49,42 @@ func BuildMigrationURL() string {
 	}
 }
 
+// BuildDatabaseEndpoint reads database.* from config.yaml + env vars
+// and returns the DB backend's host:port endpoint, plus an `enabled`
+// flag indicating whether the app actually wants a network DB.
+//
+// `enabled` is false when `database.driver` is "sqlite"/"sqlite3" —
+// file-backed drivers don't connect anywhere, and the dev preflight
+// must skip the network probe entirely rather than report
+// "unreachable" for a driver that has no host:port at all.
+//
+// When enabled is true and host/port resolve to their scaffold
+// defaults (localhost:5432), the returned endpoint reflects those
+// defaults so the TCP probe targets the same host:port the framework
+// would in production.
+//
+// This is the source of truth for "is the DB accepting connections?"
+// — separate from BuildMigrationURL, which builds a fully-formed DSN
+// suitable for `migrate` and is the wrong tool for a connectivity
+// probe (it requires schema_migrations to exist, which fails the
+// first time a fresh Postgres comes up).
+func BuildDatabaseEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	driver := strings.ToLower(strings.TrimSpace(k.String("database.driver")))
+	if driver == "sqlite" || driver == "sqlite3" {
+		return "", false
+	}
+	host := k.String("database.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("database.port")
+	if port == "" {
+		port = "5432"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
+}
+
 // GetPort reads the server port from config.yaml or env.
 func GetPort() string {
 	if p := os.Getenv("PORT"); p != "" {

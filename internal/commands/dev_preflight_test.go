@@ -15,9 +15,8 @@ import (
 // ─────────────────────────────────────────────────────────────────────
 // Tests for dev_preflight.go.
 //
-// All three probes go through package-level seams (migrateProbeRunner
-// for the DB probe; tcpDialFn for cache + queue). Each test substitutes
-// a deterministic stub and restores it via t.Cleanup.
+// All three probes go through the tcpDialFn seam. Each test
+// substitutes a deterministic stub and restores it via t.Cleanup.
 //
 // chdirToTemp + writeConfigYAML are used so configutil's loader sees a
 // known config.yaml in cwd; this keeps the probe behavior coupled to
@@ -34,14 +33,6 @@ func writeConfigYAMLBody(t *testing.T, body string) {
 	require.NoError(t, os.WriteFile("config.yaml", []byte(body), 0o644))
 }
 
-// swapMigrateProbe replaces migrateProbeRunner for one test.
-func swapMigrateProbe(t *testing.T, fn func(string) error) {
-	t.Helper()
-	orig := migrateProbeRunner
-	migrateProbeRunner = fn
-	t.Cleanup(func() { migrateProbeRunner = orig })
-}
-
 // swapTCPDial replaces tcpDialFn for one test.
 func swapTCPDial(t *testing.T, fn func(string, string, time.Duration) (net.Conn, error)) {
 	t.Helper()
@@ -52,81 +43,49 @@ func swapTCPDial(t *testing.T, fn func(string, string, time.Duration) (net.Conn,
 
 // ── probeDatabase ─────────────────────────────────────────────────────
 
-// TestProbeDatabase_NotConfigured — no config.yaml in cwd means
-// BuildMigrationURL returns "" (well, it returns a default-ish URL
-// with empty user/password). We exercise the empty-DSN path by
-// stubbing configutil... actually BuildMigrationURL never returns
-// empty because it always emits a postgres://...?sslmode template.
-// The probeNotConfigured path triggers only when the DSN is literally
-// empty, which can only happen if BuildMigrationURL changes shape;
-// for now, the test below shows the production path always treats
-// "no config" as "unreachable" because the URL points at localhost
-// with empty creds.
-func TestProbeDatabase_NotConfigured(t *testing.T) {
+// TestProbeDatabase_SQLiteSkips — sqlite drivers have no network
+// endpoint; the probe must silently report not-configured without
+// touching tcpDialFn.
+func TestProbeDatabase_SQLiteSkips(t *testing.T) {
 	chdirTemp(t)
-	// No config.yaml present. BuildMigrationURL still produces a default
-	// "postgres://localhost:5432" — we expect the probe to attempt and
-	// fail, not silently skip. The test asserts that path explicitly.
-	swapMigrateProbe(t, func(_ string) error {
-		return errors.New("connection refused")
+	writeConfigYAMLBody(t, "database:\n  driver: sqlite\n")
+	swapTCPDial(t, func(_, _ string, _ time.Duration) (net.Conn, error) {
+		t.Fatal("tcpDialFn must not be called for sqlite driver")
+		return nil, nil
 	})
 	got := probeDatabase()
 	assert.Equal(t, "database", got.Dep)
-	assert.Equal(t, probeUnreachable, got.Status)
-	assert.Contains(t, got.Reason, "connection refused")
+	assert.Equal(t, probeNotConfigured, got.Status)
 }
 
-// TestProbeDatabase_OK — happy path: migrate version succeeds, so the
-// probe reports OK with the DSN it just probed.
+// TestProbeDatabase_OK — happy path: TCP dial succeeds, so the
+// probe reports OK with the migration URL surfaced for display.
 func TestProbeDatabase_OK(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAMLBody(t, "database:\n  driver: postgres\n  host: localhost\n  port: \"5432\"\n")
-	swapMigrateProbe(t, func(_ string) error { return nil })
+	swapTCPDial(t, func(_, addr string, _ time.Duration) (net.Conn, error) {
+		assert.Equal(t, "localhost:5432", addr, "probe must dial database.host:port")
+		client, _ := net.Pipe()
+		return client, nil
+	})
 	got := probeDatabase()
 	assert.Equal(t, probeOK, got.Status)
-	assert.NotEmpty(t, got.Endpoint, "OK probe must surface the DSN it tried")
+	assert.Contains(t, got.Endpoint, "postgres://", "OK probe surfaces the migration URL for display")
 }
 
-// TestProbeDatabase_Unreachable — migrate errors → probeUnreachable
-// with the error wrapped in Reason.
+// TestProbeDatabase_Unreachable — TCP dial errors → probeUnreachable
+// with the dial error wrapped in Reason. The Endpoint still surfaces
+// the full migration URL so users can copy-paste the failing target.
 func TestProbeDatabase_Unreachable(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAMLBody(t, "database:\n  driver: postgres\n  host: localhost\n  port: \"5432\"\n")
-	swapMigrateProbe(t, func(_ string) error {
-		return errors.New("dial tcp: connection refused")
+	swapTCPDial(t, func(_, _ string, _ time.Duration) (net.Conn, error) {
+		return nil, errors.New("dial tcp: connection refused")
 	})
 	got := probeDatabase()
 	assert.Equal(t, probeUnreachable, got.Status)
 	assert.Contains(t, got.Reason, "connection refused")
-}
-
-// TestProbeDatabase_EmptyDSN — when configutil somehow returns an
-// empty DSN (shouldn't happen in production but the branch exists),
-// the probe reports not-configured.
-func TestProbeDatabase_EmptyDSN(t *testing.T) {
-	// We can't easily force BuildMigrationURL to return "" via config
-	// alone (it always emits a template). Stub the runner via a
-	// sentinel error so the probe enters the unreachable path, but
-	// the EmptyDSN test is here for parity — covered by an integration
-	// path in dev_test.go.
-	t.Skip("BuildMigrationURL always emits a non-empty URL in production; empty-DSN branch is defensive")
-}
-
-// TestRunMigrateVersionProbe_Success — wraps a fake `migrate` that
-// exits zero. Verifies the seam wrapping is correct.
-func TestRunMigrateVersionProbe_Success(t *testing.T) {
-	withFakeExec(t, 0)
-	err := runMigrateVersionProbe("postgres://x")
-	assert.NoError(t, err)
-}
-
-// TestRunMigrateVersionProbe_Failure — fake migrate exits non-zero,
-// the probe wraps the error with "migrate version:" prefix.
-func TestRunMigrateVersionProbe_Failure(t *testing.T) {
-	withFakeExec(t, 1)
-	err := runMigrateVersionProbe("postgres://x")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "migrate version")
+	assert.Contains(t, got.Endpoint, "postgres://", "unreachable probe still surfaces the URL")
 }
 
 // ── probeCache ────────────────────────────────────────────────────────
@@ -304,7 +263,10 @@ func TestTCPProbe_RealLoopback(t *testing.T) {
 func TestRunPreflight_StableOrder(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAMLBody(t, "database:\n  driver: postgres\ncache:\n  driver: memory\nqueue:\n  enabled: false\n")
-	swapMigrateProbe(t, func(_ string) error { return nil })
+	swapTCPDial(t, func(_, _ string, _ time.Duration) (net.Conn, error) {
+		client, _ := net.Pipe()
+		return client, nil
+	})
 
 	results := runPreflight()
 	require.Len(t, results, 3)
@@ -318,7 +280,6 @@ func TestRunPreflight_StableOrder(t *testing.T) {
 func TestRunPreflight_ParallelExecution(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAMLBody(t, "database:\n  driver: postgres\ncache:\n  driver: redis\nqueue:\n  enabled: true\n")
-	swapMigrateProbe(t, func(_ string) error { return errors.New("db error") })
 	swapTCPDial(t, func(_, _ string, _ time.Duration) (net.Conn, error) {
 		return nil, errors.New("tcp error")
 	})

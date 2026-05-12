@@ -221,7 +221,20 @@ func TestMenu_EnterConnString_ProbeStillFails(t *testing.T) {
 	forceTTY(t, true)
 	_ = captureMenuOutput(t)
 	pipeStdin(t, "1", "postgres://u:p@h:9/d", "4")
-	t.Cleanup(func() { _ = unsetenv("GOFASTA_DATABASE_HOST") })
+	// menuActionEnterConnString sets the full database connection set —
+	// driver/host/port/user/password/name — under every prefix from
+	// configutil.EnvPrefixes(). Unsetting only HOST left PORT=9 (etc.)
+	// in the process env, where downstream tests like
+	// TestProbeDatabase_OK saw "localhost:9" instead of "localhost:5432"
+	// even when their config.yaml said otherwise.
+	t.Cleanup(func() {
+		_ = unsetenv("GOFASTA_DATABASE_DRIVER")
+		_ = unsetenv("GOFASTA_DATABASE_HOST")
+		_ = unsetenv("GOFASTA_DATABASE_PORT")
+		_ = unsetenv("GOFASTA_DATABASE_USER")
+		_ = unsetenv("GOFASTA_DATABASE_PASSWORD")
+		_ = unsetenv("GOFASTA_DATABASE_NAME")
+	})
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "h:9", Reason: "still refused"},
 	})
