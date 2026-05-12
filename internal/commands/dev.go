@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -552,8 +553,25 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 	// At this point flags.servicesList is non-empty AND compose.yaml
 	// exists. We need to query compose for the available service list
 	// and validate every name in --services against it.
-
+	//
+	// Special handling for `--services all`: profile-gated services
+	// (compose.yaml entries with `profiles: [...]`) are hidden by
+	// compose until their profile is activated. The "all" alias should
+	// mean "every service compose.yaml declares" — including the
+	// profile-gated ones. We auto-discover every declared profile via
+	// `docker compose config --profiles` and feed them all into
+	// detectComposeServices.
 	profiles := resolveProfiles(flags)
+	if strings.EqualFold(strings.TrimSpace(flags.servicesRaw), "all") {
+		discovered, err := detectComposeProfiles()
+		if err == nil {
+			for _, p := range discovered {
+				if !slices.Contains(profiles, p) {
+					profiles = append(profiles, p)
+				}
+			}
+		}
+	}
 	available, hasHealth, err := detectComposeServices(profiles, true)
 	if err != nil {
 		return devPlan{}, clierr.Wrap(clierr.CodeDevComposeNotFound, err,

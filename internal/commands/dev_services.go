@@ -202,6 +202,39 @@ func formatUnknownServiceError(typo string, available []string) string {
 	return b.String()
 }
 
+// detectComposeProfiles returns the full list of compose profiles
+// declared in the project's compose.yaml. Used by the `--services all`
+// alias to auto-activate every profile so profile-gated services
+// (e.g. `cache`, `queue`) show up in the result of detectComposeServices.
+//
+// Without this, `--services all` would resolve to only the
+// non-profile-gated services — which is what the user observed and
+// reported as a surprise: "isn't --services all supposed to start all
+// services in compose?".
+//
+// Implementation note: shells out to `docker compose config --profiles`
+// which prints one profile name per line. Returns an empty slice if no
+// profiles are declared (the normal case when compose.yaml has no
+// profile gates).
+func detectComposeProfiles() ([]string, error) {
+	cmd := execCommand("docker", "compose", "config", "--profiles")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose config --profiles: %w", err)
+	}
+	profiles := make([]string, 0, 4)
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		profiles = append(profiles, line)
+	}
+	return profiles, nil
+}
+
 // removeService returns a new slice with `target` filtered out. Used
 // by --all-in-docker mode to peel the app off the detached-up list so
 // it can be started in the foreground separately.
