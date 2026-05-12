@@ -147,6 +147,16 @@ func loadConfig() *koanf.Koanf {
 	return k
 }
 
+// EnvPrefixes is the exported view of envPrefixes for callers outside
+// this package (e.g. the dev preflight menu, which sets env vars to
+// override a connection string the user typed at runtime). Production
+// readers should still go through loadConfig — this helper is for the
+// rare cases where a caller needs to know which prefix wins.
+//
+// Returns the prefixes in the SAME order loadConfig consumes them, so
+// callers that want to "win" should write to the last entry's prefix.
+func EnvPrefixes() []string { return envPrefixes() }
+
 // envPrefixes returns the list of env var prefixes to consult when reading
 // database connection details. GOFASTA_ is always included so the generic
 // fallback works even outside a project directory; when a go.mod file is

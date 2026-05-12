@@ -25,10 +25,10 @@ type devFlags struct {
 	noMigrate  bool // skip running migrate up
 	noTeardown bool // leave compose services running on exit
 
-	// no-db mode flag set when the user picks menu option [3] from
-	// the preflight. Migrations + seeds skip; Air starts with a
-	// loud banner so the user remembers why DB-touching endpoints
-	// will 5xx.
+	// noDB is set when the user picks menu option [3] from the
+	// preflight. Migrations + seeds skip. The scaffold's ProvideDB
+	// falls back to an in-memory SQLite stub so the app still boots;
+	// DB-touching endpoints return 5xx (no schema, no persistence).
 	noDB bool
 
 	// Volume + profile + Air knobs (unchanged from previous design).

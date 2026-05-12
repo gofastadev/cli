@@ -315,11 +315,9 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// migrations ARE running — just inside the container, and their
 	// output streams to the foreground via Stage 8.
 	//
-	// noDB mode (menu option [3]) skips migrate entirely with an
-	// explicit "running without db" message.
 	switch {
 	case flags.noDB:
-		emitter.MigrateSkipped("running without db (menu option [3])")
+		emitter.MigrateSkipped("running without db (menu option [3]) — no schema to migrate")
 	case plan.inDocker:
 		emitter.MigrateDelegated("running inside the app container")
 	case !flags.noMigrate:
@@ -331,7 +329,8 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	}
 
 	// --- Stage 7: seed (optional) ------------------------------------------
-	// Skipped automatically in noDB mode — no DB means nothing to seed.
+	// Skipped automatically in noDB mode — the degraded SQLite stub
+	// has no schema for the seed functions to populate.
 	if flags.seed && !flags.noDB {
 		if err := runSeedDelegation(); err != nil {
 			emitter.Warn(fmt.Sprintf("seed failed: %v", err))
@@ -357,10 +356,12 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	}
 
 	// In noDB mode print a loud banner so the user remembers why
-	// DB-touching endpoints are about to 5xx. We use the existing
-	// Warn channel so JSON consumers see the event in structured form.
+	// DB-touching endpoints are about to 5xx. The framework's
+	// ProvideDB falls back to in-memory SQLite (no schema), so the
+	// app boots and non-DB endpoints work, but any Find/Save against
+	// the project's models fails with "no such table: X".
 	if flags.noDB {
-		emitter.Warn("🔶 NO-DB MODE — migrations skipped; endpoints touching the database will return 5xx; data is not persisted across restarts")
+		emitter.Warn("🔶 NO-DB MODE — migrations skipped; endpoints touching the database will return 5xx; data is not persisted")
 	}
 
 	// --- Stage 8: Air ------------------------------------------------------
@@ -378,11 +379,21 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// Start the keyboard listener NOW (Stage 8b) — after preflight + the
 	// menu have resolved. Earlier startup would have put stdin in cbreak
 	// mode while the menu's bufio.Reader was waiting on a newline, with
-	// the listener silently swallowing every byte. The listener is only
-	// needed for Air's interactive r/q/h shortcuts; the preflight menu
-	// has its own [4] cancel option.
-	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, flags.noKeyboard)
+	// the listener silently swallowing every byte.
+	//
+	// In in-docker mode the listener is skipped entirely. `docker
+	// compose up` (foreground) opens /dev/tty directly to handle its
+	// own Ctrl+C and attached-container input forwarding; if both
+	// compose and our listener read from the same TTY, compose wins
+	// the race and our r/q/h shortcuts silently do nothing. Honest
+	// limit beats a broken-looking listener — when the app runs in a
+	// container we print a clear "use Ctrl+C to stop" notice instead.
+	listenerDisabled := flags.noKeyboard || plan.inDocker
+	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, listenerDisabled)
 	defer restoreKB()
+	if plan.inDocker && !flags.noKeyboard {
+		emitter.Info("ℹ docker compose attaches the terminal; r/q/h shortcuts are unavailable in this mode. Use Ctrl+C to stop.")
+	}
 
 	if plan.inDocker {
 		// Containerized mode: supporting services are already running
@@ -554,21 +565,26 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 	// exists. We need to query compose for the available service list
 	// and validate every name in --services against it.
 	//
-	// Special handling for `--services all`: profile-gated services
-	// (compose.yaml entries with `profiles: [...]`) are hidden by
-	// compose until their profile is activated. The "all" alias should
-	// mean "every service compose.yaml declares" — including the
-	// profile-gated ones. We auto-discover every declared profile via
-	// `docker compose config --profiles` and feed them all into
-	// detectComposeServices.
+	// We always discover every declared profile and activate them all.
+	// Without this, `--services <profile-gated-name>` would fail
+	// validation with "no service named X" even when X is right there
+	// in compose.yaml — because compose hides profile-gated services
+	// from `config --services` unless the profile is active. Same
+	// reason the typo-suggestion's "Available services" list would be
+	// incomplete. Activating every profile makes the universe
+	// faithfully equal "every service compose.yaml declares".
+	//
+	// This is safe: passing extra `--profile` flags to compose only
+	// affects which services are *eligible* to start; the actual
+	// startup is still bounded by the explicit names we pass to
+	// `compose up -d <names>`. A user who runs `--services db` does
+	// not get cache or queue brought up just because their profiles
+	// are now active.
 	profiles := resolveProfiles(flags)
-	if strings.EqualFold(strings.TrimSpace(flags.servicesRaw), "all") {
-		discovered, err := detectComposeProfiles()
-		if err == nil {
-			for _, p := range discovered {
-				if !slices.Contains(profiles, p) {
-					profiles = append(profiles, p)
-				}
+	if discovered, err := detectComposeProfilesFn(); err == nil {
+		for _, p := range discovered {
+			if !slices.Contains(profiles, p) {
+				profiles = append(profiles, p)
 			}
 		}
 	}
@@ -621,7 +637,7 @@ func printDevPlan(plan devPlan, emitter devEmitter) {
 		emitter.Info(fmt.Sprintf("orchestrate=true in_docker=%t profiles=%v selected=%v",
 			plan.inDocker, plan.profiles, plan.services.selected))
 	} else {
-		emitter.Info("orchestrate=false (no compose.yaml or --no-services)")
+		emitter.Info("orchestrate=false (host-only; --services not set)")
 	}
 }
 

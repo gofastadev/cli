@@ -1,6 +1,7 @@
 package providers
 
 import (
+	"fmt"
 	"log/slog"
 
 	"github.com/gofastadev/gofasta/pkg/auth"
@@ -18,6 +19,7 @@ import (
 	"github.com/gofastadev/gofasta/pkg/websocket"
 	"github.com/gofastadev/gofasta/pkg/whatsapp"
 	"github.com/google/wire"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/devtools"
@@ -76,12 +78,75 @@ var CoreSet = wire.NewSet(
 // ProvideDB wraps config.SetupDB with the devtools GORM plugin so SQL
 // queries are captured into the dev dashboard's ring buffer when the
 // binary is built with the `devtools` tag. In production builds the
-// plugin is a no-op (see app/devtools/devtools_stub.go). Safe to call
-// unconditionally.
+// plugin is a no-op (see app/devtools/devtools_stub.go).
+//
+// Degraded-mode behavior: config.SetupDB panics if it can't connect.
+// That's fine in production where a DB-less app is useless. In dev —
+// especially when running `gofasta dev` and picking "Run without db"
+// from the preflight menu — we want the app to BOOT anyway so the
+// developer can iterate on non-DB code paths. We recover from
+// SetupDB's panic and return a lazy *gorm.DB that's structurally
+// valid but errors on every query, propagating as 5xx through the
+// REST middleware. The app stays alive; only DB-touching endpoints
+// fail.
+//
+// Recovery is the simplest correct shape here. The alternative
+// (duplicating buildDialector's driver dispatch) would force this
+// scaffold to track every supported driver as the framework adds
+// them. Recover-and-wrap stays small and forwards every future
+// driver for free.
 func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
-	db := config.SetupDB(cfg)
-	if err := db.Use(devtools.GormPlugin()); err != nil {
-		slog.Warn("failed to install devtools GORM plugin", "error", err)
+	db, err := tryConnectDB(cfg)
+	if err == nil {
+		if pluginErr := db.Use(devtools.GormPlugin()); pluginErr != nil {
+			slog.Warn("failed to install devtools GORM plugin", "error", pluginErr)
+		}
+		return db
+	}
+	slog.Warn(
+		"database unreachable — starting in DEGRADED mode; endpoints touching the DB will return 5xx until the connection comes back",
+		"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port, "error", err,
+	)
+	return buildDegradedDB(cfg)
+}
+
+// tryConnectDB calls config.SetupDB and recovers from its panic. On
+// success returns (db, nil); on connection failure returns (nil, err)
+// with the panic value wrapped in an error.
+func tryConnectDB(cfg *config.DatabaseConfig) (db *gorm.DB, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			db = nil
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	db = config.SetupDB(cfg)
+	return db, nil
+}
+
+// buildDegradedDB returns an in-memory SQLite *gorm.DB to stand in
+// for the unreachable real database. The choice of SQLite is
+// deliberate: it's network-free, always works, and is the only
+// scaffold-supported driver guaranteed to succeed without external
+// state. Repositories injected with this stub will get "no such
+// table: X" errors when they try to query (because the project's
+// migrations haven't run against it), and that error propagates as
+// 5xx through pkg/httputil.Handle().
+//
+// The app boots, non-DB endpoints serve normally, DB-touching
+// endpoints fail loudly with a clear error. Exactly what the
+// preflight's "Run app without db" menu option promises.
+func buildDegradedDB(cfg *config.DatabaseConfig) *gorm.DB {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		// Last-resort fallback: a literally-empty gorm.DB. Repositories
+		// that call methods on it will nil-panic on internal fields,
+		// which surfaces clearly in logs and signals that the degraded-
+		// mode bootstrap itself failed. Should never happen — SQLite
+		// in-memory is essentially infallible — but guarded for safety.
+		slog.Error("degraded-DB bootstrap failed; returning empty *gorm.DB",
+			"driver", cfg.Driver, "error", err)
+		return &gorm.DB{Config: &gorm.Config{}}
 	}
 	return db
 }

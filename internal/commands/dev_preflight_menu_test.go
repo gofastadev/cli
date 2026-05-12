@@ -110,6 +110,8 @@ func TestMenu_Cancel(t *testing.T) {
 }
 
 // TestMenu_RunWithoutDB — user picks [3]; menuRunWithoutDB returned.
+// The framework's degraded-mode ProvideDB makes this honest now
+// (in-memory SQLite stub keeps the app alive).
 func TestMenu_RunWithoutDB(t *testing.T) {
 	forceTTY(t, true)
 	_ = captureMenuOutput(t)
@@ -121,8 +123,8 @@ func TestMenu_RunWithoutDB(t *testing.T) {
 }
 
 // TestMenu_InvalidChoiceLoops — bogus input loops back to the menu.
-// We feed an invalid char first, then "4" to exit. The output should
-// mention "invalid choice".
+// We feed an invalid char first, then "4" to cancel. The output
+// should mention "invalid choice".
 func TestMenu_InvalidChoiceLoops(t *testing.T) {
 	forceTTY(t, true)
 	out := captureMenuOutput(t)

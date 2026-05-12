@@ -42,9 +42,11 @@ const (
 	// [1]/[2] reported all-OK. The pipeline proceeds normally.
 	menuOK menuOutcome = iota
 
-	// menuRunWithoutDB means the user picked option [3]. The pipeline
-	// continues with the noDB flag set; migrations + seeds skip, and
-	// the Air banner warns about the degraded state.
+	// menuRunWithoutDB means the user picked option [3] "Run app
+	// without db". The pipeline continues with the noDB flag set;
+	// migrations + seeds skip. The scaffolded `ProvideDB` falls back
+	// to an in-memory SQLite stand-in so the app boots — DB-touching
+	// endpoints return 5xx (no schema), non-DB endpoints work.
 	menuRunWithoutDB
 
 	// menuCancel means the user picked option [4], OR we're in a
@@ -76,9 +78,13 @@ var (
 
 	// menuStartServicesFn brings up the named compose services
 	// detached, used by option [2]. Default = production
-	// startServices; tests stub the docker calls.
+	// startServices with ALL discovered profiles active, so
+	// profile-gated services (e.g. `cache`, `queue`) actually start
+	// instead of being silently filtered out by compose. Tests stub
+	// the docker calls.
 	menuStartServicesFn = func(names []string) error {
-		return startServices(names, nil)
+		profiles, _ := detectComposeProfiles()
+		return startServices(names, profiles)
 	}
 
 	// menuWaitHealthyFn waits for the named services to become
@@ -99,7 +105,8 @@ func isStdinTTY() bool {
 // so users see live feedback while compose pulls images / starts
 // containers.
 func defaultMenuWaitHealthy(names []string) error {
-	available, hasHealth, err := detectComposeServices(nil, true)
+	profiles, _ := detectComposeProfiles()
+	available, hasHealth, err := detectComposeServices(profiles, true)
 	if err != nil {
 		return fmt.Errorf("compose config: %w", err)
 	}
@@ -150,7 +157,7 @@ func runPreflightMenu(initial []probeResult) menuOutcome {
 		_, _ = fmt.Fprintln(menuOutputFn(), "  [3] Run app without db")
 		_, _ = fmt.Fprintln(menuOutputFn(), "      ⚠ Migrations will NOT run")
 		_, _ = fmt.Fprintln(menuOutputFn(), "      ⚠ Endpoints that touch the database will return 5xx")
-		_, _ = fmt.Fprintln(menuOutputFn(), "      ⚠ No data persistence — anything created in this session is lost on restart")
+		_, _ = fmt.Fprintln(menuOutputFn(), "      ⚠ The app's *gorm.DB is an in-memory SQLite stub — no schema, no persistence")
 		_, _ = fmt.Fprintln(menuOutputFn(), "  [4] Cancel and exit")
 		_, _ = fmt.Fprintln(menuOutputFn(), "")
 		_, _ = fmt.Fprint(menuOutputFn(), "Choose [1-4]: ")
@@ -273,24 +280,32 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) error {
 	}
 	name := strings.TrimPrefix(parsed.Path, "/")
 
-	// Override env vars under the GOFASTA_ prefix; configutil's loader
-	// reads both GOFASTA_ and the project-prefix, with GOFASTA_ as a
-	// fallback. The user can still override on the next run via .env.
-	_ = os.Setenv("GOFASTA_DATABASE_DRIVER", strings.TrimSuffix(parsed.Scheme, "ql"))
-	if host != "" {
-		_ = os.Setenv("GOFASTA_DATABASE_HOST", host)
-	}
-	if port != "" {
-		_ = os.Setenv("GOFASTA_DATABASE_PORT", port)
-	}
-	if user != "" {
-		_ = os.Setenv("GOFASTA_DATABASE_USER", user)
-	}
-	if password != "" {
-		_ = os.Setenv("GOFASTA_DATABASE_PASSWORD", password)
-	}
-	if name != "" {
-		_ = os.Setenv("GOFASTA_DATABASE_NAME", name)
+	// Override env vars under EVERY prefix configutil's loader knows
+	// about. The loader applies GOFASTA_ first, then the project-
+	// specific prefix (derived from go.mod) which OVERRIDES GOFASTA_
+	// on conflict. If we only set GOFASTA_ vars, a project that
+	// declared its own .env-loaded prefix (e.g. IRONJISENDAV2_DATABASE_HOST=localhost)
+	// would shadow our override and the reprobe would still see the
+	// stale value — exactly the bug a user encountering this menu is
+	// most likely to hit.
+	driver := strings.TrimSuffix(parsed.Scheme, "ql")
+	for _, prefix := range configutil.EnvPrefixes() {
+		_ = os.Setenv(prefix+"DATABASE_DRIVER", driver)
+		if host != "" {
+			_ = os.Setenv(prefix+"DATABASE_HOST", host)
+		}
+		if port != "" {
+			_ = os.Setenv(prefix+"DATABASE_PORT", port)
+		}
+		if user != "" {
+			_ = os.Setenv(prefix+"DATABASE_USER", user)
+		}
+		if password != "" {
+			_ = os.Setenv(prefix+"DATABASE_PASSWORD", password)
+		}
+		if name != "" {
+			_ = os.Setenv(prefix+"DATABASE_NAME", name)
+		}
 	}
 
 	termcolor.PrintStep("  ✓ override applied — re-probing…")
@@ -369,9 +384,3 @@ func mapFailingDepsToServices(results []probeResult) []string {
 	}
 	return out
 }
-
-// configutilCheck is a compile-time marker that the configutil import
-// is intentionally retained — used indirectly via the env-var
-// overrides in menuActionEnterConnString. Keeps the import block
-// honest if those calls are refactored later.
-var _ = configutil.BuildMigrationURL
