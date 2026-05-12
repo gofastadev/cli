@@ -37,16 +37,21 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: {{.ProjectNameLower}}_db
     ports:
-      - "${DB_HOST_PORT:-5433}:5432"
+      # One source of truth for "the database port":
+      # {{.ProjectNameUpper}}_DATABASE_PORT. It governs both the host-
+      # running app's connection target AND this host-side port mapping.
+      # The `:5432` on the right is the postgres image's hardcoded
+      # listen port (not user-configurable).
+      - "${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}
       POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-{{.ProjectNameLower}}}
       POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}_dev}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql
     healthcheck:
       # pg_isready must target the actual database name — without -d it tries
       # to connect to a database named after the user, which is wrong whenever

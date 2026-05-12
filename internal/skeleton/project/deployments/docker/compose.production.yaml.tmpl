@@ -38,14 +38,14 @@ services:
           memory: 512M
 
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
     environment:
       POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
       POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
       POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}"]
       interval: 5s
