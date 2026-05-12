@@ -180,71 +180,169 @@ func TestLoadDotEnv_UnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "open")
 }
 
-// ── managed-block round trip ──────────────────────────────────────────
+// ── mergeIntoDotEnv ───────────────────────────────────────────────────
 
-// TestWriteManagedBlock_AppendsAndIsIdempotent — first call adds the
-// block to a user-authored .env; second call REPLACES it (no nesting,
-// no drift). User-authored lines outside the block must be preserved
-// byte-for-byte, including comments and blank lines.
-func TestWriteManagedBlock_AppendsAndIsIdempotent(t *testing.T) {
+// TestMergeIntoDotEnv_ReplacesExistingKeyInPlace — an existing key in
+// the file has its value swapped on the SAME line. Surrounding
+// content (comments, ordering of unrelated keys, blank lines) is
+// preserved.
+func TestMergeIntoDotEnv_ReplacesExistingKeyInPlace(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
-	original := "# user comment\nUSER_VAR=keep\n\n# another section\nOTHER_VAR=stay\n"
+	original := "# header comment\n" +
+		"DATA_DATABASE_HOST=localhost\n" +
+		"DATA_DATABASE_PORT=5433\n" +
+		"\n" +
+		"# unrelated section\n" +
+		"OTHER_VAR=keep\n"
 	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
 
-	require.NoError(t, writeManagedBlock(path, map[string]string{
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
 		"DATA_DATABASE_HOST": "neon.tech",
 		"DATA_DATABASE_PORT": "5432",
 	}))
 
-	first, err := os.ReadFile(path)
-	require.NoError(t, err)
-	got := string(first)
-	assert.Contains(t, got, "USER_VAR=keep", "user content must survive")
-	assert.Contains(t, got, "OTHER_VAR=stay")
-	assert.Contains(t, got, managedBlockBegin)
-	assert.Contains(t, got, "DATA_DATABASE_HOST=neon.tech")
-	assert.Contains(t, got, "DATA_DATABASE_PORT=5432")
-	assert.Contains(t, got, managedBlockEnd)
-
-	// Second write with DIFFERENT keys must replace the previous block,
-	// not append a second one.
-	require.NoError(t, writeManagedBlock(path, map[string]string{
-		"DATA_DATABASE_HOST":    "different.host",
-		"DATA_DATABASE_SSLMODE": "require",
-	}))
-
-	second, err := os.ReadFile(path)
-	require.NoError(t, err)
-	got = string(second)
-	assert.Equal(t, 1, strings.Count(got, managedBlockBegin), "must not nest blocks")
-	assert.Equal(t, 1, strings.Count(got, managedBlockEnd))
-	assert.NotContains(t, got, "neon.tech", "old managed values must be gone")
-	assert.NotContains(t, got, "5432", "old managed values must be gone")
-	assert.Contains(t, got, "DATA_DATABASE_HOST=different.host")
-	assert.Contains(t, got, "DATA_DATABASE_SSLMODE=require")
-	assert.Contains(t, got, "USER_VAR=keep", "user content still intact")
-}
-
-// TestWriteManagedBlock_EmptyMapRemovesBlock — passing an empty map is
-// the "revert" affordance: any existing block is removed and the file
-// returns to user-only content.
-func TestWriteManagedBlock_EmptyMapRemovesBlock(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, ".env")
-	require.NoError(t, writeManagedBlock(path, map[string]string{"X_K": "v"}))
-	require.NoError(t, writeManagedBlock(path, map[string]string{}))
 	got, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.NotContains(t, string(got), managedBlockBegin)
-	assert.NotContains(t, string(got), "X_K=")
+	want := "# header comment\n" +
+		"DATA_DATABASE_HOST=neon.tech\n" +
+		"DATA_DATABASE_PORT=5432\n" +
+		"\n" +
+		"# unrelated section\n" +
+		"OTHER_VAR=keep\n"
+	assert.Equal(t, want, string(got),
+		"existing keys must be edited in place, all other content byte-identical")
 }
 
-// TestLoadDotEnv_ManagedBlockWinsOverRest — when both the managed
-// block AND the rest of the file set the same key, the managed
-// value wins. This is the load-side guarantee that makes persistence
-// useful: a saved override beats the user's hand-edited default.
-func TestLoadDotEnv_ManagedBlockWinsOverRest(t *testing.T) {
+// TestMergeIntoDotEnv_AppendsNewKeysAtEnd — keys not already present
+// are appended at the end of the file, in sorted order (stable diffs).
+func TestMergeIntoDotEnv_AppendsNewKeysAtEnd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("EXISTING=keep\n"), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_SSLMODE": "require",
+		"DATA_DATABASE_USER":    "neon_user",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	// A blank line separates user content from appended keys —
+	// cosmetic only, but pinned here so accidental reflow doesn't
+	// quietly drift.
+	want := "EXISTING=keep\n" +
+		"\n" +
+		"DATA_DATABASE_SSLMODE=require\n" +
+		"DATA_DATABASE_USER=neon_user\n"
+	assert.Equal(t, want, string(got))
+}
+
+// TestMergeIntoDotEnv_RemovesDuplicatesOfPersistedKeys — if a persist-
+// target key appears twice in the file (which can happen if a user
+// hand-added a copy of an existing key, or after legacy managed-block
+// migration), the merge keeps only the first occurrence with the new
+// value. Duplicates of keys NOT being persisted are LEFT alone.
+func TestMergeIntoDotEnv_RemovesDuplicatesOfPersistedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "DATA_DATABASE_HOST=first\n" +
+		"OTHER=untouched-first\n" +
+		"DATA_DATABASE_HOST=second\n" +
+		"OTHER=untouched-second\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "merged",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotStr := string(got)
+	assert.Equal(t, 1, strings.Count(gotStr, "DATA_DATABASE_HOST="),
+		"persist-target duplicates must be collapsed to one occurrence")
+	assert.Contains(t, gotStr, "DATA_DATABASE_HOST=merged")
+	// Non-target duplicates must survive untouched.
+	assert.Equal(t, 2, strings.Count(gotStr, "OTHER="),
+		"non-persist-target duplicates must be left alone")
+}
+
+// TestMergeIntoDotEnv_MigratesLegacyManagedBlock — files saved by the
+// PREVIOUS implementation contain `# >>> auto-managed` markers. On
+// next merge, those markers are stripped and the inner lines fold
+// into the regular file body — then the in-place edit runs as
+// normal. End result: no markers, no duplicate keys.
+func TestMergeIntoDotEnv_MigratesLegacyManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "DATA_DATABASE_HOST=localhost\n" +
+		"DATA_DATABASE_PORT=5433\n" +
+		"\n" +
+		managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=stale-from-block\n" +
+		"DATA_DATABASE_NAME=stale_db\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "fresh.example.com",
+		"DATA_DATABASE_NAME": "fresh_db",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotStr := string(got)
+	assert.NotContains(t, gotStr, managedBlockBegin, "markers must be gone")
+	assert.NotContains(t, gotStr, managedBlockEnd)
+	assert.NotContains(t, gotStr, "stale-from-block", "legacy values must be replaced")
+	assert.Equal(t, 1, strings.Count(gotStr, "DATA_DATABASE_HOST="),
+		"only one HOST line should remain after migration")
+	assert.Contains(t, gotStr, "DATA_DATABASE_HOST=fresh.example.com")
+	assert.Contains(t, gotStr, "DATA_DATABASE_NAME=fresh_db")
+	// The PORT key wasn't in this merge call — must survive its
+	// original value untouched.
+	assert.Contains(t, gotStr, "DATA_DATABASE_PORT=5433")
+}
+
+// TestMergeIntoDotEnv_EmptyKVsIsNoOp — passing an empty map leaves
+// the file untouched.
+func TestMergeIntoDotEnv_EmptyKVsIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("ORIGINAL=here\n"), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ORIGINAL=here\n", string(got))
+}
+
+// TestMergeIntoDotEnv_CreatesFileWhenMissing — a fresh project might
+// not have a `.env` yet; the merge creates one rather than erroring.
+func TestMergeIntoDotEnv_CreatesFileWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	// Note: file does not exist yet.
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "neon.tech",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "DATA_DATABASE_HOST=neon.tech\n", string(got))
+}
+
+// TestLoadDotEnv_ManagedBlockBackwardCompat — files written by the
+// PREVIOUS managed-block implementation are still loaded correctly:
+// the managed block's KVs are applied first (so they win over
+// un-managed lines above), preserving the contract a user might
+// rely on between updating the CLI and saving via the menu again.
+// After the next save, mergeIntoDotEnv strips the markers and
+// promotes the values to in-place lines — this test pins the
+// transition window.
+func TestLoadDotEnv_ManagedBlockBackwardCompat(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
 	content := "DATA_DATABASE_HOST=localhost\n" +
@@ -258,14 +356,13 @@ func TestLoadDotEnv_ManagedBlockWinsOverRest(t *testing.T) {
 	_, err := loadDotEnv(path)
 	require.NoError(t, err)
 	assert.Equal(t, "neon.example.com", os.Getenv("DATA_DATABASE_HOST"),
-		"managed-block value must override the un-managed entry above it")
+		"legacy managed-block value must beat the un-managed entry above it")
 }
 
 // TestLoadDotEnv_ShellStillWinsOverManagedBlock — explicit shell
-// exports must keep beating the file, including the managed block.
-// Otherwise persisting a stale override to disk would silently
-// override a developer who deliberately exported a different value
-// in their current shell.
+// exports beat the file, including a legacy managed block. Pinning
+// this so persisted overrides can't shadow a developer's deliberate
+// shell export.
 func TestLoadDotEnv_ShellStillWinsOverManagedBlock(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

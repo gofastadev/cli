@@ -131,66 +131,68 @@ func splitManagedBlock(content string) (managed, rest []string) {
 	return collected, rest
 }
 
-// writeManagedBlock atomically rewrites the managed block in `path`
-// with the given KVs. Any existing managed block is replaced; content
-// outside the block is preserved byte-for-byte. The file is created
-// (with 0o644 perms) if it does not exist.
+// mergeIntoDotEnv atomically updates `path` so each KEY in `kvs` is
+// set to its VALUE, with one occurrence per key and no duplication.
+// The merge rules:
 //
-// Writes are atomic via os.WriteFile + os.Rename: we materialize the
-// new content in `<path>.tmp` first, then rename. A crash mid-write
-// leaves either the old content or the new content intact, never a
+//  1. If the key already appears in the file, the FIRST occurrence's
+//     value is replaced in place; later duplicates of the same key
+//     are removed. The line position is preserved so existing
+//     comments, ordering, and structure stay intact — the user's
+//     `.env` looks like the user wrote it, with new values where
+//     applicable.
+//  2. If the key does NOT appear, it's appended at the end (in
+//     sorted order across all newly-added keys, for diff stability).
+//  3. Keys NOT in `kvs` are left untouched — including duplicates,
+//     which we deliberately do not "clean up" since they may be
+//     intentional.
+//  4. Any LEGACY managed-block markers (the prior
+//     "# >>> auto-managed" wrappers we used to emit) are stripped
+//     and the inner lines fold back into the regular file body.
+//     This migrates older `.env` files cleanly the first time they
+//     pass through this function.
+//
+// Writes are atomic via tmp + rename: a crash mid-write leaves
+// either the old content or the new content intact, never a
 // half-written file.
 //
-// Keys are emitted in sorted order so the block diffs cleanly across
-// saves — important because the user can see the block in git, and a
-// stable order avoids noisy "reordered keys" diffs.
-//
-// Passing an empty `kvs` map removes the managed block entirely
-// (leaving the file otherwise untouched), so the menu's "revert"
-// affordance has a clean primitive.
-func writeManagedBlock(path string, kvs map[string]string) error {
-	var existing []byte
+// Passing an empty `kvs` is a no-op (file untouched). Callers that
+// want to "revert" should edit `.env` by hand or call this function
+// with an explicit set of keys they want changed.
+func mergeIntoDotEnv(path string, kvs map[string]string) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+
+	var content string
 	if data, err := os.ReadFile(path); err == nil {
-		existing = data
+		content = string(data)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	_, rest := splitManagedBlock(string(existing))
+	// Drop legacy managed-block markers — inner lines stay where
+	// they were, just no longer fenced.
+	content = stripManagedBlockMarkers(content)
 
-	var out strings.Builder
-	for _, line := range rest {
-		out.WriteString(line)
-		out.WriteByte('\n')
+	// Split into lines for line-aware editing.
+	trailingNewline := strings.HasSuffix(content, "\n")
+	content = strings.TrimRight(content, "\n")
+	var lines []string
+	if content != "" {
+		lines = strings.Split(content, "\n")
 	}
 
-	if len(kvs) > 0 {
-		// Ensure a blank line between user content and the managed
-		// block, but only if the user content didn't already end with
-		// one. Cosmetic; keeps diffs tidy.
-		if len(rest) > 0 && strings.TrimSpace(rest[len(rest)-1]) != "" {
-			out.WriteByte('\n')
-		}
-		out.WriteString(managedBlockBegin)
-		out.WriteByte('\n')
+	out, pending := mergeReplaceInPlace(lines, kvs)
+	out = mergeAppendPending(out, pending, kvs)
 
-		keys := make([]string, 0, len(kvs))
-		for k := range kvs {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			out.WriteString(k)
-			out.WriteByte('=')
-			out.WriteString(quoteDotEnvValue(kvs[k]))
-			out.WriteByte('\n')
-		}
-		out.WriteString(managedBlockEnd)
-		out.WriteByte('\n')
+	body := strings.Join(out, "\n")
+	if trailingNewline || len(out) > 0 {
+		body += "\n"
 	}
 
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(out.String()), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
@@ -198,6 +200,96 @@ func writeManagedBlock(path string, kvs map[string]string) error {
 		return fmt.Errorf("rename tmp: %w", err)
 	}
 	return nil
+}
+
+// mergeReplaceInPlace walks `lines` and, for each line whose key is
+// in `kvs`, emits a fresh `KEY=quoted(VALUE)` at the same position;
+// LATER duplicates of the same key are dropped so the file ends with
+// exactly one occurrence per persisted key. Lines for keys NOT in
+// `kvs` pass through untouched (including any duplicates the user
+// authored on purpose).
+//
+// Returns (rewritten lines, pending) where `pending` is the subset
+// of `kvs` keys NOT encountered in the file — those get appended by
+// mergeAppendPending.
+func mergeReplaceInPlace(lines []string, kvs map[string]string) (rewritten []string, pending map[string]bool) {
+	pending = make(map[string]bool, len(kvs))
+	for k := range kvs {
+		pending[k] = true
+	}
+	seen := make(map[string]bool, len(kvs))
+	rewritten = make([]string, 0, len(lines)+len(kvs))
+	for _, line := range lines {
+		key, _, ok := parseDotEnvLine(line)
+		if !ok {
+			rewritten = append(rewritten, line) // comment, blank, malformed
+			continue
+		}
+		if _, isTarget := kvs[key]; !isTarget {
+			rewritten = append(rewritten, line) // not being persisted — pass through
+			continue
+		}
+		if seen[key] {
+			continue // later duplicate of a persisted key — drop
+		}
+		rewritten = append(rewritten, key+"="+quoteDotEnvValue(kvs[key]))
+		seen[key] = true
+		delete(pending, key)
+	}
+	return rewritten, pending
+}
+
+// mergeAppendPending tacks any unconsumed `pending` keys onto the
+// end of `out`, in sorted order for diff stability. A blank line
+// separates the appended block from preceding content (purely
+// cosmetic; keeps diffs tidy when the user opens .env).
+func mergeAppendPending(out []string, pending map[string]bool, kvs map[string]string) []string {
+	if len(pending) == 0 {
+		return out
+	}
+	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
+		out = append(out, "")
+	}
+	keys := make([]string, 0, len(pending))
+	for k := range pending {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		out = append(out, k+"="+quoteDotEnvValue(kvs[k]))
+	}
+	return out
+}
+
+// stripManagedBlockMarkers removes any line equal to the legacy
+// managed-block begin/end markers, leaving everything else intact.
+// Used by mergeIntoDotEnv to migrate older .env files written by
+// the previous writeManagedBlock implementation — once those marker
+// lines are gone the file is a clean, normal .env.
+//
+// No-op for files that never had markers.
+func stripManagedBlockMarkers(content string) string {
+	if !strings.Contains(content, managedBlockBegin) && !strings.Contains(content, managedBlockEnd) {
+		return content
+	}
+	trailingNewline := strings.HasSuffix(content, "\n")
+	content = strings.TrimRight(content, "\n")
+	if content == "" {
+		return ""
+	}
+	out := make([]string, 0)
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == managedBlockBegin || trimmed == managedBlockEnd {
+			continue
+		}
+		out = append(out, line)
+	}
+	body := strings.Join(out, "\n")
+	if trailingNewline {
+		body += "\n"
+	}
+	return body
 }
 
 // quoteDotEnvValue wraps the value in double quotes ONLY if it

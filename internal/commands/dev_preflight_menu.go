@@ -428,10 +428,10 @@ func promptPersistConnString(reader *bufio.Reader, kvs map[string]string) error 
 		prefixed[prefix+k] = v
 	}
 
-	if err := writeManagedBlock(".env", prefixed); err != nil {
+	if err := mergeIntoDotEnv(".env", prefixed); err != nil {
 		return fmt.Errorf("write .env: %w", err)
 	}
-	_, _ = fmt.Fprintf(menuOutputFn(), "  ✓ saved to .env (auto-managed block under %s prefix)\n", prefix)
+	_, _ = fmt.Fprintf(menuOutputFn(), "  ✓ saved to .env (%s settings updated in place)\n", prefix)
 	return nil
 }
 

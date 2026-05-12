@@ -218,10 +218,11 @@ func TestMenu_EnterConnString_PersistDeclined(t *testing.T) {
 	})
 	assert.Equal(t, menuOK, got)
 
-	// .env must NOT contain the managed block when persist was declined.
+	// .env must remain byte-identical to its original when persist
+	// was declined.
 	gotBytes, err := os.ReadFile(".env")
 	require.NoError(t, err)
-	assert.NotContains(t, string(gotBytes), managedBlockBegin,
+	assert.Equal(t, "DATA_DATABASE_HOST=localhost\n", string(gotBytes),
 		".env must remain unchanged when user declines persistence")
 }
 
@@ -263,14 +264,25 @@ func TestMenu_EnterConnString_PersistAccepted(t *testing.T) {
 	require.NoError(t, err)
 	gotEnv := string(envBytes)
 
-	// User content preserved.
+	// User content preserved (comment + the OTHER_VAR-style un-touched
+	// section).
 	assert.Contains(t, gotEnv, "# user comment")
-	assert.Contains(t, gotEnv, "DATA_DATABASE_HOST=localhost")
-	// Managed block present with project-prefix only — no GOFASTA_.
-	assert.Contains(t, gotEnv, managedBlockBegin)
+	// No managed-block markers — the file is a clean .env.
+	assert.NotContains(t, gotEnv, managedBlockBegin,
+		"in-place merge must not leave marker comments behind")
+	assert.NotContains(t, gotEnv, managedBlockEnd)
+	// Existing DATA_DATABASE_HOST/PORT were updated IN PLACE: the file
+	// must have exactly one of each, with the new values.
+	assert.Equal(t, 1, strings.Count(gotEnv, "DATA_DATABASE_HOST="),
+		"HOST must appear exactly once after in-place edit")
+	assert.Equal(t, 1, strings.Count(gotEnv, "DATA_DATABASE_PORT="))
 	assert.Contains(t, gotEnv, "DATA_DATABASE_HOST=ep-test.neon.tech")
 	assert.Contains(t, gotEnv, "DATA_DATABASE_PORT=5432",
 		"missing port should be filled with protocol default")
+	assert.NotContains(t, gotEnv, "DATA_DATABASE_HOST=localhost",
+		"original HOST value must be gone, not duplicated")
+	assert.NotContains(t, gotEnv, "DATA_DATABASE_PORT=5433")
+	// Brand-new keys (USER, PASSWORD, NAME, DRIVER, SSLMODE) appended.
 	assert.Contains(t, gotEnv, "DATA_DATABASE_SSLMODE=require")
 	assert.Contains(t, gotEnv, "DATA_DATABASE_USER=neon_user")
 	assert.Contains(t, gotEnv, "DATA_DATABASE_PASSWORD=secret")
@@ -312,8 +324,8 @@ func TestMenu_EnterConnString_PersistNoGoMod(t *testing.T) {
 
 	envBytes, err := os.ReadFile(".env")
 	require.NoError(t, err)
-	assert.NotContains(t, string(envBytes), managedBlockBegin,
-		".env must be unchanged when persistence is refused")
+	assert.Equal(t, "HOST=localhost\n", string(envBytes),
+		".env must be byte-identical when persistence is refused")
 }
 
 // TestMenu_EnterConnString_NeonStyleURL_NoPort_WithSslmode — the bug
