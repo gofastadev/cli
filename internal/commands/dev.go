@@ -23,44 +23,56 @@ var devFlagValues devFlags
 
 var devCmd = &cobra.Command{
 	Use:   "dev",
-	Short: "Run the full local dev environment (services + migrations + Air hot reload)",
-	Long: `Bring the project's full development environment up with one
-command: start the compose services (database, cache, queue),
-health-check each one, apply pending migrations, then launch Air
-for hot reload of the host-side app.
+	Short: "Run the local dev environment — host-first by default, optional Docker services via --services",
+	Long: `Run your gofasta project's local development environment.
 
-The cache and queue compose profiles are auto-activated by default;
-pass --no-cache / --no-queue to skip them. Pass --all-in-docker to
-run Air inside the app container instead of on the host — supporting
-services run detached and the app's stdout streams to the foreground.
+Default mode (no flags): the app runs on host with Air hot reload.
+Before Air starts, gofasta probes your declared dependencies
+(database, cache, queue from config.yaml + .env). If any dep is
+unreachable, an interactive menu offers four recovery paths:
+
+  [1] Enter a different connection string for the failing service
+  [2] Start the missing service(s) in Docker (equivalent to --services <name>)
+  [3] Run app without db (warns about no migrations / no persistence)
+  [4] Cancel and exit
+
+To pre-declare which compose services should run in Docker:
+
+  gofasta dev --services db                # db in Docker, app on host
+  gofasta dev --services db,cache,queue    # supporting services in Docker, app on host
+  gofasta dev --services db,app            # db + app in Docker, app foregrounded
+  gofasta dev --services all               # everything compose.yaml declares (full stack)
+
+The mental model: anything listed in --services runs in Docker. If
+"app" is in the list, the app runs in a foreground container instead
+of on host with Air. The list scales to any service compose.yaml
+declares — your own "lavinmq" or "elasticsearch" works the moment
+you add it to compose.yaml, no CLI release needed.
 
 While the pipeline is running, the terminal accepts these single-key
 shortcuts (disable with --no-keyboard, auto-disabled when stdin is
 not a TTY):
-  r, R    restart the entire pipeline from scratch (re-runs every stage)
+  r, R    restart the entire pipeline from scratch
   q, Q    quit gofasta dev (same as Ctrl+C)
   h, H, ? print the keybinding help
 
-Pipeline (each stage can be opted out independently):
-  1. Preflight        — verify docker + docker compose availability
-  2. Fresh volumes    — optional; drops every compose volume (--fresh)
-  3. Service start    — docker compose up -d <resolved services>
-  4. Health-wait      — poll each service until healthy (timeout 30s)
-  5. Migrate          — migrate up against the now-healthy database
-                        (skipped under --all-in-docker — the dev container
-                        runs migrate itself before Air starts)
-  6. Seed             — optional; runs ` + "`gofasta seed`" + ` after migrations
-  7. Air              — exec ` + "`go tool air`" + ` against .air.toml on the host,
-                        OR (under --all-in-docker) tail the app container's
-                        stdout to the foreground via ` + "`docker compose logs -f`" + `
-  8. Teardown         — on SIGINT/SIGTERM, stop services (volumes preserved)
-
-Projects without compose.yaml get steps 1–4 short-circuited and fall
-straight through to Air — preserving the "I brought my own DB"
-workflow.
+Pipeline stages:
+  1. Load .env                  — overlay onto config.yaml
+  2. Resolve plan               — validate --services against compose.yaml
+  3. Service start (if any)     — docker compose up -d <selected>
+  4. Health-wait                — poll each service until healthy
+  5. Preflight                  — probe db/cache/queue; menu on failure
+  6. Migrate                    — migrate up (delegated inside the app
+                                   container when "app" is in --services;
+                                   skipped under no-db mode)
+  7. Seed                       — optional; runs ` + "`gofasta seed`" + `
+  8. Air on host, OR foreground compose up <app>
+  9. Teardown                   — on SIGINT/SIGTERM, stop services
 
 Every step emits a structured event when --json is set, so agents and
-CI tooling can branch on facts instead of log strings.`,
+CI tooling can branch on facts instead of log strings.
+
+DEPRECATED: --all-in-docker is a one-release alias for --services all.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// `--all-in-docker` is the deprecated alias for `--services all`.
 		// We rewrite it here (before parseServicesList) so the rest of
@@ -499,10 +511,11 @@ func resolveProfiles(flags devFlags) []string {
 }
 
 // inDockerMode reports whether the app should run in a foreground
-// container (true when `app` appears in --services) vs on host with
-// Air. Replaces the explicit --all-in-docker boolean.
-func inDockerMode(flags devFlags) bool {
-	for _, s := range flags.servicesList {
+// container (true when `app` appears in the selected service list)
+// vs on host with Air. Takes the resolved list (post-`all`-expansion)
+// so callers don't have to think about alias normalization.
+func inDockerMode(selected []string) bool {
+	for _, s := range selected {
 		if s == appServiceName {
 			return true
 		}
@@ -529,21 +542,6 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 	// exists. We need to query compose for the available service list
 	// and validate every name in --services against it.
 
-	// In-docker mode (app in --services) cannot coexist with a
-	// filesystem-path replace directive in go.mod — the docker build
-	// context can't see paths outside the project. Detect it now.
-	if inDockerMode(flags) {
-		if replaces, _ := findLocalReplacesFn("go.mod"); len(replaces) > 0 {
-			lines := make([]string, 0, len(replaces))
-			for _, r := range replaces {
-				lines = append(lines, fmt.Sprintf("    %s => %s", r.Module, r.Path))
-			}
-			return devPlan{}, clierr.New(clierr.CodeDevLocalReplace,
-				fmt.Sprintf("go.mod has filesystem-path replace directives that the docker build cannot resolve:\n%s",
-					strings.Join(lines, "\n")))
-		}
-	}
-
 	profiles := resolveProfiles(flags)
 	available, hasHealth, err := detectComposeServices(profiles, true)
 	if err != nil {
@@ -558,9 +556,27 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 		return devPlan{}, clierr.New(clierr.CodeDevServiceUnknown, err.Error())
 	}
 
+	// In-docker mode (app in selected list) cannot coexist with a
+	// filesystem-path replace directive in go.mod — the docker build
+	// context can't see paths outside the project. Check AFTER
+	// selectServices so the `--services all` alias resolves to the
+	// full list before this gate decides whether the app is in scope.
+	inDocker := inDockerMode(selected)
+	if inDocker {
+		if replaces, _ := findLocalReplacesFn("go.mod"); len(replaces) > 0 {
+			lines := make([]string, 0, len(replaces))
+			for _, r := range replaces {
+				lines = append(lines, fmt.Sprintf("    %s => %s", r.Module, r.Path))
+			}
+			return devPlan{}, clierr.New(clierr.CodeDevLocalReplace,
+				fmt.Sprintf("go.mod has filesystem-path replace directives that the docker build cannot resolve:\n%s",
+					strings.Join(lines, "\n")))
+		}
+	}
+
 	return devPlan{
 		orchestrate: true,
-		inDocker:    inDockerMode(flags),
+		inDocker:    inDocker,
 		profiles:    profiles,
 		services: devServices{
 			available: available,
@@ -726,12 +742,20 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 
+	// done lets the signal-handler goroutine exit when Air finishes
+	// naturally (no signal received). Without this the goroutine
+	// leaks for the lifetime of the test process, which cumulatively
+	// times out `go test -race ./...` across the many tests that
+	// exercise runDev's happy paths.
+	done := make(chan struct{})
+	defer close(done)
+
 	// restartFlag is set by the signal-handler goroutine when the
 	// caller pressed R. Read by the post-Run block to decide whether
 	// to return restart=true and let the outer loop re-run the
 	// pipeline.
 	var restartFlag atomicBool
-	go airSignalHandler(sigChan, keySignals, airCmd, teardown, &restartFlag)
+	go airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
 
 	err := airCmd.Run()
 	restart := restartFlag.Load()
@@ -779,11 +803,18 @@ var isSignaledExit = func(ps *os.ProcessState) bool {
 func airSignalHandler(
 	sigChan <-chan os.Signal,
 	keySignals <-chan keyboardSignal,
+	done <-chan struct{},
 	airCmd *exec.Cmd,
 	teardown func(string),
 	restartFlag *atomicBool,
 ) {
 	select {
+	case <-done:
+		// Air finished on its own; no signal or keypress occurred.
+		// Nothing to clean up here — the deferred teardown in runAir
+		// owns the compose-stack stop, and signal.Stop releases the
+		// OS signal channel.
+		return
 	case <-sigChan:
 		if airCmd.Process != nil {
 			_ = airCmd.Process.Signal(os.Interrupt)

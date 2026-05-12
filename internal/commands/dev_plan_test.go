@@ -125,10 +125,12 @@ func TestResolveDevPlan_ServicesWithoutCompose(t *testing.T) {
 // TestResolveDevPlan_AppInServicesLocalReplace — when `app` is in
 // --services (foreground container mode), a filesystem-path replace
 // in go.mod is invisible to the docker build context. Surface the
-// pre-emptive error before docker compose runs.
+// pre-emptive error after compose-services lookup but before any
+// docker build runs.
 func TestResolveDevPlan_AppInServicesLocalReplace(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{}}}`, 0)
 
 	origFn := findLocalReplacesFn
 	t.Cleanup(func() { findLocalReplacesFn = origFn })

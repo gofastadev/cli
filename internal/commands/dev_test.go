@@ -708,7 +708,7 @@ func TestAirSignalHandler_NilProcess(t *testing.T) {
 	airCmd := exec.Command("true")
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, nil, airCmd, func(r string) { called = r }, &atomicBool{})
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -721,7 +721,7 @@ func TestAirSignalHandler_WithProcess(t *testing.T) {
 	t.Cleanup(func() { _ = airCmd.Wait() })
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, nil, airCmd, func(r string) { called = r }, &atomicBool{})
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -735,7 +735,7 @@ func TestAirSignalHandler_KeyboardRestart(t *testing.T) {
 	var called string
 	flag := &atomicBool{}
 	keyCh <- sigKeyboardRestart
-	airSignalHandler(sigChan, keyCh, airCmd, func(r string) { called = r }, flag)
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
 	assert.Equal(t, "restart", called)
 	assert.True(t, flag.Load())
 }
@@ -749,7 +749,7 @@ func TestAirSignalHandler_KeyboardQuit(t *testing.T) {
 	var called string
 	flag := &atomicBool{}
 	keyCh <- sigKeyboardQuit
-	airSignalHandler(sigChan, keyCh, airCmd, func(r string) { called = r }, flag)
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
 	assert.Equal(t, "quit", called)
 	assert.False(t, flag.Load())
 }

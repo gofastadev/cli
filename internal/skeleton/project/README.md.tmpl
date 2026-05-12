@@ -20,12 +20,17 @@ Run `gofasta doctor` to verify every prerequisite is in place.
 # Install deps + generate Wire / Swagger artifacts (one-time).
 gofasta init
 
-# Option A — everything in Docker
-make up
-
-# Option B — app on host with hot reload, database in Docker
-make up-db
+# Default — app on host with Air hot reload, no Docker. The
+# preflight checks your database / cache / queue connection
+# strings; if any dep is unreachable an interactive menu offers
+# to start it in Docker or run without it.
 gofasta dev
+
+# Bring up the database in Docker explicitly, app stays on host:
+gofasta dev --services db
+
+# Full stack in Docker (app + db + cache + queue):
+gofasta dev --services all
 ```
 
 The server listens on the port set in `config.yaml` (8080 by default).
@@ -64,9 +69,9 @@ entry point you prefer.
 
 | Task | Command |
 |------|---------|
-| Start app + db in Docker | `make up` |
-| Start db only (for `make dev`) | `make up-db` |
-| Start app with hot reload | `make dev` or `gofasta dev` |
+| Start app on host (default; preflight + interactive recovery) | `gofasta dev` |
+| Start app on host + db in Docker | `gofasta dev --services db` |
+| Start full stack in Docker (app + supporting services) | `gofasta dev --services all` |
 | Run tests | `make test` (unit) / `make test-integration` |
 | Run with race detector | `go test -race ./...` |
 | Build production binary | `make build` |
