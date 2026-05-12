@@ -294,7 +294,8 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// a moment to settle.
 	results := runPreflight()
 	if hasUnreachable(results) {
-		switch runPreflightMenu(results) {
+		outcome, menuStarted := runPreflightMenu(results)
+		switch outcome {
 		case menuOK:
 			// Recovery succeeded; proceed.
 		case menuRunWithoutDB:
@@ -302,6 +303,16 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 		case menuCancel:
 			return false, clierr.New(clierr.CodeDevPreflightCancel,
 				"preflight unresolved")
+		}
+		// If the menu's option [2] brought up compose services, they
+		// are NOT in plan.services.selected (the plan was built before
+		// the menu ran). The teardown closure stops only what the plan
+		// owns, so without this merge a q/Ctrl+C would kill the app
+		// but leave the menu-started db (and friends) running between
+		// dev sessions. Merge them in so teardown reaches them.
+		if len(menuStarted) > 0 {
+			plan.services.selected = mergeServices(plan.services.selected, menuStarted)
+			plan.orchestrate = true
 		}
 	}
 
@@ -788,21 +799,41 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	defer signal.Stop(sigChan)
 
 	// done lets the signal-handler goroutine exit when Air finishes
-	// naturally (no signal received). Without this the goroutine
-	// leaks for the lifetime of the test process, which cumulatively
-	// times out `go test -race ./...` across the many tests that
-	// exercise runDev's happy paths.
+	// naturally (no signal received). Closed explicitly below AFTER
+	// airCmd.Run() returns. Closing too early races with the handler's
+	// select against sigChan/keySignals — if `done` fires first, a
+	// user-pressed Ctrl+C gets swallowed and teardown never runs.
 	done := make(chan struct{})
-	defer close(done)
+
+	// handlerDone closes when airSignalHandler returns. We wait on it
+	// AFTER airCmd.Run() so the handler's teardown (e.g. `docker
+	// compose stop db` for menu-started services) gets to finish
+	// before runAir returns. Without this, Ctrl+C kills Air, Air's
+	// process exits, airCmd.Run() returns, runAir returns, runDev
+	// returns, main exits — and the in-flight `docker compose stop`
+	// goroutine is terminated mid-syscall, leaving the db container
+	// running. The leak that prompted this whole investigation.
+	handlerDone := make(chan struct{})
 
 	// restartFlag is set by the signal-handler goroutine when the
 	// caller pressed R. Read by the post-Run block to decide whether
 	// to return restart=true and let the outer loop re-run the
 	// pipeline.
 	var restartFlag atomicBool
-	go airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
+	go func() {
+		defer close(handlerDone)
+		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
+	}()
 
 	err := airCmd.Run()
+	// Air has exited. Either a signal was received (handler is mid-
+	// teardown) or Air died naturally (handler is blocked in select).
+	// Close `done` so a still-blocked handler can exit cleanly via its
+	// <-done case, then wait for the handler to finish before
+	// returning — that guarantees any teardown subprocess (`docker
+	// compose stop`, `down -v`) ran to completion.
+	close(done)
+	<-handlerDone
 	restart := restartFlag.Load()
 	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
 	// exit as a successful shutdown rather than a pipeline failure.

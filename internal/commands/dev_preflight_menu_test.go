@@ -90,7 +90,7 @@ func stubComposeAvailable(t *testing.T, ok bool) {
 func TestMenu_NonTTY_SkipsAndCancels(t *testing.T) {
 	forceTTY(t, false)
 	out := captureMenuOutput(t)
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -103,7 +103,7 @@ func TestMenu_Cancel(t *testing.T) {
 	forceTTY(t, true)
 	_ = captureMenuOutput(t)
 	pipeStdin(t, "4")
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -116,7 +116,7 @@ func TestMenu_RunWithoutDB(t *testing.T) {
 	forceTTY(t, true)
 	_ = captureMenuOutput(t)
 	pipeStdin(t, "3")
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuRunWithoutDB, got)
@@ -129,7 +129,7 @@ func TestMenu_InvalidChoiceLoops(t *testing.T) {
 	forceTTY(t, true)
 	out := captureMenuOutput(t)
 	pipeStdin(t, "z", "4")
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -144,7 +144,7 @@ func TestMenu_StdinClosed(t *testing.T) {
 	orig := menuInputFn
 	menuInputFn = func() io.Reader { return bytes.NewReader(nil) }
 	t.Cleanup(func() { menuInputFn = orig })
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -171,7 +171,7 @@ func TestMenu_EnterConnString_AppliesAndRecovers(t *testing.T) {
 		{Dep: "database", Status: probeOK, Endpoint: "x:1"},
 	})
 
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuOK, got)
@@ -191,7 +191,7 @@ func TestMenu_EnterConnString_EmptyInputLoops(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -207,7 +207,7 @@ func TestMenu_EnterConnString_InvalidURL(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -238,7 +238,7 @@ func TestMenu_EnterConnString_ProbeStillFails(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "h:9", Reason: "still refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -259,7 +259,7 @@ func TestMenu_StartInDocker_HappyPath(t *testing.T) {
 		{Dep: "database", Status: probeOK, Endpoint: "x:1"},
 	})
 
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuOK, got)
@@ -276,7 +276,7 @@ func TestMenu_StartInDocker_DockerUnavailable(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -293,7 +293,7 @@ func TestMenu_StartInDocker_StartFails(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -312,7 +312,7 @@ func TestMenu_StartInDocker_HealthFails(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)
@@ -334,7 +334,7 @@ func TestMenu_StartInDocker_NoFailingServices(t *testing.T) {
 	stubReprobe(t, []probeResult{
 		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
-	got := runPreflightMenu([]probeResult{
+	got, _ := runPreflightMenu([]probeResult{
 		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
 	})
 	assert.Equal(t, menuCancel, got)

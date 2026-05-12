@@ -133,7 +133,14 @@ func defaultMenuWaitHealthy(names []string) error {
 // The function is self-driving: it loops internally on retries, prints
 // progress, and only returns when the user picks a terminal option or
 // all probes report OK.
-func runPreflightMenu(initial []probeResult) menuOutcome {
+//
+// `startedServices` is the cumulative list of compose services the
+// menu brought up via option [2] across all iterations. The caller
+// merges these into plan.services.selected so the pipeline's teardown
+// closure stops them on q / Ctrl+C. Without this hand-off the
+// services start but never stop — leaking containers between dev
+// sessions.
+func runPreflightMenu(initial []probeResult) (outcome menuOutcome, startedServices []string) {
 	current := initial
 
 	// Non-TTY: print actionable text + bail. Skipping the interactive
@@ -143,7 +150,7 @@ func runPreflightMenu(initial []probeResult) menuOutcome {
 		_, _ = fmt.Fprintln(menuOutputFn(), "")
 		_, _ = fmt.Fprintln(menuOutputFn(), "  Non-interactive shell detected — menu skipped.")
 		_, _ = fmt.Fprintln(menuOutputFn(), "  Resolve the unreachable dependency manually, then re-run `gofasta dev`.")
-		return menuCancel
+		return menuCancel, nil
 	}
 
 	reader := bufio.NewReader(menuInputFn())
@@ -165,7 +172,7 @@ func runPreflightMenu(initial []probeResult) menuOutcome {
 		line, err := reader.ReadString('\n')
 		if err != nil {
 			_, _ = fmt.Fprintln(menuOutputFn(), "\n  ⚠ stdin closed; exiting")
-			return menuCancel
+			return menuCancel, startedServices
 		}
 		choice := strings.TrimSpace(line)
 
@@ -176,24 +183,50 @@ func runPreflightMenu(initial []probeResult) menuOutcome {
 			}
 			current = menuReprobeFn()
 			if !hasUnreachable(current) {
-				return menuOK
+				return menuOK, startedServices
 			}
 		case "2":
+			// Remember the services the menu attempted to start —
+			// even if waitHealthy later times out, `docker compose
+			// up -d` already created containers, and teardown must
+			// stop them so a failed option-2 attempt doesn't leak
+			// a half-started db container into the next dev session.
+			attempted := mapFailingDepsToServices(current)
+			startedServices = mergeServices(startedServices, attempted)
 			if err := menuActionStartInDocker(current); err != nil {
 				_, _ = fmt.Fprintf(menuOutputFn(), "  ⚠ could not start in Docker: %v\n", err)
 			}
 			current = menuReprobeFn()
 			if !hasUnreachable(current) {
-				return menuOK
+				return menuOK, startedServices
 			}
 		case "3":
-			return menuRunWithoutDB
+			return menuRunWithoutDB, startedServices
 		case "4":
-			return menuCancel
+			return menuCancel, startedServices
 		default:
 			_, _ = fmt.Fprintf(menuOutputFn(), "  ⚠ invalid choice %q — pick a number from 1 to 4\n", choice)
 		}
 	}
+}
+
+// mergeServices appends `add` to `base`, dropping duplicates. Stable
+// order: existing entries first, new ones in insertion order. Used to
+// accumulate "services started by the menu" across iteration loops
+// without re-counting a service that's already in the list.
+func mergeServices(base, add []string) []string {
+	seen := make(map[string]bool, len(base))
+	for _, s := range base {
+		seen[s] = true
+	}
+	out := base
+	for _, s := range add {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // printPreflightFailures renders the per-dep status header above the
