@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -180,6 +181,139 @@ func TestMenu_EnterConnString_AppliesAndRecovers(t *testing.T) {
 	assert.Equal(t, "newuser", osGetenv("GOFASTA_DATABASE_USER"))
 	assert.Equal(t, "newpass", osGetenv("GOFASTA_DATABASE_PASSWORD"))
 	assert.Equal(t, "newdb", osGetenv("GOFASTA_DATABASE_NAME"))
+}
+
+// TestMenu_EnterConnString_PersistDeclined — answer "n" (or anything
+// other than y/yes) to the save prompt → no .env write happens. The
+// session-scoped behavior is unchanged.
+func TestMenu_EnterConnString_PersistDeclined(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("go.mod", []byte("module data\n\ngo 1.25.0\n"), 0o644))
+	require.NoError(t, os.WriteFile(".env", []byte("DATA_DATABASE_HOST=localhost\n"), 0o644))
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t,
+		"1",
+		"postgres://u:p@h:1/d",
+		"n", // decline persist
+	)
+	t.Cleanup(func() {
+		_ = unsetenv("GOFASTA_DATABASE_DRIVER")
+		_ = unsetenv("GOFASTA_DATABASE_HOST")
+		_ = unsetenv("GOFASTA_DATABASE_PORT")
+		_ = unsetenv("GOFASTA_DATABASE_USER")
+		_ = unsetenv("GOFASTA_DATABASE_PASSWORD")
+		_ = unsetenv("GOFASTA_DATABASE_NAME")
+		_ = unsetenv("DATA_DATABASE_DRIVER")
+		_ = unsetenv("DATA_DATABASE_HOST")
+		_ = unsetenv("DATA_DATABASE_PORT")
+		_ = unsetenv("DATA_DATABASE_USER")
+		_ = unsetenv("DATA_DATABASE_PASSWORD")
+		_ = unsetenv("DATA_DATABASE_NAME")
+	})
+	stubReprobe(t, []probeResult{{Dep: "database", Status: probeOK, Endpoint: "h:1"}})
+
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuOK, got)
+
+	// .env must NOT contain the managed block when persist was declined.
+	gotBytes, err := os.ReadFile(".env")
+	require.NoError(t, err)
+	assert.NotContains(t, string(gotBytes), managedBlockBegin,
+		".env must remain unchanged when user declines persistence")
+}
+
+// TestMenu_EnterConnString_PersistAccepted — answer "y" → .env gets
+// a managed block under the project's prefix (DATA_*), NOT under
+// GOFASTA_. The block must contain the entered URL's components.
+func TestMenu_EnterConnString_PersistAccepted(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("go.mod", []byte("module data\n\ngo 1.25.0\n"), 0o644))
+	original := "# user comment\nDATA_DATABASE_HOST=localhost\nDATA_DATABASE_PORT=5433\n"
+	require.NoError(t, os.WriteFile(".env", []byte(original), 0o644))
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t,
+		"1",
+		"postgresql://neon_user:secret@ep-test.neon.tech/neondb?sslmode=require",
+		"y", // accept persist
+	)
+	t.Cleanup(func() {
+		for _, k := range []string{
+			"GOFASTA_DATABASE_DRIVER", "GOFASTA_DATABASE_HOST", "GOFASTA_DATABASE_PORT",
+			"GOFASTA_DATABASE_USER", "GOFASTA_DATABASE_PASSWORD", "GOFASTA_DATABASE_NAME",
+			"GOFASTA_DATABASE_SSLMODE",
+			"DATA_DATABASE_DRIVER", "DATA_DATABASE_HOST", "DATA_DATABASE_PORT",
+			"DATA_DATABASE_USER", "DATA_DATABASE_PASSWORD", "DATA_DATABASE_NAME",
+			"DATA_DATABASE_SSLMODE",
+		} {
+			_ = unsetenv(k)
+		}
+	})
+	stubReprobe(t, []probeResult{{Dep: "database", Status: probeOK, Endpoint: "ok"}})
+
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuOK, got)
+
+	envBytes, err := os.ReadFile(".env")
+	require.NoError(t, err)
+	gotEnv := string(envBytes)
+
+	// User content preserved.
+	assert.Contains(t, gotEnv, "# user comment")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_HOST=localhost")
+	// Managed block present with project-prefix only — no GOFASTA_.
+	assert.Contains(t, gotEnv, managedBlockBegin)
+	assert.Contains(t, gotEnv, "DATA_DATABASE_HOST=ep-test.neon.tech")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_PORT=5432",
+		"missing port should be filled with protocol default")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_SSLMODE=require")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_USER=neon_user")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_PASSWORD=secret")
+	assert.Contains(t, gotEnv, "DATA_DATABASE_NAME=neondb")
+	assert.NotContains(t, gotEnv, "GOFASTA_DATABASE_",
+		"persisted .env must NEVER contain toolkit-branded GOFASTA_ keys")
+}
+
+// TestMenu_EnterConnString_PersistNoGoMod — without a go.mod we can't
+// derive a project-specific prefix; persistence is refused with a
+// clear error rather than silently falling back to GOFASTA_.
+func TestMenu_EnterConnString_PersistNoGoMod(t *testing.T) {
+	chdirTemp(t)
+	// No go.mod written — projectPrefix returns "".
+	require.NoError(t, os.WriteFile(".env", []byte("HOST=localhost\n"), 0o644))
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t,
+		"1",
+		"postgres://u:p@h:1/d",
+		"y", // accept persist — but no go.mod → refused
+	)
+	t.Cleanup(func() {
+		for _, k := range []string{
+			"GOFASTA_DATABASE_DRIVER", "GOFASTA_DATABASE_HOST", "GOFASTA_DATABASE_PORT",
+			"GOFASTA_DATABASE_USER", "GOFASTA_DATABASE_PASSWORD", "GOFASTA_DATABASE_NAME",
+		} {
+			_ = unsetenv(k)
+		}
+	})
+	stubReprobe(t, []probeResult{{Dep: "database", Status: probeOK, Endpoint: "ok"}})
+
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuOK, got, "menu still returns OK; persist failure is non-fatal")
+	assert.Contains(t, out.String(), "persist failed",
+		"user must see why persistence didn't happen")
+
+	envBytes, err := os.ReadFile(".env")
+	require.NoError(t, err)
+	assert.NotContains(t, string(envBytes), managedBlockBegin,
+		".env must be unchanged when persistence is refused")
 }
 
 // TestMenu_EnterConnString_NeonStyleURL_NoPort_WithSslmode — the bug

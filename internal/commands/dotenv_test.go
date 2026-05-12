@@ -141,20 +141,25 @@ func TestParseDotEnvLine_LeadingEqualsRejected(t *testing.T) {
 	assert.False(t, ok, "line with no key before `=` should be rejected")
 }
 
-func TestLoadDotEnv_ScannerError(t *testing.T) {
-	// bufio.Scanner returns ErrTooLong when a single token exceeds the
-	// buffer (default max 64KB). Write a line longer than that to force
-	// scanner.Err() to fire and loadDotEnv to surface the error.
+func TestLoadDotEnv_HandlesHugeLine(t *testing.T) {
+	// The original implementation used bufio.Scanner, whose default
+	// token limit is 64KB — a single line longer than that would
+	// trigger ErrTooLong and the file would be unusable. The current
+	// implementation splits on '\n' directly so there is no per-line
+	// limit. This test pins that contract: a 200KB value loads
+	// successfully and lands in os.Setenv as written.
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
-	giant := "BIG_LINE=" + strings.Repeat("x", 200000) + "\n"
+	bigValue := strings.Repeat("x", 200000)
+	giant := "BIG_LINE=" + bigValue + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(giant), 0o644))
 	_ = os.Unsetenv("BIG_LINE")
 	t.Cleanup(func() { _ = os.Unsetenv("BIG_LINE") })
 
-	_, err := loadDotEnv(path)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "read")
+	count, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "huge line should still load as a single var")
+	assert.Equal(t, bigValue, os.Getenv("BIG_LINE"))
 }
 
 func TestLoadDotEnv_UnreadableFile(t *testing.T) {
@@ -173,4 +178,127 @@ func TestLoadDotEnv_UnreadableFile(t *testing.T) {
 	_, err := loadDotEnv(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "open")
+}
+
+// ── managed-block round trip ──────────────────────────────────────────
+
+// TestWriteManagedBlock_AppendsAndIsIdempotent — first call adds the
+// block to a user-authored .env; second call REPLACES it (no nesting,
+// no drift). User-authored lines outside the block must be preserved
+// byte-for-byte, including comments and blank lines.
+func TestWriteManagedBlock_AppendsAndIsIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "# user comment\nUSER_VAR=keep\n\n# another section\nOTHER_VAR=stay\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, writeManagedBlock(path, map[string]string{
+		"DATA_DATABASE_HOST": "neon.tech",
+		"DATA_DATABASE_PORT": "5432",
+	}))
+
+	first, err := os.ReadFile(path)
+	require.NoError(t, err)
+	got := string(first)
+	assert.Contains(t, got, "USER_VAR=keep", "user content must survive")
+	assert.Contains(t, got, "OTHER_VAR=stay")
+	assert.Contains(t, got, managedBlockBegin)
+	assert.Contains(t, got, "DATA_DATABASE_HOST=neon.tech")
+	assert.Contains(t, got, "DATA_DATABASE_PORT=5432")
+	assert.Contains(t, got, managedBlockEnd)
+
+	// Second write with DIFFERENT keys must replace the previous block,
+	// not append a second one.
+	require.NoError(t, writeManagedBlock(path, map[string]string{
+		"DATA_DATABASE_HOST":    "different.host",
+		"DATA_DATABASE_SSLMODE": "require",
+	}))
+
+	second, err := os.ReadFile(path)
+	require.NoError(t, err)
+	got = string(second)
+	assert.Equal(t, 1, strings.Count(got, managedBlockBegin), "must not nest blocks")
+	assert.Equal(t, 1, strings.Count(got, managedBlockEnd))
+	assert.NotContains(t, got, "neon.tech", "old managed values must be gone")
+	assert.NotContains(t, got, "5432", "old managed values must be gone")
+	assert.Contains(t, got, "DATA_DATABASE_HOST=different.host")
+	assert.Contains(t, got, "DATA_DATABASE_SSLMODE=require")
+	assert.Contains(t, got, "USER_VAR=keep", "user content still intact")
+}
+
+// TestWriteManagedBlock_EmptyMapRemovesBlock — passing an empty map is
+// the "revert" affordance: any existing block is removed and the file
+// returns to user-only content.
+func TestWriteManagedBlock_EmptyMapRemovesBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, writeManagedBlock(path, map[string]string{"X_K": "v"}))
+	require.NoError(t, writeManagedBlock(path, map[string]string{}))
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(got), managedBlockBegin)
+	assert.NotContains(t, string(got), "X_K=")
+}
+
+// TestLoadDotEnv_ManagedBlockWinsOverRest — when both the managed
+// block AND the rest of the file set the same key, the managed
+// value wins. This is the load-side guarantee that makes persistence
+// useful: a saved override beats the user's hand-edited default.
+func TestLoadDotEnv_ManagedBlockWinsOverRest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := "DATA_DATABASE_HOST=localhost\n" +
+		managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=neon.example.com\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	_ = os.Unsetenv("DATA_DATABASE_HOST")
+	t.Cleanup(func() { _ = os.Unsetenv("DATA_DATABASE_HOST") })
+
+	_, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, "neon.example.com", os.Getenv("DATA_DATABASE_HOST"),
+		"managed-block value must override the un-managed entry above it")
+}
+
+// TestLoadDotEnv_ShellStillWinsOverManagedBlock — explicit shell
+// exports must keep beating the file, including the managed block.
+// Otherwise persisting a stale override to disk would silently
+// override a developer who deliberately exported a different value
+// in their current shell.
+func TestLoadDotEnv_ShellStillWinsOverManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=from-managed\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	t.Setenv("DATA_DATABASE_HOST", "from-shell")
+
+	_, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, "from-shell", os.Getenv("DATA_DATABASE_HOST"))
+}
+
+// TestQuoteDotEnvValue_QuotesOnlyWhenNeeded — plain values pass
+// through unquoted; values with whitespace/special chars get wrapped.
+func TestQuoteDotEnvValue_QuotesOnlyWhenNeeded(t *testing.T) {
+	// Plain backslashes pass through unquoted because parseDotEnvLine
+	// doesn't process escape sequences — a `\n` in the value reads as
+	// the literal two-char sequence, not a newline. Only chars a naive
+	// parser would mis-interpret (space, tab, '#', '"', actual newline)
+	// trigger quoting.
+	cases := map[string]string{
+		"":                                    "",
+		"plain":                               "plain",
+		"with spaces":                         `"with spaces"`,
+		"with\ttab":                           "\"with\ttab\"",
+		"has#hash":                            `"has#hash"`,
+		`has"quote`:                           `"has\"quote"`,
+		`has\backslash`:                       `has\backslash`,
+		"postgres://u:p@h/db?sslmode=require": "postgres://u:p@h/db?sslmode=require",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, quoteDotEnvValue(in), "in=%q", in)
+	}
 }

@@ -178,11 +178,23 @@ func runPreflightMenu(initial []probeResult) (outcome menuOutcome, startedServic
 
 		switch choice {
 		case "1":
-			if err := menuActionEnterConnString(reader, current); err != nil {
+			kvs, err := menuActionEnterConnString(reader, current)
+			if err != nil {
 				_, _ = fmt.Fprintf(menuOutputFn(), "  ⚠ could not apply connection string: %v\n", err)
 			}
 			current = menuReprobeFn()
 			if !hasUnreachable(current) {
+				// Reprobe passed — the override works. Offer to
+				// persist it to .env under the project's prefix so
+				// the next `gofasta dev` session doesn't make the
+				// user re-paste a long DSN. Default is no — the
+				// session-scoped path stays the security-safe
+				// default; persistence is one explicit keystroke.
+				if len(kvs) > 0 {
+					if err := promptPersistConnString(reader, kvs); err != nil {
+						_, _ = fmt.Fprintf(menuOutputFn(), "  ⚠ persist failed: %v\n", err)
+					}
+				}
 				return menuOK, startedServices
 			}
 		case "2":
@@ -283,84 +295,143 @@ func condense(s string) string {
 // pipeline's outer runDev loop re-loads .env on every iteration, so
 // the override is scoped to the current run — exactly what a "try
 // this connection real quick" UX should do.
-func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) error {
+//
+// Returns the KV map that was applied (so the caller can offer to
+// persist it to .env after a successful reprobe), or nil on error.
+// The returned map keys are NOT prefixed — the caller decides which
+// prefix to write under (project-specific for persistence; every
+// prefix for in-process override).
+func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) (map[string]string, error) {
 	_, _ = fmt.Fprintln(menuOutputFn(), "")
 	_, _ = fmt.Fprint(menuOutputFn(), "  Connection string (e.g. postgres://user:pass@host:port/db): ")
 
 	line, err := reader.ReadString('\n')
 	if err != nil {
-		return fmt.Errorf("read stdin: %w", err)
+		return nil, fmt.Errorf("read stdin: %w", err)
 	}
 	raw := strings.TrimSpace(line)
 	if raw == "" {
-		return fmt.Errorf("empty input")
+		return nil, fmt.Errorf("empty input")
 	}
 
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("invalid URL: %w", err)
+		return nil, fmt.Errorf("invalid URL: %w", err)
 	}
 	if parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("URL must include scheme and host")
+		return nil, fmt.Errorf("URL must include scheme and host")
 	}
 
-	host, port := splitHostPort(parsed.Host)
-	user := ""
-	password := ""
-	if parsed.User != nil {
-		user = parsed.User.Username()
-		password, _ = parsed.User.Password()
-	}
-	name := strings.TrimPrefix(parsed.Path, "/")
-	driver := strings.TrimSuffix(parsed.Scheme, "ql")
+	kvs := connStringToDatabaseKVs(parsed)
 
-	// If the user's URL omits an explicit port, supply the protocol's
-	// default so the previous .env's PORT (e.g. 5433 from a local
-	// docker-compose mapping) does NOT leak through BuildMigrationURL
-	// and override the just-entered URL. Hosted services like Neon
-	// listen on the standard postgres port and embed the port in the
-	// DNS endpoint, so users routinely paste URLs without `:5432`.
-	if port == "" {
-		port = defaultPortForDriver(driver)
-	}
-
-	// Parse query-string parameters the framework actually consumes.
-	// sslmode is the load-bearing one: Neon and most managed Postgres
-	// services REQUIRE TLS, so dropping `sslmode=require` would silently
-	// downgrade to `disable` and the connection would fail.
-	sslmode := parsed.Query().Get("sslmode")
-
-	// Override env vars under EVERY prefix configutil's loader knows
-	// about. The loader applies GOFASTA_ first, then the project-
-	// specific prefix (derived from go.mod) which OVERRIDES GOFASTA_
-	// on conflict. If we only set GOFASTA_ vars, a project that
-	// declared its own .env-loaded prefix (e.g. IRONJISENDAV2_DATABASE_HOST=localhost)
+	// Apply under EVERY prefix configutil's loader knows about. The
+	// loader applies GOFASTA_ first, then the project-specific prefix
+	// (derived from go.mod) which OVERRIDES GOFASTA_ on conflict. If
+	// we only set GOFASTA_ vars, a project that declared its own
+	// .env-loaded prefix (e.g. IRONJISENDAV2_DATABASE_HOST=localhost)
 	// would shadow our override and the reprobe would still see the
 	// stale value — exactly the bug a user encountering this menu is
 	// most likely to hit.
 	for _, prefix := range configutil.EnvPrefixes() {
-		_ = os.Setenv(prefix+"DATABASE_DRIVER", driver)
-		if host != "" {
-			_ = os.Setenv(prefix+"DATABASE_HOST", host)
-		}
-		if port != "" {
-			_ = os.Setenv(prefix+"DATABASE_PORT", port)
-		}
-		if user != "" {
-			_ = os.Setenv(prefix+"DATABASE_USER", user)
-		}
-		if password != "" {
-			_ = os.Setenv(prefix+"DATABASE_PASSWORD", password)
-		}
-		if name != "" {
-			_ = os.Setenv(prefix+"DATABASE_NAME", name)
-		}
-		if sslmode != "" {
-			_ = os.Setenv(prefix+"DATABASE_SSLMODE", sslmode)
+		for k, v := range kvs {
+			_ = os.Setenv(prefix+k, v)
 		}
 	}
 
 	termcolor.PrintStep("  ✓ override applied — re-probing…")
+	return kvs, nil
+}
+
+// connStringToDatabaseKVs converts a parsed connection-string URL into
+// the un-prefixed DATABASE_* KV map the menu's callers consume. Returns
+// only fields the URL actually carries — empty fields are omitted so
+// the caller doesn't accidentally clobber a config.yaml default with
+// an empty string.
+//
+// Two special cases:
+//   - missing port → fill in the driver's protocol default (5432 etc.)
+//     so the previous .env's PORT doesn't leak through.
+//   - sslmode in the query string → propagate as DATABASE_SSLMODE so
+//     managed Postgres services (Neon, RDS, etc.) that REQUIRE TLS
+//     don't silently fall back to "disable".
+func connStringToDatabaseKVs(parsed *url.URL) map[string]string {
+	driver := strings.TrimSuffix(parsed.Scheme, "ql")
+	host, port := splitHostPort(parsed.Host)
+	if port == "" {
+		port = defaultPortForDriver(driver)
+	}
+	user, password := "", ""
+	if parsed.User != nil {
+		user = parsed.User.Username()
+		password, _ = parsed.User.Password()
+	}
+
+	kvs := map[string]string{"DATABASE_DRIVER": driver}
+	pairs := []struct{ key, val string }{
+		{"DATABASE_HOST", host},
+		{"DATABASE_PORT", port},
+		{"DATABASE_USER", user},
+		{"DATABASE_PASSWORD", password},
+		{"DATABASE_NAME", strings.TrimPrefix(parsed.Path, "/")},
+		{"DATABASE_SSLMODE", parsed.Query().Get("sslmode")},
+	}
+	for _, p := range pairs {
+		if p.val != "" {
+			kvs[p.key] = p.val
+		}
+	}
+	return kvs
+}
+
+// promptPersistConnString asks whether the just-applied override
+// should be written to .env under the project-specific prefix.
+// Default answer (bare Enter) is NO — the session-scoped path is the
+// security-safe default, and we don't want a careless paste of
+// production credentials to end up on disk by accident. `y`/`Y`/`yes`
+// triggers the write.
+//
+// Persistence writes ONLY under the project prefix (e.g. DATA_DATABASE_HOST
+// for a project whose go.mod is `module data`), never under GOFASTA_.
+// The project's .env should look like a normal project file; toolkit
+// branding on disk is the lock-in pattern the gofasta identity rules
+// explicitly forbid.
+//
+// If no project prefix can be derived (no go.mod, or malformed
+// module path), we refuse with a clear message rather than silently
+// falling back to GOFASTA_.
+//
+// Errors writing the file are reported to the user but do NOT roll
+// back the in-memory override — the session continues with the
+// override applied, just without disk persistence.
+func promptPersistConnString(reader *bufio.Reader, kvs map[string]string) error {
+	if len(kvs) == 0 {
+		return nil
+	}
+	_, _ = fmt.Fprint(menuOutputFn(), "  Save these settings to .env for next session? [y/N]: ")
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("read stdin: %w", err)
+	}
+	ans := strings.ToLower(strings.TrimSpace(line))
+	if ans != "y" && ans != "yes" {
+		termcolor.PrintStep("  (skipped persistence — this session only)")
+		return nil
+	}
+
+	prefix := configutil.ProjectEnvPrefix()
+	if prefix == "" {
+		return fmt.Errorf("cannot persist: no go.mod found in this directory, so no project prefix to write under")
+	}
+
+	prefixed := make(map[string]string, len(kvs))
+	for k, v := range kvs {
+		prefixed[prefix+k] = v
+	}
+
+	if err := writeManagedBlock(".env", prefixed); err != nil {
+		return fmt.Errorf("write .env: %w", err)
+	}
+	_, _ = fmt.Fprintf(menuOutputFn(), "  ✓ saved to .env (auto-managed block under %s prefix)\n", prefix)
 	return nil
 }
 

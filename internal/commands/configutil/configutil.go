@@ -193,6 +193,17 @@ func loadConfig() *koanf.Koanf {
 // callers that want to "win" should write to the last entry's prefix.
 func EnvPrefixes() []string { return envPrefixes() }
 
+// ProjectEnvPrefix returns the project-specific env var prefix derived
+// from go.mod's module path (e.g. "DATA_" for `module data`, or
+// "IRONJI_SENDA_V2_" → "IRONJISENDAV2_" after illegal-char stripping).
+// Returns "" if go.mod is missing or malformed.
+//
+// Used by callers that need to write project-prefixed values to disk
+// (persistence) — toolkit-branded "GOFASTA_*" must NOT appear in a
+// project's own .env. The project owns its env namespace; gofasta only
+// reads from it.
+func ProjectEnvPrefix() string { return projectPrefix() }
+
 // envPrefixes returns the list of env var prefixes to consult when reading
 // database connection details. GOFASTA_ is always included so the generic
 // fallback works even outside a project directory; when a go.mod file is
