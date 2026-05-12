@@ -182,6 +182,72 @@ func TestMenu_EnterConnString_AppliesAndRecovers(t *testing.T) {
 	assert.Equal(t, "newdb", osGetenv("GOFASTA_DATABASE_NAME"))
 }
 
+// TestMenu_EnterConnString_NeonStyleURL_NoPort_WithSslmode — the bug
+// from a 2026-05 user report: a hosted-Postgres URL (Neon) is pasted
+// in the form `postgresql://u:p@host/db?sslmode=require&channel_binding=require`
+// with NO explicit port and `sslmode=require`. The menu used to:
+//   - leave the previous .env's DATABASE_PORT (e.g. 5433) intact,
+//     because the URL had no port to override with
+//   - drop sslmode entirely, because it was never parsed
+//
+// Result: the rebuilt URL became `postgres://...@host:5433/db?sslmode=disable`,
+// which obviously can't reach Neon's :5432 TLS-required endpoint.
+//
+// This test pins the fix: with no explicit port, PORT must become the
+// driver's protocol default (5432 for postgres); the `?sslmode=require`
+// query param must land in DATABASE_SSLMODE.
+func TestMenu_EnterConnString_NeonStyleURL_NoPort_WithSslmode(t *testing.T) {
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t, "1",
+		"postgresql://neondb_owner:secret@ep-test-pooler.us-east-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require",
+	)
+	t.Cleanup(func() {
+		_ = unsetenv("GOFASTA_DATABASE_DRIVER")
+		_ = unsetenv("GOFASTA_DATABASE_HOST")
+		_ = unsetenv("GOFASTA_DATABASE_PORT")
+		_ = unsetenv("GOFASTA_DATABASE_USER")
+		_ = unsetenv("GOFASTA_DATABASE_PASSWORD")
+		_ = unsetenv("GOFASTA_DATABASE_NAME")
+		_ = unsetenv("GOFASTA_DATABASE_SSLMODE")
+	})
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeOK, Endpoint: "x:1"},
+	})
+
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuOK, got)
+	assert.Equal(t, "postgres", osGetenv("GOFASTA_DATABASE_DRIVER"),
+		"postgresql:// scheme should map to driver=postgres (TrimSuffix ql)")
+	assert.Equal(t, "ep-test-pooler.us-east-1.aws.neon.tech", osGetenv("GOFASTA_DATABASE_HOST"))
+	assert.Equal(t, "5432", osGetenv("GOFASTA_DATABASE_PORT"),
+		"missing port must fall back to driver's protocol default, NOT inherit prior .env")
+	assert.Equal(t, "neondb_owner", osGetenv("GOFASTA_DATABASE_USER"))
+	assert.Equal(t, "secret", osGetenv("GOFASTA_DATABASE_PASSWORD"))
+	assert.Equal(t, "neondb", osGetenv("GOFASTA_DATABASE_NAME"))
+	assert.Equal(t, "require", osGetenv("GOFASTA_DATABASE_SSLMODE"),
+		"sslmode in query string must propagate to DATABASE_SSLMODE")
+}
+
+// TestDefaultPortForDriver — pin the canonical defaults so the
+// menu's fallback stays in sync with pkg/config.SetupDB across the
+// scaffold-supported drivers.
+func TestDefaultPortForDriver(t *testing.T) {
+	cases := map[string]string{
+		"postgres":   "5432",
+		"mysql":      "3306",
+		"sqlserver":  "1433",
+		"clickhouse": "9000",
+		"sqlite":     "",
+		"unknown":    "",
+	}
+	for driver, want := range cases {
+		assert.Equal(t, want, defaultPortForDriver(driver), "driver=%s", driver)
+	}
+}
+
 // TestMenu_EnterConnString_EmptyInputLoops — blank line is rejected,
 // menu loops. Verifies the input-validation guard.
 func TestMenu_EnterConnString_EmptyInputLoops(t *testing.T) {

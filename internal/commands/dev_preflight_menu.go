@@ -312,6 +312,23 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) error {
 		password, _ = parsed.User.Password()
 	}
 	name := strings.TrimPrefix(parsed.Path, "/")
+	driver := strings.TrimSuffix(parsed.Scheme, "ql")
+
+	// If the user's URL omits an explicit port, supply the protocol's
+	// default so the previous .env's PORT (e.g. 5433 from a local
+	// docker-compose mapping) does NOT leak through BuildMigrationURL
+	// and override the just-entered URL. Hosted services like Neon
+	// listen on the standard postgres port and embed the port in the
+	// DNS endpoint, so users routinely paste URLs without `:5432`.
+	if port == "" {
+		port = defaultPortForDriver(driver)
+	}
+
+	// Parse query-string parameters the framework actually consumes.
+	// sslmode is the load-bearing one: Neon and most managed Postgres
+	// services REQUIRE TLS, so dropping `sslmode=require` would silently
+	// downgrade to `disable` and the connection would fail.
+	sslmode := parsed.Query().Get("sslmode")
 
 	// Override env vars under EVERY prefix configutil's loader knows
 	// about. The loader applies GOFASTA_ first, then the project-
@@ -321,7 +338,6 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) error {
 	// would shadow our override and the reprobe would still see the
 	// stale value — exactly the bug a user encountering this menu is
 	// most likely to hit.
-	driver := strings.TrimSuffix(parsed.Scheme, "ql")
 	for _, prefix := range configutil.EnvPrefixes() {
 		_ = os.Setenv(prefix+"DATABASE_DRIVER", driver)
 		if host != "" {
@@ -339,10 +355,35 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) error {
 		if name != "" {
 			_ = os.Setenv(prefix+"DATABASE_NAME", name)
 		}
+		if sslmode != "" {
+			_ = os.Setenv(prefix+"DATABASE_SSLMODE", sslmode)
+		}
 	}
 
 	termcolor.PrintStep("  ✓ override applied — re-probing…")
 	return nil
+}
+
+// defaultPortForDriver returns the canonical TCP port for a postgres-
+// family driver name (matching the values pkg/config.SetupDB falls
+// back to when none is configured). Called from option [1] when the
+// user's URL omits an explicit port so we don't carry the previous
+// .env's PORT through into the rebuilt connection string. Returns ""
+// for drivers without a network port (sqlite) or unknown drivers,
+// which the caller treats as "leave PORT unset".
+func defaultPortForDriver(driver string) string {
+	switch driver {
+	case "postgres":
+		return "5432"
+	case "mysql":
+		return "3306"
+	case "sqlserver":
+		return "1433"
+	case "clickhouse":
+		return "9000"
+	default:
+		return ""
+	}
 }
 
 // splitHostPort splits a host[:port] string into its parts. Returns
