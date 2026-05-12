@@ -92,7 +92,7 @@ func TestStartKeyboardListener_MakeRawFails(t *testing.T) {
 func TestReadKeyboardLoop_RestartKey(t *testing.T) {
 	for _, in := range []string{"r", "R"} {
 		ch := make(chan keyboardSignal, 4)
-		readKeyboardLoop(strings.NewReader(in), ch)
+		readKeyboardLoop(strings.NewReader(in), ch, nil)
 		require.Len(t, ch, 1, "input %q produced %d signals; want 1", in, len(ch))
 		assert.Equal(t, sigKeyboardRestart, <-ch)
 	}
@@ -106,7 +106,7 @@ func TestReadKeyboardLoop_RestartKey(t *testing.T) {
 func TestReadKeyboardLoop_QuitKey(t *testing.T) {
 	for _, in := range []string{"q", "Q", "\x03"} {
 		ch := make(chan keyboardSignal, 4)
-		readKeyboardLoop(strings.NewReader(in), ch)
+		readKeyboardLoop(strings.NewReader(in), ch, nil)
 		require.Len(t, ch, 1, "input %q produced %d signals; want 1", in, len(ch))
 		assert.Equal(t, sigKeyboardQuit, <-ch)
 	}
@@ -119,7 +119,7 @@ func TestReadKeyboardLoop_QuitKey(t *testing.T) {
 func TestReadKeyboardLoop_HelpKey(t *testing.T) {
 	for _, in := range []string{"h", "H", "?"} {
 		ch := make(chan keyboardSignal, 4)
-		readKeyboardLoop(strings.NewReader(in), ch)
+		readKeyboardLoop(strings.NewReader(in), ch, nil)
 		assert.Empty(t, ch, "input %q must not emit a pipeline signal", in)
 	}
 }
@@ -129,7 +129,7 @@ func TestReadKeyboardLoop_HelpKey(t *testing.T) {
 // trigger spurious restarts.
 func TestReadKeyboardLoop_UnknownKeysIgnored(t *testing.T) {
 	ch := make(chan keyboardSignal, 8)
-	readKeyboardLoop(strings.NewReader("abc 123\n\t"), ch)
+	readKeyboardLoop(strings.NewReader("abc 123\n\t"), ch, nil)
 	assert.Empty(t, ch)
 }
 
@@ -138,7 +138,7 @@ func TestReadKeyboardLoop_UnknownKeysIgnored(t *testing.T) {
 // the expected order.
 func TestReadKeyboardLoop_MixedSequence(t *testing.T) {
 	ch := make(chan keyboardSignal, 4)
-	readKeyboardLoop(strings.NewReader("xRyq"), ch)
+	readKeyboardLoop(strings.NewReader("xRyq"), ch, nil)
 	close(ch)
 	got := make([]keyboardSignal, 0, 2)
 	for s := range ch {

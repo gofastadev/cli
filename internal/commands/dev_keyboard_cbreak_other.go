@@ -2,7 +2,11 @@
 
 package commands
 
-import "golang.org/x/term"
+import (
+	"errors"
+
+	"golang.org/x/term"
+)
 
 // makeCbreak fallback for platforms without a POSIX termios interface
 // available through golang.org/x/sys/unix (Windows, JS, Plan 9). On
@@ -15,4 +19,19 @@ import "golang.org/x/term"
 // produce the staircase effect there — the fallback is safe.
 func makeCbreak(fd int) (*term.State, error) {
 	return term.MakeRaw(fd)
+}
+
+// cancelableStdinReader and newCancelableStdinReader are unavailable
+// on non-POSIX platforms (no portable poll(2) + self-pipe pair).
+// Returning a no-op stub plus error makes startKeyboardListener
+// degrade to "no listener" rather than carry the goroutine-leak bug
+// on platforms we don't actively support.
+type cancelableStdinReader struct{}
+
+func (cancelableStdinReader) Read(_ []byte) (int, error) { return 0, errors.New("not supported") }
+func (cancelableStdinReader) Close() error               { return nil }
+func (cancelableStdinReader) Fd() uintptr                { return 0 }
+
+func newCancelableStdinReader(_ int) (*cancelableStdinReader, error) {
+	return nil, errors.New("self-pipe cancellation not supported on this platform")
 }

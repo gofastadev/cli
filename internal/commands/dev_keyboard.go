@@ -46,8 +46,9 @@ const (
 	sigKeyboardQuit
 )
 
-// termIsTerminalFn / termSetCbreakFn / termRestoreFn are package-level
-// seams over the corresponding x/term helpers so tests can stub them
+// termIsTerminalFn / termSetCbreakFn / termRestoreFn /
+// newCancelableStdinReaderFn are package-level seams over the
+// corresponding x/term and self-pipe helpers so tests can stub them
 // without needing a real PTY. Production assigns the real functions.
 //
 // termSetCbreakFn deliberately points at makeCbreak rather than
@@ -58,9 +59,10 @@ const (
 // makeCbreak only clears ICANON+ECHO (so single-key shortcuts still
 // work) and leaves OPOST/ISIG/etc. alone.
 var (
-	termIsTerminalFn = term.IsTerminal
-	termSetCbreakFn  = makeCbreak
-	termRestoreFn    = term.Restore
+	termIsTerminalFn           = term.IsTerminal
+	termSetCbreakFn            = makeCbreak
+	termRestoreFn              = term.Restore
+	newCancelableStdinReaderFn = newCancelableStdinReader
 )
 
 // keyboardReader is the abstraction over stdin used by the listener.
@@ -97,8 +99,33 @@ func startKeyboardListener(in keyboardReader, disabled bool) (signals <-chan key
 		return nil, func() {}, false
 	}
 
+	// Wrap stdin in a self-pipe + poll(2) reader so the listener's
+	// blocked Read can be canceled cleanly. On macOS, dup(2)+close
+	// does NOT interrupt a pending read syscall — the kernel keeps
+	// the read waiting until input arrives, at which point the
+	// dying listener still eats that byte and steals it from the
+	// next menu prompt. poll(2) IS reliably interrupted by POLLHUP
+	// on the self-pipe's read end, which fires the instant cancel()
+	// closes the write end.
+	//
+	// Failure to set up the self-pipe is non-fatal: restore the
+	// terminal and drop into the no-listener path. Cancellation is
+	// what makes the rest of the design correct, so without it we
+	// choose "no shortcut" over "a shortcut that leaks goroutines
+	// and steals bytes from the menu on the next iteration".
+	stdinReader, err := newCancelableStdinReaderFn(fd)
+	if err != nil {
+		_ = termRestoreFn(fd, oldState)
+		return nil, func() {}, false
+	}
+
 	sigCh := make(chan keyboardSignal, 4)
-	go readKeyboardLoop(in, sigCh)
+	// done is closed by cancel() so readKeyboardLoop can distinguish
+	// "Read returned because the user pressed a key" from "Read
+	// returned because the self-pipe was closed" and exit silently
+	// in the latter case (no stray signal to a stale sigCh listener).
+	done := make(chan struct{})
+	go readKeyboardLoop(stdinReader, sigCh, done)
 
 	printKeyboardBanner()
 
@@ -108,25 +135,62 @@ func startKeyboardListener(in keyboardReader, disabled bool) (signals <-chan key
 			return
 		}
 		restored = true
+		close(done)
+		// Closing the self-pipe's write end fires POLLHUP on the
+		// read end inside the goroutine's Poll call — the Read
+		// returns io.EOF, the goroutine sees `done` closed and
+		// returns without consuming a keystroke from stdin.
+		_ = stdinReader.Close()
 		_ = termRestoreFn(fd, oldState)
 	}
 	return sigCh, cancel, true
 }
 
 // readKeyboardLoop reads single bytes from `in` and translates each to
-// a keyboardSignal. Exits when stdin returns EOF / error — typically
-// when the cancel function restores the terminal mid-read, the next
-// read errors out and the goroutine exits cleanly.
+// a keyboardSignal. Exits when:
+//   - cancel() closes the self-pipe — `in.Read` returns io.EOF
+//     (`done` is also closed, used to suppress the stray signal that
+//     would otherwise be sent if a real keystroke and a cancel raced),
+//     OR
+//   - stdin returns EOF / error from any other cause
+//
+// makeCbreak sets the TTY to VMIN=1 VTIME=0, so a naive Read would
+// block until at least one byte is available — and a goroutine
+// parked in such a Read can't notice when the pipeline closed `done`.
+// Cancellation is therefore handled inside `in`'s Read: it uses
+// poll(2) on stdin AND on a self-pipe's read end, so closing the
+// self-pipe's write end wakes the Poll immediately with POLLHUP and
+// the goroutine exits without having consumed any keystroke. That
+// leaves the next reader of os.Stdin (typically the preflight menu
+// on iteration 2 of the restart loop) able to see every byte the
+// user types.
 //
 // Unrecognized keys are silently ignored; `h` / `?` print the help
 // banner inline so the user can re-discover the keybindings without
 // leaving the process.
-func readKeyboardLoop(in io.Reader, sigCh chan<- keyboardSignal) {
+func readKeyboardLoop(in io.Reader, sigCh chan<- keyboardSignal, done <-chan struct{}) {
 	buf := make([]byte, 1)
 	for {
-		n, err := in.Read(buf)
-		if err != nil || n == 0 {
+		select {
+		case <-done:
 			return
+		default:
+		}
+		n, err := in.Read(buf)
+		if err != nil {
+			return
+		}
+		if n == 0 {
+			continue
+		}
+		// Re-check done after Read so that a cancellation that landed
+		// while we were briefly blocked is honored before the byte is
+		// interpreted as r/q/h. Without this, the goroutine could send
+		// one stale signal after cancel() returned.
+		select {
+		case <-done:
+			return
+		default:
 		}
 		switch buf[0] {
 		case 'r', 'R':
