@@ -14,11 +14,12 @@ import (
 // fakeExec + chdir-to-temp give full control without touching docker.
 // ─────────────────────────────────────────────────────────────────────
 
-// TestResolveDevPlan_NoServices — --no-services disables the compose
-// pipeline regardless of compose.yaml existence.
-func TestResolveDevPlan_NoServices(t *testing.T) {
+// TestResolveDevPlan_NoServicesByDefault — under the host-first model
+// the empty --services list (the default) means no compose orchestration
+// runs at all; the app is expected to run on host with Air.
+func TestResolveDevPlan_NoServicesByDefault(t *testing.T) {
 	chdirTemp(t)
-	plan, err := resolveDevPlan(devFlags{noServices: true})
+	plan, err := resolveDevPlan(devFlags{})
 	require.NoError(t, err)
 	assert.False(t, plan.orchestrate)
 }
@@ -32,21 +33,17 @@ func TestResolveDevPlan_NoComposeFile(t *testing.T) {
 	assert.False(t, plan.orchestrate)
 }
 
-// TestResolveDevPlan_ServicesWithoutCompose — user supplied
-// --services=a,b,c but there's no compose.yaml → clierr.
-func TestResolveDevPlan_ServicesWithoutCompose(t *testing.T) {
-	chdirTemp(t)
-	_, err := resolveDevPlan(devFlags{servicesList: []string{"db"}})
-	require.Error(t, err)
-}
-
-// TestResolveDevPlan_HappyPath — compose.yaml present; detectComposeServices
-// returns two services. Plan includes both.
+// TestResolveDevPlan_HappyPath — compose.yaml present, --services=db,cache
+// names two services that exist in compose.yaml. Plan includes both
+// and orchestrate=true.
 func TestResolveDevPlan_HappyPath(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
 	fakeExecOutput(t, `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}},"cache":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{})
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db", "cache"},
+		servicesRaw:  "db,cache",
+	})
 	require.NoError(t, err)
 	assert.True(t, plan.orchestrate)
 	assert.ElementsMatch(t, []string{"db", "cache"}, plan.services.available)
@@ -110,41 +107,21 @@ func TestDetectVersions_EmptyStdout(t *testing.T) {
 	assert.Equal(t, "unknown", compose)
 }
 
-// TestResolveDevPlan_AllInDockerWithoutCompose — --all-in-docker set
-// but no compose.yaml → CodeDevComposeNotFound.
-func TestResolveDevPlan_AllInDockerWithoutCompose(t *testing.T) {
+// TestResolveDevPlan_ServicesWithoutCompose — --services set but no
+// compose.yaml → CodeDevComposeNotFound. The error gates the user
+// against running with a broken config.
+func TestResolveDevPlan_ServicesWithoutCompose(t *testing.T) {
 	chdirTemp(t)
-	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	_, err := resolveDevPlan(devFlags{servicesList: []string{"db"}, servicesRaw: "db"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "compose.yaml")
 }
 
-// TestResolveDevPlan_AllInDockerNoServicesConflict — mutual-exclusion
-// guard: --all-in-docker + --no-services is incoherent.
-func TestResolveDevPlan_AllInDockerNoServicesConflict(t *testing.T) {
-	chdirTemp(t)
-	_, err := resolveDevPlan(devFlags{allInDocker: true, noServices: true})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mutually exclusive")
-}
-
-// TestResolveDevPlan_AllInDockerNoDBConflict — the in-container app
-// needs the db; --no-db with --all-in-docker is rejected.
-func TestResolveDevPlan_AllInDockerNoDBConflict(t *testing.T) {
-	chdirTemp(t)
-	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	_, err := resolveDevPlan(devFlags{allInDocker: true, noDB: true})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "mutually exclusive")
-}
-
-// TestResolveDevPlan_AllInDockerLocalReplace — a filesystem-path
-// replace in go.mod (the common cross-repo dev case) cannot be
-// resolved inside the docker build context. Detect it before docker
-// compose runs and surface a clear message naming the offending
-// module + path, rather than letting buildkit emit
-// "reading /foo/go.mod: no such file or directory".
-func TestResolveDevPlan_AllInDockerLocalReplace(t *testing.T) {
+// TestResolveDevPlan_AppInServicesLocalReplace — when `app` is in
+// --services (foreground container mode), a filesystem-path replace
+// in go.mod is invisible to the docker build context. Surface the
+// pre-emptive error before docker compose runs.
+func TestResolveDevPlan_AppInServicesLocalReplace(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
 
@@ -156,61 +133,75 @@ func TestResolveDevPlan_AllInDockerLocalReplace(t *testing.T) {
 		}, nil
 	}
 
-	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db", "app"},
+		servicesRaw:  "db,app",
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "filesystem-path replace")
 	assert.Contains(t, err.Error(), "github.com/example/foo")
-	assert.Contains(t, err.Error(), "../../foo")
 }
 
-// TestResolveDevPlan_AllInDockerWithoutAppService — compose.yaml has
-// no `app` service → CodeDevFlagConflict so the user gets a clear
-// "your compose.yaml is missing the app service" message instead of a
-// silent empty-services run.
-func TestResolveDevPlan_AllInDockerWithoutAppService(t *testing.T) {
+// TestResolveDevPlan_UnknownServiceErrors — --services <name> where
+// the name isn't declared in compose.yaml returns
+// CodeDevServiceUnknown with a clear listing of valid names.
+func TestResolveDevPlan_UnknownServiceErrors(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
-	_, err := resolveDevPlan(devFlags{allInDocker: true})
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"lavinmq":{}}}`, 0)
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"lavinmw"},
+		servicesRaw:  "lavinmw",
+	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "`app` service")
+	assert.Contains(t, err.Error(), `"lavinmw"`)
+	assert.Contains(t, err.Error(), "lavinmq")
 }
 
-// TestResolveDevPlan_DefaultProfilesIncludeCacheAndQueue — the
-// behavior change at the heart of this work: default mode auto-on
-// activates the cache + queue compose profiles. Without this, the
-// existing --no-cache / --no-queue flags can never do real work.
-func TestResolveDevPlan_DefaultProfilesIncludeCacheAndQueue(t *testing.T) {
+// TestResolveDevPlan_ServicesAllExpands — `--services all` resolves
+// to every service compose.yaml declares, with the canonical
+// "app in services means in-docker mode" inference flowing through.
+func TestResolveDevPlan_ServicesAllExpands(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{},"cache":{},"queue":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{})
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"cache":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"app", "db", "cache"},
+		servicesRaw:  "all",
+	})
 	require.NoError(t, err)
-	assert.Contains(t, plan.profiles, "cache")
-	assert.Contains(t, plan.profiles, "queue")
+	assert.True(t, plan.inDocker, "app present in services → in-docker mode")
+	assert.ElementsMatch(t, []string{"app", "db", "cache"}, plan.services.selected)
 }
 
-// TestResolveDevPlan_NoCacheRemovesCacheProfile — opt-out for cache
-// drops the cache profile but leaves queue alone.
-func TestResolveDevPlan_NoCacheRemovesCacheProfile(t *testing.T) {
+// TestResolveDevPlan_ServicesAppExclusiveInferred — when `app` is the
+// only entry, in-docker mode is true; the supporting service set is
+// empty (the user has an external db they're pointing at).
+func TestResolveDevPlan_ServicesAppExclusiveInferred(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{},"queue":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{noCache: true})
+	fakeExecOutput(t, `{"services":{"app":{},"db":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"app"},
+		servicesRaw:  "app",
+	})
 	require.NoError(t, err)
-	assert.NotContains(t, plan.profiles, "cache")
-	assert.Contains(t, plan.profiles, "queue")
+	assert.True(t, plan.inDocker)
+	assert.Equal(t, []string{"app"}, plan.services.selected)
 }
 
-// TestResolveDevPlan_NoQueueRemovesQueueProfile — symmetric.
-func TestResolveDevPlan_NoQueueRemovesQueueProfile(t *testing.T) {
-	chdirTemp(t)
-	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{},"cache":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{noQueue: true})
-	require.NoError(t, err)
-	assert.Contains(t, plan.profiles, "cache")
-	assert.NotContains(t, plan.profiles, "queue")
+// TestResolveProfiles_NoUserProfileReturnsEmpty — default profiles
+// list is empty under the host-first redesign. The previous auto-on
+// cache+queue behavior was tied to the now-removed orchestration
+// defaults.
+func TestResolveProfiles_NoUserProfileReturnsEmpty(t *testing.T) {
+	assert.Empty(t, resolveProfiles(devFlags{}))
+}
+
+// TestResolveProfiles_UserProfilePassedThrough — --profile=<name>
+// flows through as a single entry.
+func TestResolveProfiles_UserProfilePassedThrough(t *testing.T) {
+	assert.Equal(t, []string{"observability"}, resolveProfiles(devFlags{profile: "observability"}))
 }
 
 // TestResolveDevPlan_UserProfileMergesWithDefaults — user's --profile

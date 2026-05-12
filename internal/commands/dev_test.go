@@ -76,7 +76,7 @@ func TestRunDev_HappyPathWithEnv(t *testing.T) {
 
 	withFakeExec(t, 0)
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	assert.NoError(t, err)
 	// The .env was loaded — value now in process env.
 	assert.Equal(t, "loaded", os.Getenv("DEV_TEST_RUN_HAPPY_VAR"))
@@ -88,7 +88,7 @@ func TestRunDev_NoDotEnv(t *testing.T) {
 	setupDevTempdir(t)
 	withFakeExec(t, 0)
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	assert.NoError(t, err)
 }
 
@@ -105,7 +105,7 @@ func TestRunDev_UnreadableDotEnv(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(".env", 0o644) })
 
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	// runDev treats the load error as non-fatal — it prints a warning and
 	// carries on. No error is returned.
 	assert.NoError(t, err)
@@ -123,7 +123,7 @@ func TestRunDev_MigrationFails(t *testing.T) {
 	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
 	t.Cleanup(func() { execLookPath = origLookPath })
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	// Air also fails (same fakeExec) — runDev returns the air error.
 	assert.Error(t, err)
 }
@@ -211,7 +211,7 @@ func TestRunDev_WithFlagPort(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	t.Setenv("PORT", "") // reset
-	err := runDev(devFlags{envFile: ".env", noServices: true, port: "9999"})
+	err := runDev(devFlags{envFile: ".env", port: "9999"})
 	assert.NoError(t, err)
 	assert.Equal(t, "9999", os.Getenv("PORT"))
 }
@@ -221,7 +221,7 @@ func TestRunDev_DryRun(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, dryRun: true})
+	err := runDev(devFlags{envFile: ".env", dryRun: true})
 	assert.NoError(t, err)
 }
 
@@ -231,7 +231,7 @@ func TestRunDev_Seed(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, seed: true})
+	err := runDev(devFlags{envFile: ".env", seed: true})
 	assert.NoError(t, err)
 }
 
@@ -248,7 +248,7 @@ func TestRunDev_SeedFails(t *testing.T) {
 	t.Cleanup(func() { execLookPath = origLookPath })
 	// stagedFakeExec: migrate=0, seed=1, then air=0 (final code repeats).
 	stagedFakeExec(t, 0, 1, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, seed: true})
+	err := runDev(devFlags{envFile: ".env", seed: true})
 	assert.NoError(t, err)
 }
 
@@ -515,7 +515,7 @@ func TestRunDev_NoTeardownSkips(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, noTeardown: true})
+	err := runDev(devFlags{envFile: ".env", noTeardown: true})
 	assert.NoError(t, err)
 }
 
@@ -570,7 +570,7 @@ func TestRunDev_Dashboard(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	// Pick a port nothing else is likely listening on.
-	err := runDev(devFlags{envFile: ".env", noServices: true,
+	err := runDev(devFlags{envFile: ".env",
 		dashboard: true, dashboardPort: 0}) // port 0 → random free port
 	assert.NoError(t, err)
 }
@@ -583,7 +583,7 @@ func TestRunDev_AirRebuild(t *testing.T) {
 	require.NoError(t, os.MkdirAll("tmp", 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join("tmp", "x"), []byte("x"), 0o644))
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, rebuild: true})
+	err := runDev(devFlags{envFile: ".env", rebuild: true})
 	assert.NoError(t, err)
 	_, err = os.Stat("tmp")
 	assert.True(t, os.IsNotExist(err), "tmp should have been removed")
