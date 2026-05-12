@@ -393,7 +393,14 @@ func TestRunDev_ComposeUnavailable(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = execOrig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 5e9, keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  5e9,
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 
@@ -423,7 +430,14 @@ func TestRunDev_StartServicesFails(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 5e9, keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  5e9,
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 
@@ -452,8 +466,14 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 500000000, // 500ms
-		keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  500000000, // 500ms
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 

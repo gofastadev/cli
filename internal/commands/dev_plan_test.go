@@ -50,12 +50,17 @@ func TestResolveDevPlan_HappyPath(t *testing.T) {
 }
 
 // TestResolveDevPlan_DetectFails — docker compose config exits
-// non-zero; resolveDevPlan surfaces a clierr.
+// non-zero; resolveDevPlan surfaces a clierr. We pass --services to
+// trip the compose-config call (the empty-services path doesn't call
+// compose at all and exits cleanly).
 func TestResolveDevPlan_DetectFails(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
 	withFakeExec(t, 1)
-	_, err := resolveDevPlan(devFlags{})
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+	})
 	require.Error(t, err)
 }
 
@@ -204,26 +209,18 @@ func TestResolveProfiles_UserProfilePassedThrough(t *testing.T) {
 	assert.Equal(t, []string{"observability"}, resolveProfiles(devFlags{profile: "observability"}))
 }
 
-// TestResolveDevPlan_UserProfileMergesWithDefaults — user's --profile
-// is merged with the auto-on cache + queue. Order matters for
-// deterministic assertions; ElementsMatch covers it.
-func TestResolveDevPlan_UserProfileMergesWithDefaults(t *testing.T) {
+// TestResolveDevPlan_UserProfile — user's --profile flows through as
+// a single entry. The previous auto-on cache+queue profiles are gone
+// under the host-first model.
+func TestResolveDevPlan_UserProfile(t *testing.T) {
 	chdirTemp(t)
 	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{},"cache":{},"queue":{},"observability":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{profile: "observability"})
+	fakeExecOutput(t, `{"services":{"db":{},"observability":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		profile:      "observability",
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+	})
 	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"observability", "cache", "queue"}, plan.profiles)
-}
-
-// TestResolveDevPlan_UserProfileDuplicatesDeduped — user passes
-// --profile cache; default also adds cache; the result has cache only
-// once.
-func TestResolveDevPlan_UserProfileDuplicatesDeduped(t *testing.T) {
-	chdirTemp(t)
-	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
-	fakeExecOutput(t, `{"services":{"db":{},"cache":{}}}`, 0)
-	plan, err := resolveDevPlan(devFlags{profile: "cache"})
-	require.NoError(t, err)
-	assert.ElementsMatch(t, []string{"cache", "queue"}, plan.profiles)
+	assert.Equal(t, []string{"observability"}, plan.profiles)
 }

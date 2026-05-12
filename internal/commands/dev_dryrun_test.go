@@ -74,12 +74,14 @@ func TestRunDev_DryRun_JSONMode(t *testing.T) {
 	}
 }
 
-// TestRunDev_DryRun_AllInDocker_PlanShape — the dry-run output for
-// --all-in-docker must surface (1) in_docker=true, (2) the app service
-// in the selected list, and (3) cache + queue in the resolved profile
-// list. Operators read this output to predict what `gofasta dev` will
-// do without actually starting docker, so the shape is a contract.
-func TestRunDev_DryRun_AllInDocker_PlanShape(t *testing.T) {
+// TestRunDev_DryRun_ServicesAll_PlanShape — `--services all` is the
+// canonical "full stack in docker" invocation under the host-first
+// redesign. The dry-run output must surface (1) in_docker=true (app
+// is in the service list), (2) the full selected set, (3) any
+// profiles. Operators read this output to predict what `gofasta dev`
+// will do without actually starting docker, so the shape is a
+// contract.
+func TestRunDev_DryRun_ServicesAll_PlanShape(t *testing.T) {
 	dir := t.TempDir()
 	orig, _ := os.Getwd()
 	t.Cleanup(func() { _ = os.Chdir(orig) })
@@ -89,10 +91,11 @@ func TestRunDev_DryRun_AllInDocker_PlanShape(t *testing.T) {
 
 	stdout := captureStdout(t, func() {
 		err := runDev(devFlags{
-			envFile:     ".env",
-			dryRun:      true,
-			allInDocker: true,
-			waitTimeout: defaultWaitTimeout,
+			envFile:      ".env",
+			dryRun:       true,
+			servicesList: []string{"app", "db", "cache", "queue"},
+			servicesRaw:  "all",
+			waitTimeout:  defaultWaitTimeout,
 		})
 		assert.NoError(t, err)
 	})
