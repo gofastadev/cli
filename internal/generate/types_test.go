@@ -29,3 +29,17 @@ func TestStep_ZeroValue(t *testing.T) {
 	assert.Empty(t, s.Label)
 	assert.Nil(t, s.Fn)
 }
+
+func TestScaffoldData_HasTimeField(t *testing.T) {
+	withTime := ScaffoldData{Fields: []Field{
+		{Name: "Name", GoType: "string"},
+		{Name: "CreatedAt", GoType: "time.Time"},
+	}}
+	assert.True(t, withTime.HasTimeField())
+
+	withoutTime := ScaffoldData{Fields: []Field{
+		{Name: "Name", GoType: "string"},
+		{Name: "Count", GoType: "int"},
+	}}
+	assert.False(t, withoutTime.HasTimeField())
+}
