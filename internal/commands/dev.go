@@ -146,6 +146,12 @@ func init() {
 // preflight menu has resolved — otherwise the listener's cbreak-mode
 // stdin grab would steal every keystroke from the menu's line reader
 // and the user would see no echo / no input registered.
+// runDevPipelineFn is a package-level seam over runDevPipeline so tests
+// can drive runDev's restart-loop branch (iter > 1) without a real
+// keyboard listener / Air subprocess. Production uses the real
+// runDevPipeline.
+var runDevPipelineFn = runDevPipeline
+
 func runDev(flags devFlags) error {
 	emitter := newDevEmitter(jsonOutput)
 
@@ -153,7 +159,7 @@ func runDev(flags devFlags) error {
 		if iter > 1 {
 			emitter.Info(fmt.Sprintf("⟳ restarting from scratch (iteration %d)", iter))
 		}
-		restart, err := runDevPipeline(flags, emitter)
+		restart, err := runDevPipelineFn(flags, emitter)
 		if err != nil {
 			return err
 		}

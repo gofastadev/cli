@@ -81,6 +81,18 @@ var (
 	// tcpDialFn is the seam over net.DialTimeout. Tests use httptest
 	// listeners or canned errors to drive the three probe outcomes.
 	tcpDialFn = net.DialTimeout
+
+	// configBuildDatabaseEndpointFn / configBuildCacheEndpointFn /
+	// configBuildQueueEndpointFn / configBuildMigrationURLFn — seams
+	// over the configutil endpoint builders. configutil's real
+	// implementations never return ("", true) for the *enabled* case
+	// (host/port always fall back to localhost defaults), but the
+	// probe functions defensively check for that shape. Tests use
+	// these seams to drive the defensive branches.
+	configBuildDatabaseEndpointFn = configutil.BuildDatabaseEndpoint
+	configBuildCacheEndpointFn    = configutil.BuildCacheEndpoint
+	configBuildQueueEndpointFn    = configutil.BuildQueueEndpoint
+	configBuildMigrationURLFn     = configutil.BuildMigrationURL
 )
 
 // runPreflight runs the three probes in parallel and returns their
@@ -122,7 +134,7 @@ func runPreflight() []probeResult {
 // user/database/driver. The reachability decision is independent of
 // that string.
 func probeDatabase() probeResult {
-	endpoint, enabled := configutil.BuildDatabaseEndpoint()
+	endpoint, enabled := configBuildDatabaseEndpointFn()
 	if !enabled {
 		return probeResult{Dep: "database", Status: probeNotConfigured}
 	}
@@ -133,7 +145,7 @@ func probeDatabase() probeResult {
 			Reason: "database configuration is incomplete",
 		}
 	}
-	display := configutil.BuildMigrationURL()
+	display := configBuildMigrationURLFn()
 	if display == "" {
 		display = endpoint
 	}
@@ -152,7 +164,7 @@ func probeDatabase() probeResult {
 // resolved from config.yaml. Skipped via probeNotConfigured when the
 // app uses an in-memory cache.
 func probeCache() probeResult {
-	endpoint, enabled := configutil.BuildCacheEndpoint()
+	endpoint, enabled := configBuildCacheEndpointFn()
 	if !enabled {
 		return probeResult{Dep: "cache", Status: probeNotConfigured}
 	}
@@ -177,7 +189,7 @@ func probeCache() probeResult {
 // probeQueue TCP-connects to the queue's Redis backend. Skipped via
 // probeNotConfigured when queue.enabled is false.
 func probeQueue() probeResult {
-	endpoint, enabled := configutil.BuildQueueEndpoint()
+	endpoint, enabled := configBuildQueueEndpointFn()
 	if !enabled {
 		return probeResult{Dep: "queue", Status: probeNotConfigured}
 	}

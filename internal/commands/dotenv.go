@@ -22,6 +22,13 @@ const (
 	managedBlockEnd   = "# <<< auto-managed: dev preflight override <<<"
 )
 
+// osRenameFn is a package-level seam over os.Rename so tests can drive
+// the rename-failure branch of mergeIntoDotEnv (which is otherwise hard
+// to reach because mergeIntoDotEnv writes its tmp into the same dir
+// before the rename, leaving few legitimate failure modes). Production
+// uses the real os.Rename.
+var osRenameFn = os.Rename
+
 // loadDotEnv reads a .env-style file and sets each KEY=VALUE pair as a
 // process environment variable (via os.Setenv), returning the number of
 // variables set. Pre-existing env vars are NOT overwritten — the running
@@ -195,7 +202,7 @@ func mergeIntoDotEnv(path string, kvs map[string]string) error {
 	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := osRenameFn(tmp, path); err != nil {
 		_ = os.Remove(tmp)
 		return fmt.Errorf("rename tmp: %w", err)
 	}
@@ -274,9 +281,13 @@ func stripManagedBlockMarkers(content string) string {
 	}
 	trailingNewline := strings.HasSuffix(content, "\n")
 	content = strings.TrimRight(content, "\n")
-	if content == "" {
-		return ""
-	}
+	// Unreachable in practice: the early-return guard above requires
+	// `content` to contain at least one (non-newline) marker substring,
+	// so TrimRight("\n") cannot leave it empty. Removed an
+	// `if content == "" { return "" }` defensive check that the
+	// coverage tool flagged as 0% — the loop below already handles the
+	// empty case correctly (Split returns [""], filter loop produces
+	// out=[""], Join returns "", body stays "" if no trailing newline).
 	out := make([]string, 0)
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
