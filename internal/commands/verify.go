@@ -111,6 +111,13 @@ var wireDriftInfoErr error
 // step failed (unless keep-going was passed), returns a CodeVerifyFailed
 // error so the root command's error handler exits non-zero.
 func runVerify(opts verifyOptions) error {
+	// Load .env so the spawned `go test ./...` child inherits the
+	// project's env vars. Integration tests that read config.yaml +
+	// project-prefixed env vars (e.g. for testcontainers ports or DB
+	// fixture configuration) need these visible in os.Environ(). See
+	// migrate.go for the full rationale.
+	_, _ = loadDotEnv(".env")
+
 	start := time.Now()
 
 	// Each step is {Name, Runner}. Runners return a verifyCheck with

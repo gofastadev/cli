@@ -31,6 +31,28 @@ func TestVerifyCmd_HasDescription(t *testing.T) {
 	assert.NotEmpty(t, verifyCmd.Long)
 }
 
+// TestRunVerify_LoadsDotEnv — regression: verify must load .env so the
+// `go test ./...` child process inherits project env vars (used by
+// integration tests that read config.yaml + env overrides).
+func TestRunVerify_LoadsDotEnv(t *testing.T) {
+	chdirTemp(t)
+	const probe = "GOFASTA_VERIFY_DOTENV_PROBE"
+	require.NoError(t, os.WriteFile(".env", []byte(probe+"=loaded\n"), 0o644))
+	t.Cleanup(func() { _ = os.Unsetenv(probe) })
+
+	// Stub all the steps to no-op so the test doesn't shell out for real.
+	origRun := runShellFn
+	runShellFn = func(_ string, _ ...string) (string, error) { return "", nil }
+	t.Cleanup(func() { runShellFn = origRun })
+	origLook := golangciLintLookPath
+	golangciLintLookPath = func() (string, error) { return "", fmt.Errorf("not installed") }
+	t.Cleanup(func() { golangciLintLookPath = origLook })
+
+	_ = runVerify(verifyOptions{skipLint: true, keepGoing: true})
+	assert.Equal(t, "loaded", os.Getenv(probe),
+		"runVerify must call loadDotEnv before running test/build steps")
+}
+
 // TestStepWireDrift_NoWireGenSkips — projects without app/di/wire_gen.go
 // are valid (e.g., a pure-library project). Drift check must skip.
 func TestStepWireDrift_NoWireGenSkips(t *testing.T) {

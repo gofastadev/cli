@@ -1,9 +1,11 @@
 package commands
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestInitCmd_Registered(t *testing.T) {
@@ -40,4 +42,20 @@ func TestRunInit_ConfigLoadFailed(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	_ = runInit()
+}
+
+// TestRunInit_LoadsDotEnvBeforeMigrations — regression: Step 6 of
+// runInit must load .env before building the migrate URL, otherwise
+// the migration step sees empty credentials and dials the wrong port.
+// The .env file already exists (Step 1's no-op branch).
+func TestRunInit_LoadsDotEnvBeforeMigrations(t *testing.T) {
+	chdirTemp(t)
+	const probe = "GOFASTA_INIT_DOTENV_PROBE"
+	require.NoError(t, os.WriteFile(".env", []byte(probe+"=loaded\n"), 0o644))
+	t.Cleanup(func() { _ = os.Unsetenv(probe) })
+
+	withFakeExec(t, 0)
+	_ = runInit()
+	assert.Equal(t, "loaded", os.Getenv(probe),
+		"runInit must call loadDotEnv before building the migrate URL")
 }

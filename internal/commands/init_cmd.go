@@ -83,6 +83,12 @@ func runInit() error {
 	// Step 6: Run migrations
 	fmt.Println()
 	termcolor.PrintStep("🗄  Running database migrations...")
+	// Load the .env we just created (or already had) so the migrate URL
+	// includes user/password/name and the host-side port mapping. See
+	// migrate.go for the full why — config.yaml in scaffolded projects
+	// intentionally omits credentials, and `migrate` would otherwise
+	// dial the wrong port with empty creds.
+	_, _ = loadDotEnv(".env")
 	dbURL := buildMigrationURL()
 	if dbURL != "" {
 		migrateCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")

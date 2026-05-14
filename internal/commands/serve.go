@@ -18,6 +18,15 @@ The command must be run from the project root. Because it shells out to
 the project binary, any cobra flags registered on the project's ` + "`serve`" + `
 subcommand are forwarded through unchanged.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Load .env so the spawned `go run ./app/main serve` child
+		// process inherits DB credentials, REDIS_URL, etc. via
+		// os.Environ(). The framework's pkg/config reads from
+		// os.Environ() but does NOT load .env on its own (no
+		// godotenv import in the skeleton), so the parent must
+		// populate the env before exec. See migrate.go for the
+		// full rationale.
+		_, _ = loadDotEnv(".env")
+
 		c := execCommand("go", "run", "./app/main", "serve")
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
