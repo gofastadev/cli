@@ -25,6 +25,44 @@ import (
 // the existing tests.
 // ─────────────────────────────────────────────────────────────────────
 
+// Package-init snapshot of the menu seam defaults. Captured at package
+// load time so a later test can invoke the *original* closures even
+// after other tests stub the vars away. (The coverage profile tracks
+// the lexical line/column of each closure body, so calling a fresh
+// stand-in with identical text does NOT cover the originals.)
+var (
+	initialMenuInputFn         = menuInputFn
+	initialMenuOutputFn        = menuOutputFn
+	initialMenuStartServicesFn = menuStartServicesFn
+)
+
+// menuInputFn / menuOutputFn / menuStartServicesFn default closures —
+// existing tests always stub these via the seams, so the default
+// implementations (lines 64, 68, 85-88 in dev_preflight_menu.go) report
+// uncovered. Invoke each through the package-init snapshot above to
+// exercise the original closure bodies.
+func TestMenuSeamDefaults(t *testing.T) {
+	assert.Equal(t, os.Stdin, initialMenuInputFn())
+	assert.Equal(t, os.Stdout, initialMenuOutputFn())
+
+	// menuStartServicesFn calls detectComposeProfiles and startServices.
+	// withFakeExec makes both succeed (exit 0).
+	withFakeExec(t, 0)
+	require.NoError(t, initialMenuStartServicesFn([]string{"db"}))
+}
+
+// startKeyboardListener no-op cancel closures — return nil/false paths
+// in dev_keyboard.go line 89 (disabled), 93 (non-TTY), 99 (raw fail),
+// 119 (stdinReader fail). All return a `func() {}` cancel that should
+// be safe to invoke. Existing tests check return values but never call
+// these no-op closures, so the empty-function bodies report uncovered.
+func TestStartKeyboardListener_NoopCancelClosuresAreCallable(t *testing.T) {
+	withTerminalStubs(t, true, errors.New("force raw failure"))
+	_, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	assert.False(t, active)
+	assert.NotPanics(t, func() { cancel() })
+}
+
 func TestIsStdinTTY_RespectsTermIsTerminalSeam(t *testing.T) {
 	origIs := termIsTerminalFn
 	t.Cleanup(func() { termIsTerminalFn = origIs })
@@ -977,12 +1015,13 @@ func TestReadKeyboardLoop_DoneClosedAfterRead(t *testing.T) {
 
 func TestStartKeyboardListener_HappyPath(t *testing.T) {
 	withTerminalStubs(t, true, nil)
-	// Provide a working cancelableStdinReader via the seam — a
-	// nopReadCloser is sufficient because the listener only Closes it.
+	// Real cancelableStdinReader so the goroutine's Poll has a valid
+	// fd to watch. cancel() then closes cancelW (POLLHUP fires), Poll
+	// returns, Read returns io.EOF; the readMu serialization in
+	// cancelableStdinReader.Close ensures Close waits for Read to
+	// release before closing cancelR — race-free under -race.
 	origNew := newCancelableStdinReaderFn
 	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
-		// Construct a real reader pointing at a fresh os.Pipe pair so
-		// Close has something legitimate to close.
 		r, w, err := os.Pipe()
 		require.NoError(t, err)
 		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
@@ -1065,6 +1104,8 @@ func (g *gateReader) Read(p []byte) (int, error) {
 // scripting MULTIPLE distinct stubs in a single test (the package-
 // wide fakeExecOutput overrides the seam globally which doesn't fit
 // our switch-on-args needs here).
+//
+//nolint:unparam // exit-code parameter is reserved for future non-zero tests
 func fakeCmdWithOutput(t *testing.T, stdout string, code int) *exec.Cmd {
 	t.Helper()
 	cs := []string{"-test.run=TestHelperProcess", "--", "fake"}
@@ -1083,4 +1124,3 @@ func itoa(i int) string {
 	// other files but keeping this file's imports minimal.
 	return strconvItoa(i)
 }
-

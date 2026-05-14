@@ -105,7 +105,7 @@ func TestSplitManagedBlock_UnclosedBlock(t *testing.T) {
 }
 
 // stripManagedBlockMarkers — non-NotExist content path where after
-// TrimRight + stripping, body is empty. The "if content == ''" branch
+// TrimRight + stripping, body is empty. The "if content == ”" branch
 // (line 277-279) is unreachable in practice: the early-return guard
 // requires the content to contain at least one marker substring, and
 // TrimRight only removes trailing newlines, so content can never be
@@ -192,7 +192,7 @@ func TestMergeServices_DropsDuplicates(t *testing.T) {
 func TestMapFailingDepsToServices_QueueBranch(t *testing.T) {
 	results := []probeResult{
 		{Dep: "queue", Status: probeUnreachable},
-		{Dep: "database", Status: probeOK},          // skipped — not unreachable
+		{Dep: "database", Status: probeOK},         // skipped — not unreachable
 		{Dep: "unknown", Status: probeUnreachable}, // skipped — not in the switch
 	}
 	got := mapFailingDepsToServices(results)

@@ -5,9 +5,23 @@ package commands
 import (
 	"io"
 	"os"
+	"sync"
 
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
+)
+
+// Package-level seams over the syscall primitives makeCbreak and
+// cancelableStdinReader rely on. Production assigns the real
+// implementations at init; tests override to exercise the EINTR / error
+// branches that would otherwise be unreachable without racing the
+// kernel. Each seam mirrors the signature of the wrapped function.
+var (
+	osPipeFn              = os.Pipe
+	unixIoctlGetTermiosFn = unix.IoctlGetTermios
+	unixIoctlSetTermiosFn = unix.IoctlSetTermios
+	unixPollFn            = unix.Poll
+	unixReadFn            = unix.Read
 )
 
 // makeCbreak places fd in cbreak mode for the duration of the dev
@@ -48,14 +62,14 @@ func makeCbreak(fd int) (*term.State, error) {
 	if err != nil {
 		return nil, err
 	}
-	t, err := unix.IoctlGetTermios(fd, ioctlGetTermiosReq)
+	t, err := unixIoctlGetTermiosFn(fd, ioctlGetTermiosReq)
 	if err != nil {
 		return nil, err
 	}
 	t.Lflag &^= unix.ICANON | unix.ECHO
 	t.Cc[unix.VMIN] = 1
 	t.Cc[unix.VTIME] = 0
-	if err := unix.IoctlSetTermios(fd, ioctlSetTermiosReq, t); err != nil {
+	if err := unixIoctlSetTermiosFn(fd, ioctlSetTermiosReq, t); err != nil {
 		return nil, err
 	}
 	return oldState, nil
@@ -80,6 +94,16 @@ func makeCbreak(fd int) (*term.State, error) {
 type cancelableStdinReader struct {
 	fd               int      // stdin fd to read from (NOT owned, never closed)
 	cancelR, cancelW *os.File // self-pipe: closing cancelW wakes Poll on cancelR via POLLHUP
+
+	// readMu serializes Read's access to cancelR/cancelW.Fd() against
+	// Close's destruction of those files. Without it the race detector
+	// (correctly) flags an unsynchronized read/write on os.File internal
+	// state when Close runs concurrently with an in-flight Read. The
+	// lock is only contended during shutdown — Read holds it for the
+	// duration of one Poll call, but Close first closes cancelW (waking
+	// any pending Poll via POLLHUP) and only then waits for Read to
+	// release the lock, so cancellation latency is unchanged.
+	readMu sync.Mutex
 }
 
 // Read blocks (via Poll) until either:
@@ -93,12 +117,17 @@ func (c *cancelableStdinReader) Read(p []byte) (int, error) {
 	if len(p) == 0 {
 		return 0, nil
 	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
+	if c.cancelR == nil {
+		return 0, io.EOF
+	}
 	fds := []unix.PollFd{
 		{Fd: int32(c.fd), Events: unix.POLLIN},
 		{Fd: int32(c.cancelR.Fd()), Events: unix.POLLIN},
 	}
 	for {
-		_, err := unix.Poll(fds, -1)
+		_, err := unixPollFn(fds, -1)
 		if err == unix.EINTR {
 			continue
 		}
@@ -115,7 +144,7 @@ func (c *cancelableStdinReader) Read(p []byte) (int, error) {
 		// readKeyboardLoop contract of one byte per Read.
 		if fds[0].Revents&unix.POLLIN != 0 {
 			buf := make([]byte, 1)
-			n, err := unix.Read(c.fd, buf)
+			n, err := unixReadFn(c.fd, buf)
 			if err != nil {
 				if err == unix.EINTR {
 					continue
@@ -139,11 +168,19 @@ func (c *cancelableStdinReader) Read(p []byte) (int, error) {
 }
 
 // Close releases the self-pipe. Safe to call multiple times.
+//
+// The cancelW.Close() fires POLLHUP on the read end so any in-flight
+// Read returns io.EOF. We then take readMu to wait for that Read to
+// release before closing cancelR — without this serialization, the
+// goroutine's stored cancelR.Fd() races with cancelR.Close() (Go's
+// os.File does not synchronize Fd vs Close internally).
 func (c *cancelableStdinReader) Close() error {
 	if c.cancelW != nil {
 		_ = c.cancelW.Close()
 		c.cancelW = nil
 	}
+	c.readMu.Lock()
+	defer c.readMu.Unlock()
 	if c.cancelR != nil {
 		_ = c.cancelR.Close()
 		c.cancelR = nil
@@ -166,7 +203,7 @@ func (c *cancelableStdinReader) Fd() uintptr { return uintptr(c.fd) }
 // Sets CLOEXEC on both pipe fds so child processes (Air, docker
 // compose) don't inherit them.
 func newCancelableStdinReader(fd int) (*cancelableStdinReader, error) {
-	r, w, err := os.Pipe()
+	r, w, err := osPipeFn()
 	if err != nil {
 		return nil, err
 	}
