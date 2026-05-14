@@ -53,6 +53,13 @@ func init() {
 }
 
 func runDBReset(skipSeed bool) error {
+	// See comment in migrate.go: scaffolded projects keep DB
+	// credentials in .env (not config.yaml), and compose maps host
+	// port 5433 → container 5432. Loading .env here lets the migrate
+	// shell-out reach the DB and lets the spawned `go run ./app/main
+	// seed` child see the same connection details via os.Environ().
+	_, _ = loadDotEnv(".env")
+
 	dbURL := buildMigrationURL()
 	if dbURL == "" {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")

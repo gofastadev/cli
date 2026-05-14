@@ -2,6 +2,7 @@ package commands
 
 import (
 	"os"
+	"os/exec"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -74,4 +75,70 @@ func TestRunMigration_EmptyURLCoverage(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	_ = runMigration("up")
+}
+
+// TestRunMigration_LoadsDotEnv — regression for the bug where
+// `gofasta migrate up` produced `postgres://:@localhost:5432/?sslmode=disable`
+// because it never read .env. The scaffold's config.yaml intentionally
+// omits user/password/name; .env supplies them via the project-prefixed
+// env vars (e.g. ACME_DATABASE_USER). This test pins that runMigration
+// loads .env BEFORE building the URL so the credentials show up in the
+// -database argument passed to `migrate`.
+func TestRunMigration_LoadsDotEnv(t *testing.T) {
+	chdirTemp(t)
+	// Scaffold-style config.yaml: no user/pass/name, host/port from yaml.
+	scaffoldConfig := `database:
+  driver: postgres
+  host: localhost
+  port: "5432"
+  sslmode: disable
+`
+	require.NoError(t, os.WriteFile("config.yaml", []byte(scaffoldConfig), 0o644))
+	require.NoError(t, os.WriteFile("go.mod",
+		[]byte("module github.com/acme/myapp\n\ngo 1.25.0\n"), 0o644))
+
+	// .env that overrides everything the way the dev workflow expects:
+	// host port (5433) maps to container 5432, plus the credentials.
+	dotenv := `MYAPP_DATABASE_USER=myappuser
+MYAPP_DATABASE_PASSWORD=myapppass
+MYAPP_DATABASE_NAME=myapp_dev
+MYAPP_DATABASE_HOST=localhost
+MYAPP_DATABASE_PORT=5433
+`
+	require.NoError(t, os.WriteFile(".env", []byte(dotenv), 0o644))
+	// Clean up the env vars that loadDotEnv will os.Setenv so this
+	// test doesn't leak state into sibling tests.
+	for _, k := range []string{
+		"MYAPP_DATABASE_USER", "MYAPP_DATABASE_PASSWORD",
+		"MYAPP_DATABASE_NAME", "MYAPP_DATABASE_HOST", "MYAPP_DATABASE_PORT",
+	} {
+		t.Cleanup(func() { _ = os.Unsetenv(k) })
+	}
+
+	// Capture the exact args passed to the migrate shell-out so we can
+	// assert the URL contains the .env values.
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigration("up"))
+
+	// Find the -database arg (it follows -database in the captured slice).
+	var dbURL string
+	for i, a := range captured {
+		if a == "-database" && i+1 < len(captured) {
+			dbURL = captured[i+1]
+			break
+		}
+	}
+	require.NotEmpty(t, dbURL, "migrate should be invoked with -database <url>")
+	assert.Contains(t, dbURL, "myappuser:myapppass@", "URL must include .env credentials, not empty :@")
+	assert.Contains(t, dbURL, "localhost:5433", "URL must use the .env host:port mapping")
+	assert.Contains(t, dbURL, "/myapp_dev", "URL must include .env database name")
+	assert.NotContains(t, dbURL, "://:@", "URL must not have empty user/password")
+	assert.NotContains(t, dbURL, "/?sslmode", "URL must include database name before query")
 }

@@ -63,6 +63,19 @@ func init() {
 var buildMigrationURL = configutil.BuildMigrationURL
 
 func runMigration(direction string) error {
+	// Load .env BEFORE building the migration URL. config.yaml in
+	// scaffolded projects ships with in-container defaults (host:
+	// localhost, port: 5432 — what the app sees from inside the
+	// compose network); the .env file is where the host-side
+	// overrides live (e.g. PORT=5433 because docker maps host
+	// 5433 → container 5432, plus DATABASE_USER/PASSWORD/NAME).
+	// Without this, migrate builds a URL that points at port 5432
+	// on the host (where nothing is listening) and fails with
+	// "connection refused" even when the DB is fully healthy.
+	// `gofasta dev` and `gofasta doctor` both load .env this way;
+	// migrate must do the same.
+	_, _ = loadDotEnv(".env")
+
 	dbURL := buildMigrationURL()
 	if dbURL == "" {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")

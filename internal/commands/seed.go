@@ -20,6 +20,14 @@ this when you want a known-good fixture state during development.
 Must be run from the project root. Reads connection details from
 config.yaml via the project binary, not the CLI directly.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Load .env so the spawned `go run ./app/main seed` child
+		// process sees DB credentials (USER/PASSWORD/NAME) and the
+		// host-side port mapping. See migrate.go for the full why —
+		// the scaffold keeps these out of config.yaml on purpose,
+		// and exec.Cmd inherits os.Environ() by default so values
+		// set by loadDotEnv (via os.Setenv) reach the child.
+		_, _ = loadDotEnv(".env")
+
 		cmdArgs := []string{"run", "./app/main", "seed"}
 		fresh, _ := cmd.Flags().GetBool("fresh")
 		if fresh {
