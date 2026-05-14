@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,4 +399,84 @@ func TestQuoteDotEnvValue_QuotesOnlyWhenNeeded(t *testing.T) {
 	for in, want := range cases {
 		assert.Equal(t, want, quoteDotEnvValue(in), "in=%q", in)
 	}
+}
+
+// splitManagedBlock — empty input short-circuits to (nil, nil) before
+// any line scanning.
+func TestSplitManagedBlock_EmptyInput(t *testing.T) {
+	managed, rest := splitManagedBlock("")
+	assert.Nil(t, managed)
+	assert.Nil(t, rest)
+}
+
+// splitManagedBlock — begin marker without a matching end. The function
+// folds the collected lines back into `rest` rather than granting
+// unmarked lines block priority.
+func TestSplitManagedBlock_UnclosedBlock(t *testing.T) {
+	input := managedBlockBegin + "\nFOO=1\nBAR=2\n"
+	managed, rest := splitManagedBlock(input)
+	assert.Nil(t, managed)
+	assert.Contains(t, strings.Join(rest, "\n"), "FOO=1")
+	assert.Contains(t, strings.Join(rest, "\n"), "BAR=2")
+}
+
+// stripManagedBlockMarkers — marker-only input. Filters both markers
+// and the trailing newline survives via the trailingNewline branch.
+func TestStripManagedBlockMarkers_MarkerOnly(t *testing.T) {
+	got := stripManagedBlockMarkers(managedBlockBegin + "\n" + managedBlockEnd + "\n")
+	assert.Equal(t, "\n", got)
+}
+
+// stripManagedBlockMarkers — markers wrapping a real content line.
+// Exercises the append-non-marker branch in the line loop.
+func TestStripManagedBlockMarkers_PreservesNonMarkerLines(t *testing.T) {
+	input := managedBlockBegin + "\nFOO=1\n" + managedBlockEnd + "\n"
+	got := stripManagedBlockMarkers(input)
+	assert.Contains(t, got, "FOO=1")
+	assert.NotContains(t, got, ">>> auto-managed")
+}
+
+// mergeIntoDotEnv — non-IsNotExist read error. Pointing at
+// `parent_file/.env` where `parent_file` is a regular file makes
+// ReadFile return ENOTDIR (not IsNotExist).
+func TestMergeIntoDotEnv_NonNotExistReadError(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	err := mergeIntoDotEnv(filepath.Join(file, ".env"), map[string]string{"K": "v"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read")
+}
+
+// mergeIntoDotEnv — WriteFile of the tmp file fails because the parent
+// directory is read-only (EACCES). Skipped under root since chmod can't
+// deny root.
+func TestMergeIntoDotEnv_WriteTmpError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based write denial")
+	}
+	dir := t.TempDir()
+	readonly := filepath.Join(dir, "ro")
+	require.NoError(t, os.Mkdir(readonly, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(readonly, 0o755) })
+	err := mergeIntoDotEnv(filepath.Join(readonly, ".env"), map[string]string{"K": "v"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write tmp")
+}
+
+// mergeIntoDotEnv — rename error path. POSIX rename rarely fails in
+// isolation because the tmp file lives in the same directory; drive
+// the failure deterministically through the osRenameFn seam.
+func TestMergeIntoDotEnv_RenameError(t *testing.T) {
+	orig := osRenameFn
+	osRenameFn = func(string, string) error { return errors.New("synthetic rename failure") }
+	t.Cleanup(func() { osRenameFn = orig })
+
+	dir := t.TempDir()
+	target := filepath.Join(dir, ".env")
+	err := mergeIntoDotEnv(target, map[string]string{"K": "v"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rename")
+	_, statErr := os.Stat(target + ".tmp")
+	assert.True(t, os.IsNotExist(statErr), "tmp file should be removed after rename failure")
 }

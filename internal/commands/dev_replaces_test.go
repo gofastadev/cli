@@ -259,3 +259,16 @@ replace github.com/gofastadev/gofasta => ../../gofastadev/gofasta
 	assert.Equal(t, "github.com/gofastadev/gofasta", got[0].Module)
 	assert.Equal(t, "../../gofastadev/gofasta", got[0].Path)
 }
+
+// TestFindLocalReplaces_ParentIsFile — deterministic non-IsNotExist
+// error path. Pointing at `parent_file/go.mod` where `parent_file` is a
+// regular file returns ENOTDIR from os.Open, which IS NOT IsNotExist,
+// so the explicit `return nil, err` branch fires.
+func TestFindLocalReplaces_ParentIsFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "f")
+	require.NoError(t, os.WriteFile(file, []byte("x"), 0o644))
+	_, err := findLocalReplaces(filepath.Join(file, "go.mod"))
+	require.Error(t, err)
+	assert.False(t, os.IsNotExist(err), "ENOTDIR must not be classified as IsNotExist")
+}
