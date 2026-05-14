@@ -141,20 +141,25 @@ func TestParseDotEnvLine_LeadingEqualsRejected(t *testing.T) {
 	assert.False(t, ok, "line with no key before `=` should be rejected")
 }
 
-func TestLoadDotEnv_ScannerError(t *testing.T) {
-	// bufio.Scanner returns ErrTooLong when a single token exceeds the
-	// buffer (default max 64KB). Write a line longer than that to force
-	// scanner.Err() to fire and loadDotEnv to surface the error.
+func TestLoadDotEnv_HandlesHugeLine(t *testing.T) {
+	// The original implementation used bufio.Scanner, whose default
+	// token limit is 64KB — a single line longer than that would
+	// trigger ErrTooLong and the file would be unusable. The current
+	// implementation splits on '\n' directly so there is no per-line
+	// limit. This test pins that contract: a 200KB value loads
+	// successfully and lands in os.Setenv as written.
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")
-	giant := "BIG_LINE=" + strings.Repeat("x", 200000) + "\n"
+	bigValue := strings.Repeat("x", 200000)
+	giant := "BIG_LINE=" + bigValue + "\n"
 	require.NoError(t, os.WriteFile(path, []byte(giant), 0o644))
 	_ = os.Unsetenv("BIG_LINE")
 	t.Cleanup(func() { _ = os.Unsetenv("BIG_LINE") })
 
-	_, err := loadDotEnv(path)
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "read")
+	count, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, 1, count, "huge line should still load as a single var")
+	assert.Equal(t, bigValue, os.Getenv("BIG_LINE"))
 }
 
 func TestLoadDotEnv_UnreadableFile(t *testing.T) {
@@ -173,4 +178,224 @@ func TestLoadDotEnv_UnreadableFile(t *testing.T) {
 	_, err := loadDotEnv(path)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "open")
+}
+
+// ── mergeIntoDotEnv ───────────────────────────────────────────────────
+
+// TestMergeIntoDotEnv_ReplacesExistingKeyInPlace — an existing key in
+// the file has its value swapped on the SAME line. Surrounding
+// content (comments, ordering of unrelated keys, blank lines) is
+// preserved.
+func TestMergeIntoDotEnv_ReplacesExistingKeyInPlace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "# header comment\n" +
+		"DATA_DATABASE_HOST=localhost\n" +
+		"DATA_DATABASE_PORT=5433\n" +
+		"\n" +
+		"# unrelated section\n" +
+		"OTHER_VAR=keep\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "neon.tech",
+		"DATA_DATABASE_PORT": "5432",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	want := "# header comment\n" +
+		"DATA_DATABASE_HOST=neon.tech\n" +
+		"DATA_DATABASE_PORT=5432\n" +
+		"\n" +
+		"# unrelated section\n" +
+		"OTHER_VAR=keep\n"
+	assert.Equal(t, want, string(got),
+		"existing keys must be edited in place, all other content byte-identical")
+}
+
+// TestMergeIntoDotEnv_AppendsNewKeysAtEnd — keys not already present
+// are appended at the end of the file, in sorted order (stable diffs).
+func TestMergeIntoDotEnv_AppendsNewKeysAtEnd(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("EXISTING=keep\n"), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_SSLMODE": "require",
+		"DATA_DATABASE_USER":    "neon_user",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	// A blank line separates user content from appended keys —
+	// cosmetic only, but pinned here so accidental reflow doesn't
+	// quietly drift.
+	want := "EXISTING=keep\n" +
+		"\n" +
+		"DATA_DATABASE_SSLMODE=require\n" +
+		"DATA_DATABASE_USER=neon_user\n"
+	assert.Equal(t, want, string(got))
+}
+
+// TestMergeIntoDotEnv_RemovesDuplicatesOfPersistedKeys — if a persist-
+// target key appears twice in the file (which can happen if a user
+// hand-added a copy of an existing key, or after legacy managed-block
+// migration), the merge keeps only the first occurrence with the new
+// value. Duplicates of keys NOT being persisted are LEFT alone.
+func TestMergeIntoDotEnv_RemovesDuplicatesOfPersistedKeys(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "DATA_DATABASE_HOST=first\n" +
+		"OTHER=untouched-first\n" +
+		"DATA_DATABASE_HOST=second\n" +
+		"OTHER=untouched-second\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "merged",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotStr := string(got)
+	assert.Equal(t, 1, strings.Count(gotStr, "DATA_DATABASE_HOST="),
+		"persist-target duplicates must be collapsed to one occurrence")
+	assert.Contains(t, gotStr, "DATA_DATABASE_HOST=merged")
+	// Non-target duplicates must survive untouched.
+	assert.Equal(t, 2, strings.Count(gotStr, "OTHER="),
+		"non-persist-target duplicates must be left alone")
+}
+
+// TestMergeIntoDotEnv_MigratesLegacyManagedBlock — files saved by the
+// PREVIOUS implementation contain `# >>> auto-managed` markers. On
+// next merge, those markers are stripped and the inner lines fold
+// into the regular file body — then the in-place edit runs as
+// normal. End result: no markers, no duplicate keys.
+func TestMergeIntoDotEnv_MigratesLegacyManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	original := "DATA_DATABASE_HOST=localhost\n" +
+		"DATA_DATABASE_PORT=5433\n" +
+		"\n" +
+		managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=stale-from-block\n" +
+		"DATA_DATABASE_NAME=stale_db\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "fresh.example.com",
+		"DATA_DATABASE_NAME": "fresh_db",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	gotStr := string(got)
+	assert.NotContains(t, gotStr, managedBlockBegin, "markers must be gone")
+	assert.NotContains(t, gotStr, managedBlockEnd)
+	assert.NotContains(t, gotStr, "stale-from-block", "legacy values must be replaced")
+	assert.Equal(t, 1, strings.Count(gotStr, "DATA_DATABASE_HOST="),
+		"only one HOST line should remain after migration")
+	assert.Contains(t, gotStr, "DATA_DATABASE_HOST=fresh.example.com")
+	assert.Contains(t, gotStr, "DATA_DATABASE_NAME=fresh_db")
+	// The PORT key wasn't in this merge call — must survive its
+	// original value untouched.
+	assert.Contains(t, gotStr, "DATA_DATABASE_PORT=5433")
+}
+
+// TestMergeIntoDotEnv_EmptyKVsIsNoOp — passing an empty map leaves
+// the file untouched.
+func TestMergeIntoDotEnv_EmptyKVsIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	require.NoError(t, os.WriteFile(path, []byte("ORIGINAL=here\n"), 0o644))
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "ORIGINAL=here\n", string(got))
+}
+
+// TestMergeIntoDotEnv_CreatesFileWhenMissing — a fresh project might
+// not have a `.env` yet; the merge creates one rather than erroring.
+func TestMergeIntoDotEnv_CreatesFileWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	// Note: file does not exist yet.
+
+	require.NoError(t, mergeIntoDotEnv(path, map[string]string{
+		"DATA_DATABASE_HOST": "neon.tech",
+	}))
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, "DATA_DATABASE_HOST=neon.tech\n", string(got))
+}
+
+// TestLoadDotEnv_ManagedBlockBackwardCompat — files written by the
+// PREVIOUS managed-block implementation are still loaded correctly:
+// the managed block's KVs are applied first (so they win over
+// un-managed lines above), preserving the contract a user might
+// rely on between updating the CLI and saving via the menu again.
+// After the next save, mergeIntoDotEnv strips the markers and
+// promotes the values to in-place lines — this test pins the
+// transition window.
+func TestLoadDotEnv_ManagedBlockBackwardCompat(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := "DATA_DATABASE_HOST=localhost\n" +
+		managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=neon.example.com\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	_ = os.Unsetenv("DATA_DATABASE_HOST")
+	t.Cleanup(func() { _ = os.Unsetenv("DATA_DATABASE_HOST") })
+
+	_, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, "neon.example.com", os.Getenv("DATA_DATABASE_HOST"),
+		"legacy managed-block value must beat the un-managed entry above it")
+}
+
+// TestLoadDotEnv_ShellStillWinsOverManagedBlock — explicit shell
+// exports beat the file, including a legacy managed block. Pinning
+// this so persisted overrides can't shadow a developer's deliberate
+// shell export.
+func TestLoadDotEnv_ShellStillWinsOverManagedBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, ".env")
+	content := managedBlockBegin + "\n" +
+		"DATA_DATABASE_HOST=from-managed\n" +
+		managedBlockEnd + "\n"
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	t.Setenv("DATA_DATABASE_HOST", "from-shell")
+
+	_, err := loadDotEnv(path)
+	require.NoError(t, err)
+	assert.Equal(t, "from-shell", os.Getenv("DATA_DATABASE_HOST"))
+}
+
+// TestQuoteDotEnvValue_QuotesOnlyWhenNeeded — plain values pass
+// through unquoted; values with whitespace/special chars get wrapped.
+func TestQuoteDotEnvValue_QuotesOnlyWhenNeeded(t *testing.T) {
+	// Plain backslashes pass through unquoted because parseDotEnvLine
+	// doesn't process escape sequences — a `\n` in the value reads as
+	// the literal two-char sequence, not a newline. Only chars a naive
+	// parser would mis-interpret (space, tab, '#', '"', actual newline)
+	// trigger quoting.
+	cases := map[string]string{
+		"":                                    "",
+		"plain":                               "plain",
+		"with spaces":                         `"with spaces"`,
+		"with\ttab":                           "\"with\ttab\"",
+		"has#hash":                            `"has#hash"`,
+		`has"quote`:                           `"has\"quote"`,
+		`has\backslash`:                       `has\backslash`,
+		"postgres://u:p@h/db?sslmode=require": "postgres://u:p@h/db?sslmode=require",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, quoteDotEnvValue(in), "in=%q", in)
+	}
 }

@@ -3,9 +3,6 @@ package di
 import (
 	"log/slog"
 
-{{- if .GraphQL}}
-	"{{.ModulePath}}/app/graphql/resolvers"
-{{- end}}
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
 	"github.com/gofastadev/gofasta/pkg/config"
@@ -13,15 +10,19 @@ import (
 	"github.com/gofastadev/gofasta/pkg/i18n"
 	"github.com/gofastadev/gofasta/pkg/mailer"
 	"github.com/gofastadev/gofasta/pkg/notify"
-	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+	"github.com/gofastadev/gofasta/pkg/queue"
+	"github.com/gofastadev/gofasta/pkg/session"
+	"github.com/gofastadev/gofasta/pkg/slack"
+	"github.com/gofastadev/gofasta/pkg/storage"
+	"github.com/gofastadev/gofasta/pkg/websocket"
+	"github.com/gofastadev/gofasta/pkg/whatsapp"
+	"gorm.io/gorm"
+
+{{if .GraphQL}}	"{{.ModulePath}}/app/graphql/resolvers"
+{{end}}	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"{{.ModulePath}}/app/rest/controllers"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 	"{{.ModulePath}}/app/validators"
-	"github.com/gofastadev/gofasta/pkg/queue"
-	"github.com/gofastadev/gofasta/pkg/session"
-	"github.com/gofastadev/gofasta/pkg/storage"
-	"github.com/gofastadev/gofasta/pkg/websocket"
-	"gorm.io/gorm"
 )
 
 // ServiceContainer holds all application dependencies, assembled by Wire.
@@ -31,6 +32,8 @@ type ServiceContainer struct {
 	Logger         *slog.Logger
 	Validator      *validators.AppValidator
 	EmailSender    mailer.EmailSender
+	SlackSender    slack.Sender
+	WhatsAppSender whatsapp.Sender
 	CacheService   cache.CacheService
 	JWTService     *auth.JWTService
 	RBACService    *auth.RBACService
@@ -44,7 +47,8 @@ type ServiceContainer struct {
 	UserRepo       repoInterfaces.UserRepositoryInterface
 	UserService    svcInterfaces.UserServiceInterface
 	UserController *controllers.UserController
+	// gofasta:scaffold:container-fields — `gofasta g scaffold` inserts new resource fields above this line. Don't remove the marker; the CLI relies on it to find the insertion point.
 {{- if .GraphQL}}
-	Resolver       *resolvers.Resolver
+	Resolver *resolvers.Resolver
 {{- end}}
 }

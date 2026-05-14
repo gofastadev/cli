@@ -11,6 +11,11 @@ services:
     ports:
       - "${PORT:-8080}:8080"
     environment:
+      # Container apps must bind to all interfaces so the published port is
+      # reachable from outside. The framework default is loopback (127.0.0.1)
+      # to keep the macOS firewall quiet during local Air rebuilds; we
+      # override it here so production containers actually serve traffic.
+      - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
       - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=5432
@@ -33,14 +38,14 @@ services:
           memory: 512M
 
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
     environment:
       POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
       POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
       POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}"]
       interval: 5s

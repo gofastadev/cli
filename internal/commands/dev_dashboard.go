@@ -47,6 +47,28 @@ func loadDashboardTemplate() (*template.Template, error) {
 	dashboardTemplateOnce.Do(func() {
 		dashboardTemplate, dashboardTemplateErr = template.
 			New("dashboard").
+			Funcs(template.FuncMap{
+				// deref lets the template format a *float64 via printf.
+				// The template only reaches this branch after `if
+				// .LatencyP50MS` so nil is defensive, not expected.
+				"deref": func(p *float64) float64 {
+					if p == nil {
+						return 0
+					}
+					return *p
+				},
+				// dict constructs a map[string]any so sub-templates
+				// (the shared "initialPager") can accept multiple
+				// named fields without defining a Go struct per use.
+				"dict": func(kv ...any) map[string]any {
+					m := make(map[string]any, len(kv)/2)
+					for i := 0; i+1 < len(kv); i += 2 {
+						k, _ := kv[i].(string)
+						m[k] = kv[i+1]
+					}
+					return m
+				},
+			}).
 			Parse(dashboardTemplateSource)
 	})
 	return dashboardTemplate, dashboardTemplateErr

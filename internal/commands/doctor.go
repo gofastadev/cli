@@ -81,6 +81,18 @@ func runDoctor() error {
 		termcolor.PrintHeader("Project:")
 		printCheck("config.yaml", "found", true)
 
+		// Load .env BEFORE building the migration URL. config.yaml in
+		// scaffolded projects ships with in-container defaults (host:
+		// localhost, port: 5432 — what the app sees from inside the
+		// compose network); the .env file is where the host-side
+		// overrides live (e.g. PORT=5433 because docker maps host
+		// 5433 → container 5432). Without this, doctor builds a URL
+		// that points at port 5432 on the host (where nothing is
+		// listening) and reports "not reachable" even when the DB is
+		// fully healthy. `gofasta dev` doesn't have this bug because
+		// it loads .env in its own Stage 0.
+		_, _ = loadDotEnv(".env")
+
 		dbURL := configutil.BuildMigrationURL()
 		if dbURL != "" {
 			cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "version")

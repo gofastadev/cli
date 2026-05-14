@@ -15,14 +15,21 @@ type ExampleJob struct {
 	Logger *slog.Logger
 }
 
+// NewExampleJob constructs the sample cron job used as a starting point.
+// Replace its body with real work or delete the type entirely.
 func NewExampleJob(logger *slog.Logger) *ExampleJob {
 	return &ExampleJob{Logger: logger}
 }
 
+// Name returns the scheduler key under which this job is registered.
+// The framework's scheduler matches this to a `name` entry in the
+// project's jobs config to look up the cron schedule.
 func (j *ExampleJob) Name() string {
 	return "example"
 }
 
+// Run executes the job once. The scheduler invokes this on every tick
+// allowed by the cron expression configured in jobs config.
 func (j *ExampleJob) Run() {
 	j.Logger.Info("example job executed — replace this with real work")
 }

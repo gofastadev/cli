@@ -16,6 +16,12 @@ services:
       - go_build_cache:/root/.cache/go-build
     environment:
       - PORT=${PORT:-8080}
+      # Listen on all interfaces inside the container so the host can reach
+      # the published port. The framework's default Server.Host is the
+      # loopback 127.0.0.1 (which sidesteps macOS's firewall prompt during
+      # host-side Air rebuilds), so the dockerized dev container has to
+      # opt out of that default explicitly.
+      - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
       - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=5432
@@ -31,16 +37,21 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16-alpine
+    image: postgres:18-alpine
     container_name: {{.ProjectNameLower}}_db
     ports:
-      - "${DB_HOST_PORT:-5433}:5432"
+      # One source of truth for "the database port":
+      # {{.ProjectNameUpper}}_DATABASE_PORT. It governs both the host-
+      # running app's connection target AND this host-side port mapping.
+      # The `:5432` on the right is the postgres image's hardcoded
+      # listen port (not user-configurable).
+      - "${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT:-5433}:5432"
     environment:
       POSTGRES_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-{{.ProjectNameLower}}}
       POSTGRES_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-{{.ProjectNameLower}}}
       POSTGRES_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}_dev}
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - db_data:/var/lib/postgresql
     healthcheck:
       # pg_isready must target the actual database name — without -d it tries
       # to connect to a database named after the user, which is wrong whenever
@@ -53,16 +64,20 @@ services:
       retries: 10
     restart: unless-stopped
 
-  # cache (redis) is profile-gated. Start it on demand with
-  #   gofasta dev --profile cache
-  # or
+  # cache (redis) is active when EITHER the `cache` or `queue` profile
+  # is enabled. Both profiles are needed because the asynqmon `queue`
+  # service depends_on cache, and Compose requires a depended-upon
+  # service to share its dependent's profile (or be unprofiled). See:
+  # https://docs.docker.com/compose/how-tos/profiles/
+  #
+  # gofasta dev auto-activates both profiles; pass --no-cache /
+  # --no-queue to opt out. With raw docker compose, start it on demand:
   #   docker compose --profile cache up -d
-  # Not started by default so projects that don't use pkg/cache don't
-  # pay the memory cost.
+  #   docker compose --profile queue up -d   # also brings cache up
   cache:
     image: redis:7-alpine
     container_name: {{.ProjectNameLower}}_cache
-    profiles: [cache]
+    profiles: [cache, queue]
     ports:
       - "${REDIS_HOST_PORT:-6379}:6379"
     healthcheck:
@@ -79,6 +94,13 @@ services:
   #   gofasta dev --profile queue
   queue:
     image: hibiken/asynqmon:latest
+    # hibiken/asynqmon publishes only a linux/amd64 manifest on Docker
+    # Hub — there is no arm64 build. Pinning the platform makes Apple
+    # Silicon (M-series) and other arm64 hosts run it under emulation
+    # (Rosetta 2 on macOS) rather than fail the pull with
+    # `no matching manifest for linux/arm64/v8`. Native amd64 hosts
+    # (Intel Macs, Linux CI, Windows/WSL on Intel) are unaffected.
+    platform: linux/amd64
     container_name: {{.ProjectNameLower}}_queue
     profiles: [queue]
     ports:

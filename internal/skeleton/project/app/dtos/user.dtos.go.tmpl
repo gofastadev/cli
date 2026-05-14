@@ -21,16 +21,23 @@ type User struct {
 	DeletedAt     *time.Time `json:"deletedAt,omitempty"`
 }
 
+// TUserResponseDto is the response shape for endpoints that return a
+// single user — either Data on success or Errors on a validation failure.
 type TUserResponseDto struct {
 	Data   *User                 `json:"data,omitempty"`
 	Errors []*TCommonAPIErrorDto `json:"errors,omitempty"`
 }
 
+// TUsersResponseDto is the response shape for list endpoints, pairing
+// the page of records with the matching pagination metadata.
 type TUsersResponseDto struct {
 	Data       []*User               `json:"data"`
 	Pagination *TPaginationObjectDto `json:"pagination"`
 }
 
+// TUserFieldsForUpdateDto is the input for partial user updates. Every
+// optional field is a pointer so the controller can distinguish "absent"
+// from "present-but-empty" and forward only the deltas to the service.
 type TUserFieldsForUpdateDto struct {
 	ID            uuid.UUID `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification=users"`
 	RecordVersion int       `json:"recordVersion" validate:"required,min=1"`
@@ -42,22 +49,32 @@ type TUserFieldsForUpdateDto struct {
 	IsDeletable   *bool     `json:"isDeletable,omitempty"`
 }
 
+// TCreateUserDto is the input shape for the create-user endpoint. Every
+// field is required (validators enforce that) so the controller can
+// trust a valid struct on the way into the service.
 type TCreateUserDto struct {
-	FirstName      string    `json:"firstName" validate:"required,min=1,max=50"`
-	OtherNames     string    `json:"otherNames" validate:"required,min=1,max=150"`
-	Email          string    `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
-	PhoneNumber    string    `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
-	ProfilePicture *string   `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
+	FirstName      string  `json:"firstName" validate:"required,min=1,max=50"`
+	OtherNames     string  `json:"otherNames" validate:"required,min=1,max=150"`
+	Email          string  `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber    string  `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
+	ProfilePicture *string `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
 }
 
+// TArchiveUserDto is the input for the soft-delete endpoint. The
+// is_record_deletable validator ensures the row's IsDeletable flag is
+// true before the service runs the soft delete.
 type TArchiveUserDto struct {
 	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users,is_record_deletable=users"`
 }
 
+// TFindUserByIDDto is the input for the get-user-by-id endpoint.
 type TFindUserByIDDto struct {
 	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users"`
 }
 
+// UserFieldsForFiltersDto is the per-field filter block for list
+// queries. Every field is optional — a nil pointer means "don't filter
+// on this field".
 type UserFieldsForFiltersDto struct {
 	FirstName   *string `json:"firstName,omitempty" schema:"firstName"`
 	OtherNames  *string `json:"otherNames,omitempty" schema:"otherNames"`
@@ -65,12 +82,17 @@ type UserFieldsForFiltersDto struct {
 	PhoneNumber *string `json:"phoneNumber,omitempty" schema:"phoneNumber"`
 }
 
+// UserFiltersDto bundles the field filters, pagination, and sorting
+// instructions the service expects on a list-users call.
 type UserFiltersDto struct {
 	Fields     *UserFieldsForFiltersDto `json:"fields" schema:"fields"`
 	Pagination *TPaginationInputDto     `json:"pagination,omitempty" schema:"pagination"`
 	Sorting    *TSortingInputDto        `json:"sorting,omitempty" schema:"sorting"`
 }
 
+// TUserFiltersQueryParamsDto is the flat query-string shape decoded
+// from REST list requests, before the controller folds it into a
+// UserFiltersDto for the service layer.
 type TUserFiltersQueryParamsDto struct {
 	FirstName       *string          `json:"firstName,omitempty" schema:"firstName"`
 	OtherNames      *string          `json:"otherNames,omitempty" schema:"otherNames"`

@@ -259,6 +259,132 @@ func TestEnvPrefixes_DeDupesGofasta(t *testing.T) {
 		"duplicate prefixes should be collapsed")
 }
 
+// --- BuildDatabaseEndpoint ---
+
+func TestBuildDatabaseEndpoint_PostgresDefaults(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: postgres
+`)
+	endpoint, enabled := BuildDatabaseEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "localhost:5432", endpoint)
+}
+
+func TestBuildDatabaseEndpoint_MySQLExplicit(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: mysql
+  host: db.internal
+  port: "3306"
+`)
+	endpoint, enabled := BuildDatabaseEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "db.internal:3306", endpoint)
+}
+
+func TestBuildDatabaseEndpoint_SQLiteDisabled(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: sqlite
+  name: test.db
+`)
+	endpoint, enabled := BuildDatabaseEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildDatabaseEndpoint_Sqlite3AliasDisabled(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: SQLITE3
+`)
+	endpoint, enabled := BuildDatabaseEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+// --- BuildCacheEndpoint ---
+
+func TestBuildCacheEndpoint_RedisDefaults(t *testing.T) {
+	setupConfigDir(t, `cache:
+  driver: redis
+`)
+	endpoint, enabled := BuildCacheEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "localhost:6379", endpoint)
+}
+
+func TestBuildCacheEndpoint_RedisExplicit(t *testing.T) {
+	setupConfigDir(t, `cache:
+  driver: redis
+  redis:
+    host: redis.internal
+    port: "6380"
+`)
+	endpoint, enabled := BuildCacheEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "redis.internal:6380", endpoint)
+}
+
+func TestBuildCacheEndpoint_MemoryDisabled(t *testing.T) {
+	setupConfigDir(t, `cache:
+  driver: memory
+`)
+	endpoint, enabled := BuildCacheEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildCacheEndpoint_EmptyDisabled(t *testing.T) {
+	setupConfigDir(t, "")
+	endpoint, enabled := BuildCacheEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+// --- BuildQueueEndpoint ---
+
+func TestBuildQueueEndpoint_EnabledDefaults(t *testing.T) {
+	setupConfigDir(t, `queue:
+  enabled: true
+`)
+	endpoint, enabled := BuildQueueEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "localhost:6379", endpoint)
+}
+
+func TestBuildQueueEndpoint_EnabledExplicit(t *testing.T) {
+	setupConfigDir(t, `queue:
+  enabled: true
+  redis:
+    host: queue.internal
+    port: "6390"
+`)
+	endpoint, enabled := BuildQueueEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "queue.internal:6390", endpoint)
+}
+
+func TestBuildQueueEndpoint_Disabled(t *testing.T) {
+	setupConfigDir(t, `queue:
+  enabled: false
+`)
+	endpoint, enabled := BuildQueueEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+// --- Exported wrappers ---
+
+func TestEnvPrefixes_ExportedWrapper(t *testing.T) {
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/acme/mylearn")
+	assert.Equal(t, []string{"GOFASTA_", "MYLEARN_"}, EnvPrefixes())
+}
+
+func TestProjectEnvPrefix_ExportedWrapper(t *testing.T) {
+	setupConfigDir(t, "")
+	writeGoMod(t, "github.com/acme/mylearn")
+	assert.Equal(t, "MYLEARN_", ProjectEnvPrefix())
+}
+
 // writeGoMod writes a minimal go.mod in the current working directory
 // (which setupConfigDir has already set to a fresh tempdir).
 func writeGoMod(t *testing.T, modulePath string) {

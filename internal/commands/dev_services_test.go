@@ -8,95 +8,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestIsDBLike — DB-name heuristic covers the canonical service names
-// scaffolds use and a -db suffix pattern, without false-positive matches
-// like "redis" or "metrics".
-func TestIsDBLike(t *testing.T) {
-	for _, n := range []string{"db", "database", "postgres", "mysql", "mariadb", "clickhouse", "users-db"} {
-		assert.True(t, isDBLike(n), "%s should match", n)
-	}
-	for _, n := range []string{"redis", "cache", "queue", "asynq", "app"} {
-		assert.False(t, isDBLike(n), "%s should NOT match", n)
-	}
-}
-
-// TestIsCacheLike — cache-name heuristic covers redis, valkey, and a
-// -cache suffix pattern.
-func TestIsCacheLike(t *testing.T) {
-	for _, n := range []string{"cache", "redis", "valkey", "session-cache"} {
-		assert.True(t, isCacheLike(n), "%s should match", n)
-	}
-	for _, n := range []string{"db", "postgres", "queue", "app"} {
-		assert.False(t, isCacheLike(n), "%s should NOT match", n)
-	}
-}
-
-// TestIsQueueLike — queue-name heuristic.
-func TestIsQueueLike(t *testing.T) {
-	for _, n := range []string{"queue", "asynq", "nats", "rabbitmq", "job-queue"} {
-		assert.True(t, isQueueLike(n), "%s should match", n)
-	}
-	for _, n := range []string{"db", "redis", "app"} {
-		assert.False(t, isQueueLike(n), "%s should NOT match", n)
-	}
-}
-
-// TestResolveSelectedServices — flag-resolution matrix. Verifies the
-// documented priority order: --no-services > --services list > default
-// minus opt-out filters.
-func TestResolveSelectedServices(t *testing.T) {
-	available := []string{"db", "cache", "queue", "other"}
-
-	t.Run("no-services wins over everything", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{noServices: true})
-		assert.Empty(t, got)
-	})
-
-	t.Run("explicit list overrides no-* flags", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{
-			servicesList: []string{"db", "cache"},
-			noDB:         true, // ignored in favor of explicit list
-		})
-		assert.Equal(t, []string{"db", "cache"}, got)
-	})
-
-	t.Run("explicit list strips app service", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{
-			servicesList: []string{"db", "app", "cache"},
-		})
-		assert.Equal(t, []string{"db", "cache"}, got)
-	})
-
-	t.Run("no-db filters db-like services", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{noDB: true})
-		assert.NotContains(t, got, "db")
-		assert.Contains(t, got, "cache")
-		assert.Contains(t, got, "queue")
-	})
-
-	t.Run("no-cache filters cache-like services", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{noCache: true})
-		assert.Contains(t, got, "db")
-		assert.NotContains(t, got, "cache")
-	})
-
-	t.Run("no-queue filters queue-like services", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{noQueue: true})
-		assert.NotContains(t, got, "queue")
-	})
-
-	t.Run("all no-* flags combine", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{
-			noDB: true, noCache: true, noQueue: true,
-		})
-		assert.Equal(t, []string{"other"}, got)
-	})
-
-	t.Run("default selects everything", func(t *testing.T) {
-		got := resolveSelectedServices(available, devFlags{})
-		assert.ElementsMatch(t, available, got)
-	})
-}
+// The isDBLike/isCacheLike/isQueueLike heuristics and the old
+// resolveSelectedServices function were removed in the host-first
+// redesign — `--services <names>` now validates against the
+// compose-declared service list directly via selectServices
+// (covered in dev_services_suggest_test.go). The remaining tests in
+// this file cover compose-service detection + healthcheck polling,
+// which the new design uses unchanged.
 
 // TestParseServicesList — input normalization for --services.
 func TestParseServicesList(t *testing.T) {
@@ -139,10 +57,11 @@ func TestIsServiceReady(t *testing.T) {
 	})
 }
 
-// TestDetectComposeServices_WithProfile — profile != "" adds --profile.
+// TestDetectComposeServices_WithProfile — non-empty profiles list adds
+// one --profile arg per entry.
 func TestDetectComposeServices_WithProfile(t *testing.T) {
 	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
-	_, _, err := detectComposeServices("cache")
+	_, _, err := detectComposeServices([]string{"cache"}, false)
 	require.NoError(t, err)
 }
 

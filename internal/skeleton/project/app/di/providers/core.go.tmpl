@@ -1,11 +1,11 @@
 package providers
 
 import (
+	"fmt"
 	"log/slog"
+	"net"
+	"time"
 
-	"github.com/google/wire"
-	"{{.ModulePath}}/app/devtools"
-	"{{.ModulePath}}/app/validators"
 	"github.com/gofastadev/gofasta/pkg/auth"
 	"github.com/gofastadev/gofasta/pkg/cache"
 	"github.com/gofastadev/gofasta/pkg/config"
@@ -16,9 +16,16 @@ import (
 	"github.com/gofastadev/gofasta/pkg/notify"
 	"github.com/gofastadev/gofasta/pkg/queue"
 	"github.com/gofastadev/gofasta/pkg/session"
+	"github.com/gofastadev/gofasta/pkg/slack"
 	"github.com/gofastadev/gofasta/pkg/storage"
 	"github.com/gofastadev/gofasta/pkg/websocket"
+	"github.com/gofastadev/gofasta/pkg/whatsapp"
+	"github.com/google/wire"
+	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/validators"
 )
 
 // LoadConfig reads configuration for this project.
@@ -41,6 +48,8 @@ var CoreSet = wire.NewSet(
 	ProvideDBConfig,
 	ProvideLogConfig,
 	ProvideEmailConfig,
+	ProvideSlackConfig,
+	ProvideWhatsAppConfig,
 	ProvideAuthConfig,
 	ProvideCacheConfig,
 	ProvideStorageConfig,
@@ -51,6 +60,8 @@ var CoreSet = wire.NewSet(
 	validators.NewAppValidator,
 	ProvideTemplateRenderer,
 	mailer.NewEmailSender,
+	slack.NewSlackSender,
+	whatsapp.NewSender,
 	auth.NewJWTService,
 	auth.NewRBACService,
 	ProvideCacheService,
@@ -69,12 +80,106 @@ var CoreSet = wire.NewSet(
 // ProvideDB wraps config.SetupDB with the devtools GORM plugin so SQL
 // queries are captured into the dev dashboard's ring buffer when the
 // binary is built with the `devtools` tag. In production builds the
-// plugin is a no-op (see app/devtools/devtools_stub.go). Safe to call
-// unconditionally.
+// plugin is a no-op (see app/devtools/devtools_stub.go).
+//
+// Degraded-mode behavior: a cheap TCP probe runs FIRST so we can skip
+// config.SetupDB entirely when the DB is unreachable. SetupDB calls
+// gorm.Open, which logs `[error] failed to initialize database` from
+// inside GORM before returning the error, and then SetupDB itself
+// slog.Error's and panics. Probing first means none of that noise
+// appears in degraded mode — just the WARN below explaining what
+// happened. When `gofasta dev` is in front of this, the developer
+// has already seen the preflight menu and picked "Run app without
+// db"; the in-app logs should match that choice, not contradict it
+// with red ERROR lines.
+//
+// Recovery via panic catch is still in place as a belt-and-braces
+// layer for races (DB went down between the probe and SetupDB) and
+// for non-TCP drivers (SQLite file-mode, etc.).
 func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
-	db := config.SetupDB(cfg)
-	if err := db.Use(devtools.GormPlugin()); err != nil {
-		slog.Warn("failed to install devtools GORM plugin", "error", err)
+	if !databaseReachable(cfg) {
+		slog.Warn(
+			"database unreachable — starting in DEGRADED mode; endpoints touching the DB will return 5xx until the connection comes back",
+			"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port,
+		)
+		return buildDegradedDB(cfg)
+	}
+	db, err := tryConnectDB(cfg)
+	if err == nil {
+		if pluginErr := db.Use(devtools.GormPlugin()); pluginErr != nil {
+			slog.Warn("failed to install devtools GORM plugin", "error", pluginErr)
+		}
+		return db
+	}
+	slog.Warn(
+		"database connect failed after reachability probe passed — starting in DEGRADED mode",
+		"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port, "error", err,
+	)
+	return buildDegradedDB(cfg)
+}
+
+// databaseReachable opens and closes a 2-second TCP connection to
+// cfg.Host:cfg.Port to confirm the DB is accepting connections. For
+// file-backed drivers (sqlite, sqlite3) the answer is always yes:
+// they have no network endpoint to probe. Any other connect failure
+// (DNS, refused, timeout) returns false so the caller skips SetupDB.
+//
+// 2 seconds is the same budget `gofasta dev`'s preflight probe uses,
+// keeping the in-app behavior consistent with what the developer saw
+// at the menu.
+func databaseReachable(cfg *config.DatabaseConfig) bool {
+	if cfg.Driver == "sqlite" || cfg.Driver == "sqlite3" {
+		return true
+	}
+	if cfg.Host == "" || cfg.Port == "" {
+		return false
+	}
+	addr := net.JoinHostPort(cfg.Host, cfg.Port)
+	conn, err := net.DialTimeout("tcp", addr, 2*time.Second)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// tryConnectDB calls config.SetupDB and recovers from its panic. On
+// success returns (db, nil); on connection failure returns (nil, err)
+// with the panic value wrapped in an error.
+func tryConnectDB(cfg *config.DatabaseConfig) (db *gorm.DB, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			db = nil
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	db = config.SetupDB(cfg)
+	return db, nil
+}
+
+// buildDegradedDB returns an in-memory SQLite *gorm.DB to stand in
+// for the unreachable real database. The choice of SQLite is
+// deliberate: it's network-free, always works, and is the only
+// scaffold-supported driver guaranteed to succeed without external
+// state. Repositories injected with this stub will get "no such
+// table: X" errors when they try to query (because the project's
+// migrations haven't run against it), and that error propagates as
+// 5xx through pkg/httputil.Handle().
+//
+// The app boots, non-DB endpoints serve normally, DB-touching
+// endpoints fail loudly with a clear error. Exactly what the
+// preflight's "Run app without db" menu option promises.
+func buildDegradedDB(cfg *config.DatabaseConfig) *gorm.DB {
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	if err != nil {
+		// Last-resort fallback: a literally-empty gorm.DB. Repositories
+		// that call methods on it will nil-panic on internal fields,
+		// which surfaces clearly in logs and signals that the degraded-
+		// mode bootstrap itself failed. Should never happen — SQLite
+		// in-memory is essentially infallible — but guarded for safety.
+		slog.Error("degraded-DB bootstrap failed; returning empty *gorm.DB",
+			"driver", cfg.Driver, "error", err)
+		return &gorm.DB{Config: &gorm.Config{}}
 	}
 	return db
 }
@@ -105,35 +210,73 @@ func ProvideLogger(cfg *config.LogConfig) *slog.Logger {
 	return wrapped
 }
 
-func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig       { return &cfg.Database }
-func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig           { return &cfg.Log }
-func ProvideEmailConfig(cfg *config.AppConfig) *config.EmailConfig       { return &cfg.Email }
-func ProvideAuthConfig(cfg *config.AppConfig) *config.AuthConfig         { return &cfg.Auth }
-func ProvideCacheConfig(cfg *config.AppConfig) *config.CacheConfig       { return &cfg.Cache }
-func ProvideStorageConfig(cfg *config.AppConfig) *config.StorageConfig   { return &cfg.Storage }
-func ProvideQueueConfig(cfg *config.AppConfig) *config.QueueConfig       { return &cfg.Queue }
+// The functions below pluck a typed sub-config off the loaded AppConfig.
+// Wire needs each as a separate provider so packages that only depend on
+// (say) DatabaseConfig don't transitively pull AppConfig into their
+// build graph.
+
+// ProvideDBConfig exposes the Database section of AppConfig as a Wire provider.
+func ProvideDBConfig(cfg *config.AppConfig) *config.DatabaseConfig { return &cfg.Database }
+
+// ProvideLogConfig exposes the Log section of AppConfig as a Wire provider.
+func ProvideLogConfig(cfg *config.AppConfig) *config.LogConfig { return &cfg.Log }
+
+// ProvideEmailConfig exposes the Email section of AppConfig as a Wire provider.
+func ProvideEmailConfig(cfg *config.AppConfig) *config.EmailConfig { return &cfg.Email }
+
+// ProvideSlackConfig exposes the Slack section of AppConfig as a Wire provider.
+func ProvideSlackConfig(cfg *config.AppConfig) *config.SlackConfig { return &cfg.Slack }
+
+// ProvideWhatsAppConfig exposes the WhatsApp section of AppConfig as a Wire provider.
+func ProvideWhatsAppConfig(cfg *config.AppConfig) *config.WhatsAppConfig { return &cfg.WhatsApp }
+
+// ProvideAuthConfig exposes the Auth section of AppConfig as a Wire provider.
+func ProvideAuthConfig(cfg *config.AppConfig) *config.AuthConfig { return &cfg.Auth }
+
+// ProvideCacheConfig exposes the Cache section of AppConfig as a Wire provider.
+func ProvideCacheConfig(cfg *config.AppConfig) *config.CacheConfig { return &cfg.Cache }
+
+// ProvideStorageConfig exposes the Storage section of AppConfig as a Wire provider.
+func ProvideStorageConfig(cfg *config.AppConfig) *config.StorageConfig { return &cfg.Storage }
+
+// ProvideQueueConfig exposes the Queue section of AppConfig as a Wire provider.
+func ProvideQueueConfig(cfg *config.AppConfig) *config.QueueConfig { return &cfg.Queue }
 
 // --- Complex providers ---
 
+// ProvideTemplateRenderer constructs the HTML email template renderer
+// rooted at templates/emails and stamps every email with the configured
+// From-name as the default sender.
 func ProvideTemplateRenderer(cfg *config.AppConfig) *mailer.TemplateRenderer {
 	return mailer.NewTemplateRenderer("templates/emails", cfg.Email.FromName)
 }
 
-func ProvideWebSocketHub(logger *slog.Logger) *websocket.Hub {
-	return websocket.NewHub(logger)
+// ProvideWebSocketHub constructs the framework's WebSocket hub used for
+// real-time fan-out (rooms, broadcasts, per-connection state).
+func ProvideWebSocketHub(log *slog.Logger) *websocket.Hub {
+	return websocket.NewHub(log)
 }
 
-func ProvideNotifier(logger *slog.Logger, emailSender mailer.EmailSender, db *gorm.DB) *notify.Notifier {
-	return notify.NewNotifier(logger,
+// ProvideNotifier wires a multi-channel notifier with email + database
+// channels enabled by default. Add channels (Slack, SMS, etc.) here as
+// the project grows.
+func ProvideNotifier(log *slog.Logger, emailSender mailer.EmailSender, db *gorm.DB) *notify.Notifier {
+	return notify.NewNotifier(log,
 		notify.NewEmailChannel(emailSender),
 		notify.NewDatabaseChannel(db),
 	)
 }
 
+// ProvideI18nService constructs the i18n service backed by the locales
+// directory + default language declared in config.
 func ProvideI18nService(cfg *config.AppConfig) *i18n.I18nService {
 	return i18n.NewI18nService(cfg.I18n.LocalesDir, cfg.I18n.DefaultLanguage)
 }
 
+// ProvideEncrypter constructs the AES-256-GCM encrypter used for
+// at-rest field encryption. Returns nil if no key is configured or if
+// the key fails to parse — callers should treat a nil encrypter as
+// "encryption disabled" rather than panic.
 func ProvideEncrypter(cfg *config.AppConfig) *encryption.Encrypter {
 	if cfg.Encryption.Key == "" {
 		return nil
@@ -145,6 +288,9 @@ func ProvideEncrypter(cfg *config.AppConfig) *encryption.Encrypter {
 	return enc
 }
 
+// ProvideSessionStore constructs the session store named by config —
+// filesystem-backed when sessions need to survive a process restart,
+// cookie-backed (the default) when statelessness is preferred.
 func ProvideSessionStore(cfg *config.AppConfig) *session.Store {
 	sc := cfg.Session
 	if sc.Driver == "filesystem" {

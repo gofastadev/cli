@@ -16,6 +16,23 @@ import (
 // helpers that build GOFASTA_FAKE_EXIT env values.
 func strconvItoa(i int) string { return strconv.Itoa(i) }
 
+// hasComposeSub reports whether `args` represents a `docker compose
+// [--profile X]... <sub> ...` invocation. The exec stubs in this file
+// matched the subcommand by literal positional index before
+// runDev started prepending profile flags; this helper restores the
+// match logic to "subcommand-by-content" so multi-profile invocations
+// route to the correct stub.
+func hasComposeSub(args []string, sub string) bool {
+	if len(args) < 2 || args[0] != "compose" {
+		return false
+	}
+	i := 1
+	for i+1 < len(args) && args[i] == "--profile" {
+		i += 2
+	}
+	return i < len(args) && args[i] == sub
+}
+
 func TestDevCmd_Registered(t *testing.T) {
 	found := false
 	for _, c := range rootCmd.Commands() {
@@ -59,7 +76,7 @@ func TestRunDev_HappyPathWithEnv(t *testing.T) {
 
 	withFakeExec(t, 0)
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	assert.NoError(t, err)
 	// The .env was loaded — value now in process env.
 	assert.Equal(t, "loaded", os.Getenv("DEV_TEST_RUN_HAPPY_VAR"))
@@ -71,7 +88,7 @@ func TestRunDev_NoDotEnv(t *testing.T) {
 	setupDevTempdir(t)
 	withFakeExec(t, 0)
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	assert.NoError(t, err)
 }
 
@@ -88,7 +105,7 @@ func TestRunDev_UnreadableDotEnv(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chmod(".env", 0o644) })
 
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	// runDev treats the load error as non-fatal — it prints a warning and
 	// carries on. No error is returned.
 	assert.NoError(t, err)
@@ -106,7 +123,7 @@ func TestRunDev_MigrationFails(t *testing.T) {
 	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
 	t.Cleanup(func() { execLookPath = origLookPath })
 
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	// Air also fails (same fakeExec) — runDev returns the air error.
 	assert.Error(t, err)
 }
@@ -194,7 +211,7 @@ func TestRunDev_WithFlagPort(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	t.Setenv("PORT", "") // reset
-	err := runDev(devFlags{envFile: ".env", noServices: true, port: "9999"})
+	err := runDev(devFlags{envFile: ".env", port: "9999"})
 	assert.NoError(t, err)
 	assert.Equal(t, "9999", os.Getenv("PORT"))
 }
@@ -204,7 +221,7 @@ func TestRunDev_DryRun(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, dryRun: true})
+	err := runDev(devFlags{envFile: ".env", dryRun: true})
 	assert.NoError(t, err)
 }
 
@@ -214,7 +231,7 @@ func TestRunDev_Seed(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, seed: true})
+	err := runDev(devFlags{envFile: ".env", seed: true})
 	assert.NoError(t, err)
 }
 
@@ -231,7 +248,7 @@ func TestRunDev_SeedFails(t *testing.T) {
 	t.Cleanup(func() { execLookPath = origLookPath })
 	// stagedFakeExec: migrate=0, seed=1, then air=0 (final code repeats).
 	stagedFakeExec(t, 0, 1, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, seed: true})
+	err := runDev(devFlags{envFile: ".env", seed: true})
 	assert.NoError(t, err)
 }
 
@@ -240,6 +257,7 @@ func TestRunDev_SeedFails(t *testing.T) {
 func TestRunDev_WithComposeOrchestration(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	// compose.yaml makes plan.orchestrate true.
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
@@ -257,11 +275,11 @@ func TestRunDev_WithComposeOrchestration(t *testing.T) {
 			stdout = ""
 		} else if len(args) >= 2 && args[0] == "version" {
 			stdout = "28.0\n"
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "version" {
+		} else if hasComposeSub(args, "version") {
 			stdout = "v2.26\n"
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		} else if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -285,6 +303,7 @@ func TestRunDev_WithComposeOrchestration(t *testing.T) {
 func TestRunDev_Fresh_WithCompose(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`
@@ -292,9 +311,9 @@ func TestRunDev_Fresh_WithCompose(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -318,6 +337,7 @@ func TestRunDev_Fresh_WithCompose(t *testing.T) {
 func TestRunDev_Fresh_ResetVolumesFails(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`
@@ -326,11 +346,11 @@ func TestRunDev_Fresh_ResetVolumesFails(t *testing.T) {
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "down" && args[2] == "-v" {
+		} else if hasComposeSub(args, "down") {
 			exitCode = 1 // resetVolumes fails
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -363,7 +383,7 @@ func TestRunDev_ComposeUnavailable(t *testing.T) {
 	execOrig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -376,7 +396,14 @@ func TestRunDev_ComposeUnavailable(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = execOrig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 5e9, keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  5e9,
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 
@@ -391,9 +418,9 @@ func TestRunDev_StartServicesFails(t *testing.T) {
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "up" {
+		} else if hasComposeSub(args, "up") {
 			exitCode = 1
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -406,7 +433,14 @@ func TestRunDev_StartServicesFails(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 5e9, keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  5e9,
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 
@@ -420,9 +454,9 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}}}}`
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = `[{"Service":"db","State":"running","Health":"starting"}]`
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -435,8 +469,14 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 		return cmd
 	}
 	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 500000000, // 500ms
-		keepVolumes: true})
+	err := runDev(devFlags{
+		envFile:      ".env",
+		waitTimeout:  500000000, // 500ms
+		keepVolumes:  true,
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+		noKeyboard:   true,
+	})
 	require.Error(t, err)
 }
 
@@ -445,17 +485,18 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 func TestRunDev_KeepVolumesFalseDestroys(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
 		exitCode := 0
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = `{"services":{"db":{}}}`
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = `[{"Service":"db","State":"running","Health":""}]`
-		} else if len(args) >= 3 && args[0] == "compose" && args[1] == "down" && args[2] == "-v" {
+		} else if hasComposeSub(args, "down") {
 			exitCode = 1 // Make teardown fail → emitter.Shutdown(mode+"-failed", 1).
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -487,7 +528,7 @@ func TestRunAir_SignaledExit(t *testing.T) {
 	isSignaledExit = func(_ *os.ProcessState) bool { return true }
 	t.Cleanup(func() { isSignaledExit = orig })
 	withFakeExec(t, 1) // exec fails with exit 1
-	err := runAir(devFlags{}, func(string) {})
+	_, err := runAir(devFlags{}, func(string) {}, nil)
 	// isSignaledExit returns true → runAir returns nil.
 	assert.NoError(t, err)
 }
@@ -498,7 +539,7 @@ func TestRunDev_NoTeardownSkips(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, noTeardown: true})
+	err := runDev(devFlags{envFile: ".env", noTeardown: true})
 	assert.NoError(t, err)
 }
 
@@ -519,6 +560,7 @@ func TestRunDev_ResolveDevPlanFails(t *testing.T) {
 func TestRunDev_AttachLogs(t *testing.T) {
 	chdirTemp(t)
 	writeConfigYAML(t)
+	stubProbesOK(t)
 	require.NoError(t, os.WriteFile("compose.yaml",
 		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
 	composeConfig := `{"services":{"db":{}}}`
@@ -526,9 +568,9 @@ func TestRunDev_AttachLogs(t *testing.T) {
 	orig := execCommand
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		stdout := ""
-		if len(args) >= 2 && args[0] == "compose" && args[1] == "config" {
+		if hasComposeSub(args, "config") {
 			stdout = composeConfig
-		} else if len(args) >= 2 && args[0] == "compose" && args[1] == "ps" {
+		} else if hasComposeSub(args, "ps") {
 			stdout = composePS
 		}
 		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
@@ -553,7 +595,7 @@ func TestRunDev_Dashboard(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	// Pick a port nothing else is likely listening on.
-	err := runDev(devFlags{envFile: ".env", noServices: true,
+	err := runDev(devFlags{envFile: ".env",
 		dashboard: true, dashboardPort: 0}) // port 0 → random free port
 	assert.NoError(t, err)
 }
@@ -566,7 +608,7 @@ func TestRunDev_AirRebuild(t *testing.T) {
 	require.NoError(t, os.MkdirAll("tmp", 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join("tmp", "x"), []byte("x"), 0o644))
 	withFakeExec(t, 0)
-	err := runDev(devFlags{envFile: ".env", noServices: true, rebuild: true})
+	err := runDev(devFlags{envFile: ".env", rebuild: true})
 	assert.NoError(t, err)
 	_, err = os.Stat("tmp")
 	assert.True(t, os.IsNotExist(err), "tmp should have been removed")
@@ -614,7 +656,7 @@ func TestRunAir_RemoveAllFails(t *testing.T) {
 	removeAllFn = func(_ string) error { return fmt.Errorf("boom") }
 	t.Cleanup(func() { removeAllFn = orig })
 	withFakeExec(t, 0)
-	err := runAir(devFlags{rebuild: true}, func(string) {})
+	_, err := runAir(devFlags{rebuild: true}, func(string) {}, nil)
 	// Air succeeds despite RemoveAll failing.
 	assert.NoError(t, err)
 }
@@ -633,7 +675,7 @@ func TestRunAir_EnvNilBranch(t *testing.T) {
 	}
 	t.Cleanup(func() { execCommand = orig })
 	// runAir will fail; we only care about coverage.
-	_ = runAir(devFlags{}, func(string) {})
+	_, _ = runAir(devFlags{}, func(string) {}, nil)
 }
 
 // TestRunAir_Rebuild_RemovesTmp — rebuild flag triggers the RemoveAll
@@ -641,7 +683,7 @@ func TestRunAir_EnvNilBranch(t *testing.T) {
 func TestRunAir_Rebuild_RemovesTmp(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
-	err := runAir(devFlags{rebuild: true}, func(string) {})
+	_, err := runAir(devFlags{rebuild: true}, func(string) {}, nil)
 	assert.NoError(t, err)
 }
 
@@ -651,7 +693,7 @@ func TestRunAir_GoNotOnPath(t *testing.T) {
 	origLookPath := execLookPath
 	execLookPath = func(name string) (string, error) { return "", os.ErrNotExist }
 	t.Cleanup(func() { execLookPath = origLookPath })
-	err := runAir(devFlags{}, func(string) {})
+	_, err := runAir(devFlags{}, func(string) {}, nil)
 	require.Error(t, err)
 }
 
@@ -671,7 +713,7 @@ func TestAirSignalHandler_NilProcess(t *testing.T) {
 	airCmd := exec.Command("true")
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, airCmd, func(r string) { called = r })
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -684,8 +726,37 @@ func TestAirSignalHandler_WithProcess(t *testing.T) {
 	t.Cleanup(func() { _ = airCmd.Wait() })
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, airCmd, func(r string) { called = r })
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
+}
+
+// TestAirSignalHandler_KeyboardRestart — pressing R sends sigKeyboardRestart;
+// the handler SIGINTs Air, calls teardown with reason "restart", and sets
+// the restart flag so runAir returns restart=true.
+func TestAirSignalHandler_KeyboardRestart(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("true")
+	var called string
+	flag := &atomicBool{}
+	keyCh <- sigKeyboardRestart
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
+	assert.Equal(t, "restart", called)
+	assert.True(t, flag.Load())
+}
+
+// TestAirSignalHandler_KeyboardQuit — pressing Q is the same teardown
+// path as Ctrl+C; restart flag stays false.
+func TestAirSignalHandler_KeyboardQuit(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("true")
+	var called string
+	flag := &atomicBool{}
+	keyCh <- sigKeyboardQuit
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
+	assert.Equal(t, "quit", called)
+	assert.False(t, flag.Load())
 }
 
 // TestParseServicesInList — parseServicesList trims spaces and

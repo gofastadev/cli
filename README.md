@@ -2,13 +2,25 @@
 
 [![CI](https://github.com/gofastadev/cli/actions/workflows/ci.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/ci.yml) [![CodeQL](https://github.com/gofastadev/cli/actions/workflows/codeql.yml/badge.svg)](https://github.com/gofastadev/cli/actions/workflows/codeql.yml) [![codecov](https://codecov.io/gh/gofastadev/cli/graph/badge.svg)](https://codecov.io/gh/gofastadev/cli) [![Go Reference](https://pkg.go.dev/badge/github.com/gofastadev/cli.svg)](https://pkg.go.dev/github.com/gofastadev/cli) [![Go Report Card](https://goreportcard.com/badge/github.com/gofastadev/cli)](https://goreportcard.com/report/github.com/gofastadev/cli) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Go Version](https://img.shields.io/github/go-mod/go-version/gofastadev/cli)](https://github.com/gofastadev/cli/blob/main/go.mod) [![Release](https://img.shields.io/github/v/release/gofastadev/cli)](https://github.com/gofastadev/cli/releases)
 
-The command-line tool for [Gofasta](https://github.com/gofastadev/gofasta), a Go backend toolkit. The CLI is a standalone binary that creates new projects, generates code, and runs common development tasks. It does not import the gofasta library — it only manipulates files on disk.
+The `gofasta` binary — the command-line tool for [Gofasta](https://gofasta.dev), a Go backend toolkit. It creates new projects, generates code, runs the development loop (`gofasta dev`), and ships first-class agent integration. It is a standalone Go binary that does **not** import the gofasta library at runtime — it only manipulates files on disk.
+
+## The Gofasta project
+
+Gofasta is split across three independent repositories. Each has its own release cycle and `go.mod` / `package.json`.
+
+| Repo | Role |
+|------|------|
+| [`gofastadev/cli`](https://github.com/gofastadev/cli) | **You are here.** The `gofasta` binary — `gofasta new`, code generation, and the dev loop. |
+| [`gofastadev/gofasta`](https://github.com/gofastadev/gofasta) | The library your project imports — every package under `pkg/*`. |
+| [`gofastadev/website`](https://github.com/gofastadev/website) | The docs site at **[gofasta.dev](https://gofasta.dev)**. |
+
+For full documentation — every command's flags, every package's API, every guide — visit **[gofasta.dev](https://gofasta.dev)**. This README covers CLI installation, scaffolding, and the most common workflows; everything else is on the website.
 
 ## Install the CLI
 
 The CLI lives in its own Go module (`github.com/gofastadev/cli`) with `main.go` at `cmd/gofasta/`. It is not the same as the `github.com/gofastadev/gofasta` library, which your generated projects import as a dependency. You install one, you import the other.
 
-**Option A — `go install` (recommended for Go developers, requires Go 1.25.0+):**
+**Option A — `go install` (recommended for Go developers, requires Go 1.25.0+, install Go: <https://go.dev/doc/install>):**
 
 ```bash
 go install github.com/gofastadev/cli/cmd/gofasta@latest
@@ -129,7 +141,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
 3. Copies ~78 template files, replacing placeholders with your project name
-4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies (Wire, gqlgen, Air, swag)
+4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
 7. Generates GraphQL resolver code
@@ -137,7 +149,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 
 ## Start Developing
 
-After creating a project:
+After creating a project, you have two ways to run it. Either path requires **Docker** (install: <https://docs.docker.com/get-docker/>) — the recommended path runs the entire stack in containers; the host-machine path uses Docker only for PostgreSQL and runs the app on the host.
 
 ```bash
 cd myapp
@@ -145,9 +157,9 @@ cd myapp
 # Option 1: Docker (recommended — starts app + PostgreSQL)
 make up
 
-# Option 2: Host machine (requires local PostgreSQL)
+# Option 2: Host machine (requires local PostgreSQL or Docker for the DB)
 docker compose up db -d    # Start just the database
-make dev                   # Run with hot reload
+make dev                   # Run with hot reload (uses Air, fetched as a go.mod tool)
 ```
 
 Your app is now running:
@@ -261,6 +273,8 @@ gofasta g task process-payment
 gofasta g email-template order-confirmation
 # Creates templates/emails/order-confirmation.html
 ```
+
+> **Per-command reference.** Every `gofasta` command has a dedicated page on [gofasta.dev/docs/cli-reference](https://gofasta.dev/docs/cli-reference) with all its flags, error codes, and recipes. The README below is a tour of the most common workflows; the website is the source of truth for flag-level detail.
 
 ## Other Commands
 
@@ -429,7 +443,7 @@ cli/
 │   │   ├── serve.go              # Passthrough to project serve
 │   │   ├── seed.go               # Passthrough to project seed
 │   │   ├── swagger.go            # Swagger generation
-│   │   └── configutil/           # Reads config.yaml without framework import
+│   │   └── configutil/           # Reads config.yaml without importing the gofasta library
 │   ├── generate/                  # Code generation engine
 │   │   ├── commands.go           # Generate subcommands and step chains
 │   │   ├── types.go              # ScaffoldData, Field, Step types
@@ -449,6 +463,10 @@ cli/
 ├── go.mod
 └── README.md
 ```
+
+## Maintenance and sustainability
+
+Gofasta is currently maintained by one person; sustainability planning — release cadence, security SLOs, the solo-to-team transition, and the automation arc that retires manual steps as the project matures — is documented in the [release coordination repo](https://github.com/gofastadev/release), specifically in [`CADENCE.md`](https://github.com/gofastadev/release/blob/main/CADENCE.md), [`RELEASING.md`](https://github.com/gofastadev/release/blob/main/RELEASING.md), and [`COMMUNITY.md`](https://github.com/gofastadev/release/blob/main/COMMUNITY.md). Read those three together for the full picture.
 
 ## License
 

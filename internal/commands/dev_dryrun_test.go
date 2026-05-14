@@ -74,6 +74,38 @@ func TestRunDev_DryRun_JSONMode(t *testing.T) {
 	}
 }
 
+// TestRunDev_DryRun_ServicesAll_PlanShape — `--services all` is the
+// canonical "full stack in docker" invocation under the host-first
+// redesign. The dry-run output must surface (1) in_docker=true (app
+// is in the service list), (2) the full selected set, (3) any
+// profiles. Operators read this output to predict what `gofasta dev`
+// will do without actually starting docker, so the shape is a
+// contract.
+func TestRunDev_DryRun_ServicesAll_PlanShape(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"cache":{},"queue":{}}}`, 0)
+
+	stdout := captureStdout(t, func() {
+		err := runDev(devFlags{
+			envFile:      ".env",
+			dryRun:       true,
+			servicesList: []string{"app", "db", "cache", "queue"},
+			servicesRaw:  "all",
+			waitTimeout:  defaultWaitTimeout,
+		})
+		assert.NoError(t, err)
+	})
+
+	assert.Contains(t, stdout, "in_docker=true")
+	assert.Contains(t, stdout, "app")
+	assert.Contains(t, stdout, "cache")
+	assert.Contains(t, stdout, "queue")
+}
+
 // TestDevFlags_KeepVolumes_DefaultIsTrue — sanity: --keep-volumes has a
 // true default so the documented teardown behavior (preserve volumes)
 // holds without any extra flag.

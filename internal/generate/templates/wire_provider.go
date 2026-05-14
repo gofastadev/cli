@@ -5,6 +5,7 @@ var WireProvider = `package providers
 
 import (
 	"github.com/google/wire"
+
 	"{{.ModulePath}}/app/repositories"
 	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 {{- if .IncludeController}}
@@ -14,6 +15,7 @@ import (
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 )
 
+// {{.Name}}Set wires the {{.Name}} resource: repository, service{{if .IncludeController}}, and controller{{end}}.
 var {{.Name}}Set = wire.NewSet(
 	repositories.New{{.Name}}Repository,
 	wire.Bind(new(repoInterfaces.{{.Name}}RepositoryInterface), new(*repositories.{{.Name}}Repository)),

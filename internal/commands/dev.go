@@ -7,8 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -18,37 +20,69 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	devFlagValues  devFlags
-	devServicesRaw string
-)
+var devFlagValues devFlags
 
 var devCmd = &cobra.Command{
 	Use:   "dev",
-	Short: "Run the full local dev environment (services + migrations + Air hot reload)",
-	Long: `Bring the project's full development environment up with one
-command: start the compose services (database, cache, queue),
-health-check each one, apply pending migrations, then launch Air
-for hot reload of the host-side app.
+	Short: "Run the local dev environment — host-first by default, optional Docker services via --services",
+	Long: `Run your gofasta project's local development environment.
 
-Pipeline (each stage can be opted out independently):
-  1. Preflight        — verify docker + docker compose availability
-  2. Fresh volumes    — optional; drops every compose volume (--fresh)
-  3. Service start    — docker compose up -d <resolved services>
-  4. Health-wait      — poll each service until healthy (timeout 30s)
-  5. Migrate          — migrate up against the now-healthy database
-  6. Seed             — optional; runs ` + "`gofasta seed`" + ` after migrations
-  7. Air              — exec ` + "`go tool air`" + ` against .air.toml
-  8. Teardown         — on SIGINT/SIGTERM, stop services (volumes preserved)
+Default mode (no flags): the app runs on host with Air hot reload.
+Before Air starts, gofasta probes your declared dependencies
+(database, cache, queue from config.yaml + .env). If any dep is
+unreachable, an interactive menu offers four recovery paths:
 
-Projects without compose.yaml get steps 1–4 short-circuited and fall
-straight through to Air — preserving the "I brought my own DB"
-workflow.
+  [1] Enter a different connection string for the failing service
+  [2] Start the missing service(s) in Docker (equivalent to --services <name>)
+  [3] Run app without db (warns about no migrations / no persistence)
+  [4] Cancel and exit
+
+To pre-declare which compose services should run in Docker:
+
+  gofasta dev --services db                # db in Docker, app on host
+  gofasta dev --services db,cache,queue    # supporting services in Docker, app on host
+  gofasta dev --services db,app            # db + app in Docker, app foregrounded
+  gofasta dev --services all               # everything compose.yaml declares (full stack)
+
+The mental model: anything listed in --services runs in Docker. If
+"app" is in the list, the app runs in a foreground container instead
+of on host with Air. The list scales to any service compose.yaml
+declares — your own "lavinmq" or "elasticsearch" works the moment
+you add it to compose.yaml, no CLI release needed.
+
+While the pipeline is running, the terminal accepts these single-key
+shortcuts (disable with --no-keyboard, auto-disabled when stdin is
+not a TTY):
+  r, R    restart the entire pipeline from scratch
+  q, Q    quit gofasta dev (same as Ctrl+C)
+  h, H, ? print the keybinding help
+
+Pipeline stages:
+  1. Load .env                  — overlay onto config.yaml
+  2. Resolve plan               — validate --services against compose.yaml
+  3. Service start (if any)     — docker compose up -d <selected>
+  4. Health-wait                — poll each service until healthy
+  5. Preflight                  — probe db/cache/queue; menu on failure
+  6. Migrate                    — migrate up (delegated inside the app
+                                   container when "app" is in --services;
+                                   skipped under no-db mode)
+  7. Seed                       — optional; runs ` + "`gofasta seed`" + `
+  8. Air on host, OR foreground compose up <app>
+  9. Teardown                   — on SIGINT/SIGTERM, stop services
 
 Every step emits a structured event when --json is set, so agents and
-CI tooling can branch on facts instead of log strings.`,
+CI tooling can branch on facts instead of log strings.
+
+DEPRECATED: --all-in-docker is a one-release alias for --services all.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		devFlagValues.servicesList = parseServicesList(devServicesRaw)
+		// `--all-in-docker` is the deprecated alias for `--services all`.
+		// We rewrite it here (before parseServicesList) so the rest of
+		// the pipeline only sees the canonical form.
+		if devFlagValues.allInDocker && devFlagValues.servicesRaw == "" {
+			termcolor.PrintWarn("--all-in-docker is deprecated; use --services all (silently mapped for one release)")
+			devFlagValues.servicesRaw = "all"
+		}
+		devFlagValues.servicesList = parseServicesList(devFlagValues.servicesRaw)
 		return runDev(devFlagValues)
 	},
 }
@@ -57,14 +91,8 @@ func init() {
 	rootCmd.AddCommand(devCmd)
 
 	f := devCmd.Flags()
-	f.BoolVar(&devFlagValues.noServices, "no-services", false,
-		"skip all compose orchestration; just run Air (honors an externally-managed database)")
-	f.BoolVar(&devFlagValues.noDB, "no-db", false,
-		"skip DB-like services (postgres, mysql, clickhouse, …)")
-	f.BoolVar(&devFlagValues.noCache, "no-cache", false,
-		"skip cache-like services (redis, valkey, …)")
-	f.BoolVar(&devFlagValues.noQueue, "no-queue", false,
-		"skip queue-like services (asynq, nats, rabbitmq, …)")
+	f.StringVar(&devFlagValues.servicesRaw, "services", "",
+		"comma-separated list of compose services to start in Docker (e.g. 'db', 'db,cache,queue'); use 'all' for every service compose.yaml declares (full stack including app). Empty = host-only.")
 	f.BoolVar(&devFlagValues.noMigrate, "no-migrate", false,
 		"skip running migrate up after services become healthy")
 	f.BoolVar(&devFlagValues.noTeardown, "no-teardown", false,
@@ -73,10 +101,8 @@ func init() {
 		"preserve named volumes on teardown (default: true)")
 	f.BoolVar(&devFlagValues.fresh, "fresh", false,
 		"drop every compose volume before starting — forces a clean DB state")
-	f.StringVar(&devServicesRaw, "services", "",
-		"comma-separated list of compose services to start (overrides --no-* flags)")
 	f.StringVar(&devFlagValues.profile, "profile", "",
-		"docker compose profile to activate (e.g. cache, queue)")
+		"additional docker compose profile to activate")
 	f.DurationVar(&devFlagValues.waitTimeout, "wait-timeout", defaultWaitTimeout,
 		"how long to wait for compose services to report healthy")
 	f.StringVar(&devFlagValues.envFile, "env-file", ".env",
@@ -95,20 +121,68 @@ func init() {
 		"start the local dev dashboard — an HTML debug page with routes, health, and live service state")
 	f.IntVar(&devFlagValues.dashboardPort, "dashboard-port", 9090,
 		"port for the dev dashboard HTTP server")
+	f.BoolVar(&devFlagValues.allInDocker, "all-in-docker", false,
+		"DEPRECATED — use --services all. This flag will be removed in the next release.")
+	f.BoolVar(&devFlagValues.noKeyboard, "no-keyboard", false,
+		"disable the interactive keyboard layer (r=restart, q=quit, h=help); use when stdin is piped or for non-interactive sessions")
 }
 
-// runDev is the orchestration entrypoint. Broken into clearly-named
-// stages so the pipeline reads top-to-bottom. Each stage consults flags
-// to decide whether to execute; each emits one or more events via the
-// devEmitter so humans see status lines and agents see JSON events.
+// runDev is the orchestration entrypoint. It owns three top-level
+// concerns:
 //
-//nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
+//   - the keyboard listener (raw-mode stdin → restart/quit signals),
+//     which must persist across pipeline iterations so the user can
+//     press R again immediately after a restart completes;
+//   - the restart loop, which re-runs runDevPipeline from scratch each
+//     time the pipeline returns restart=true (i.e. the user pressed R);
+//   - exit-time terminal restoration (deferred), so a panic does not
+//     leave the user's terminal in raw mode.
+//
+// Tests that exercise the pipeline shape call runDev directly — under
+// `go test`, os.Stdin is a pipe (not a TTY) so the keyboard layer
+// auto-skips and runDev behaves exactly like the old single-pass body.
+//
+// The keyboard listener is started INSIDE the pipeline, after the
+// preflight menu has resolved — otherwise the listener's cbreak-mode
+// stdin grab would steal every keystroke from the menu's line reader
+// and the user would see no echo / no input registered.
+// runDevPipelineFn is a package-level seam over runDevPipeline so tests
+// can drive runDev's restart-loop branch (iter > 1) without a real
+// keyboard listener / Air subprocess. Production uses the real
+// runDevPipeline.
+var runDevPipelineFn = runDevPipeline
+
 func runDev(flags devFlags) error {
 	emitter := newDevEmitter(jsonOutput)
 
+	for iter := 1; ; iter++ {
+		if iter > 1 {
+			emitter.Info(fmt.Sprintf("⟳ restarting from scratch (iteration %d)", iter))
+		}
+		restart, err := runDevPipelineFn(flags, emitter)
+		if err != nil {
+			return err
+		}
+		if !restart {
+			return nil
+		}
+	}
+}
+
+// runDevPipeline is the single-pass dev pipeline. Each call goes
+// through every stage from .env load to Stage 8, then either exits
+// (restart=false) or signals the outer loop to re-run (restart=true).
+//
+// Broken into clearly-named stages so the pipeline reads top-to-bottom.
+// Each stage consults flags to decide whether to execute; each emits
+// one or more events via the devEmitter so humans see status lines and
+// agents see JSON events.
+//
+//nolint:gocognit,gocyclo // Linear pipeline; breaking it up would obscure the ordering invariants.
+func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// --- Stage 0: load .env ------------------------------------------------
-	// Keep the existing behavior: load .env first so subsequent stages see
-	// the developer's local overrides for DATABASE_HOST / PORT / etc.
+	// Re-loaded each iteration so editing .env and pressing R picks
+	// up the new values without re-invoking gofasta dev from outside.
 	if loaded, err := loadDotEnv(flags.envFile); err != nil {
 		emitter.Warn(fmt.Sprintf("%s present but could not be loaded: %v", flags.envFile, err))
 	} else if loaded > 0 {
@@ -124,18 +198,18 @@ func runDev(flags devFlags) error {
 	// effects.
 	plan, err := resolveDevPlan(flags)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	if flags.dryRun {
 		printDevPlan(plan, emitter)
-		return nil
+		return false, nil
 	}
 
 	// --- Stage 2: preflight ------------------------------------------------
 	if plan.orchestrate {
 		if !composeAvailableFn() {
-			return clierr.New(clierr.CodeDevDockerUnavailable,
+			return false, clierr.New(clierr.CodeDevDockerUnavailable,
 				"docker or docker compose is not available")
 		}
 		docker, compose := detectVersions()
@@ -151,22 +225,33 @@ func runDev(flags devFlags) error {
 	}
 
 	// --- Stage 4: start services -------------------------------------------
-	if plan.orchestrate && len(plan.services.selected) > 0 {
-		for _, name := range plan.services.selected {
+	// Under --all-in-docker we deliberately START the app in foreground
+	// later (Stage 8) instead of as a detached daemon. The app's stdout
+	// then attaches directly to the user's terminal — same UX as running
+	// Air on the host, just inside a container. So filter the app out of
+	// the detached-up list here; supporting services (db, cache, queue)
+	// stay daemonized because their output isn't useful in the foreground.
+	detachedServices := plan.services.selected
+	if plan.inDocker {
+		detachedServices = removeService(plan.services.selected, appServiceName)
+	}
+
+	if plan.orchestrate && len(detachedServices) > 0 {
+		for _, name := range detachedServices {
 			emitter.ServiceStart(name)
 		}
-		if err := startServices(plan.services.selected, flags.profile); err != nil {
-			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
+		if err := startServices(detachedServices, plan.profiles); err != nil {
+			return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
 				"failed to start compose services")
 		}
 
-		if err := waitHealthy(plan.services.selected, plan.services.hasHealth, flags.waitTimeout,
+		if err := waitHealthy(detachedServices, plan.services.hasHealth, flags.waitTimeout,
 			func(name, state string, elapsed time.Duration) {
 				if strings.HasPrefix(state, "running/healthy") || state == "running/" {
 					emitter.ServiceHealthy(name, elapsed)
 				}
 			}); err != nil {
-			return clierr.Wrap(clierr.CodeDevServiceUnhealthy, err, err.Error())
+			return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err, err.Error())
 		}
 	}
 
@@ -201,8 +286,58 @@ func runDev(flags devFlags) error {
 	}
 	defer runTeardown("clean")
 
-	// --- Stage 5: migrations -----------------------------------------------
-	if !flags.noMigrate {
+	// --- Stage 5: preflight (dep connectivity probes) ----------------------
+	// After any --services-named compose services are up + healthy, we
+	// probe the app's declared deps (database / cache / queue from
+	// config.yaml + .env). When a probe reports unreachable AND the
+	// user is in a TTY, the interactive menu offers four recovery
+	// paths (enter conn string, start in docker, run without db,
+	// cancel). Non-TTY shells skip the menu and fail loud.
+	//
+	// The probes intentionally run AFTER service startup so a user
+	// who passed `--services db` doesn't get a spurious "db
+	// unreachable" warning before the just-started container has had
+	// a moment to settle.
+	results := runPreflight()
+	if hasUnreachable(results) {
+		outcome, menuStarted := runPreflightMenu(results)
+		switch outcome {
+		case menuOK:
+			// Recovery succeeded; proceed.
+		case menuRunWithoutDB:
+			flags.noDB = true
+		case menuCancel:
+			return false, clierr.New(clierr.CodeDevPreflightCancel,
+				"preflight unresolved")
+		}
+		// If the menu's option [2] brought up compose services, they
+		// are NOT in plan.services.selected (the plan was built before
+		// the menu ran). The teardown closure stops only what the plan
+		// owns, so without this merge a q/Ctrl+C would kill the app
+		// but leave the menu-started db (and friends) running between
+		// dev sessions. Merge them in so teardown reaches them.
+		if len(menuStarted) > 0 {
+			plan.services.selected = mergeServices(plan.services.selected, menuStarted)
+			plan.orchestrate = true
+		}
+	}
+
+	// --- Stage 6: migrations -----------------------------------------------
+	// Under in-docker mode the app container's CMD already runs
+	// migrate against db:5432 before starting Air (see
+	// deployments/docker/dev.dockerfile.tmpl), so a host-side run would
+	// be a wasteful double-attempt and would force the user to have
+	// the `migrate` CLI on $PATH. We emit MigrateDelegated (NOT
+	// MigrateSkipped) so the message reflects what's really happening:
+	// migrations ARE running — just inside the container, and their
+	// output streams to the foreground via Stage 8.
+	//
+	switch {
+	case flags.noDB:
+		emitter.MigrateSkipped("running without db (menu option [3]) — no schema to migrate")
+	case plan.inDocker:
+		emitter.MigrateDelegated("running inside the app container")
+	case !flags.noMigrate:
 		if applied, err := runMigrationsWithCount(); err != nil {
 			emitter.MigrateSkipped(err.Error())
 		} else {
@@ -210,8 +345,10 @@ func runDev(flags devFlags) error {
 		}
 	}
 
-	// --- Stage 6: seed (optional) ------------------------------------------
-	if flags.seed {
+	// --- Stage 7: seed (optional) ------------------------------------------
+	// Skipped automatically in noDB mode — the degraded SQLite stub
+	// has no schema for the seed functions to populate.
+	if flags.seed && !flags.noDB {
 		if err := runSeedDelegation(); err != nil {
 			emitter.Warn(fmt.Sprintf("seed failed: %v", err))
 		} else {
@@ -219,13 +356,29 @@ func runDev(flags devFlags) error {
 		}
 	}
 
-	// --- Stage 7: optional side-processes ----------------------------------
+	// --- Stage 8: optional side-processes ----------------------------------
 	// --attach-logs: stream docker compose logs alongside Air output.
 	// --dashboard:   spin up the debug HTTP server on dashboardPort.
 	// Both register shutdown hooks so they stop cleanly with the pipeline.
+	//
+	// Under in-docker mode the foreground stream IS the app container's
+	// log stream (set up below in Stage 9), so an explicit --attach-logs
+	// here would just duplicate work; warn and let Stage 9 own it.
 	var sideCancels []func()
-	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 {
+	if flags.attachLogs && plan.orchestrate && len(plan.services.selected) > 0 && !plan.inDocker {
 		sideCancels = append(sideCancels, startLogStreamer(plan.services.selected))
+	}
+	if flags.attachLogs && plan.inDocker {
+		emitter.Warn("--attach-logs is implicit when the app runs in docker (its logs are already in the foreground); pass --attach-logs only to multiplex backing services' logs alongside")
+	}
+
+	// In noDB mode print a loud banner so the user remembers why
+	// DB-touching endpoints are about to 5xx. The framework's
+	// ProvideDB falls back to in-memory SQLite (no schema), so the
+	// app boots and non-DB endpoints work, but any Find/Save against
+	// the project's models fails with "no such table: X".
+	if flags.noDB {
+		emitter.Warn("🔶 NO-DB MODE — migrations skipped; endpoints touching the database will return 5xx; data is not persisted")
 	}
 
 	// --- Stage 8: Air ------------------------------------------------------
@@ -235,17 +388,145 @@ func runDev(flags devFlags) error {
 	}
 	portInt, _ := strconv.Atoi(port)
 	urls := airURLs(port)
-	emitter.Air(portInt, urls)
 
 	if flags.dashboard {
 		sideCancels = append(sideCancels, startDashboard(flags.dashboardPort, portInt, &plan.services, emitter))
 	}
 
-	err = runAir(flags, runTeardown)
+	// Start the keyboard listener NOW (Stage 8b) — after preflight + the
+	// menu have resolved. Earlier startup would have put stdin in cbreak
+	// mode while the menu's bufio.Reader was waiting on a newline, with
+	// the listener silently swallowing every byte.
+	//
+	// In in-docker mode the listener is skipped entirely. `docker
+	// compose up` (foreground) opens /dev/tty directly to handle its
+	// own Ctrl+C and attached-container input forwarding; if both
+	// compose and our listener read from the same TTY, compose wins
+	// the race and our r/q/h shortcuts silently do nothing. Honest
+	// limit beats a broken-looking listener — when the app runs in a
+	// container we print a clear "use Ctrl+C to stop" notice instead.
+	listenerDisabled := flags.noKeyboard || plan.inDocker
+	keySignals, restoreKB, _ := startKeyboardListener(os.Stdin, listenerDisabled)
+	defer restoreKB()
+	if plan.inDocker && !flags.noKeyboard {
+		emitter.Info("ℹ docker compose attaches the terminal; r/q/h shortcuts are unavailable in this mode. Use Ctrl+C to stop.")
+	}
+
+	if plan.inDocker {
+		// Containerized mode: supporting services are already running
+		// (Stage 4 brought them up with `compose up -d` minus the app).
+		// Now we start the app in the FOREGROUND via `compose up app`
+		// so its stdout/stderr attach directly to the user's terminal.
+		// The container's CMD runs migrate then Air; both stream live
+		// into the dev terminal — same UX as host-mode Air, just inside
+		// a container.
+		//
+		// --attach-logs additionally tails the supporting services'
+		// stdout via a sideband `compose logs -f` streamer so multi-
+		// service debugging works without leaving the foreground.
+		emitter.AirInDocker(portInt, urls)
+		if flags.attachLogs {
+			supporting := removeService(plan.services.selected, appServiceName)
+			sideCancels = append(sideCancels, startLogStreamer(supporting))
+		}
+		restart, err := runInDockerForeground(runTeardown, keySignals)
+		for _, c := range sideCancels {
+			c()
+		}
+		return restart, err
+	}
+
+	emitter.Air(portInt, urls)
+	restart, err := runAir(flags, runTeardown, keySignals)
 	for _, c := range sideCancels {
 		c()
 	}
-	return err
+	return restart, err
+}
+
+// runInDockerForeground starts `docker compose up <app>` as a
+// foreground child whose stdout/stderr inherit gofasta dev's terminal.
+// The container's CMD (migrate + Air) then streams directly to the
+// user's screen — same UX as host-mode Air, no log-streamer middleman.
+//
+// The function blocks until one of:
+//
+//   - SIGINT/SIGTERM (Ctrl+C from the terminal or `kill`)
+//   - sigKeyboardQuit on keySignals (the user pressed Q)
+//   - sigKeyboardRestart on keySignals (the user pressed R)
+//   - the foreground compose process exits on its own (app crashed,
+//     compose itself died, or the container's CMD returned)
+//
+// Returns true only when the user pressed R. All other paths return
+// false so the outer pipeline loop exits cleanly.
+//
+// Stdin is deliberately NOT piped to the child. The keyboard listener
+// in dev_keyboard.go owns stdin in cbreak mode; piping it through
+// would either race the listener for bytes or confuse `docker compose
+// up`'s own (unused) stdin handling.
+func runInDockerForeground(teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
+	cmd := execCommand("docker", "compose", "up", appServiceName)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	// cmd.Stdin intentionally left nil — see function doc.
+
+	if err := cmd.Start(); err != nil {
+		return false, clierr.Wrap(clierr.CodeDevServiceUnhealthy, err,
+			"failed to start app container in foreground")
+	}
+
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	return runInDockerSupervisor(cmd, exited, teardown, keySignals), nil
+}
+
+// runInDockerSupervisor blocks on a select over four channels and
+// translates each event into a teardown reason. Extracted from
+// runInDockerForeground so tests can drive every branch with an
+// already-started (or fake) *exec.Cmd plus a synthesized `exited`
+// channel — no real docker process required.
+//
+// Returns true only when the user pressed R, so the outer pipeline
+// loop knows to re-run. Every other path returns false (clean exit).
+func runInDockerSupervisor(
+	cmd *exec.Cmd,
+	exited <-chan error,
+	teardown func(string),
+	keySignals <-chan keyboardSignal,
+) bool {
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
+
+	interruptCompose := func() {
+		if cmd != nil && cmd.Process != nil {
+			_ = cmd.Process.Signal(os.Interrupt)
+		}
+	}
+
+	select {
+	case <-sigChan:
+		interruptCompose()
+		<-exited
+		teardown("interrupted")
+		return false
+	case sig := <-keySignals:
+		interruptCompose()
+		<-exited
+		if sig == sigKeyboardRestart {
+			teardown("restart")
+			return true
+		}
+		teardown("quit")
+		return false
+	case <-exited:
+		// Compose / the app container exited on its own — crash, OOM,
+		// or the container's CMD returned. Tear down the rest of the
+		// stack so a half-up state doesn't linger.
+		teardown("app-exited")
+		return false
+	}
 }
 
 // devPlan is what resolveDevPlan builds before any side effect runs.
@@ -253,32 +534,116 @@ func runDev(flags devFlags) error {
 // both paths see an identical picture of what's about to happen.
 type devPlan struct {
 	orchestrate bool        // run the compose pipeline at all
+	inDocker    bool        // --all-in-docker: app + Air run inside the app container
+	profiles    []string    // compose profiles to activate (cache + queue auto-on, plus --profile)
 	services    devServices // resolved service set (may be empty)
 }
 
-func resolveDevPlan(flags devFlags) (devPlan, error) {
-	// If the user opts out of orchestration entirely, or there's no
-	// compose.yaml in sight, fall straight through to the Air-only path.
-	if flags.noServices || !composeFileExists() {
-		if len(flags.servicesList) > 0 && !composeFileExists() {
-			return devPlan{}, clierr.New(clierr.CodeDevComposeNotFound,
-				"no compose.yaml found but --services was set")
+// resolveProfiles builds the list of compose profiles to activate for
+// this run. The default set is empty; users opt in with --profile.
+// The cache + queue profiles, previously auto-on, are gone — they
+// belonged to the now-removed auto-orchestrate model.
+func resolveProfiles(flags devFlags) []string {
+	if flags.profile == "" {
+		return nil
+	}
+	return []string{flags.profile}
+}
+
+// inDockerMode reports whether the app should run in a foreground
+// container (true when `app` appears in the selected service list)
+// vs on host with Air. Takes the resolved list (post-`all`-expansion)
+// so callers don't have to think about alias normalization.
+func inDockerMode(selected []string) bool {
+	for _, s := range selected {
+		if s == appServiceName {
+			return true
 		}
+	}
+	return false
+}
+
+func resolveDevPlan(flags devFlags) (devPlan, error) {
+	// `--services` without compose.yaml is a configuration error —
+	// can't bring services up if there's no file to read from.
+	if len(flags.servicesList) > 0 && !composeFileExists() {
+		return devPlan{}, clierr.New(clierr.CodeDevComposeNotFound,
+			"--services was set but no compose.yaml found in the project root")
+	}
+
+	// No services requested AND no compose.yaml: host-only Air, no
+	// orchestration. Preflight will still check the dep connection
+	// strings via Stage 1.
+	if len(flags.servicesList) == 0 {
 		return devPlan{orchestrate: false}, nil
 	}
 
-	available, hasHealth, err := detectComposeServices(flags.profile)
+	// At this point flags.servicesList is non-empty AND compose.yaml
+	// exists. We need to query compose for the available service list
+	// and validate every name in --services against it.
+	//
+	// We always discover every declared profile and activate them all.
+	// Without this, `--services <profile-gated-name>` would fail
+	// validation with "no service named X" even when X is right there
+	// in compose.yaml — because compose hides profile-gated services
+	// from `config --services` unless the profile is active. Same
+	// reason the typo-suggestion's "Available services" list would be
+	// incomplete. Activating every profile makes the universe
+	// faithfully equal "every service compose.yaml declares".
+	//
+	// This is safe: passing extra `--profile` flags to compose only
+	// affects which services are *eligible* to start; the actual
+	// startup is still bounded by the explicit names we pass to
+	// `compose up -d <names>`. A user who runs `--services db` does
+	// not get cache or queue brought up just because their profiles
+	// are now active.
+	profiles := resolveProfiles(flags)
+	if discovered, err := detectComposeProfilesFn(); err == nil {
+		for _, p := range discovered {
+			if !slices.Contains(profiles, p) {
+				profiles = append(profiles, p)
+			}
+		}
+	}
+	available, hasHealth, err := detectComposeServices(profiles, true)
 	if err != nil {
 		return devPlan{}, clierr.Wrap(clierr.CodeDevComposeNotFound, err,
 			"could not read compose configuration")
 	}
-	selected := resolveSelectedServices(available, flags)
+
+	// Validate every name in --services against the compose-declared
+	// list. Returns a typo suggestion when the name is "close enough".
+	selected, err := selectServices(available, flags.servicesRaw)
+	if err != nil {
+		return devPlan{}, clierr.New(clierr.CodeDevServiceUnknown, err.Error())
+	}
+
+	// In-docker mode (app in selected list) cannot coexist with a
+	// filesystem-path replace directive in go.mod — the docker build
+	// context can't see paths outside the project. Check AFTER
+	// selectServices so the `--services all` alias resolves to the
+	// full list before this gate decides whether the app is in scope.
+	inDocker := inDockerMode(selected)
+	if inDocker {
+		if replaces, _ := findLocalReplacesFn("go.mod"); len(replaces) > 0 {
+			lines := make([]string, 0, len(replaces))
+			for _, r := range replaces {
+				lines = append(lines, fmt.Sprintf("    %s => %s", r.Module, r.Path))
+			}
+			return devPlan{}, clierr.New(clierr.CodeDevLocalReplace,
+				fmt.Sprintf("go.mod has filesystem-path replace directives that the docker build cannot resolve:\n%s",
+					strings.Join(lines, "\n")))
+		}
+	}
+
 	return devPlan{
 		orchestrate: true,
+		inDocker:    inDocker,
+		profiles:    profiles,
 		services: devServices{
 			available: available,
 			selected:  selected,
-			profile:   flags.profile,
+			profiles:  profiles,
 			hasHealth: hasHealth,
 		},
 	}, nil
@@ -286,10 +651,10 @@ func resolveDevPlan(flags devFlags) (devPlan, error) {
 
 func printDevPlan(plan devPlan, emitter devEmitter) {
 	if plan.orchestrate {
-		emitter.Info(fmt.Sprintf("orchestrate=true profile=%q services=%v",
-			plan.services.profile, plan.services.selected))
+		emitter.Info(fmt.Sprintf("orchestrate=true in_docker=%t profiles=%v selected=%v",
+			plan.inDocker, plan.profiles, plan.services.selected))
 	} else {
-		emitter.Info("orchestrate=false (no compose.yaml or --no-services)")
+		emitter.Info("orchestrate=false (host-only; --services not set)")
 	}
 }
 
@@ -391,7 +756,7 @@ func airURLs(port string) map[string]string {
 // rarely fails).
 var removeAllFn = os.RemoveAll
 
-func runAir(flags devFlags, teardown func(string)) error {
+func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
 	if flags.rebuild {
 		// tmp/ is Air's default build directory; projects that
 		// customize .air.toml may use a different path, but clearing
@@ -406,14 +771,19 @@ func runAir(flags devFlags, teardown func(string)) error {
 	args := []string{"tool", "air"}
 
 	if _, err := execLookPath("go"); err != nil {
-		return clierr.New(clierr.CodeDevAirNotInstalled,
+		return false, clierr.New(clierr.CodeDevAirNotInstalled,
 			"Go toolchain not on $PATH")
 	}
 
 	airCmd := execCommand("go", args...)
 	airCmd.Stdout = os.Stdout
 	airCmd.Stderr = os.Stderr
-	airCmd.Stdin = os.Stdin
+	// Deliberately do NOT pipe os.Stdin to Air. The keyboard listener
+	// in dev_keyboard.go owns stdin (in raw mode) for r/q/h shortcuts,
+	// and Air does not read stdin for any interactive feature — it
+	// reloads on filesystem events. Letting Air keep stdin would either
+	// fight the listener for bytes or, depending on terminal mode,
+	// cause Air to burn CPU on EOF.
 
 	// Inject GOFLAGS=-tags=devtools so Air's internal `go build`
 	// compiles the scaffold's app/devtools/devtools_enabled.go file
@@ -432,21 +802,57 @@ func runAir(flags devFlags, teardown func(string)) error {
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-	go airSignalHandler(sigChan, airCmd, teardown)
+	defer signal.Stop(sigChan)
+
+	// done lets the signal-handler goroutine exit when Air finishes
+	// naturally (no signal received). Closed explicitly below AFTER
+	// airCmd.Run() returns. Closing too early races with the handler's
+	// select against sigChan/keySignals — if `done` fires first, a
+	// user-pressed Ctrl+C gets swallowed and teardown never runs.
+	done := make(chan struct{})
+
+	// handlerDone closes when airSignalHandler returns. We wait on it
+	// AFTER airCmd.Run() so the handler's teardown (e.g. `docker
+	// compose stop db` for menu-started services) gets to finish
+	// before runAir returns. Without this, Ctrl+C kills Air, Air's
+	// process exits, airCmd.Run() returns, runAir returns, runDev
+	// returns, main exits — and the in-flight `docker compose stop`
+	// goroutine is terminated mid-syscall, leaving the db container
+	// running. The leak that prompted this whole investigation.
+	handlerDone := make(chan struct{})
+
+	// restartFlag is set by the signal-handler goroutine when the
+	// caller pressed R. Read by the post-Run block to decide whether
+	// to return restart=true and let the outer loop re-run the
+	// pipeline.
+	var restartFlag atomicBool
+	go func() {
+		defer close(handlerDone)
+		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
+	}()
 
 	err := airCmd.Run()
+	// Air has exited. Either a signal was received (handler is mid-
+	// teardown) or Air died naturally (handler is blocked in select).
+	// Close `done` so a still-blocked handler can exit cleanly via its
+	// <-done case, then wait for the handler to finish before
+	// returning — that guarantees any teardown subprocess (`docker
+	// compose stop`, `down -v`) ran to completion.
+	close(done)
+	<-handlerDone
+	restart := restartFlag.Load()
 	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
 	// exit as a successful shutdown rather than a pipeline failure.
 	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
 		if isSignaledExit(airCmd.ProcessState) {
-			return nil
+			return restart, nil
 		}
 	}
 	if err != nil {
-		return clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+		return restart, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
 			"air exited with error")
 	}
-	return nil
+	return restart, nil
 }
 
 // isSignaledExit reports whether a process exited due to a signal.
@@ -461,15 +867,71 @@ var isSignaledExit = func(ps *os.ProcessState) bool {
 
 // airSignalHandler is the goroutine body from runAir. Extracted into a
 // named function so tests can drive it directly without racing the
-// real air process. Sends SIGINT to the running air process (if any)
-// and then calls teardown to stop compose services.
-func airSignalHandler(sigChan <-chan os.Signal, airCmd *exec.Cmd, teardown func(string)) {
-	<-sigChan
-	if airCmd.Process != nil {
-		_ = airCmd.Process.Signal(os.Interrupt)
+// real air process.
+//
+// Multiplexes three kinds of input:
+//
+//   - sigChan (OS SIGINT/SIGTERM): SIGINT the Air process and tear
+//     down. Pipeline exits cleanly.
+//   - keySignals = sigKeyboardRestart: same as Ctrl+C semantics but
+//     sets restartFlag so the outer loop re-runs the pipeline.
+//   - keySignals = sigKeyboardQuit: same as Ctrl+C semantics, no
+//     restart.
+//
+// restartFlag is the seam through which runAir learns whether the
+// child's SIGINT was caused by the user pressing R; it is the cleanest
+// way to communicate from a goroutine without wrapping the return path
+// in extra channels.
+func airSignalHandler(
+	sigChan <-chan os.Signal,
+	keySignals <-chan keyboardSignal,
+	done <-chan struct{},
+	airCmd *exec.Cmd,
+	teardown func(string),
+	restartFlag *atomicBool,
+) {
+	select {
+	case <-done:
+		// Air finished on its own; no signal or keypress occurred.
+		// Nothing to clean up here — the deferred teardown in runAir
+		// owns the compose-stack stop, and signal.Stop releases the
+		// OS signal channel.
+		return
+	case <-sigChan:
+		if airCmd.Process != nil {
+			_ = airCmd.Process.Signal(os.Interrupt)
+		}
+		teardown("interrupted")
+	case sig := <-keySignals:
+		if sig == sigKeyboardRestart {
+			restartFlag.Store(true)
+			if airCmd.Process != nil {
+				_ = airCmd.Process.Signal(os.Interrupt)
+			}
+			teardown("restart")
+			return
+		}
+		if airCmd.Process != nil {
+			_ = airCmd.Process.Signal(os.Interrupt)
+		}
+		teardown("quit")
 	}
-	teardown("interrupted")
 }
+
+// atomicBool is a tiny sync/atomic.Bool stand-in scoped to the
+// runAir/airSignalHandler exchange. We keep our own type rather than
+// pulling sync/atomic across the call sites so the goroutine
+// interaction stays obvious in this file (and so runAir's signature
+// does not pollute call sites with sync/atomic.Bool pointers).
+type atomicBool struct {
+	v atomic.Bool
+}
+
+// Store atomically writes b.
+func (a *atomicBool) Store(b bool) { a.v.Store(b) }
+
+// Load atomically returns the current value.
+func (a *atomicBool) Load() bool { return a.v.Load() }
 
 // appendTag merges a build tag into an existing GOFLAGS string. If the
 // existing value already contains a -tags= fragment, we splice the new

@@ -26,6 +26,19 @@ type testScaffoldData struct {
 	ModulePath        string
 }
 
+// HasTimeField mirrors the helper on the production ScaffoldData type. The
+// model template uses it to gate the `import "time"` line — without this
+// method the template would always render and the test data would fail
+// the template engine's strict field check.
+func (s testScaffoldData) HasTimeField() bool {
+	for _, f := range s.Fields {
+		if f.GoType == "time.Time" {
+			return true
+		}
+	}
+	return false
+}
+
 type testField struct {
 	Name      string
 	JSONName  string

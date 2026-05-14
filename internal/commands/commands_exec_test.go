@@ -85,6 +85,12 @@ func TestRunDBReset_DropFails(t *testing.T) {
 
 // stagedFakeExec returns a fake that exits with code[i] on the i-th call,
 // repeating the final code if there are more calls than codes.
+//
+// Like withFakeExec, this also stubs the preflight probes to report OK
+// — every dev pipeline test using stagedFakeExec needs the preflight
+// to pass so the staged exit codes can drive the actual shell-out
+// sequence under test. See the comment on withFakeExec for the
+// migrate-version → TCP-probe refactor history.
 func stagedFakeExec(t *testing.T, codes ...int) {
 	t.Helper()
 	orig := execCommand
@@ -98,6 +104,7 @@ func stagedFakeExec(t *testing.T, codes ...int) {
 		return fakeExecCommand(code)(name, args...)
 	}
 	t.Cleanup(func() { execCommand = orig })
+	stubProbesOK(t)
 }
 
 func TestRunDBReset_UpFails(t *testing.T) {
@@ -295,7 +302,7 @@ func TestRunDev_FakeSuccess(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 0)
 	// runDev starts air in foreground, fake exits 0 immediately, returns nil
-	assert.NoError(t, runDev(devFlags{envFile: ".env", noServices: true}))
+	assert.NoError(t, runDev(devFlags{envFile: ".env"}))
 }
 
 func TestRunDev_WithGraphQLFile(t *testing.T) {
@@ -303,7 +310,7 @@ func TestRunDev_WithGraphQLFile(t *testing.T) {
 	writeConfigYAML(t)
 	os.WriteFile("gqlgen.yml", []byte("schema: s\n"), 0644)
 	withFakeExec(t, 0)
-	assert.NoError(t, runDev(devFlags{envFile: ".env", noServices: true}))
+	assert.NoError(t, runDev(devFlags{envFile: ".env"}))
 }
 
 func TestRunDev_AirFails(t *testing.T) {
@@ -311,7 +318,7 @@ func TestRunDev_AirFails(t *testing.T) {
 	writeConfigYAML(t)
 	withFakeExec(t, 1)
 	// Both migrate + air "fail" — migrate is non-fatal, air error returns
-	err := runDev(devFlags{envFile: ".env", noServices: true})
+	err := runDev(devFlags{envFile: ".env"})
 	assert.Error(t, err)
 }
 
@@ -538,27 +545,6 @@ func TestRunNew_GofastaInstallFails(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
 	assert.Contains(t, err.Error(), "failed to install")
-}
-
-// When GOFASTA_REPLACE points at a valid-looking local framework dir,
-// runNew should skip the network `go get` and wire the library via a
-// replace directive instead. Uses a fake framework layout (dir + go.mod)
-// that's just enough to satisfy installGofastaFromLocal's existence
-// checks; the underlying `go mod edit` calls are mocked via withFakeExec.
-func TestRunNew_GofastaReplaceHappyPath(t *testing.T) {
-	chdirTemp(t)
-	// Fake framework checkout — absolute path with a go.mod inside.
-	fakeFramework := t.TempDir()
-	require.NoError(t, os.WriteFile(filepath.Join(fakeFramework, "go.mod"),
-		[]byte("module github.com/gofastadev/gofasta\n\ngo 1.25.0\n"), 0o644))
-	t.Setenv("GOFASTA_REPLACE", fakeFramework)
-	withFakeExec(t, 0)
-
-	err := runNew("replaceapp", false)
-	assert.NoError(t, err)
-	// The project dir should exist and contain the scaffolded files.
-	_, err = os.Stat(filepath.Join("replaceapp", "config.yaml"))
-	assert.NoError(t, err)
 }
 
 // --- runRoutes ---

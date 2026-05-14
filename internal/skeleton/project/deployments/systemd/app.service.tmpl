@@ -23,6 +23,11 @@ User={{.ProjectNameLower}}
 Group={{.ProjectNameLower}}
 WorkingDirectory=/etc/{{.ProjectNameLower}}
 EnvironmentFile=/etc/{{.ProjectNameLower}}/.env
+# The framework default Server.Host is 127.0.0.1 (loopback) — chosen so
+# macOS doesn't prompt the firewall on every Air rebuild during local
+# development. On a production VPS the app must listen on all interfaces
+# (or at least the address nginx upstreams to), so override here.
+Environment="{{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0"
 ExecStart=/usr/local/bin/{{.ProjectNameLower}} serve
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

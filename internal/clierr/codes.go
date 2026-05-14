@@ -24,7 +24,6 @@ const (
 	CodeGoModInitFailed Code = "GO_MOD_INIT_FAILED"
 	CodeGoModTidyFailed Code = "GO_MOD_TIDY_FAILED"
 	CodeGofastaInstall  Code = "GOFASTA_INSTALL_FAILED"
-	CodeGofastaReplace  Code = "GOFASTA_REPLACE_INVALID"
 	CodeGoBuildFailed   Code = "GO_BUILD_FAILED"
 	CodeGoTestFailed    Code = "GO_TEST_FAILED"
 	CodeGoVetFailed     Code = "GO_VET_FAILED"
@@ -99,6 +98,10 @@ const (
 	CodeDevMigrationFailed   Code = "DEV_MIGRATION_FAILED"
 	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
+	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
+	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
+	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
+	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -136,11 +139,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/getting-started/installation",
 	},
 	CodeGofastaInstall: {
-		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or set GOFASTA_REPLACE=/path/to/local/gofasta to bypass the proxy entirely",
-		Docs: "https://gofasta.dev/docs/cli-reference/new",
-	},
-	CodeGofastaReplace: {
-		Hint: "GOFASTA_REPLACE must point to a directory containing a valid gofasta checkout (go.mod present)",
+		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or run `go get github.com/gofastadev/gofasta@latest` inside the generated project once the sum DB catches up",
 		Docs: "https://gofasta.dev/docs/cli-reference/new",
 	},
 	CodeGoBuildFailed: {
@@ -292,6 +291,22 @@ var registry = map[Code]meta{
 	},
 	CodeDevPortInUse: {
 		Hint: "another process is already bound to the configured PORT; stop it, pick a different port with `--port`, or update `server.port` in config.yaml",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevFlagConflict: {
+		Hint: "two flags requested incompatible behavior — see the message above; run `gofasta dev --help` for the flag matrix",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevLocalReplace: {
+		Hint: "filesystem-path replaces (e.g. `replace ... => ../foo`) only resolve on the host — the docker build context cannot see paths outside the project. Either run without --all-in-docker (host mode handles local replaces fine), drop the replace and `go get` a published version, or vendor with `go mod vendor` so the replaced module is bundled into the build context.",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevServiceUnknown: {
+		Hint: "the name passed to --services is not declared in compose.yaml; check `docker compose config --services` for the list of valid names",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevPreflightCancel: {
+		Hint: "preflight was canceled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 

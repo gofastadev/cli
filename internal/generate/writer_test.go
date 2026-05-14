@@ -47,7 +47,9 @@ func TestWriteTemplate_CreatesParentDirs(t *testing.T) {
 	require.NoError(t, err)
 
 	content := readTestFile(t, path)
-	assert.Equal(t, "package deep", content)
+	// `.go` outputs are formatted through go/format.Source, which
+	// guarantees the trailing-newline convention `gofmt -s -l` enforces.
+	assert.Equal(t, "package deep\n", content)
 }
 
 func TestWriteTemplate_InvalidTemplate(t *testing.T) {
@@ -98,7 +100,10 @@ func TestWriteTemplate_AbsolutePath(t *testing.T) {
 
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.Equal(t, "package sub", string(data))
+	// `.go` outputs are normalized through go/format.Source, which is
+	// what guarantees scaffolded files pass `gofmt -s -l .` — that
+	// normalization includes a trailing newline.
+	assert.Equal(t, "package sub\n", string(data))
 }
 
 // TestWriteTemplate_UsesTimestamp — a template that calls

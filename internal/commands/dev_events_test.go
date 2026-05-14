@@ -32,13 +32,14 @@ func TestJSONEmitter_AllEvents(t *testing.T) {
 	e.ServiceUnhealthy("cache", "timeout")
 	e.MigrateOK(3)
 	e.MigrateSkipped("--no-migrate")
+	e.MigrateDelegated("running inside the app container")
 	e.Air(8080, map[string]string{"rest": "http://localhost:8080"})
 	e.Shutdown("stopped", 0)
 	e.Info("air starting")
 	e.Warn("dashboard died")
 
 	lines := bytes.Split(bytes.TrimSpace(buf.Bytes()), []byte{'\n'})
-	require.Len(t, lines, 10)
+	require.Len(t, lines, 11)
 
 	expected := []struct {
 		event  string
@@ -50,6 +51,7 @@ func TestJSONEmitter_AllEvents(t *testing.T) {
 		{"service", "unhealthy"},
 		{"migrate", "ok"},
 		{"migrate", "skipped"},
+		{"migrate", "delegated"},
 		{"air", "running"},
 		{"shutdown", ""},
 		{"info", ""},
@@ -89,6 +91,21 @@ func TestJSONEmitter_AirURLs(t *testing.T) {
 	assert.Equal(t, "http://x", urls["rest"])
 }
 
+// TestJSONEmitter_AirInDocker — the in-docker variant emits the same
+// "air" event but with status="running-in-docker" so JSON consumers
+// can branch on host vs containerized runtime without adding a new
+// event name.
+func TestJSONEmitter_AirInDocker(t *testing.T) {
+	var buf bytes.Buffer
+	e := &jsonEmitter{out: &buf}
+	e.AirInDocker(8080, map[string]string{"rest": "http://localhost:8080"})
+	var got map[string]interface{}
+	require.NoError(t, json.Unmarshal(bytes.TrimSpace(buf.Bytes()), &got))
+	assert.Equal(t, "air", got["event"])
+	assert.Equal(t, "running-in-docker", got["status"])
+	assert.Equal(t, float64(8080), got["port"])
+}
+
 // TestHumanEmitter_DoesNotPanic — every method runs without panicking
 // under a TTY-less test environment. We don't assert on stdout
 // content because the output is intentionally human-formatted (colors,
@@ -102,7 +119,9 @@ func TestHumanEmitter_DoesNotPanic(t *testing.T) {
 	h.MigrateOK(3)
 	h.MigrateOK(0) // zero-applied branch — "up to date"
 	h.MigrateSkipped("flag")
+	h.MigrateDelegated("running inside the app container")
 	h.Air(8080, map[string]string{"rest": "http://localhost:8080"})
+	h.AirInDocker(8080, map[string]string{"rest": "http://localhost:8080"})
 	h.Shutdown("stopped", 0)
 	h.Info("message")
 	h.Warn("warning")

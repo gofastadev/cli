@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 )
@@ -45,9 +46,9 @@ var timeSleepFn = time.Sleep
 // of `gofasta dev`. Built once in runDev and passed down; never mutated
 // after construction.
 type devServices struct {
-	available []string        // every service in compose.yaml except the app
+	available []string        // every service in compose.yaml; excludes "app" unless --all-in-docker is on
 	selected  []string        // services we'll actually start (post-flag resolution)
-	profile   string          // docker compose --profile value, empty if not set
+	profiles  []string        // docker compose --profile values; empty if no profiles active
 	hasHealth map[string]bool // per-service: does compose.yaml define a healthcheck?
 }
 
@@ -79,14 +80,28 @@ func composeFileExists() bool {
 }
 
 // detectComposeServices returns every service name declared in
-// compose.yaml (minus the app service), plus a per-service flag
-// indicating whether it declares a healthcheck block. Uses
-// `docker compose config --format json` so we get the fully-resolved
-// configuration including merged overrides and applied profiles.
-func detectComposeServices(profile string) (available []string, hasHealth map[string]bool, err error) {
+// compose.yaml plus a per-service flag indicating whether it declares a
+// healthcheck block. Uses `docker compose config --format json` so we
+// get the fully-resolved configuration including merged overrides and
+// applied profiles.
+//
+// The "app" service is filtered out of the result unless includeApp is
+// true — gofasta dev's default mode runs Air on the host, so the app
+// container is not part of the orchestrated set; --all-in-docker flips
+// that and needs the app service to be discoverable.
+//
+// `profiles` is the list of compose profiles to activate during config
+// resolution; each entry becomes a `--profile <name>` arg. Compose v2
+// only emits services whose profile is active (or who have no profile
+// at all), so the right call here is "pass every profile this run wants
+// to enable" before reading the result.
+func detectComposeServices(profiles []string, includeApp bool) (available []string, hasHealth map[string]bool, err error) {
 	args := []string{"compose"}
-	if profile != "" {
-		args = append(args, "--profile", profile)
+	for _, p := range profiles {
+		if p == "" {
+			continue
+		}
+		args = append(args, "--profile", p)
 	}
 	args = append(args, "config", "--format", "json")
 
@@ -111,7 +126,7 @@ func detectComposeServices(profile string) (available []string, hasHealth map[st
 
 	hasHealth = make(map[string]bool, len(parsed.Services))
 	for name, svc := range parsed.Services {
-		if name == appServiceName {
+		if name == appServiceName && !includeApp {
 			continue
 		}
 		available = append(available, name)
@@ -120,78 +135,154 @@ func detectComposeServices(profile string) (available []string, hasHealth map[st
 	return available, hasHealth, nil
 }
 
-// resolveSelectedServices applies the flag rules to an available-services
-// list and returns the services that should actually be started.
+// selectServices is the (host-first model) validator for the
+// `--services <names>` flag.
 //
-// Resolution order (highest priority first):
-//  1. --no-services        → start nothing
-//  2. --services=a,b,c     → start exactly these (overrides --no-db etc.)
-//  3. default              → start everything in `available` minus --no-* filters
-func resolveSelectedServices(available []string, flags devFlags) []string {
-	if flags.noServices {
-		return nil
+//   - raw == "" → returns ([], nil). No services in compose; the app
+//     runs on host with Air.
+//   - raw == "all" → returns the entire `available` list verbatim.
+//     Pulls in `app` too if compose.yaml declares it, which is how
+//     `--services all` reaches full-stack-in-docker.
+//   - raw == "a,b,c" → validates each name against `available`. On
+//     a typo, returns a clierr.New(CodeDevServiceUnknown, ...) with a
+//     human-readable hint that lists available services and (when a
+//     Levenshtein match is close enough) suggests the likely correct
+//     name.
+//
+// The function takes the canonical `available` list from
+// detectComposeServices so it doesn't need to know about specific
+// service-name conventions — a custom `lavinmq` service declared in
+// compose.yaml is valid the moment compose.yaml mentions it.
+//
+// Returns the resolved list with input order preserved (so `db,app`
+// brings db up before the foreground app start in callers that care
+// about ordering).
+func selectServices(available []string, raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
 	}
-	if len(flags.servicesList) > 0 {
-		// Trust the explicit list but still filter out `app` if the user
-		// accidentally included it (dev always runs app on host).
-		result := make([]string, 0, len(flags.servicesList))
-		for _, s := range flags.servicesList {
-			if s == appServiceName {
-				continue
-			}
-			result = append(result, s)
-		}
-		return result
+	if strings.EqualFold(raw, "all") {
+		out := make([]string, len(available))
+		copy(out, available)
+		return out, nil
 	}
 
-	filtered := make([]string, 0, len(available))
+	availableSet := make(map[string]bool, len(available))
 	for _, s := range available {
-		if flags.noDB && isDBLike(s) {
-			continue
-		}
-		if flags.noCache && isCacheLike(s) {
-			continue
-		}
-		if flags.noQueue && isQueueLike(s) {
-			continue
-		}
-		filtered = append(filtered, s)
+		availableSet[s] = true
 	}
-	return filtered
+
+	requested := parseServicesList(raw)
+	out := make([]string, 0, len(requested))
+	for _, name := range requested {
+		if !availableSet[name] {
+			return nil, fmt.Errorf("%s", formatUnknownServiceError(name, available))
+		}
+		out = append(out, name)
+	}
+	return out, nil
 }
 
-// isDBLike / isCacheLike / isQueueLike apply simple name-based matching
-// so the --no-db, --no-cache, --no-queue flags don't require the user
-// to know the exact service names the scaffold used. The heuristics are
-// intentionally narrow to avoid false positives in user-authored
-// compose files.
-func isDBLike(name string) bool {
-	n := strings.ToLower(name)
-	return n == "db" || n == "database" || n == "postgres" || n == "mysql" ||
-		n == "mariadb" || n == "clickhouse" || strings.HasSuffix(n, "-db")
+// formatUnknownServiceError builds the multi-line error message for a
+// service name that wasn't found in compose.yaml. Includes the
+// available list (sorted, comma-joined) and, when applicable, a
+// "Did you mean: X?" suggestion via Levenshtein matching.
+func formatUnknownServiceError(typo string, available []string) string {
+	sorted := make([]string, len(available))
+	copy(sorted, available)
+	sort.Strings(sorted)
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "compose.yaml has no service named %q.\n", typo)
+	fmt.Fprintf(&b, "  Available services: %s", strings.Join(sorted, ", "))
+	if guess, ok := suggestClosest(typo, available); ok {
+		fmt.Fprintf(&b, "\n  Did you mean: %s?", guess)
+	}
+	return b.String()
 }
 
-func isCacheLike(name string) bool {
-	n := strings.ToLower(name)
-	return n == "cache" || n == "redis" || n == "valkey" ||
-		strings.HasSuffix(n, "-cache")
+// detectComposeProfilesFn is the package-level seam over
+// detectComposeProfiles. Tests reassign to inject canned profile
+// lists without faking the docker subprocess output (whose default
+// stub returns JSON, which the profile parser would otherwise treat
+// as a giant "profile name").
+var detectComposeProfilesFn = detectComposeProfiles
+
+// detectComposeProfiles returns the full list of compose profiles
+// declared in the project's compose.yaml. Used by resolveDevPlan to
+// auto-activate every profile so profile-gated services (e.g.
+// `cache`, `queue`) show up in the result of detectComposeServices.
+//
+// Without this, `--services <profile-gated-name>` would fail with
+// "no service named X" even when X is right there in compose.yaml,
+// and `--services all` would resolve to only the non-profile-gated
+// subset — both real user-reported surprises.
+//
+// Implementation note: shells out to `docker compose config --profiles`
+// which prints one profile name per line. Returns an empty slice if
+// no profiles are declared (the normal case when compose.yaml has no
+// profile gates) or if the docker call fails (the caller treats the
+// error as "no profiles to add" and proceeds with whatever the user
+// passed via --profile).
+func detectComposeProfiles() ([]string, error) {
+	cmd := execCommand("docker", "compose", "config", "--profiles")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = nil
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("docker compose config --profiles: %w", err)
+	}
+	profiles := make([]string, 0, 4)
+	for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// Defensive: skip lines that look like JSON (or any other
+		// non-identifier shape). Compose's `--profiles` output is
+		// strictly one identifier per line; anything else is a sign
+		// our exec stub is being asked something we didn't intend.
+		if strings.ContainsAny(line, "{}[]\"") {
+			continue
+		}
+		profiles = append(profiles, line)
+	}
+	return profiles, nil
 }
 
-func isQueueLike(name string) bool {
-	n := strings.ToLower(name)
-	return n == "queue" || n == "asynq" || n == "nats" || n == "rabbitmq" ||
-		strings.HasSuffix(n, "-queue")
+// removeService returns a new slice with `target` filtered out. Used
+// by --all-in-docker mode to peel the app off the detached-up list so
+// it can be started in the foreground separately.
+func removeService(services []string, target string) []string {
+	out := make([]string, 0, len(services))
+	for _, s := range services {
+		if s == target {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
 }
 
-// startServices runs `docker compose up -d <names>`. Returns the combined
-// stderr output on failure so the caller can surface it to the user.
-func startServices(names []string, profile string) error {
+// startServices runs `docker compose up -d <names>` with one
+// `--profile <p>` arg per entry in profiles. Returns the combined stderr
+// output on failure so the caller can surface it to the user.
+//
+// Multi-profile activation is documented at
+// https://docs.docker.com/compose/how-tos/profiles/ — passing
+// `--profile a --profile b` is additive (union), and any service whose
+// declared profile set intersects this list is eligible to start.
+func startServices(names, profiles []string) error {
 	if len(names) == 0 {
 		return nil
 	}
 	args := []string{"compose"}
-	if profile != "" {
-		args = append(args, "--profile", profile)
+	for _, p := range profiles {
+		if p == "" {
+			continue
+		}
+		args = append(args, "--profile", p)
 	}
 	args = append(args, "up", "-d")
 	args = append(args, names...)

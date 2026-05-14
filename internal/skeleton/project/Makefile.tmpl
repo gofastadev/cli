@@ -1,4 +1,10 @@
-.PHONY: dev up down serve build wire generate test test-integration lint clean migrate migrate-up migrate-down seed init doctor{{if .GraphQL}} gqlgen{{end}}
+.PHONY: dev up down serve build wire generate test test-integration lint lint-install fmt fmt-check vet preflight clean migrate migrate-up migrate-down seed init doctor{{if .GraphQL}} gqlgen{{end}}
+
+# Pinned golangci-lint version. MUST match the version in
+# .github/workflows/test.yml so a green local preflight predicts a green
+# CI run. Bump both files together when upgrading the linter.
+GOLANGCI_LINT_VERSION := v2.11.4
+GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 
 # ──────────────────────────────────────────────
 # Development (pick one)
@@ -8,18 +14,28 @@
 # and `gofasta` users run the same code path. If a target is broken, fix the
 # CLI command — don't fix it in the Makefile.
 
-# Run on host with Air hot reload (requires Go + a reachable database).
-# Works with the db-in-Docker workflow: run `make up-db` first.
+# Run on host with Air hot reload. `gofasta dev`'s preflight checks
+# the DB / cache / queue connection strings; if any dep is unreachable
+# an interactive menu offers to start it in Docker, enter a different
+# connection string, or run without it.
 dev:
 	gofasta dev
 
-# Run everything in Docker (app + db in containers).
-up:
-	docker compose up --build
+# Bring db up in Docker too (app still runs on host with Air).
+dev-with-db:
+	gofasta dev --services db
 
-# Start only the database container (for use with `make dev`).
+# Full stack in Docker (app + every supporting service compose declares).
+dev-all:
+	gofasta dev --services all
+
+# Bring up only the database in Docker (without running gofasta dev).
 up-db:
 	docker compose up db -d
+
+# Bring up the full compose stack standalone (no gofasta dev wrapper).
+up:
+	docker compose up --build
 
 down:
 	docker compose down
@@ -82,11 +98,51 @@ doctor:
 	gofasta doctor
 
 # ──────────────────────────────────────────────
-# Lint & Cleanup
+# Lint, format, and preflight
 # ──────────────────────────────────────────────
 
-lint:
-	golangci-lint run
+# Format every Go file (gofmt -s rewrites in place).
+fmt:
+	gofmt -s -w .
+
+# Verify gofmt has nothing to change. Fails if any file would be rewritten —
+# which is what CI enforces. Portable across /bin/sh and bash.
+fmt-check:
+	@out=$$(gofmt -s -l .); \
+	if [ -n "$$out" ]; then \
+		echo "gofmt issues in:"; echo "$$out"; \
+		echo "run 'make fmt' to fix"; \
+		exit 1; \
+	fi
+
+# go vet across every package.
+vet:
+	go vet ./...
+
+# Install golangci-lint at the version pinned above. Idempotent — only
+# (re)installs if the on-PATH version differs.
+lint-install:
+	@if ! $(GOLANGCI_LINT) --version 2>/dev/null | grep -q "$(GOLANGCI_LINT_VERSION:v%=%)"; then \
+		echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; \
+		go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); \
+	fi
+
+# Run golangci-lint with the pinned version + the project's .golangci.yml.
+lint: lint-install
+	$(GOLANGCI_LINT) run
+
+# Preflight — the full sequence CI runs, in order. A task is not done
+# until this is green. Mirrors gofasta's own preflight philosophy: if a
+# step CI runs is skipped locally, that's how broken code reaches main.
+#
+# Order is intentional: fmt-check first (cheapest, catches the most
+# common slip), then vet, then lint (the heavy step), then race tests,
+# then a clean build.
+preflight: fmt-check vet lint
+	go test -race ./...
+	go build ./...
+	@echo ""
+	@echo "  ✓ preflight green — safe to commit."
 
 clean:
 	rm -rf ./tmp

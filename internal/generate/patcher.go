@@ -8,6 +8,13 @@ import (
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
+// containerFieldsMarker pins the line `gofasta g scaffold` inserts new
+// resource fields above. The scaffolded container.go.tmpl ships the
+// marker; if it's removed the patch silently no-ops, which is why
+// PatchContainer treats a missing marker as a hard error rather than a
+// warning. Keep this string in sync with container.go.tmpl.
+const containerFieldsMarker = "// gofasta:scaffold:container-fields"
+
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
 func PatchContainer(d ScaffoldData) error {
 	path := "app/di/container.go"
@@ -33,12 +40,20 @@ func PatchContainer(d ScaffoldData) error {
 	if d.IncludeController {
 		fields += fmt.Sprintf("\t%sController *controllers.%sController\n", d.Name, d.Name)
 	}
-	s = strings.Replace(s, "\tResolver       *resolvers.Resolver", fields+"\tResolver       *resolvers.Resolver", 1)
+
+	if !strings.Contains(s, containerFieldsMarker) {
+		return fmt.Errorf("%s is missing the %q marker — the scaffold template is out of sync with the patcher; restore the marker comment to enable code generation", path, containerFieldsMarker)
+	}
+	s = strings.Replace(s, "\t"+containerFieldsMarker, fields+"\t"+containerFieldsMarker, 1)
 
 	return writeOrRecordPatch(path,
 		describePatch(fmt.Sprintf("add %sRepo/%sService fields", d.Name, d.Name)),
 		[]byte(s))
 }
+
+// wireProvidersMarker pins the line `gofasta g scaffold` inserts new
+// providers.<Name>Set entries above. Keep in sync with wire.go.tmpl.
+const wireProvidersMarker = "// gofasta:scaffold:wire-providers"
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
 func PatchWireFile(d ScaffoldData) error {
@@ -55,7 +70,10 @@ func PatchWireFile(d ScaffoldData) error {
 		return nil
 	}
 
-	s = strings.Replace(s, "\t\tproviders.GraphQLSet,", fmt.Sprintf("\t\t%s,\n\t\tproviders.GraphQLSet,", providerRef), 1)
+	if !strings.Contains(s, wireProvidersMarker) {
+		return fmt.Errorf("%s is missing the %q marker — the scaffold template is out of sync with the patcher; restore the marker comment to enable code generation", path, wireProvidersMarker)
+	}
+	s = strings.Replace(s, "\t\t"+wireProvidersMarker, fmt.Sprintf("\t\t%s,\n\t\t%s", providerRef, wireProvidersMarker), 1)
 
 	return writeOrRecordPatch(path,
 		describePatch("add "+providerRef+" to wire.Build"),
@@ -124,19 +142,42 @@ func PatchRouteConfig(d ScaffoldData) error {
 		return nil
 	}
 
+	if !strings.Contains(s, routeConfigFieldsMarker) {
+		return fmt.Errorf("%s is missing the %q marker — restore the marker comment to enable code generation", path, routeConfigFieldsMarker)
+	}
+	if !strings.Contains(s, routeRegistrationsMarker) {
+		return fmt.Errorf("%s is missing the %q marker — restore the marker comment to enable code generation", path, routeRegistrationsMarker)
+	}
+
+	newField := fmt.Sprintf("\t%s *controllers.%sController", controllerField, d.Name)
 	s = strings.Replace(s,
-		"\tHealthController *health.Controller",
-		fmt.Sprintf("\t%s *controllers.%sController\n\tHealthController *health.Controller", controllerField, d.Name),
+		"\t"+routeConfigFieldsMarker,
+		newField+"\n\t"+routeConfigFieldsMarker,
 		1)
 
-	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)\n", d.Name, controllerField)
-	mountLine := "\tr.Mount(\"/api/v1\", api)"
-	s = strings.Replace(s, mountLine, routeCall+mountLine, 1)
+	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)", d.Name, controllerField)
+	s = strings.Replace(s,
+		"\t"+routeRegistrationsMarker,
+		routeCall+"\n\t"+routeRegistrationsMarker,
+		1)
 
 	return writeOrRecordPatch(path,
 		describePatch("register "+d.Name+"Routes under /api/v1"),
 		[]byte(s))
 }
+
+// routeConfigFieldsMarker pins where new <Name>Controller fields land
+// in the RouteConfig struct. Keep in sync with index.routes.go.tmpl.
+const routeConfigFieldsMarker = "// gofasta:scaffold:route-config-fields"
+
+// routeRegistrationsMarker pins where new <Name>Routes(api, ...) calls
+// land in InitAPIRoutes. Keep in sync with index.routes.go.tmpl.
+const routeRegistrationsMarker = "// gofasta:scaffold:route-registrations"
+
+// routeConfigInitMarker pins where new <Name>Controller: container.<Name>Controller,
+// lines land in the RouteConfig literal in cmd/serve.go. Keep in sync
+// with serve.go.tmpl.
+const routeConfigInitMarker = "// gofasta:scaffold:routeconfig-init"
 
 // PatchServeFile adds the controller to RouteConfig initialization in cmd/serve.go.
 func PatchServeFile(d ScaffoldData) error {
@@ -153,9 +194,13 @@ func PatchServeFile(d ScaffoldData) error {
 		return nil
 	}
 
+	if !strings.Contains(s, routeConfigInitMarker) {
+		return fmt.Errorf("%s is missing the %q marker — restore the marker comment to enable code generation", path, routeConfigInitMarker)
+	}
+	newLine := fmt.Sprintf("%s: container.%s,", controllerField, controllerField)
 	s = strings.Replace(s,
-		"HealthController: healthController,",
-		fmt.Sprintf("%s:   container.%s,\n\t\tHealthController: healthController,", controllerField, controllerField),
+		"\t\t"+routeConfigInitMarker,
+		newLine+"\n\t\t"+routeConfigInitMarker,
 		1)
 
 	return writeOrRecordPatch(path,

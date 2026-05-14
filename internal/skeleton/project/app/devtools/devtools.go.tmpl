@@ -3,9 +3,9 @@
 //
 // The package is split across three files:
 //
-//   devtools.go         — always-compiled shared types + public API shape.
-//   devtools_enabled.go — `//go:build devtools` real implementation.
-//   devtools_stub.go    — `//go:build !devtools` no-op implementation.
+//	devtools.go         — always-compiled shared types + public API shape.
+//	devtools_enabled.go — `//go:build devtools` real implementation.
+//	devtools_stub.go    — `//go:build !devtools` no-op implementation.
 //
 // Both `_enabled.go` and `_stub.go` define the SAME exported symbols with
 // matching signatures — so cmd/serve.go calls them unconditionally and

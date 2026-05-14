@@ -3,7 +3,6 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/termcolor"
@@ -16,19 +15,14 @@ func GenTask(d ScaffoldData) error {
 		termcolor.PrintSkip(path, "exists")
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 
 	content := taskTemplate
 	content = strings.ReplaceAll(content, "__NAME__", d.Name)
 	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	termcolor.PrintCreate(path)
-	return nil
+	// writeOrRecordCreate handles MkdirAll + format.Source for .go files,
+	// so the emitted task file is preflight-clean by construction.
+	return writeOrRecordCreate(path, []byte(content))
 }
 
 const taskTemplate = `package tasks
@@ -42,6 +36,8 @@ import (
 	"github.com/hibiken/asynq"
 )
 
+// Task__NAME__ is the asynq task type name. Workers route inbound
+// payloads to Handle__NAME__ by matching on this string.
 const Task__NAME__ = "__SNAKE_NAME__"
 
 // __NAME__Payload is the data passed to the __SNAKE_NAME__ task.

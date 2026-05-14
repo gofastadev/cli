@@ -8,21 +8,20 @@ import (
 	"os/signal"
 	"syscall"
 
-{{- if .GraphQL}}
-	"github.com/99designs/gqlgen/graphql/handler"
+{{if .GraphQL}}	"github.com/99designs/gqlgen/graphql/handler"
 	"github.com/99designs/gqlgen/graphql/playground"
-	"{{.ModulePath}}/app"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
-{{- end}}
-	"{{.ModulePath}}/app/devtools"
-	"{{.ModulePath}}/app/di"
-	"{{.ModulePath}}/app/jobs"
-	"{{.ModulePath}}/app/rest/routes"
-	"github.com/gofastadev/gofasta/pkg/health"
+{{end}}	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
 	"github.com/gofastadev/gofasta/pkg/scheduler"
 	"github.com/spf13/cobra"
+
+{{if .GraphQL}}	"{{.ModulePath}}/app"
+{{end}}	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/di"
+	"{{.ModulePath}}/app/jobs"
+	"{{.ModulePath}}/app/rest/routes"
 )
 
 var serveCmd = &cobra.Command{
@@ -75,8 +74,9 @@ func startServer() error {
 
 	// Build REST router
 	healthController := health.NewController(container.DB, container.CacheService)
-	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
-		UserController:   container.UserController,
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		UserController: container.UserController,
+		// gofasta:scaffold:routeconfig-init — `gofasta g scaffold` inserts new <Name>Controller: container.<Name>Controller, lines above this. Don't remove the marker.
 		HealthController: healthController,
 		WebSocketHub:     container.WebSocketHub,
 	})
@@ -127,8 +127,14 @@ func startServer() error {
 	}
 	rootHandler := middleware.Chain(mux, middlewares...)
 
+	// Bind to cfg.Server.Host:Port. The default host (set in pkg/config) is
+	// 127.0.0.1, which keeps macOS's firewall quiet during local Air rebuilds —
+	// the OS only prompts for permission on non-loopback listeners. Production
+	// containers and VPS deploys override this via env var (e.g.
+	// {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0); the scaffold's Dockerfile and
+	// compose manifests do this already.
 	srv := &http.Server{
-		Addr:    ":" + cfg.Server.Port,
+		Addr:    cfg.Server.Host + ":" + cfg.Server.Port,
 		Handler: rootHandler,
 	}
 
@@ -149,7 +155,7 @@ func startServer() error {
 	defer stop()
 
 	go func() {
-		slog.Info("server starting", "port", cfg.Server.Port)
+		slog.Info("server starting", "host", cfg.Server.Host, "port", cfg.Server.Port)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("server error", "error", err)
 			os.Exit(1)
@@ -173,7 +179,9 @@ func startServer() error {
 	}
 
 	if sqlDB, err := container.DB.DB(); err == nil {
-		sqlDB.Close()
+		if err := sqlDB.Close(); err != nil {
+			slog.Error("closing database connection", "error", err)
+		}
 	}
 
 	slog.Info("server stopped")

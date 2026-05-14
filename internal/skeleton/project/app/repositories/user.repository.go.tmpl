@@ -4,70 +4,138 @@ import (
 	"context"
 	"time"
 
+	"github.com/gofastadev/gofasta/pkg/utils"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"gorm.io/gorm"
+
 	"{{.ModulePath}}/app/models"
 	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
-	"github.com/gofastadev/gofasta/pkg/utils"
-	"gorm.io/gorm"
 )
+
+// userRepositoryTracerName is the OpenTelemetry tracer scope for this
+// repository. Each method opens a span so the dev dashboard can show
+// data-access calls as nested bars under the service span. Matches the
+// `gofasta g repository` pattern so custom and scaffolded repos group
+// uniformly in the trace view.
+const userRepositoryTracerName = "{{.ModulePath}}/app/repositories/user"
 
 // Compile-time check that UserRepository implements UserRepositoryInterface.
 var _ repoInterfaces.UserRepositoryInterface = (*UserRepository)(nil)
 
+// UserRepository is the GORM-backed data-access layer for the User
+// resource. Methods open OpenTelemetry spans for each call so they show
+// up nested under their service span in the trace view.
 type UserRepository struct {
 	DB *gorm.DB
 }
 
+// NewUserRepository constructs a UserRepository bound to the supplied
+// GORM database handle. Wire calls this at app startup.
 func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{DB: db}
 }
 
+// FindWithFilters returns the paginated set of users matching `filters`,
+// sorted by `sort`, along with the total count for pagination. The
+// filter map keys map directly to column names via utils.BuildQueryForAnyModel.
 func (r *UserRepository) FindWithFilters(ctx context.Context, filters map[string]interface{}, page, limit int, sort string) ([]*models.User, int64, error) {
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindWithFilters")
+	defer span.End()
+
 	query, err := utils.BuildQueryForAnyModel(r.DB.WithContext(ctx).Model(&models.User{}), filters)
 	if err != nil {
+		span.RecordError(err)
 		return nil, 0, err
 	}
 
 	var totalCount int64
 	if err := query.Count(&totalCount).Error; err != nil {
+		span.RecordError(err)
 		return nil, 0, err
 	}
 
 	offset := (page - 1) * limit
 	var users []*models.User
 	if err := query.Limit(limit).Offset(offset).Order(sort).Find(&users).Error; err != nil {
+		span.RecordError(err)
 		return nil, 0, err
 	}
 
 	return users, totalCount, nil
 }
 
+// Create inserts a new user row. The framework's BeforeCreate hook on
+// BaseModelImpl populates the UUID and timestamps automatically.
 func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
-	return r.DB.WithContext(ctx).Create(user).Error
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.Create")
+	defer span.End()
+
+	if err := r.DB.WithContext(ctx).Create(user).Error; err != nil {
+		span.RecordError(err)
+		return err
+	}
+	return nil
 }
 
+// Update applies a partial update to the user identified by `id`. Only
+// keys present in the `fields` map are written, so callers can pass
+// just the deltas they want to change.
 func (r *UserRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error {
-	return r.DB.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Updates(fields).Error
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.Update")
+	defer span.End()
+
+	if err := r.DB.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Updates(fields).Error; err != nil {
+		span.RecordError(err)
+		return err
+	}
+	return nil
 }
 
+// FindByID returns the user with the given ID. Returns gorm.ErrRecordNotFound
+// when no row matches.
 func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindByID")
+	defer span.End()
+
 	var user models.User
 	if err := r.DB.WithContext(ctx).Where("id = ?", id).First(&user).Error; err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	return &user, nil
 }
 
+// FindByIDAndRecordVersion returns the user with the given ID only if
+// its RecordVersion matches `version` and the row is not soft-deleted.
+// This is the primitive used by the optimistic-locking path on updates —
+// the service compares the caller's expected version with the database
+// before committing a change.
 func (r *UserRepository) FindByIDAndRecordVersion(ctx context.Context, id uuid.UUID, version int) (*models.User, error) {
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindByIDAndRecordVersion")
+	defer span.End()
+
 	var user models.User
 	if err := r.DB.WithContext(ctx).Where("id = ? AND deleted_at IS NULL AND record_version = ?", id, version).First(&user).Error; err != nil {
+		span.RecordError(err)
 		return nil, err
 	}
 	return &user, nil
 }
 
+// SoftDelete marks the user as deleted by setting deleted_at + clearing
+// is_active. The is_deletable guard prevents deleting protected rows
+// (the framework's IsDeletable column lets you ship rows that should
+// never be archived — admins, system accounts, etc.).
 func (r *UserRepository) SoftDelete(ctx context.Context, id uuid.UUID) error {
-	return r.DB.WithContext(ctx).Model(&models.User{}).
+	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.SoftDelete")
+	defer span.End()
+
+	if err := r.DB.WithContext(ctx).Model(&models.User{}).
 		Where("id = ? AND is_deletable = ?", id, true).
-		Updates(map[string]interface{}{"deleted_at": time.Now(), "is_active": false}).Error
+		Updates(map[string]interface{}{"deleted_at": time.Now(), "is_active": false}).Error; err != nil {
+		span.RecordError(err)
+		return err
+	}
+	return nil
 }

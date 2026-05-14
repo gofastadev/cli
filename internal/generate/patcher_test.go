@@ -23,8 +23,9 @@ import (
 )
 
 type Container struct {
-	Resolver       *resolvers.Resolver
 	UserController *controllers.UserController
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -53,7 +54,8 @@ import (
 )
 
 type Container struct {
-	Resolver       *resolvers.Resolver
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -76,7 +78,8 @@ func TestPatchContainer_SkipsIfAlreadyWired(t *testing.T) {
 
 type Container struct {
 	ProductService svcInterfaces.ProductServiceInterface
-	Resolver       *resolvers.Resolver
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
 }
 `
 	writeTestFile(t, "app/di/container.go", containerContent)
@@ -95,6 +98,7 @@ func TestPatchWireFile_AddsProviderSet(t *testing.T) {
 func InitializeContainer() *Container {
 	wire.Build(
 		providers.CoreSet,
+		// gofasta:scaffold:wire-providers
 		providers.GraphQLSet,
 	)
 	return nil
@@ -204,12 +208,14 @@ import (
 )
 
 type RouteConfig struct {
+	// gofasta:scaffold:route-config-fields
 	HealthController *health.Controller
 }
 
-func InitApiRoutes(config *RouteConfig) *chi.Mux {
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
 	r.Mount("/api/v1", api)
 	return r
 }
@@ -243,7 +249,8 @@ func TestPatchServeFile_AddsController(t *testing.T) {
 
 	serveContent := `package cmd
 
-	apiRouter := routes.InitApiRoutes(&routes.RouteConfig{
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		// gofasta:scaffold:routeconfig-init
 		HealthController: healthController,
 	})
 `
@@ -268,6 +275,125 @@ func TestPatchServeFile_SkipsIfExists(t *testing.T) {
 
 	err := PatchServeFile(d)
 	require.NoError(t, err)
+}
+
+// Marker-missing error branches — each patcher refuses to mutate a file
+// whose scaffold marker has been stripped. Seed a target file that's
+// otherwise well-formed but missing the marker comment the patcher
+// anchors on, then assert the patcher returns an actionable error
+// pointing at the missing marker.
+
+func TestPatchContainer_MarkerMissing(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+	d.IncludeController = true
+
+	containerContent := `package di
+
+import (
+	"github.com/testorg/testapp/app/rest/controllers"
+	svcInterfaces "github.com/testorg/testapp/app/services/interfaces"
+	"github.com/testorg/testapp/app/graphql/resolvers"
+)
+
+type Container struct {
+	UserController *controllers.UserController
+	Resolver *resolvers.Resolver
+}
+`
+	writeTestFile(t, "app/di/container.go", containerContent)
+
+	err := PatchContainer(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), containerFieldsMarker)
+}
+
+func TestPatchWireFile_MarkerMissing(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	wireContent := `package di
+
+func InitializeContainer() *Container {
+	wire.Build(
+		providers.CoreSet,
+		providers.GraphQLSet,
+	)
+	return nil
+}
+`
+	writeTestFile(t, "app/di/wire.go", wireContent)
+
+	err := PatchWireFile(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), wireProvidersMarker)
+}
+
+func TestPatchRouteConfig_FieldsMarkerMissing(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	routeContent := `package routes
+
+type RouteConfig struct {
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
+	r.Mount("/api/v1", api)
+	return r
+}
+`
+	writeTestFile(t, "app/rest/routes/index.routes.go", routeContent)
+
+	err := PatchRouteConfig(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), routeConfigFieldsMarker)
+}
+
+func TestPatchRouteConfig_RegistrationsMarkerMissing(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	routeContent := `package routes
+
+type RouteConfig struct {
+	// gofasta:scaffold:route-config-fields
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	r.Mount("/api/v1", api)
+	return r
+}
+`
+	writeTestFile(t, "app/rest/routes/index.routes.go", routeContent)
+
+	err := PatchRouteConfig(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), routeRegistrationsMarker)
+}
+
+func TestPatchServeFile_MarkerMissing(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	serveContent := `package cmd
+
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		HealthController: healthController,
+	})
+`
+	writeTestFile(t, "cmd/serve.go", serveContent)
+
+	err := PatchServeFile(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), routeConfigInitMarker)
 }
 
 // TestPatchResolver_NoConstructor — the source has no Resolver

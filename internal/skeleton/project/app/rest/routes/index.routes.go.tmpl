@@ -4,22 +4,34 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
-	httpSwagger "github.com/swaggo/http-swagger/v2"
-	"{{.ModulePath}}/app/rest/controllers"
-	_ "{{.ModulePath}}/docs"
 	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 	"github.com/gofastadev/gofasta/pkg/websocket"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
+
+	"{{.ModulePath}}/app/rest/controllers"
+
+	// Importing the generated docs package for its side-effect: its
+	// init() registers the swagger spec with httpSwagger so the /swagger
+	// route can serve it. The package exposes no callable API; the
+	// blank import is the documented swag/http-swagger pattern.
+	_ "{{.ModulePath}}/docs"
 )
 
 // RouteConfig holds all controllers needed for route registration.
 type RouteConfig struct {
-	UserController   *controllers.UserController
+	UserController *controllers.UserController
+	// gofasta:scaffold:route-config-fields — `gofasta g scaffold` inserts new <Name>Controller fields above this line. Don't remove the marker.
 	HealthController *health.Controller
 	WebSocketHub     *websocket.Hub
 }
 
-func InitApiRoutes(config *RouteConfig) *chi.Mux {
+// InitAPIRoutes wires every REST route the project exposes onto a fresh
+// chi.Mux: health/liveness/readiness, swagger UI, the websocket
+// endpoint, and the /api/v1 sub-router with the per-resource routes.
+// New resources scaffolded via `gofasta g scaffold` register their
+// routes inside the api sub-router below.
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Health checks
@@ -43,6 +55,7 @@ func InitApiRoutes(config *RouteConfig) *chi.Mux {
 	// API v1 routes — register new resource routes above the Mount call.
 	api := chi.NewRouter()
 	UserRoutes(api, config.UserController)
+	// gofasta:scaffold:route-registrations — `gofasta g scaffold` inserts new <Name>Routes(api, ...) calls above this line. Don't remove the marker.
 	r.Mount("/api/v1", api)
 
 	return r

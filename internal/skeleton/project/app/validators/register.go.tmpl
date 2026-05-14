@@ -16,8 +16,8 @@ func newValidator(db *gorm.DB) (*validator.Validate, ut.Translator, error) {
 	validate := validator.New()
 
 	// Create a universal translator and register English translations
-	en := en.New()
-	uni := ut.New(en, en)
+	enLocale := en.New()
+	uni := ut.New(enLocale, enLocale)
 
 	trans, found := uni.GetTranslator("en")
 	if !found {
@@ -31,23 +31,32 @@ func newValidator(db *gorm.DB) (*validator.Validate, ut.Translator, error) {
 	}
 
 	for tag, message := range getCustomValidationMessages() {
-		validate.RegisterTranslation(tag, trans, func(ut ut.Translator) error {
+		if err := validate.RegisterTranslation(tag, trans, func(ut ut.Translator) error {
 			return ut.Add(tag, message, true)
 		}, func(ut ut.Translator, fe validator.FieldError) string {
 			t, _ := ut.T(tag, fe.Field(), fe.Param())
 			return t
-		})
+		}); err != nil {
+			return nil, nil, fmt.Errorf("register translation %q: %w", tag, err)
+		}
 	}
 
 	// COMMON VALIDATORS (from framework)
 	validators.RegisterCommonValidators(validate, db)
 
 	// USER VALIDATIONS
-	validate.RegisterValidation("is_record_exist_by_email_for_conflict", isRecordExistByEmailForConflict(db))
-	validate.RegisterValidation("does_record_exist_by_email_for_verification", doesRecordExistByEmailForVerification(db))
-	validate.RegisterValidation("is_record_exist_by_phone_number_for_conflict", isRecordExistByPhoneNumberForConflict(db))
-	validate.RegisterValidation("is_record_exist_by_phone_number_for_verification", isRecordExistByPhoneNumberForVerification(db))
-	validate.RegisterValidation("is_valid_phone_number", isValidPhoneNumber)
+	registrations := map[string]validator.Func{
+		"is_record_exist_by_email_for_conflict":            isRecordExistByEmailForConflict(db),
+		"does_record_exist_by_email_for_verification":      doesRecordExistByEmailForVerification(db),
+		"is_record_exist_by_phone_number_for_conflict":     isRecordExistByPhoneNumberForConflict(db),
+		"is_record_exist_by_phone_number_for_verification": isRecordExistByPhoneNumberForVerification(db),
+		"is_valid_phone_number":                            isValidPhoneNumber,
+	}
+	for tag, fn := range registrations {
+		if err := validate.RegisterValidation(tag, fn); err != nil {
+			return nil, nil, fmt.Errorf("register validation %q: %w", tag, err)
+		}
+	}
 
 	return validate, trans, nil
 }

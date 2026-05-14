@@ -49,6 +49,42 @@ func BuildMigrationURL() string {
 	}
 }
 
+// BuildDatabaseEndpoint reads database.* from config.yaml + env vars
+// and returns the DB backend's host:port endpoint, plus an `enabled`
+// flag indicating whether the app actually wants a network DB.
+//
+// `enabled` is false when `database.driver` is "sqlite"/"sqlite3" —
+// file-backed drivers don't connect anywhere, and the dev preflight
+// must skip the network probe entirely rather than report
+// "unreachable" for a driver that has no host:port at all.
+//
+// When enabled is true and host/port resolve to their scaffold
+// defaults (localhost:5432), the returned endpoint reflects those
+// defaults so the TCP probe targets the same host:port the framework
+// would in production.
+//
+// This is the source of truth for "is the DB accepting connections?"
+// — separate from BuildMigrationURL, which builds a fully-formed DSN
+// suitable for `migrate` and is the wrong tool for a connectivity
+// probe (it requires schema_migrations to exist, which fails the
+// first time a fresh Postgres comes up).
+func BuildDatabaseEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	driver := strings.ToLower(strings.TrimSpace(k.String("database.driver")))
+	if driver == "sqlite" || driver == "sqlite3" {
+		return "", false
+	}
+	host := k.String("database.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("database.port")
+	if port == "" {
+		port = "5432"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
+}
+
 // GetPort reads the server port from config.yaml or env.
 func GetPort() string {
 	if p := os.Getenv("PORT"); p != "" {
@@ -67,6 +103,62 @@ func ReadDBDriver() string {
 		return "postgres"
 	}
 	return driver
+}
+
+// BuildCacheEndpoint reads cache.* from config.yaml + env vars and
+// returns the cache backend's host:port endpoint, plus an `enabled`
+// flag indicating whether the app actually wants a network cache.
+//
+// `enabled` is false when `cache.driver` is "memory" or empty —
+// memory-backed caches don't connect anywhere, and the dev preflight
+// must skip the probe entirely rather than report "unreachable" and
+// nag a user who explicitly opted out of Redis.
+//
+// When enabled is true but host/port can't be assembled, the returned
+// endpoint is empty and the caller should treat that as a config
+// error (not as "unreachable").
+func BuildCacheEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	driver := strings.ToLower(strings.TrimSpace(k.String("cache.driver")))
+	if driver == "" || driver == "memory" {
+		return "", false
+	}
+	host := k.String("cache.redis.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("cache.redis.port")
+	if port == "" {
+		port = "6379"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
+}
+
+// BuildQueueEndpoint reads queue.* from config.yaml + env vars and
+// returns the queue backend's host:port endpoint, plus an `enabled`
+// flag.
+//
+// `enabled` follows `queue.enabled` directly. When false (the
+// scaffold's default), the preflight skips the probe so a project
+// that doesn't use the queue doesn't get a spurious "unreachable"
+// warning at every `gofasta dev` invocation.
+//
+// The queue's Redis defaults to host=localhost port=6379 when not
+// explicitly configured, matching pkg/queue's own resolution.
+func BuildQueueEndpoint() (endpoint string, enabled bool) {
+	k := loadConfig()
+	if !k.Bool("queue.enabled") {
+		return "", false
+	}
+	host := k.String("queue.redis.host")
+	if host == "" {
+		host = "localhost"
+	}
+	port := k.String("queue.redis.port")
+	if port == "" {
+		port = "6379"
+	}
+	return fmt.Sprintf("%s:%s", host, port), true
 }
 
 func loadConfig() *koanf.Koanf {
@@ -90,6 +182,27 @@ func loadConfig() *koanf.Koanf {
 	}
 	return k
 }
+
+// EnvPrefixes is the exported view of envPrefixes for callers outside
+// this package (e.g. the dev preflight menu, which sets env vars to
+// override a connection string the user typed at runtime). Production
+// readers should still go through loadConfig — this helper is for the
+// rare cases where a caller needs to know which prefix wins.
+//
+// Returns the prefixes in the SAME order loadConfig consumes them, so
+// callers that want to "win" should write to the last entry's prefix.
+func EnvPrefixes() []string { return envPrefixes() }
+
+// ProjectEnvPrefix returns the project-specific env var prefix derived
+// from go.mod's module path (e.g. "DATA_" for `module data`, or
+// "IRONJI_SENDA_V2_" → "IRONJISENDAV2_" after illegal-char stripping).
+// Returns "" if go.mod is missing or malformed.
+//
+// Used by callers that need to write project-prefixed values to disk
+// (persistence) — toolkit-branded "GOFASTA_*" must NOT appear in a
+// project's own .env. The project owns its env namespace; gofasta only
+// reads from it.
+func ProjectEnvPrefix() string { return projectPrefix() }
 
 // envPrefixes returns the list of env var prefixes to consult when reading
 // database connection details. GOFASTA_ is always included so the generic
