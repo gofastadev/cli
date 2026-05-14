@@ -155,21 +155,28 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 }
 
 // TestManifest_LoadSaveRoundtrip — manifest round-trips cleanly through
-// disk and InstallRecord data survives intact.
+// disk and InstallRecord data (including v2 fields) survives intact.
 func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 	assert.Empty(t, m.Installed, "fresh manifest should be empty")
+	assert.Equal(t, manifestSchemaVersion, m.Version)
 
-	m.RecordInstall("claude", "v0.5.0-test")
+	m.RecordInstall("claude", "v0.5.0-test",
+		[]string{".claude/settings.json", ".claude/commands/verify.md"},
+		"AGENTS.md", "CLAUDE.md")
 	require.NoError(t, m.Save(dir))
 
 	m2, err := LoadManifest(dir)
 	require.NoError(t, err)
+	assert.Equal(t, "claude", m2.ActiveAgent)
 	rec, ok := m2.Installed["claude"]
 	require.True(t, ok)
 	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
+	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
+	assert.Equal(t, "AGENTS.md", rec.RenamedFrom)
+	assert.Equal(t, "CLAUDE.md", rec.RenamedTo)
 }
 
 // TestExtractModulePath — parses `module ...` lines out of go.mod text.

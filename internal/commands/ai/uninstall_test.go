@@ -1,0 +1,182 @@
+package ai
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// ─────────────────────────────────────────────────────────────────────
+// Coverage for the `gofasta ai uninstall <agent>` flow:
+// runUninstall + Uninstall + UninstallResult.
+// ─────────────────────────────────────────────────────────────────────
+
+// TestRunUninstall_RemovesCreatedFiles — install claude, uninstall it,
+// assert all the dotfiles are gone and the manifest no longer records
+// an active agent.
+func TestRunUninstall_RemovesCreatedFiles(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	_, err := os.Stat(filepath.Join(dir, ".claude", "settings.json"))
+	require.NoError(t, err)
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", false))
+	})
+
+	// .claude/ should be gone — including the empty parent dirs.
+	_, err = os.Stat(filepath.Join(dir, ".claude"))
+	assert.True(t, os.IsNotExist(err), ".claude/ should be removed")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, m.ActiveAgent)
+	_, present := m.Installed["claude"]
+	assert.False(t, present)
+}
+
+// TestRunUninstall_RestoresOriginalDocFile — install claude with a
+// pre-seeded AGENTS.md, uninstall, assert CLAUDE.md is renamed back to
+// AGENTS.md with original content preserved.
+func TestRunUninstall_RestoresOriginalDocFile(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	body := []byte("# original briefing\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), body, 0o644))
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	_ = captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", false))
+	})
+
+	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	require.NoError(t, err)
+	assert.Equal(t, body, got)
+	_, err = os.Stat(filepath.Join(dir, "CLAUDE.md"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+// TestRunUninstall_PreservesUserModifiedFiles — user edits one of the
+// installed files; uninstall keeps it and reports it as preserved.
+func TestRunUninstall_PreservesUserModifiedFiles(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	settings := filepath.Join(dir, ".claude", "settings.json")
+	require.NoError(t, os.WriteFile(settings, []byte(`{"my":"edits"}`), 0o644))
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", false))
+	})
+	// File should still exist (preserved).
+	got, err := os.ReadFile(settings)
+	require.NoError(t, err)
+	assert.Equal(t, `{"my":"edits"}`, string(got))
+	assert.Contains(t, out, "preserved")
+	assert.Contains(t, out, "settings.json")
+}
+
+// TestRunUninstall_UnknownAgent — bad key surfaces UNKNOWN_AGENT.
+func TestRunUninstall_UnknownAgent(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	err := runUninstall("nonexistent", false)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "UNKNOWN_AGENT")
+}
+
+// TestRunUninstall_NotInstalled — calling uninstall for an agent that
+// was never installed returns a friendly error, not a panic.
+func TestRunUninstall_NotInstalled(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	err := runUninstall("claude", false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not currently installed")
+}
+
+// TestRunUninstall_DryRun — nothing is removed but the result lists
+// what would have been.
+func TestRunUninstall_DryRun(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", true))
+	})
+	// .claude/settings.json should still exist after dry-run.
+	_, err := os.Stat(filepath.Join(dir, ".claude", "settings.json"))
+	require.NoError(t, err)
+	// Manifest still records claude as active.
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", m.ActiveAgent)
+}
+
+// TestRunUninstall_FindProjectRootError — outside any Go module.
+func TestRunUninstall_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := runUninstall("claude", false)
+	require.Error(t, err)
+}
+
+// TestUninstall_NotFoundFiles — manifest references a file that's
+// already gone (user deleted it manually). Uninstall reports it under
+// NotFound, doesn't error.
+func TestUninstall_NotFoundFiles(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	// Delete one tracked file behind the installer's back.
+	require.NoError(t, os.Remove(filepath.Join(dir, ".claude", "commands", "verify.md")))
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", false))
+	})
+	assert.Contains(t, out, "already gone")
+}
+
+// TestUninstallResult_PrintText_AllSections — the human renderer
+// covers each section.
+func TestUninstallResult_PrintText_AllSections(t *testing.T) {
+	r := &UninstallResult{
+		Agent:     "claude",
+		Renamed:   []string{"CLAUDE.md → AGENTS.md"},
+		Removed:   []string{".claude/settings.json", ".claude/commands/verify.md"},
+		Preserved: []string{".claude/commands/scaffold.md"},
+		NotFound:  []string{".claude/hooks/pre-commit.sh"},
+	}
+	var buf bytes.Buffer
+	r.PrintText(&buf)
+	out := buf.String()
+	assert.Contains(t, out, "renamed 1 file(s)")
+	assert.Contains(t, out, "removed 2 file(s)")
+	assert.Contains(t, out, "preserved 1 locally-modified")
+	assert.Contains(t, out, "1 recorded file(s) already gone")
+}
+
+// TestUninstallCmd_RunE — the cobra-bound RunE delegates to runUninstall.
+func TestUninstallCmd_RunE(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	// No go.mod → findProjectRoot fails.
+	err := uninstallCmd.RunE(uninstallCmd, []string{"claude"})
+	require.Error(t, err)
+}

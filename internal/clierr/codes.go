@@ -72,6 +72,7 @@ const (
 	CodeUnknownAgent    Code = "UNKNOWN_AGENT"
 	CodeAIManifestIO    Code = "AI_MANIFEST_IO"
 	CodeAIInstallFailed Code = "AI_INSTALL_FAILED"
+	CodeAIAgentConflict Code = "AI_AGENT_CONFLICT"
 
 	// --- Debug (gofasta debug) ---
 	//
@@ -266,6 +267,10 @@ var registry = map[Code]meta{
 	},
 	CodeAIInstallFailed: {
 		Hint: "one or more agent configuration files could not be written; inspect the error above",
+		Docs: "",
+	},
+	CodeAIAgentConflict: {
+		Hint: "another AI agent is already installed in this project; re-run with `--switch` to replace it, or `gofasta ai uninstall <agent>` to remove it first",
 		Docs: "",
 	},
 

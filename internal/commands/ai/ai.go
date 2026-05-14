@@ -60,6 +60,7 @@ Examples:
 var (
 	installDryRun bool
 	installForce  bool
+	installSwitch bool
 )
 
 // listCmd lists every supported agent.
@@ -85,6 +86,8 @@ func init() {
 		"Preview what would be written without touching disk")
 	Cmd.Flags().BoolVar(&installForce, "force", false,
 		"Overwrite existing files whose contents differ from the template")
+	Cmd.Flags().BoolVar(&installSwitch, "switch", false,
+		"Replace the currently-installed agent with this one (uninstalls the previous agent first)")
 	Cmd.AddCommand(listCmd)
 	Cmd.AddCommand(statusCmd)
 }
@@ -92,6 +95,11 @@ func init() {
 // runInstall is the entry point for `gofasta ai <agent>`. Resolves the
 // agent, verifies we're in a gofasta project, reads go.mod for the
 // module path, renders templates, updates the manifest.
+//
+// Single-active-agent invariant: if the manifest records a different
+// active agent, runInstall refuses unless `--switch` is passed. With
+// `--switch`, the previous agent is uninstalled (its files removed,
+// its rename reversed) before the new agent is installed.
 func runInstall(key string, dryRun, force bool) error {
 	agent := AgentByKey(key)
 	if agent == nil {
@@ -109,6 +117,23 @@ func runInstall(key string, dryRun, force bool) error {
 		return err
 	}
 
+	m, err := LoadManifest(root)
+	if err != nil {
+		return err
+	}
+
+	// Single-active-agent guard. A different agent is installed:
+	// without --switch, refuse and print the would-be diff so the user
+	// can decide. With --switch, uninstall the previous agent first.
+	if m.ActiveAgent != "" && m.ActiveAgent != agent.Key {
+		if !installSwitch {
+			return agentConflictError(m, agent, root, data)
+		}
+		if err := switchUninstall(m, root, dryRun); err != nil {
+			return err
+		}
+	}
+
 	result, err := Install(agent, root, data, InstallOptions{
 		DryRun: dryRun,
 		Force:  force,
@@ -117,13 +142,15 @@ func runInstall(key string, dryRun, force bool) error {
 		return err
 	}
 
-	// Update manifest on successful non-dry-run install.
+	// Update manifest on successful non-dry-run install. Record the
+	// full template path list so uninstall can reverse the install
+	// without re-walking templates (which may shift between CLI versions).
 	if !dryRun {
-		m, err := LoadManifest(root)
-		if err != nil {
-			return err
+		ownedFiles, ferr := agentOwnedFiles(agent)
+		if ferr != nil {
+			return ferr
 		}
-		m.RecordInstall(agent.Key, data.CLIVersion)
+		m.RecordInstall(agent.Key, data.CLIVersion, ownedFiles, result.renameFrom, result.renameTo)
 		if err := m.Save(root); err != nil {
 			return err
 		}
@@ -139,6 +166,123 @@ func runInstall(key string, dryRun, force bool) error {
 		result.PrintText(w)
 		printNextSteps(w, agent)
 	})
+	return nil
+}
+
+// agentOwnedFiles returns every project-relative path the agent's
+// templates render to. Stamped into the manifest at install time so
+// uninstall can reverse the install precisely.
+func agentOwnedFiles(agent *Agent) ([]string, error) {
+	files, err := TemplateFiles(agent)
+	if err != nil {
+		return nil, clierr.Wrap(clierr.CodeAIInstallFailed, err,
+			"could not enumerate templates for agent "+agent.Key)
+	}
+	out := make([]string, 0, len(files))
+	for _, tf := range files {
+		out = append(out, tf.DestPath)
+	}
+	return out, nil
+}
+
+// agentConflictError builds the "another agent is installed" error,
+// inlining the would-be diff (a dry-run of both the uninstall and the
+// install) so the user can see exactly what `--switch` would do.
+func agentConflictError(m *Manifest, target *Agent, root string, data InstallData) error {
+	prev := AgentByKey(m.ActiveAgent)
+	prevName := m.ActiveAgent
+	if prev != nil {
+		prevName = prev.Name
+	}
+
+	var diff []string
+
+	// Doc-file rename swap: previous agent → AGENTS.md → target.
+	if prev != nil {
+		if rec, ok := m.Installed[prev.Key]; ok && rec.RenamedTo != "" && rec.RenamedFrom != "" {
+			if target.DocFilename != "" {
+				diff = append(diff, "  rename "+rec.RenamedTo+" → "+target.DocFilename)
+			} else {
+				diff = append(diff, "  rename "+rec.RenamedTo+" → "+rec.RenamedFrom)
+			}
+		} else if target.DocFilename != "" {
+			diff = append(diff, "  rename AGENTS.md → "+target.DocFilename)
+		}
+	}
+
+	// Files the previous agent owns (will be removed).
+	if prev != nil {
+		if rec, ok := m.Installed[prev.Key]; ok && len(rec.CreatedFiles) > 0 {
+			diff = append(diff, "  remove "+joinShort(rec.CreatedFiles))
+		}
+	}
+
+	// Files the new agent will create.
+	if owned, ferr := agentOwnedFiles(target); ferr == nil && len(owned) > 0 {
+		diff = append(diff, "  add "+joinShort(owned))
+	}
+
+	var msg strings.Builder
+	msg.WriteString(prevName)
+	msg.WriteString(" is currently installed.")
+	if len(diff) > 0 {
+		msg.WriteString("\nSwitching to ")
+		msg.WriteString(target.Name)
+		msg.WriteString(" would:\n")
+		for _, line := range diff {
+			msg.WriteString(line)
+			msg.WriteByte('\n')
+		}
+		msg.WriteString("Re-run with --switch to apply.")
+	} else {
+		msg.WriteString(" Re-run with `--switch` to replace it with ")
+		msg.WriteString(target.Name)
+		msg.WriteByte('.')
+	}
+	_ = root
+	_ = data
+	return clierr.New(clierr.CodeAIAgentConflict, msg.String())
+}
+
+// joinShort joins paths with ", " for inline display. Truncates with
+// "(+N more)" if the list is long enough that a single line gets
+// unwieldy in a terminal.
+func joinShort(paths []string) string {
+	const maxInline = 4
+	if len(paths) <= maxInline {
+		return strings.Join(paths, ", ")
+	}
+	return fmt.Sprintf("%s (+%d more)", strings.Join(paths[:maxInline], ", "), len(paths)-maxInline)
+}
+
+// switchUninstall removes the currently-installed agent before the new
+// one takes over. Used by the --switch path. In dryRun mode the
+// uninstall is also a dry-run — no disk changes.
+func switchUninstall(m *Manifest, root string, dryRun bool) error {
+	prev := AgentByKey(m.ActiveAgent)
+	if prev == nil {
+		// Manifest references an agent the current CLI doesn't know
+		// about (older or experimental). Just clear the active marker —
+		// we have no template to walk for cleanup.
+		m.ActiveAgent = ""
+		return nil
+	}
+	rec, ok := m.Installed[prev.Key]
+	if !ok {
+		m.ActiveAgent = ""
+		return nil
+	}
+	data, err := buildInstallData(root)
+	if err != nil {
+		return err
+	}
+	_, err = Uninstall(prev, root, rec, data, UninstallOptions{DryRun: dryRun})
+	if err != nil {
+		return err
+	}
+	if !dryRun {
+		m.RecordUninstall(prev.Key)
+	}
 	return nil
 }
 
@@ -211,17 +355,17 @@ func printNextSteps(w io.Writer, agent *Agent) {
 	fprintln(w, "Next steps:")
 	switch agent.Key {
 	case "claude":
-		fprintln(w, "  Open this project in Claude Code. The following commands are pre-approved:")
-		fprintln(w, "    gofasta *, make *, go build/test/vet, gofmt, common read-only git")
+		fprintln(w, "  Open this project in Claude Code. It will read CLAUDE.md.")
+		fprintln(w, "  Pre-approved commands: gofasta *, make *, go build/test/vet, gofmt, common read-only git")
 		fprintln(w, "  Slash commands available: /verify, /scaffold, /inspect")
 	case "cursor":
-		fprintln(w, "  Open this project in Cursor. `.cursor/rules/gofasta.mdc` will apply to every edit.")
+		fprintln(w, "  Open this project in Cursor. It reads AGENTS.md from the project root.")
 	case "codex":
-		fprintln(w, "  Point OpenAI Codex at this project root. It will read AGENTS.md + .codex/config.toml.")
+		fprintln(w, "  Run Codex from the project root. It reads AGENTS.md and .codex/config.toml.")
 	case "aider":
-		fprintln(w, "  Start Aider: `aider` from the project root. Auto-test + auto-lint are enabled.")
+		fprintln(w, "  Start `aider` from the project root. It will load CONVENTIONS.md and run `gofasta verify` after each edit.")
 	case "windsurf":
-		fprintln(w, "  Open this project in Windsurf. `.windsurfrules` applies to every edit.")
+		fprintln(w, "  Open this project in Windsurf. Cascade reads AGENTS.md.")
 	}
 }
 

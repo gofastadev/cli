@@ -147,7 +147,7 @@ func TestRunStatus_WithInstalledManifest(t *testing.T) {
 	dir := scaffoldFakeProject(t, "example.com/app")
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
-	m.RecordInstall("claude", "v1.0.0")
+	m.RecordInstall("claude", "v1.0.0", []string{".claude/settings.json"}, "AGENTS.md", "CLAUDE.md")
 	require.NoError(t, m.Save(dir))
 
 	out := captureStdout(t, func() {
@@ -387,4 +387,126 @@ func TestRunInstall_InstallError(t *testing.T) {
 	require.NoError(t, os.WriteFile(dst, []byte("conflict"), 0o644))
 	err = runInstall("claude", false, false)
 	require.Error(t, err)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// Single-active-agent guard + --switch tests
+// ─────────────────────────────────────────────────────────────────────
+
+// TestRunInstall_BlocksWhenOtherAgentActive — install codex first,
+// then attempt to install claude without --switch. Must error with
+// CodeAIAgentConflict and the error body should describe the diff.
+func TestRunInstall_BlocksWhenOtherAgentActive(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	t.Cleanup(func() { installSwitch = false })
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
+	assert.Contains(t, err.Error(), "currently installed")
+	assert.Contains(t, err.Error(), "--switch")
+}
+
+// TestRunInstall_SwitchReplacesActiveAgent — install aider, then
+// install claude with --switch. Verify the swap: AGENTS.md ↔
+// CONVENTIONS.md ↔ CLAUDE.md, .aider.conf.yml gone, .claude/* present,
+// manifest.ActiveAgent == "claude".
+func TestRunInstall_SwitchReplacesActiveAgent(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	// Pre-seed AGENTS.md so aider's rename has something to act on.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("aider", false, false))
+	})
+	// Aider installed: CONVENTIONS.md exists, .aider.conf.yml exists.
+	_, err := os.Stat(filepath.Join(dir, "CONVENTIONS.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(dir, ".aider.conf.yml"))
+	require.NoError(t, err)
+
+	// Now switch to claude.
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	// Aider files removed; claude files installed.
+	_, err = os.Stat(filepath.Join(dir, "CONVENTIONS.md"))
+	assert.True(t, os.IsNotExist(err), "CONVENTIONS.md should be renamed back / replaced")
+	_, err = os.Stat(filepath.Join(dir, ".aider.conf.yml"))
+	assert.True(t, os.IsNotExist(err), ".aider.conf.yml should be removed")
+	_, err = os.Stat(filepath.Join(dir, "CLAUDE.md"))
+	require.NoError(t, err, "CLAUDE.md should exist after switch")
+	_, err = os.Stat(filepath.Join(dir, ".claude", "settings.json"))
+	require.NoError(t, err)
+
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", m.ActiveAgent)
+	_, present := m.Installed["aider"]
+	assert.False(t, present, "aider should be removed from manifest after switch")
+}
+
+// TestRunInstall_SameAgentReinstall — re-running the same agent does
+// NOT trigger the conflict guard (it's idempotent).
+func TestRunInstall_SameAgentReinstall(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+}
+
+// TestLoadManifest_MigratesV1ToV2 — write a v1 manifest with one
+// installed agent, load it, assert ActiveAgent is inferred and
+// Version was bumped.
+func TestLoadManifest_MigratesV1ToV2(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	v1 := `{
+		"version": 1,
+		"installed": {
+			"claude": {
+				"installed_at": "2026-01-01T00:00:00Z",
+				"cli_version": "v0.1.0"
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
+		[]byte(v1), 0o644))
+
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", m.ActiveAgent, "v1→v2 should infer single installed agent as active")
+	assert.Equal(t, manifestSchemaVersion, m.Version)
+}
+
+// TestLoadManifest_V1MultipleInstalledLeavesActiveEmpty — if v1 had
+// more than one installed entry (legacy quirk, the v1 schema technically
+// allowed it), ActiveAgent stays empty. The next install will populate.
+func TestLoadManifest_V1MultipleInstalledLeavesActiveEmpty(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	v1 := `{
+		"version": 1,
+		"installed": {
+			"claude": {"installed_at": "2026-01-01T00:00:00Z", "cli_version": "v0.1.0"},
+			"cursor": {"installed_at": "2026-01-02T00:00:00Z", "cli_version": "v0.1.0"}
+		}
+	}`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
+		[]byte(v1), 0o644))
+
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Empty(t, m.ActiveAgent, "ambiguous v1 manifest should not infer active agent")
+	assert.Equal(t, manifestSchemaVersion, m.Version)
 }

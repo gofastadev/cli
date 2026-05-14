@@ -9,8 +9,9 @@
 auto-test: true
 test-cmd: gofasta verify --json
 
-# Project conventions file. Copied from AGENTS.md content during install.
-read: .aider/CONVENTIONS.md
+# Project conventions file. `gofasta ai aider` renames the scaffold's
+# AGENTS.md to CONVENTIONS.md at the project root.
+read: CONVENTIONS.md
 
 # Force lint-on-edit using the same linter CI uses.
 auto-lint: true

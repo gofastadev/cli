@@ -17,18 +17,31 @@ import (
 // to know which configs are present and at what version.
 const manifestPath = ".gofasta/ai.json"
 
+// manifestSchemaVersion is the on-disk schema version this CLI emits.
+// v1 had {Version, Installed{InstalledAt, CLIVersion}}.
+// v2 adds the active-agent invariant + per-record CreatedFiles + the
+// rename bookkeeping needed to reverse an install.
+const manifestSchemaVersion = 2
+
 // Manifest tracks which agents have been installed in this project and
-// at what CLI version. Used by `gofasta ai status` and by the upgrade
-// flow in the future to diff installed config vs latest.
+// at what CLI version. Used by `gofasta ai status`, the conflict guard
+// in `gofasta ai <agent>`, and `gofasta ai uninstall`.
 type Manifest struct {
 	// Version of the manifest file format itself (not the gofasta CLI).
 	// Bump when we change the on-disk schema so older CLIs can warn.
 	Version int `json:"version"`
 
+	// ActiveAgent is the key of the currently-installed agent, or "" if
+	// none. The single-active-agent invariant is enforced in runInstall:
+	// if ActiveAgent is set and a different agent is requested, the
+	// install refuses without `--switch`.
+	ActiveAgent string `json:"active_agent,omitempty"`
+
 	// Installed is keyed by agent key (e.g. "claude") and records when
-	// it was installed and which CLI version wrote the templates. A
-	// later CLI version can detect "older templates installed" and
-	// offer an upgrade.
+	// it was installed and which CLI version wrote the templates. Even
+	// after `gofasta ai uninstall <key>` removes the entry, prior CLI
+	// versions used to keep history here — v2 deletes the entry on
+	// uninstall to keep status output focused on the active agent.
 	Installed map[string]InstallRecord `json:"installed"`
 }
 
@@ -36,17 +49,33 @@ type Manifest struct {
 type InstallRecord struct {
 	InstalledAt time.Time `json:"installed_at"`
 	CLIVersion  string    `json:"cli_version"`
+
+	// CreatedFiles is every project-relative path the install wrote.
+	// Uninstall walks this list to remove exactly what was added —
+	// without it we'd have to guess from template enumeration, which
+	// breaks if templates change between install and uninstall.
+	CreatedFiles []string `json:"created_files,omitempty"`
+
+	// RenamedFrom / RenamedTo capture a doc-file rename performed at
+	// install time (e.g. AGENTS.md → CLAUDE.md). Uninstall reverses
+	// the rename. Empty when the agent reads AGENTS.md natively.
+	RenamedFrom string `json:"renamed_from,omitempty"`
+	RenamedTo   string `json:"renamed_to,omitempty"`
 }
 
 // LoadManifest reads .gofasta/ai.json. Returns an empty Manifest if the
 // file doesn't exist — callers can treat "fresh project" and "never
-// installed any agent" identically.
+// installed any agent" identically. Auto-migrates v1 → v2 in memory
+// (no file rewrite until the next Save).
 func LoadManifest(projectRoot string) (*Manifest, error) {
 	path := filepath.Join(projectRoot, manifestPath)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Manifest{Version: 1, Installed: map[string]InstallRecord{}}, nil
+			return &Manifest{
+				Version:   manifestSchemaVersion,
+				Installed: map[string]InstallRecord{},
+			}, nil
 		}
 		return nil, clierr.Wrap(clierr.CodeAIManifestIO, err,
 			"could not read "+manifestPath)
@@ -59,7 +88,24 @@ func LoadManifest(projectRoot string) (*Manifest, error) {
 	if m.Installed == nil {
 		m.Installed = map[string]InstallRecord{}
 	}
+	migrateManifest(&m)
 	return &m, nil
+}
+
+// migrateManifest brings older on-disk schemas forward. v1 manifests
+// had no ActiveAgent field; if exactly one agent was installed under v1
+// we infer it as the active one. Otherwise ActiveAgent stays empty and
+// the next install populates it.
+func migrateManifest(m *Manifest) {
+	if m.Version >= manifestSchemaVersion {
+		return
+	}
+	if m.ActiveAgent == "" && len(m.Installed) == 1 {
+		for k := range m.Installed {
+			m.ActiveAgent = k
+		}
+	}
+	m.Version = manifestSchemaVersion
 }
 
 // manifestMarshal is a package-level seam for json.MarshalIndent so
@@ -92,14 +138,32 @@ func (m *Manifest) Save(projectRoot string) error {
 	return nil
 }
 
-// RecordInstall stamps an agent as installed in the manifest and saves.
-func (m *Manifest) RecordInstall(agentKey, cliVersion string) {
+// RecordInstall stamps an agent as installed in the manifest and marks
+// it as the active agent. createdFiles is the project-relative list of
+// every file the install wrote (used by uninstall to reverse cleanly).
+// renamedFrom/renamedTo capture a doc-file rename, both empty if none.
+func (m *Manifest) RecordInstall(agentKey, cliVersion string, createdFiles []string, renamedFrom, renamedTo string) {
 	if m.Installed == nil {
 		m.Installed = map[string]InstallRecord{}
 	}
 	m.Installed[agentKey] = InstallRecord{
-		InstalledAt: time.Now().UTC(),
-		CLIVersion:  cliVersion,
+		InstalledAt:  time.Now().UTC(),
+		CLIVersion:   cliVersion,
+		CreatedFiles: append([]string(nil), createdFiles...),
+		RenamedFrom:  renamedFrom,
+		RenamedTo:    renamedTo,
+	}
+	m.ActiveAgent = agentKey
+}
+
+// RecordUninstall removes an agent's record and clears ActiveAgent if
+// it matches. Safe to call when the agent isn't installed (no-op).
+func (m *Manifest) RecordUninstall(agentKey string) {
+	if m.Installed != nil {
+		delete(m.Installed, agentKey)
+	}
+	if m.ActiveAgent == agentKey {
+		m.ActiveAgent = ""
 	}
 }
 
