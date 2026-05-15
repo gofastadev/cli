@@ -53,7 +53,7 @@ func New{{.Name}}ControllerInstance(svc svcInterfaces.{{.Name}}ServiceInterface,
 //	@Router			/{{.PluralLower}} [get]
 {{- end}}
 func (c *{{.Name}}Controller) List(w http.ResponseWriter, r *http.Request) error {
-	q, err := httputil.BindQuery[dtos.T{{.Name}}FiltersQueryParamsDto](r)
+	q, err := httputil.DecodeQuery[dtos.T{{.Name}}FiltersQueryParamsDto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid query parameters", nil)
 	}
@@ -125,7 +125,7 @@ func (c *{{.Name}}Controller) GetByID(w http.ResponseWriter, r *http.Request) er
 //	@Router			/{{.PluralLower}} [post]
 {{- end}}
 func (c *{{.Name}}Controller) Create(w http.ResponseWriter, r *http.Request) error {
-	in, err := httputil.BindJSON[dtos.TCreate{{.Name}}Dto](r)
+	in, err := httputil.DecodeJSON[dtos.TCreate{{.Name}}Dto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid request body", nil)
 	}
@@ -162,7 +162,7 @@ func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
-	in, err := httputil.BindJSON[dtos.TUpdate{{.Name}}Dto](r)
+	in, err := httputil.DecodeJSON[dtos.TUpdate{{.Name}}Dto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid request body", nil)
 	}

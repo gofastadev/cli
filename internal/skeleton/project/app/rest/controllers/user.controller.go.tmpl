@@ -48,7 +48,7 @@ func NewUserControllerInstance(svc svcInterfaces.UserServiceInterface, v *valida
 //	@Failure		500				{object}	apperrors.AppError
 //	@Router			/users [get]
 func (c *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
-	q, err := httputil.BindQuery[dtos.TUserFiltersQueryParamsDto](r)
+	q, err := httputil.DecodeQuery[dtos.TUserFiltersQueryParamsDto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid query parameters", nil)
 	}
@@ -92,7 +92,7 @@ func (c *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error
 //	@Failure		500		{object}	apperrors.AppError
 //	@Router			/users [post]
 func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) error {
-	in, err := httputil.BindJSON[dtos.TCreateUserDto](r)
+	in, err := httputil.DecodeJSON[dtos.TCreateUserDto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid request body", nil)
 	}
@@ -156,7 +156,7 @@ func (c *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) erro
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
-	in, err := httputil.BindJSON[dtos.TUpdateUserDto](r)
+	in, err := httputil.DecodeJSON[dtos.TUpdateUserDto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid request body", nil)
 	}
