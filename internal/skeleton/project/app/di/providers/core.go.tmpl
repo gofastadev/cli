@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/rest/controllers"
 	"{{.ModulePath}}/app/services"
 	"{{.ModulePath}}/app/validators"
 )
@@ -59,6 +60,7 @@ var CoreSet = wire.NewSet(
 	ProvideDB,
 	ProvideLogger,
 	validators.NewAppValidator,
+	wire.Bind(new(controllers.Validator), new(*validators.AppValidator)),
 	ProvideTemplateRenderer,
 	mailer.NewEmailSender,
 	slack.NewSlackSender,

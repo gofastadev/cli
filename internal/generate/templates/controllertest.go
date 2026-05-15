@@ -24,14 +24,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	"gorm.io/driver/sqlite"
-	"gorm.io/gorm"
 
+	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/models"
 	"{{.ModulePath}}/app/rest/controllers"
 	"{{.ModulePath}}/app/rest/routes"
 	"{{.ModulePath}}/app/services"
-	"{{.ModulePath}}/app/validators"
 )
 
 // mock{{.Name}}Service is an inline testify mock for the service.
@@ -71,13 +69,15 @@ func (m *mock{{.Name}}Service) Archive(ctx context.Context, id uuid.UUID) error 
 	return m.Called(ctx, id).Error(0)
 }
 
-func newTest{{.Name}}Validator(t *testing.T) *validators.AppValidator {
-	t.Helper()
-	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
-	require.NoError(t, err)
-	require.NoError(t, db.AutoMigrate(&models.{{.Name}}{}))
-	return validators.NewAppValidator(db)
-}
+// noop{{.Name}}Validator passes every input. These tests assert the
+// controller's sentinel→status mapping (404/409/500), not validation
+// behavior — so making validation pass-through lets each request reach
+// the service mock that returns the sentinel under test. If you want
+// to assert that bad input produces 422, swap in the real validator
+// (validators.NewAppValidator) for that specific test.
+type noop{{.Name}}Validator struct{}
+
+func (noop{{.Name}}Validator) ValidateStruct(_ any) []*dtos.TCommonAPIErrorDto { return nil }
 
 func mount{{.Name}}Controller(c *controllers.{{.Name}}Controller) http.Handler {
 	r := chi.NewRouter()
@@ -100,7 +100,7 @@ func Test{{.Name}}Controller_Get_OK_200(t *testing.T) {
 	id := uuid.New()
 	svc.On("Get", mock.Anything, id).Return(valid{{.Name}}Model(id), nil)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -113,7 +113,7 @@ func Test{{.Name}}Controller_Get_NotFound_404(t *testing.T) {
 	id := uuid.New()
 	svc.On("Get", mock.Anything, id).Return(nil, services.Err{{.Name}}NotFound)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -123,7 +123,7 @@ func Test{{.Name}}Controller_Get_NotFound_404(t *testing.T) {
 // Test{{.Name}}Controller_Get_BadUUID_400 — non-UUID path param fails parsing.
 func Test{{.Name}}Controller_Get_BadUUID_400(t *testing.T) {
 	svc := &mock{{.Name}}Service{}
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodGet, "/{{.PluralSnake}}/not-a-uuid", nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -134,7 +134,7 @@ func Test{{.Name}}Controller_Get_BadUUID_400(t *testing.T) {
 // Test{{.Name}}Controller_Create_BadJSON_400 — malformed body → 400.
 func Test{{.Name}}Controller_Create_BadJSON_400(t *testing.T) {
 	svc := &mock{{.Name}}Service{}
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodPost, "/{{.PluralSnake}}", bytes.NewBufferString("not-json"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -150,7 +150,7 @@ func Test{{.Name}}Controller_Update_VersionConflict_409(t *testing.T) {
 	svc.On("Update", mock.Anything, id, 7, mock.Anything).
 		Return(nil, services.Err{{.Name}}VersionConflict)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	body := fmt.Sprintf(` + "`" + `{"id":"%s","recordVersion":7}` + "`" + `, id)
 	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -165,7 +165,7 @@ func Test{{.Name}}Controller_Archive_NoContent_204(t *testing.T) {
 	id := uuid.New()
 	svc.On("Archive", mock.Anything, id).Return(nil)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -179,7 +179,7 @@ func Test{{.Name}}Controller_Archive_NotDeletable_409(t *testing.T) {
 	id := uuid.New()
 	svc.On("Archive", mock.Anything, id).Return(services.Err{{.Name}}NotDeletable)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -192,7 +192,7 @@ func Test{{.Name}}Controller_List_OK_200(t *testing.T) {
 	svc.On("List", mock.Anything, mock.Anything).
 		Return([]*models.{{.Name}}{valid{{.Name}}Model(uuid.New())}, int64(1), nil)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodGet, "/{{.PluralSnake}}", nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -209,7 +209,7 @@ func Test{{.Name}}Controller_List_DefaultsApplied(t *testing.T) {
 		return true
 	})).Return([]*models.{{.Name}}{}, int64(0), nil)
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodGet, "/{{.PluralSnake}}", nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
@@ -227,16 +227,14 @@ func Test{{.Name}}Controller_Create_ServiceError_500(t *testing.T) {
 	svc.On("Create", mock.Anything, mock.Anything).
 		Return(nil, errors.New("db down"))
 
-	c := controllers.New{{.Name}}ControllerInstance(svc, newTest{{.Name}}Validator(t))
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	body := ` + "`" + `{}` + "`" + `
 	req := httptest.NewRequest(http.MethodPost, "/{{.PluralSnake}}", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
-	// Could be 422 if validation fires first (resource has required
-	// fields) or 500 if service is reached. Either is acceptable for
-	// this smoke test — the point is a clean error response.
-	assert.True(t, rec.Code == http.StatusInternalServerError || rec.Code == http.StatusUnprocessableEntity,
-		"expected 500 (service error reached) or 422 (validation rejected first), got %d", rec.Code)
+	// noop{{.Name}}Validator passes everything, so the request always
+	// reaches the service mock that returns the infra error.
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 `

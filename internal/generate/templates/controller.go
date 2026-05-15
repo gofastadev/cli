@@ -20,7 +20,6 @@ import (
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/services"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
-	"{{.ModulePath}}/app/validators"
 )
 
 // {{.Name}}Controller exposes the REST surface for the {{.Name}} resource.
@@ -29,12 +28,14 @@ import (
 // actual work to the service layer.
 type {{.Name}}Controller struct {
 	svc       svcInterfaces.{{.Name}}ServiceInterface
-	validator *validators.AppValidator
+	validator Validator
 }
 
 // New{{.Name}}ControllerInstance constructs a {{.Name}}Controller.
-// Wire calls this at app startup.
-func New{{.Name}}ControllerInstance(svc svcInterfaces.{{.Name}}ServiceInterface, v *validators.AppValidator) *{{.Name}}Controller {
+// Wire calls this at app startup. Validator is the controllers.Validator
+// interface; the project's *validators.AppValidator is bound to it in
+// providers.CoreSet.
+func New{{.Name}}ControllerInstance(svc svcInterfaces.{{.Name}}ServiceInterface, v Validator) *{{.Name}}Controller {
 	return &{{.Name}}Controller{svc: svc, validator: v}
 }
 

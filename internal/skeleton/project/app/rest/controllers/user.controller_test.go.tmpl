@@ -27,14 +27,23 @@ import (
 	"{{.ModulePath}}/testutil/mocks"
 )
 
-// newTestValidator constructs a real AppValidator backed by an
-// in-memory SQLite. The validator's DB-dependent custom validators
-// (does_record_exist_by_id_for_verification, is_record_deletable, etc.)
-// run against the empty in-memory DB, which is fine for happy-path
-// tests where the input is structurally valid; for tests that need to
-// trigger DB-backed validation failures, seed the SQLite DB before
-// the assertion.
-func newTestValidator(t *testing.T) *validators.AppValidator {
+// noopValidator passes every input. Most controller tests use it
+// because they're asserting the controller's sentinel→status mapping
+// (404, 409, etc.) — making validation pass-through lets the request
+// reach the service mock that returns the sentinel under test. Tests
+// that exercise validation behavior itself use newRealTestValidator
+// instead (see TestCreateUser_ValidationFails_422).
+type noopValidator struct{}
+
+func (noopValidator) ValidateStruct(_ any) []*dtos.TCommonAPIErrorDto { return nil }
+
+// newRealTestValidator constructs the project's real AppValidator
+// backed by an in-memory SQLite. Custom DB-backed validators
+// (does_record_exist_by_id_for_verification, etc.) run against the
+// empty DB — call only from tests that want validation to actually
+// run, e.g. asserting that bad input produces 422. Helpers that pass
+// noopValidator{} skip this setup entirely.
+func newRealTestValidator(t *testing.T) *validators.AppValidator {
 	t.Helper()
 	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
 	require.NoError(t, err)
@@ -78,7 +87,7 @@ func TestCreateUser_Created_201(t *testing.T) {
 	id := uuid.New()
 	svc.On("Create", mock.Anything, mock.Anything).Return(validUserModel(id), nil)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	body := `{"firstName":"Alice","otherNames":"X","email":"alice@example.com","phoneNumber":"0712345678"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -95,10 +104,12 @@ func TestCreateUser_Created_201(t *testing.T) {
 }
 
 // TestCreateUser_ValidationFails_422 — invalid input body must NOT
-// reach the service; status is 422 with structured details.
+// reach the service; status is 422 with structured details. Uses the
+// REAL AppValidator (not noopValidator) because the assertion is
+// specifically about validation behavior.
 func TestCreateUser_ValidationFails_422(t *testing.T) {
 	svc := &mocks.MockUserService{}
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, newRealTestValidator(t))
 
 	// Email field missing → required validator fails.
 	body := `{"firstName":"A","otherNames":"X","phoneNumber":"0712345678"}`
@@ -114,7 +125,7 @@ func TestCreateUser_ValidationFails_422(t *testing.T) {
 // TestCreateUser_BadJSON_400 — malformed body fails BindJSON; 400.
 func TestCreateUser_BadJSON_400(t *testing.T) {
 	svc := &mocks.MockUserService{}
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 
 	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(`not-json`))
 	req.Header.Set("Content-Type", "application/json")
@@ -131,7 +142,7 @@ func TestCreateUser_ServiceError_500(t *testing.T) {
 	svc := &mocks.MockUserService{}
 	svc.On("Create", mock.Anything, mock.Anything).Return(nil, errors.New("db down"))
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	body := `{"firstName":"Alice","otherNames":"X","email":"alice@example.com","phoneNumber":"0712345678"}`
 	req := httptest.NewRequest(http.MethodPost, "/users", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -149,7 +160,7 @@ func TestGetUser_OK_200(t *testing.T) {
 	id := uuid.New()
 	svc.On("Get", mock.Anything, id).Return(validUserModel(id), nil)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/users/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -163,7 +174,7 @@ func TestGetUser_NotFound_404(t *testing.T) {
 	id := uuid.New()
 	svc.On("Get", mock.Anything, id).Return(nil, services.ErrUserNotFound)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/users/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -175,7 +186,7 @@ func TestGetUser_NotFound_404(t *testing.T) {
 // before the service is called.
 func TestGetUser_InvalidUUID_400(t *testing.T) {
 	svc := &mocks.MockUserService{}
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodGet, "/users/not-a-uuid", nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -193,7 +204,7 @@ func TestUpdateUser_VersionConflict_409(t *testing.T) {
 	svc.On("Update", mock.Anything, id, 7, mock.Anything).
 		Return(nil, services.ErrUserVersionConflict)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	body := fmt.Sprintf(`{"id":"%s","recordVersion":7,"firstName":"Changed"}`, id)
 	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/users/%s", id), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -210,7 +221,7 @@ func TestUpdateUser_NotFound_404(t *testing.T) {
 	svc.On("Update", mock.Anything, id, 1, mock.Anything).
 		Return(nil, services.ErrUserNotFound)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	body := fmt.Sprintf(`{"id":"%s","recordVersion":1,"firstName":"X"}`, id)
 	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/users/%s", id), bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -228,7 +239,7 @@ func TestArchiveUser_NoContent_204(t *testing.T) {
 	id := uuid.New()
 	svc.On("Archive", mock.Anything, id).Return(nil)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/users/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -243,7 +254,7 @@ func TestArchiveUser_NotDeletable_409(t *testing.T) {
 	id := uuid.New()
 	svc.On("Archive", mock.Anything, id).Return(services.ErrUserNotDeletable)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/users/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -259,7 +270,7 @@ func TestListUsers_OK_200(t *testing.T) {
 	svc.On("List", mock.Anything, mock.Anything).
 		Return([]*models.User{validUserModel(uuid.New())}, int64(1), nil)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
@@ -277,7 +288,7 @@ func TestListUsers_DefaultsAppliedWhenQueryEmpty(t *testing.T) {
 		return true
 	})).Return([]*models.User{}, int64(0), nil)
 
-	c := controllers.NewUserControllerInstance(svc, newTestValidator(t))
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)

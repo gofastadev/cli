@@ -13,7 +13,6 @@ import (
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/services"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
-	"{{.ModulePath}}/app/validators"
 )
 
 // UserController is the REST surface for the user resource.
@@ -25,13 +24,14 @@ import (
 // sentinel errors, which this controller maps to status codes.
 type UserController struct {
 	svc       svcInterfaces.UserServiceInterface
-	validator *validators.AppValidator
+	validator Validator
 }
 
 // NewUserControllerInstance constructs a UserController. Wire calls
 // this at app startup, satisfying the dependencies from the project's
-// wire set.
-func NewUserControllerInstance(svc svcInterfaces.UserServiceInterface, v *validators.AppValidator) *UserController {
+// wire set. Validator is the controllers.Validator interface; the
+// project's *validators.AppValidator is bound to it in CoreSet.
+func NewUserControllerInstance(svc svcInterfaces.UserServiceInterface, v Validator) *UserController {
 	return &UserController{svc: svc, validator: v}
 }
 
