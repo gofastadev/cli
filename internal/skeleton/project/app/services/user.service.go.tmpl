@@ -2,11 +2,15 @@ package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 
 	"github.com/gofastadev/gofasta/pkg/utils"
 	"go.opentelemetry.io/otel"
+	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/models"
@@ -58,7 +62,7 @@ func (u *UserService) FindUsersWithFilters(ctx context.Context, filters dtos.Use
 	users, totalCount, err := u.UserRepo.FindWithFilters(ctx, filterMap, page, limit, sort)
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.FindUsersWithFilters: %w", err)
 	}
 
 	// Convert models to DTOs
@@ -94,8 +98,8 @@ func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto)
 	randomPassword, err := utils.GeneratePassword(16)
 	if err != nil {
 		span.RecordError(err)
-		slog.Error("failed to generate random password", "error", err)
-		return nil, err
+		slog.ErrorContext(ctx, "failed to generate random password", "error", err)
+		return nil, fmt.Errorf("UserService.CreateUser: generate password: %w", err)
 	}
 	userData := &models.User{
 		FirstName:   input.FirstName,
@@ -106,7 +110,7 @@ func (u *UserService) CreateUser(ctx context.Context, input dtos.TCreateUserDto)
 	}
 	if err := u.UserRepo.Create(ctx, userData); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.CreateUser: persist: %w", err)
 	}
 	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(userData)}, nil
 }
@@ -122,7 +126,17 @@ func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForU
 	if validationErrors := u.Validator.ValidateStruct(input); len(validationErrors) > 0 {
 		return &dtos.TUserResponseDto{Errors: validationErrors}, nil
 	}
-	if userToUpd, _ := u.UserRepo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion); userToUpd == nil {
+	// Optimistic-locking guard: only proceed if the persisted version
+	// still matches what the caller saw. We DISTINGUISH "not found
+	// because the version changed" (gorm.ErrRecordNotFound) from "the
+	// DB blew up" (any other error) — the original code treated both
+	// as "wrong version", masking infrastructure failures as user errors.
+	userToUpd, err := u.UserRepo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		span.RecordError(err)
+		return nil, fmt.Errorf("UserService.UpdateUser: lock check: %w", err)
+	}
+	if userToUpd == nil || errors.Is(err, gorm.ErrRecordNotFound) {
 		fieldName := "recordVersion"
 		return &dtos.TUserResponseDto{Errors: []*dtos.TCommonAPIErrorDto{
 			{FieldName: &fieldName, Message: "The record version you passed is not matching"},
@@ -131,12 +145,12 @@ func (u *UserService) UpdateUser(ctx context.Context, input dtos.TUserFieldsForU
 	userDataForUpdate := utils.ConvertStructToMap(input)
 	if err := u.UserRepo.Update(ctx, input.ID, userDataForUpdate); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.UpdateUser: persist: %w", err)
 	}
 	foundUser, err := u.UserRepo.FindByID(ctx, input.ID)
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.UpdateUser: refetch: %w", err)
 	}
 	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(foundUser)}, nil
 }
@@ -153,7 +167,7 @@ func (u *UserService) FindUserByID(ctx context.Context, filters dtos.TFindUserBy
 	user, err := u.UserRepo.FindByID(ctx, filters.UserID)
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.FindUserByID: %w", err)
 	}
 	return &dtos.TUserResponseDto{Data: castUserModelToUserDto(user)}, nil
 }
@@ -170,9 +184,9 @@ func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDt
 	}
 	if err := u.UserRepo.SoftDelete(ctx, input.UserID); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserService.ArchiveUser: %w", err)
 	}
-	status := 200
+	status := http.StatusOK
 	message := "Success"
 	return &dtos.TCommonResponseDto{Status: status, Message: &message}, nil
 }

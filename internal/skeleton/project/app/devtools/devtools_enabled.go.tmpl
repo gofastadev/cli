@@ -352,7 +352,7 @@ func (g *gormDevtools) Initialize(db *gorm.DB) error {
 		if sc := trace.SpanContextFromContext(tx.Statement.Context); sc.IsValid() {
 			traceID = sc.TraceID().String()
 		}
-		// Stringify vars defensively: GORM hands us a []interface{}
+		// Stringify vars defensively: GORM hands us a []any
 		// whose element types are driver-dependent. fmt.Sprint collapses
 		// everything to a printable form the dashboard can hand back to
 		// /debug/explain verbatim.
@@ -410,7 +410,7 @@ var (
 	explainDB   *gorm.DB
 )
 
-func registerDBImpl(db interface{}) {
+func registerDBImpl(db any) {
 	d, ok := db.(*gorm.DB)
 	if !ok {
 		return
@@ -449,11 +449,11 @@ func runExplain(req explainReq) (explainResult, error) {
 	if db == nil {
 		return explainResult{}, fmt.Errorf("devtools.RegisterDB was never called")
 	}
-	args := make([]interface{}, len(req.Vars))
+	args := make([]any, len(req.Vars))
 	for i, v := range req.Vars {
 		args[i] = v
 	}
-	var rows []map[string]interface{}
+	var rows []map[string]any
 	if err := db.Raw("EXPLAIN "+trimmed, args...).Scan(&rows).Error; err != nil {
 		return explainResult{}, err
 	}
@@ -829,7 +829,7 @@ func (c *cacheDecorator) Get(ctx context.Context, key string) (string, error) {
 	return v, err
 }
 
-func (c *cacheDecorator) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
+func (c *cacheDecorator) Set(ctx context.Context, key string, value any, ttl time.Duration) error {
 	start := time.Now()
 	err := c.inner.Set(ctx, key, value, ttl)
 	c.recordEntry(ctx, "set", key, false, start, err)

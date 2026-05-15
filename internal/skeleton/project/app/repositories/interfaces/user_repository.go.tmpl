@@ -10,9 +10,9 @@ import (
 
 // UserRepositoryInterface defines the contract for user data access.
 type UserRepositoryInterface interface {
-	FindWithFilters(ctx context.Context, filters map[string]interface{}, page, limit int, sort string) ([]*models.User, int64, error)
+	FindWithFilters(ctx context.Context, filters map[string]any, page, limit int, sort string) ([]*models.User, int64, error)
 	Create(ctx context.Context, user *models.User) error
-	Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error
+	Update(ctx context.Context, id uuid.UUID, fields map[string]any) error
 	FindByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 	FindByIDAndRecordVersion(ctx context.Context, id uuid.UUID, version int) (*models.User, error)
 	SoftDelete(ctx context.Context, id uuid.UUID) error

@@ -13,7 +13,7 @@ type MockUserRepository struct {
 	mock.Mock
 }
 
-func (m *MockUserRepository) FindWithFilters(ctx context.Context, filters map[string]interface{}, page, limit int, sort string) ([]*models.User, int64, error) {
+func (m *MockUserRepository) FindWithFilters(ctx context.Context, filters map[string]any, page, limit int, sort string) ([]*models.User, int64, error) {
 	args := m.Called(ctx, filters, page, limit, sort)
 	if args.Get(0) == nil {
 		return nil, args.Get(1).(int64), args.Error(2)
@@ -26,7 +26,7 @@ func (m *MockUserRepository) Create(ctx context.Context, user *models.User) erro
 	return args.Error(0)
 }
 
-func (m *MockUserRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error {
+func (m *MockUserRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]any) error {
 	args := m.Called(ctx, id, fields)
 	return args.Error(0)
 }

@@ -14,10 +14,14 @@ var Svc = `package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"math"
+	"net/http"
 
 	"github.com/gofastadev/gofasta/pkg/utils"
 	"go.opentelemetry.io/otel"
+	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/models"
@@ -66,7 +70,7 @@ func (s *{{.Name}}Service) FindAll(ctx context.Context, filters dtos.{{.Name}}Fi
 	entities, totalCount, err := s.{{.Name}}Repo.FindAll(ctx, page, limit, paginator.GetSort())
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.FindAll: %w", err)
 	}
 
 	items := make([]*dtos.{{.Name}}, 0, len(entities))
@@ -97,7 +101,7 @@ func (s *{{.Name}}Service) FindByID(ctx context.Context, input dtos.TFind{{.Name
 	entity, err := s.{{.Name}}Repo.FindByID(ctx, input.ID)
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.FindByID: %w", err)
 	}
 	return &dtos.T{{.Name}}ResponseDto{Data: cast{{.Name}}ToDto(entity)}, nil
 }
@@ -117,7 +121,7 @@ func (s *{{.Name}}Service) Create(ctx context.Context, input dtos.TCreate{{.Name
 	}
 	if err := s.{{.Name}}Repo.Create(ctx, entity); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.Create: %w", err)
 	}
 	return &dtos.T{{.Name}}ResponseDto{Data: cast{{.Name}}ToDto(entity)}, nil
 }
@@ -132,19 +136,29 @@ func (s *{{.Name}}Service) Update(ctx context.Context, input dtos.TUpdate{{.Name
 	if errs := s.Validator.ValidateStruct(input); len(errs) > 0 {
 		return &dtos.T{{.Name}}ResponseDto{Errors: errs}, nil
 	}
-	if found, _ := s.{{.Name}}Repo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion); found == nil {
+	// Optimistic-locking guard: distinguish "version mismatch" (which
+	// is a user-recoverable validation error) from "DB outage" (which
+	// must propagate). The original ` + "`if found, _ := ...`" + ` pattern
+	// dropped infrastructure errors and showed them as wrong-version,
+	// hiding real failures.
+	found, err := s.{{.Name}}Repo.FindByIDAndRecordVersion(ctx, input.ID, input.RecordVersion)
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		span.RecordError(err)
+		return nil, fmt.Errorf("{{.Name}}Service.Update: lock check: %w", err)
+	}
+	if found == nil || errors.Is(err, gorm.ErrRecordNotFound) {
 		fieldName := "recordVersion"
 		return &dtos.T{{.Name}}ResponseDto{Errors: []*dtos.TCommonAPIErrorDto{{lbrace}}{{lbrace}}FieldName: &fieldName, Message: "The record version you passed is not matching"{{rbrace}}{{rbrace}}}, nil
 	}
 	fields := utils.ConvertStructToMap(input)
 	if err := s.{{.Name}}Repo.Update(ctx, input.ID, fields); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.Update: persist: %w", err)
 	}
 	updated, err := s.{{.Name}}Repo.FindByID(ctx, input.ID)
 	if err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.Update: refetch: %w", err)
 	}
 	return &dtos.T{{.Name}}ResponseDto{Data: cast{{.Name}}ToDto(updated)}, nil
 }
@@ -160,9 +174,9 @@ func (s *{{.Name}}Service) Archive(ctx context.Context, input dtos.TArchive{{.Na
 	}
 	if err := s.{{.Name}}Repo.SoftDelete(ctx, input.ID); err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Service.Archive: %w", err)
 	}
-	status := 200
+	status := http.StatusOK
 	message := "Success"
 	return &dtos.TCommonResponseDto{Status: status, Message: &message}, nil
 }

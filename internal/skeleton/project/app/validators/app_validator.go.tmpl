@@ -29,7 +29,7 @@ func NewAppValidator(db *gorm.DB) *AppValidator {
 }
 
 // ValidateStruct validates the input struct and returns any validation errors.
-func (v *AppValidator) ValidateStruct(input interface{}) []*dtos.TCommonAPIErrorDto {
+func (v *AppValidator) ValidateStruct(input any) []*dtos.TCommonAPIErrorDto {
 	valErrs := []*dtos.TCommonAPIErrorDto{}
 	validationError := v.validate.Struct(input)
 	if validationError != nil {

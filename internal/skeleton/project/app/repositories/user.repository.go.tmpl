@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/gofastadev/gofasta/pkg/utils"
@@ -39,27 +40,32 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 // FindWithFilters returns the paginated set of users matching `filters`,
 // sorted by `sort`, along with the total count for pagination. The
 // filter map keys map directly to column names via utils.BuildQueryForAnyModel.
-func (r *UserRepository) FindWithFilters(ctx context.Context, filters map[string]interface{}, page, limit int, sort string) ([]*models.User, int64, error) {
+//
+// Soft-deleted rows are excluded automatically because BaseModelImpl's
+// DeletedAt is gorm.DeletedAt — every SELECT gets a `WHERE deleted_at
+// IS NULL` clause from GORM. To include archived rows, callers can
+// build a query with .Unscoped() and pass that here instead.
+func (r *UserRepository) FindWithFilters(ctx context.Context, filters map[string]any, page, limit int, sort string) ([]*models.User, int64, error) {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindWithFilters")
 	defer span.End()
 
 	query, err := utils.BuildQueryForAnyModel(r.DB.WithContext(ctx).Model(&models.User{}), filters)
 	if err != nil {
 		span.RecordError(err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("UserRepository.FindWithFilters: build query: %w", err)
 	}
 
 	var totalCount int64
 	if err := query.Count(&totalCount).Error; err != nil {
 		span.RecordError(err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("UserRepository.FindWithFilters: count: %w", err)
 	}
 
 	offset := (page - 1) * limit
 	var users []*models.User
 	if err := query.Limit(limit).Offset(offset).Order(sort).Find(&users).Error; err != nil {
 		span.RecordError(err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("UserRepository.FindWithFilters: query: %w", err)
 	}
 
 	return users, totalCount, nil
@@ -73,7 +79,7 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 
 	if err := r.DB.WithContext(ctx).Create(user).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("UserRepository.Create: %w", err)
 	}
 	return nil
 }
@@ -81,19 +87,20 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 // Update applies a partial update to the user identified by `id`. Only
 // keys present in the `fields` map are written, so callers can pass
 // just the deltas they want to change.
-func (r *UserRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error {
+func (r *UserRepository) Update(ctx context.Context, id uuid.UUID, fields map[string]any) error {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.Update")
 	defer span.End()
 
 	if err := r.DB.WithContext(ctx).Model(&models.User{}).Where("id = ?", id).Updates(fields).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("UserRepository.Update: %w", err)
 	}
 	return nil
 }
 
 // FindByID returns the user with the given ID. Returns gorm.ErrRecordNotFound
-// when no row matches.
+// when no row matches (including when soft-deleted — the auto-filter
+// on gorm.DeletedAt excludes deleted rows).
 func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindByID")
 	defer span.End()
@@ -101,41 +108,44 @@ func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Us
 	var user models.User
 	if err := r.DB.WithContext(ctx).Where("id = ?", id).First(&user).Error; err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserRepository.FindByID: %w", err)
 	}
 	return &user, nil
 }
 
 // FindByIDAndRecordVersion returns the user with the given ID only if
-// its RecordVersion matches `version` and the row is not soft-deleted.
-// This is the primitive used by the optimistic-locking path on updates —
-// the service compares the caller's expected version with the database
-// before committing a change.
+// its RecordVersion matches `version`. Used by the optimistic-locking
+// path on updates — the service compares the caller's expected
+// version with the database before committing a change.
+//
+// Soft-deleted rows are excluded automatically by GORM's auto-filter
+// on gorm.DeletedAt; no manual `WHERE deleted_at IS NULL` is needed.
 func (r *UserRepository) FindByIDAndRecordVersion(ctx context.Context, id uuid.UUID, version int) (*models.User, error) {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.FindByIDAndRecordVersion")
 	defer span.End()
 
 	var user models.User
-	if err := r.DB.WithContext(ctx).Where("id = ? AND deleted_at IS NULL AND record_version = ?", id, version).First(&user).Error; err != nil {
+	if err := r.DB.WithContext(ctx).Where("id = ? AND record_version = ?", id, version).First(&user).Error; err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("UserRepository.FindByIDAndRecordVersion: %w", err)
 	}
 	return &user, nil
 }
 
 // SoftDelete marks the user as deleted by setting deleted_at + clearing
-// is_active. The is_deletable guard prevents deleting protected rows
-// (the framework's IsDeletable column lets you ship rows that should
-// never be archived — admins, system accounts, etc.).
+// is_active in a single UPDATE. The is_deletable guard prevents
+// archiving protected rows (system accounts, etc.). Setting deleted_at
+// directly works alongside gorm.DeletedAt — GORM's auto-filter then
+// excludes the row from subsequent reads.
 func (r *UserRepository) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.SoftDelete")
 	defer span.End()
 
 	if err := r.DB.WithContext(ctx).Model(&models.User{}).
 		Where("id = ? AND is_deletable = ?", id, true).
-		Updates(map[string]interface{}{"deleted_at": time.Now(), "is_active": false}).Error; err != nil {
+		Updates(map[string]any{"deleted_at": time.Now(), "is_active": false}).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("UserRepository.SoftDelete: %w", err)
 	}
 	return nil
 }

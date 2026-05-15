@@ -11,6 +11,7 @@ var Repo = `package repositories
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -43,50 +44,57 @@ func New{{.Name}}Repository(db *gorm.DB) *{{.Name}}Repository {
 
 // FindAll returns the paginated, sorted list of non-deleted {{.Name}}
 // rows along with the total count for pagination.
+//
+// The "WHERE deleted_at IS NULL" clause is auto-applied by GORM because
+// BaseModelImpl.DeletedAt is gorm.DeletedAt — every SELECT excludes
+// soft-deleted rows by default. To include them, repository methods
+// can opt out with .Unscoped().
 func (r *{{.Name}}Repository) FindAll(ctx context.Context, page, limit int, sort string) ([]*models.{{.Name}}, int64, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.FindAll")
 	defer span.End()
 
 	var total int64
-	query := r.DB.WithContext(ctx).Model(&models.{{.Name}}{}).Where("deleted_at IS NULL")
+	query := r.DB.WithContext(ctx).Model(&models.{{.Name}}{})
 	if err := query.Count(&total).Error; err != nil {
 		span.RecordError(err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("{{.Name}}Repository.FindAll: count: %w", err)
 	}
 	var entities []*models.{{.Name}}
 	offset := (page - 1) * limit
 	if err := query.Limit(limit).Offset(offset).Order(sort).Find(&entities).Error; err != nil {
 		span.RecordError(err)
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("{{.Name}}Repository.FindAll: query: %w", err)
 	}
 	return entities, total, nil
 }
 
-// FindByID returns the row with the given ID, scoped to non-deleted
-// records. Returns gorm.ErrRecordNotFound when no row matches.
+// FindByID returns the row with the given ID. Returns
+// gorm.ErrRecordNotFound when no row matches (including when the row
+// has been soft-deleted — GORM's auto-filter on gorm.DeletedAt
+// excludes deleted rows).
 func (r *{{.Name}}Repository) FindByID(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.FindByID")
 	defer span.End()
 
 	var entity models.{{.Name}}
-	if err := r.DB.WithContext(ctx).Where("id = ? AND deleted_at IS NULL", id).First(&entity).Error; err != nil {
+	if err := r.DB.WithContext(ctx).Where("id = ?", id).First(&entity).Error; err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Repository.FindByID: %w", err)
 	}
 	return &entity, nil
 }
 
 // FindByIDAndRecordVersion returns the row only if its RecordVersion
-// matches version and the row is not soft-deleted. Used by services
-// for optimistic-locking guards before applying updates.
+// matches version. Used by services for optimistic-locking guards
+// before applying updates.
 func (r *{{.Name}}Repository) FindByIDAndRecordVersion(ctx context.Context, id uuid.UUID, version int) (*models.{{.Name}}, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.FindByIDAndRecordVersion")
 	defer span.End()
 
 	var entity models.{{.Name}}
-	if err := r.DB.WithContext(ctx).Where("id = ? AND deleted_at IS NULL AND record_version = ?", id, version).First(&entity).Error; err != nil {
+	if err := r.DB.WithContext(ctx).Where("id = ? AND record_version = ?", id, version).First(&entity).Error; err != nil {
 		span.RecordError(err)
-		return nil, err
+		return nil, fmt.Errorf("{{.Name}}Repository.FindByIDAndRecordVersion: %w", err)
 	}
 	return &entity, nil
 }
@@ -99,35 +107,38 @@ func (r *{{.Name}}Repository) Create(ctx context.Context, entity *models.{{.Name
 
 	if err := r.DB.WithContext(ctx).Create(entity).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("{{.Name}}Repository.Create: %w", err)
 	}
 	return nil
 }
 
 // Update applies a partial update to the row identified by id. Only
 // keys present in the fields map are written.
-func (r *{{.Name}}Repository) Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error {
+func (r *{{.Name}}Repository) Update(ctx context.Context, id uuid.UUID, fields map[string]any) error {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.Update")
 	defer span.End()
 
 	if err := r.DB.WithContext(ctx).Model(&models.{{.Name}}{}).Where("id = ?", id).Updates(fields).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("{{.Name}}Repository.Update: %w", err)
 	}
 	return nil
 }
 
 // SoftDelete marks the row as deleted by setting deleted_at + clearing
-// is_active. The is_deletable guard prevents deleting protected rows.
+// is_active in a single UPDATE. The is_deletable guard prevents
+// archiving protected rows (system accounts, etc.). Setting deleted_at
+// directly works alongside gorm.DeletedAt — the auto-filter then
+// excludes the row from subsequent reads.
 func (r *{{.Name}}Repository) SoftDelete(ctx context.Context, id uuid.UUID) error {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.SoftDelete")
 	defer span.End()
 
 	if err := r.DB.WithContext(ctx).Model(&models.{{.Name}}{}).
 		Where("id = ? AND is_deletable = ?", id, true).
-		Updates(map[string]interface{}{"deleted_at": time.Now(), "is_active": false}).Error; err != nil {
+		Updates(map[string]any{"deleted_at": time.Now(), "is_active": false}).Error; err != nil {
 		span.RecordError(err)
-		return err
+		return fmt.Errorf("{{.Name}}Repository.SoftDelete: %w", err)
 	}
 	return nil
 }

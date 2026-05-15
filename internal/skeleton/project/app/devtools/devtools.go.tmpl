@@ -192,7 +192,7 @@ func WrapCache(inner cache.CacheService) cache.CacheService {
 // that need to issue ad-hoc queries (currently /debug/explain) have a
 // handle to work with. Called from cmd/serve.go after DI constructs
 // the container. In stub builds it's a no-op.
-func RegisterDB(db interface{}) {
+func RegisterDB(db any) {
 	registerDBImpl(db)
 }
 
