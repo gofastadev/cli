@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gofastadev/cli/internal/cliout"
@@ -39,26 +42,63 @@ in the schema_migrations table. Safe to re-run: already-applied migrations are
 skipped. Fails fast on the first migration that errors, leaving the schema at
 the last successful version.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMigration("up")
+		return runMigrationUp()
 	},
 }
 
 var migrateDownCmd = &cobra.Command{
 	Use:   "down",
-	Short: "Rollback the single most recently applied migration",
-	Long: `Rollback the most recent migration by executing its paired .down.sql file.
-This is a single-step rollback — run it repeatedly (or use ` + "`gofasta db fresh`" + `)
-to unwind multiple versions. Destructive operations in the .down.sql are not
-reversible, so review the SQL before running against a shared database.`,
+	Short: "Rollback applied migrations (interactive menu by default; --all / --steps for scripts)",
+	Long: `Rollback applied migrations. With no flags and an interactive terminal,
+opens a menu offering single-step / all / specific count. With --all or --steps
+N, runs unattended (CI/scripts).
+
+Flags:
+  --all       Roll back every applied migration (destructive — confirms unless --yes)
+  --steps N   Roll back exactly N migrations (no prompt; default 1 in non-interactive mode)
+  --yes       Skip the destructive-action confirmation prompt
+
+Without flags, in a non-interactive context (CI, piped stdin, --json) the
+default is single-step rollback so automation never blocks on a prompt.
+
+Destructive operations in the .down.sql are not reversible, so review the
+SQL before running against a shared database.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runMigration("down")
+		return runMigrationDown()
 	},
 }
+
+var (
+	downAll   bool
+	downSteps int
+	downYes   bool
+)
 
 func init() {
 	migrateCmd.AddCommand(migrateUpCmd)
 	migrateCmd.AddCommand(migrateDownCmd)
+	migrateDownCmd.Flags().BoolVar(&downAll, "all", false,
+		"Roll back ALL applied migrations (destructive — prompts for confirmation unless --yes)")
+	migrateDownCmd.Flags().IntVar(&downSteps, "steps", 0,
+		"Roll back exactly N migrations (skips the menu; default 1 in non-interactive mode)")
+	migrateDownCmd.Flags().BoolVar(&downYes, "yes", false,
+		"Skip the destructive-action confirmation prompt (use with --all in scripts)")
 	rootCmd.AddCommand(migrateCmd)
+}
+
+// downStdin is a package-level seam over os.Stdin so tests can drive
+// the interactive menu via a strings.Reader without wiring a real pipe.
+var downStdin io.Reader = os.Stdin
+
+// stdinIsTTY reports whether os.Stdin is an interactive terminal. Used
+// by the down command to decide between menu (interactive) and default
+// single-step (CI / piped input). Mirrors termcolor's isTTY helper.
+func stdinIsTTY() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 // buildMigrationURL is a package-level seam over
@@ -66,7 +106,7 @@ func init() {
 // defensive branch.
 var buildMigrationURL = configutil.BuildMigrationURL
 
-// migrateResult is the structured payload emitted by runMigration —
+// migrateResult is the structured payload emitted by runMigrate —
 // suitable for `--json` consumers (CI, agents) and rendered by the
 // human textFn for interactive use.
 type migrateResult struct {
@@ -77,7 +117,128 @@ type migrateResult struct {
 	DurationMs int64  `json:"duration_ms"`
 }
 
+// runMigrationUp applies every pending migration. Thin wrapper over
+// runMigrate so the up path stays trivial (no menu, no flags).
+func runMigrationUp() error {
+	return runMigrate("up", []string{"up"})
+}
+
+// runMigrationDown resolves the rollback scope (single / all / N steps)
+// from --all / --steps flags or an interactive menu, gates destructive
+// choices behind a y/N confirm, then delegates to runMigrate.
+func runMigrationDown() error {
+	plan, err := resolveDownPlan()
+	if err != nil {
+		return err
+	}
+	if plan.confirm && !confirmDestructive(plan) {
+		return fmt.Errorf("rollback canceled")
+	}
+
+	args := []string{"down"}
+	if plan.steps > 0 {
+		args = append(args, strconv.Itoa(plan.steps))
+	}
+	return runMigrate("down", args)
+}
+
+// runMigration is a backward-compat dispatcher used by older tests.
+// New callers should use runMigrationUp / runMigrationDown directly.
 func runMigration(direction string) error {
+	if direction == "down" {
+		return runMigrationDown()
+	}
+	return runMigrationUp()
+}
+
+// migrateDownPlan describes a resolved rollback request. steps=0 means
+// "all" (which is what passing no count to `migrate down` does).
+type migrateDownPlan struct {
+	steps   int
+	confirm bool
+}
+
+// resolveDownPlan reads flags first (so scripts win deterministically),
+// then falls back to either an interactive menu (TTY + non-JSON) or the
+// safe single-step default (CI / piped / --json).
+func resolveDownPlan() (migrateDownPlan, error) {
+	switch {
+	case downAll:
+		return migrateDownPlan{steps: 0, confirm: !downYes}, nil
+	case downSteps > 0:
+		return migrateDownPlan{steps: downSteps, confirm: false}, nil
+	case downSteps < 0:
+		return migrateDownPlan{}, fmt.Errorf("--steps must be > 0")
+	case stdinIsTTY() && !cliout.JSON():
+		return promptDownPlan()
+	default:
+		// Non-interactive default = single step. Matches the docs' old
+		// promise and never blocks automation on a prompt.
+		return migrateDownPlan{steps: 1, confirm: false}, nil
+	}
+}
+
+// promptDownPlan shows the interactive menu and parses the answer.
+// Reading via `downStdin` (not os.Stdin directly) lets tests drive
+// the menu with a strings.Reader.
+func promptDownPlan() (migrateDownPlan, error) {
+	fmt.Println(termcolor.Step("Roll back how many migrations?"))
+	fmt.Println("  1 — latest only (default)")
+	fmt.Println("  a — all migrations (destructive)")
+	fmt.Println("  n — specific number")
+	fmt.Println("  q — cancel")
+	fmt.Print("Choice [1]: ")
+
+	reader := bufio.NewReader(downStdin)
+	line, _ := reader.ReadString('\n')
+	choice := strings.ToLower(strings.TrimSpace(line))
+
+	switch choice {
+	case "", "1":
+		return migrateDownPlan{steps: 1, confirm: false}, nil
+	case "a", "all":
+		return migrateDownPlan{steps: 0, confirm: true}, nil
+	case "n":
+		fmt.Print("How many steps? ")
+		nLine, _ := reader.ReadString('\n')
+		n, perr := strconv.Atoi(strings.TrimSpace(nLine))
+		if perr != nil || n <= 0 {
+			return migrateDownPlan{}, fmt.Errorf("invalid step count: %s", strings.TrimSpace(nLine))
+		}
+		return migrateDownPlan{steps: n, confirm: n > 1}, nil
+	case "q", "quit", "cancel":
+		return migrateDownPlan{}, fmt.Errorf("rollback canceled")
+	default:
+		// Accept a bare number too — quality-of-life so users who type
+		// "3" instead of "n" then "3" still get what they want.
+		if n, perr := strconv.Atoi(choice); perr == nil && n > 0 {
+			return migrateDownPlan{steps: n, confirm: n > 1}, nil
+		}
+		return migrateDownPlan{}, fmt.Errorf("invalid choice: %q", choice)
+	}
+}
+
+// confirmDestructive prompts y/N for a destructive plan. Reads from
+// downStdin so tests can drive the response.
+func confirmDestructive(plan migrateDownPlan) bool {
+	var msg string
+	if plan.steps == 0 {
+		msg = "This will roll back ALL migrations. Confirm? [y/N]: "
+	} else {
+		msg = fmt.Sprintf("This will roll back %d migrations. Confirm? [y/N]: ", plan.steps)
+	}
+	fmt.Print(termcolor.Warn("%s", msg))
+
+	reader := bufio.NewReader(downStdin)
+	line, _ := reader.ReadString('\n')
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes"
+}
+
+// runMigrate is the shared core: load .env, build URL, exec migrate,
+// emit a structured cliout payload. migrateArgs is the tail passed to
+// migrate (e.g. ["up"] or ["down", "1"]).
+func runMigrate(direction string, migrateArgs []string) error {
 	// Load .env BEFORE building the migration URL. config.yaml in
 	// scaffolded projects ships with in-container defaults (host:
 	// localhost, port: 5432 — what the app sees from inside the
@@ -105,15 +266,7 @@ func runMigration(direction string) error {
 		fmt.Println(termcolor.Step("Applying migrations (%s)", direction))
 	}
 
-	// `migrate down` (no count) prompts "Are you sure you want to
-	// apply ALL down migrations?" and rolls back everything. The
-	// command's docs promise single-step rollback, so we always
-	// rollback exactly one step. Multi-step rollbacks should go
-	// through `gofasta db reset` (or run migrate directly).
-	args := []string{"-path", "db/migrations", "-database", dbURL, direction}
-	if direction == "down" {
-		args = append(args, "1")
-	}
+	args := append([]string{"-path", "db/migrations", "-database", dbURL}, migrateArgs...)
 	cmd := execCommand("migrate", args...)
 	if cliout.JSON() {
 		cmd.Stdout = &captured
@@ -121,10 +274,9 @@ func runMigration(direction string) error {
 	} else {
 		// Stream output live in human mode AND tee into the buffer so
 		// the final payload (used for the final ✓/✗ summary line) has
-		// access to it if needed. Wire stdin too — `migrate down`
-		// (without a step count) prompts "Are you sure you want to
-		// apply all down migrations? [y/N]"; without stdin attached
-		// the tool reads EOF, defaults to N, and exits non-zero.
+		// access to it if needed. Wire stdin so any interactive prompt
+		// the migrate tool itself shows (rare now that we always pass
+		// an explicit count) reaches the user.
 		cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
 		cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
 		cmd.Stdin = os.Stdin

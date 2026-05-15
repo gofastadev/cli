@@ -3,6 +3,7 @@ package commands
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -75,6 +76,149 @@ func TestRunMigration_EmptyURLCoverage(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	_ = runMigration("up")
+}
+
+// resetDownFlags restores the down flags + stdin seam to clean state
+// between tests so order-of-execution can't leak state.
+func resetDownFlags(t *testing.T) {
+	t.Helper()
+	origAll, origSteps, origYes, origStdin := downAll, downSteps, downYes, downStdin
+	downAll = false
+	downSteps = 0
+	downYes = false
+	t.Cleanup(func() {
+		downAll, downSteps, downYes, downStdin = origAll, origSteps, origYes, origStdin
+	})
+}
+
+// TestRunMigrationDown_AllFlagWithYesPassesNoCount — `--all --yes` rolls
+// back without any prompt and without a step count (which makes the
+// migrate tool roll back ALL).
+func TestRunMigrationDown_AllFlagWithYesPassesNoCount(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downAll = true
+	downYes = true
+
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigrationDown())
+	require.NotEmpty(t, captured)
+	assert.Equal(t, "down", captured[len(captured)-1],
+		"--all should pass bare 'down' (no count) so migrate rolls back everything")
+}
+
+// TestRunMigrationDown_StepsFlagPassesCount — `--steps 3` skips the
+// menu and passes "3" to migrate.
+func TestRunMigrationDown_StepsFlagPassesCount(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downSteps = 3
+
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigrationDown())
+	assert.Equal(t, "3", captured[len(captured)-1])
+}
+
+// TestRunMigrationDown_NegativeStepsRejected — input validation: a
+// negative --steps value fails fast.
+func TestRunMigrationDown_NegativeStepsRejected(t *testing.T) {
+	chdirTemp(t)
+	resetDownFlags(t)
+	downSteps = -2
+	err := runMigrationDown()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--steps must be > 0")
+}
+
+// TestRunMigrationDown_AllRequiresConfirmWithoutYes — `--all` without
+// --yes triggers the confirm prompt; answering "n" cancels.
+func TestRunMigrationDown_AllRequiresConfirmWithoutYes(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downAll = true
+	downStdin = strings.NewReader("n\n")
+
+	err := runMigrationDown()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "canceled")
+}
+
+// TestRunMigrationDown_AllConfirmedWithYesAnswerProceeds — same setup
+// but the user types "y", so the rollback proceeds.
+func TestRunMigrationDown_AllConfirmedWithYesAnswerProceeds(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downAll = true
+	downStdin = strings.NewReader("y\n")
+	withFakeExec(t, 0)
+	require.NoError(t, runMigrationDown())
+}
+
+// TestResolveDownPlan_Default_NonInteractive — no flags + non-TTY stdin
+// → safe single-step default. Pinning this so CI never blocks on a
+// menu we'd otherwise show.
+func TestResolveDownPlan_Default_NonInteractive(t *testing.T) {
+	resetDownFlags(t)
+	plan, err := resolveDownPlan()
+	require.NoError(t, err)
+	assert.Equal(t, 1, plan.steps)
+	assert.False(t, plan.confirm)
+}
+
+// TestPromptDownPlan_MenuChoices walks every menu branch via the
+// downStdin seam.
+func TestPromptDownPlan_MenuChoices(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		wantSteps int
+		wantConf  bool
+		wantErr   bool
+	}{
+		{"default-empty", "\n", 1, false, false},
+		{"default-1", "1\n", 1, false, false},
+		{"all", "a\n", 0, true, false},
+		{"all-spelled", "all\n", 0, true, false},
+		{"specific-via-n", "n\n3\n", 3, true, false},
+		{"specific-via-bare-number", "5\n", 5, true, false},
+		{"specific-via-bare-1-not-confirmed", "1\n", 1, false, false},
+		{"cancel-q", "q\n", 0, false, true},
+		{"cancel-quit", "quit\n", 0, false, true},
+		{"invalid", "zzz\n", 0, false, true},
+		{"invalid-n-then-bad", "n\nfoo\n", 0, false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetDownFlags(t)
+			downStdin = strings.NewReader(tc.input)
+			plan, err := promptDownPlan()
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.wantSteps, plan.steps)
+			assert.Equal(t, tc.wantConf, plan.confirm)
+		})
+	}
 }
 
 // TestRunMigration_DownPassesSingleStep — regression: the migrate
