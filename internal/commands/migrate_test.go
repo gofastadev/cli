@@ -115,6 +115,64 @@ func TestRunMigrationDown_AllFlagWithYesPassesNoCount(t *testing.T) {
 		"--all should pass bare 'down' (no count) so migrate rolls back everything")
 }
 
+// TestRunMigrationDown_AllAutoAnswersMigratePrompt — when the user
+// picks "all" via flag or menu, runMigrationDown must feed "y\n" to
+// the migrate child so the tool's own redundant confirmation prompt
+// auto-answers (we already confirmed at our layer).
+//
+// We inspect the spawned cmd asynchronously: runMigrate assigns
+// cmd.Stdin AFTER execCommand returns but BEFORE cmd.Run is called.
+// Capturing the *exec.Cmd reference in the fake lets us read .Stdin
+// after Run completes, which proves the override was wired.
+func TestRunMigrationDown_AllAutoAnswersMigratePrompt(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downAll = true
+	downYes = true
+
+	var spawned *exec.Cmd
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		spawned = fakeExecCommand(0)(name, args...)
+		return spawned
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigrationDown())
+	require.NotNil(t, spawned)
+	require.NotNil(t, spawned.Stdin,
+		"runMigrationDown for --all must wire a stdin override to auto-answer migrate's prompt")
+	// The override must NOT be os.Stdin — that's the bug we're guarding
+	// against (user types "y" once at our menu, then the migrate tool
+	// asks again and the user is confused).
+	assert.NotSame(t, os.Stdin, spawned.Stdin,
+		"stdin should be a strings.Reader feeding 'y\\n', not os.Stdin")
+}
+
+// TestRunMigrationDown_SingleStepUsesOsStdin — when the plan has an
+// explicit step count, no prompt fires from migrate, so we should
+// pass through os.Stdin (the default).
+func TestRunMigrationDown_SingleStepUsesOsStdin(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	resetDownFlags(t)
+	downSteps = 1
+
+	var spawned *exec.Cmd
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		spawned = fakeExecCommand(0)(name, args...)
+		return spawned
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigrationDown())
+	require.NotNil(t, spawned)
+	assert.Same(t, os.Stdin, spawned.Stdin,
+		"single-step rollback should pass through os.Stdin (no prompt to suppress)")
+}
+
 // TestRunMigrationDown_StepsFlagPassesCount — `--steps 3` skips the
 // menu and passes "3" to migrate.
 func TestRunMigrationDown_StepsFlagPassesCount(t *testing.T) {

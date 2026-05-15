@@ -120,12 +120,17 @@ type migrateResult struct {
 // runMigrationUp applies every pending migration. Thin wrapper over
 // runMigrate so the up path stays trivial (no menu, no flags).
 func runMigrationUp() error {
-	return runMigrate("up", []string{"up"})
+	return runMigrate("up", []string{"up"}, nil)
 }
 
 // runMigrationDown resolves the rollback scope (single / all / N steps)
 // from --all / --steps flags or an interactive menu, gates destructive
 // choices behind a y/N confirm, then delegates to runMigrate.
+//
+// When the plan is "all" (steps == 0), the migrate tool's own
+// "Are you sure you want to apply all down migrations? [y/N]" prompt
+// will fire — but we've already confirmed via our menu, so we feed
+// "y\n" to the child's stdin to suppress the duplicate prompt.
 func runMigrationDown() error {
 	plan, err := resolveDownPlan()
 	if err != nil {
@@ -136,10 +141,16 @@ func runMigrationDown() error {
 	}
 
 	args := []string{"down"}
+	var stdinOverride io.Reader
 	if plan.steps > 0 {
 		args = append(args, strconv.Itoa(plan.steps))
+	} else {
+		// Bare `migrate down` triggers the tool's own y/N prompt.
+		// We've already confirmed at our layer; auto-answer "y" so the
+		// user doesn't see the same question twice.
+		stdinOverride = strings.NewReader("y\n")
 	}
-	return runMigrate("down", args)
+	return runMigrate("down", args, stdinOverride)
 }
 
 // runMigration is a backward-compat dispatcher used by older tests.
@@ -238,7 +249,11 @@ func confirmDestructive(plan migrateDownPlan) bool {
 // runMigrate is the shared core: load .env, build URL, exec migrate,
 // emit a structured cliout payload. migrateArgs is the tail passed to
 // migrate (e.g. ["up"] or ["down", "1"]).
-func runMigrate(direction string, migrateArgs []string) error {
+//
+// stdinOverride, when non-nil, is used as the child's stdin instead of
+// os.Stdin — needed when the migrate tool would prompt for a y/N that
+// we've already confirmed at our layer (see runMigrationDown for "all").
+func runMigrate(direction string, migrateArgs []string, stdinOverride io.Reader) error {
 	// Load .env BEFORE building the migration URL. config.yaml in
 	// scaffolded projects ships with in-container defaults (host:
 	// localhost, port: 5432 — what the app sees from inside the
@@ -271,15 +286,27 @@ func runMigrate(direction string, migrateArgs []string) error {
 	if cliout.JSON() {
 		cmd.Stdout = &captured
 		cmd.Stderr = &captured
+		// In JSON mode any prompt would block forever — feed the
+		// override (or an empty reader) so the migrate tool sees EOF
+		// rather than hanging on Read.
+		if stdinOverride != nil {
+			cmd.Stdin = stdinOverride
+		}
 	} else {
 		// Stream output live in human mode AND tee into the buffer so
 		// the final payload (used for the final ✓/✗ summary line) has
 		// access to it if needed. Wire stdin so any interactive prompt
 		// the migrate tool itself shows (rare now that we always pass
-		// an explicit count) reaches the user.
+		// an explicit count) reaches the user — unless the caller
+		// supplied an override (used by `down --all` to auto-answer
+		// the migrate tool's redundant confirmation).
 		cmd.Stdout = io.MultiWriter(os.Stdout, &captured)
 		cmd.Stderr = io.MultiWriter(os.Stderr, &captured)
-		cmd.Stdin = os.Stdin
+		if stdinOverride != nil {
+			cmd.Stdin = stdinOverride
+		} else {
+			cmd.Stdin = os.Stdin
+		}
 	}
 
 	start := time.Now()
