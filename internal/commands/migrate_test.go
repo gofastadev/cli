@@ -77,6 +77,49 @@ func TestRunMigration_EmptyURLCoverage(t *testing.T) {
 	_ = runMigration("up")
 }
 
+// TestRunMigration_DownPassesSingleStep — regression: the migrate
+// down command's docs promise single-step rollback, but the old
+// implementation passed bare "down" which means "rollback ALL with a
+// y/N prompt". With stdin not wired (the previous bug), the prompt
+// auto-aborted and the command always failed. Now we always append
+// "1" for the down direction so neither the prompt nor the all-
+// rollback semantics surprise a developer.
+func TestRunMigration_DownPassesSingleStep(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigration("down"))
+	require.NotEmpty(t, captured, "execCommand should have been invoked")
+	assert.Equal(t, "1", captured[len(captured)-1],
+		"`migrate down` must pass '1' as the step count to avoid the all-rollback prompt")
+}
+
+// TestRunMigration_UpDoesNotPassCount — symmetric assertion: `up` does
+// not append a step count, since "apply all pending" is the right
+// semantics for the up direction.
+func TestRunMigration_UpDoesNotPassCount(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigration("up"))
+	assert.Equal(t, "up", captured[len(captured)-1],
+		"`migrate up` must end with 'up' (no step count) so all pending migrations apply")
+}
+
 // TestRunMigration_LoadsDotEnv — regression for the bug where
 // `gofasta migrate up` produced `postgres://:@localhost:5432/?sslmode=disable`
 // because it never read .env. The scaffold's config.yaml intentionally
