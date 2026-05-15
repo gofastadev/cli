@@ -1,6 +1,10 @@
 package resolvers
 
-import svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+import (
+	"github.com/gofastadev/gofasta/pkg/validators"
+
+	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+)
 
 // This file holds the dependency-injected Resolver struct. The
 // Mutation()/Query() entry points and the concrete *mutationResolver /
@@ -10,11 +14,17 @@ import svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 // typically server.health.resolvers.go). Keeping them out of this file
 // avoids duplicate-symbol conflicts after each codegen run.
 
+// Resolver is the GraphQL boundary type. Like the REST controller, it
+// owns input validation and the model→DTO mapping for responses.
+// Service-layer errors (sentinels) are translated to gqlerror values
+// in the per-resource resolver files.
 type Resolver struct {
 	UserService svcInterfaces.UserServiceInterface
+	Validator   *validators.AppValidator
 }
 
-// NewResolver creates a new Resolver with the provided service dependencies.
-func NewResolver(userService svcInterfaces.UserServiceInterface) *Resolver {
-	return &Resolver{UserService: userService}
+// NewResolver creates a new Resolver with the provided dependencies.
+// Wire calls this at app startup.
+func NewResolver(userService svcInterfaces.UserServiceInterface, validator *validators.AppValidator) *Resolver {
+	return &Resolver{UserService: userService, Validator: validator}
 }

@@ -1,0 +1,29 @@
+package services
+
+import "errors"
+
+// Domain sentinel errors for the user service. Controllers (and other
+// callers) match these with `errors.Is` to translate them into the
+// right transport-level response — HTTP status codes, gqlerror
+// extensions, etc. — instead of leaking ORM-internal errors like
+// `gorm.ErrRecordNotFound` past the service boundary.
+//
+// Wrapping rule: services should `return nil, ErrUserX` directly when
+// the cause IS the domain condition, and `return nil, fmt.Errorf("…: %w", err)`
+// when the cause is infrastructure that callers shouldn't branch on.
+var (
+	// ErrUserNotFound — no user matches the given identifier (or the
+	// row is soft-deleted, which from the API's perspective is the
+	// same thing).
+	ErrUserNotFound = errors.New("user not found")
+
+	// ErrUserVersionConflict — the caller's expected RecordVersion
+	// doesn't match the persisted value. Another writer changed the
+	// row between read and write; the caller should refetch and retry.
+	ErrUserVersionConflict = errors.New("user record version mismatch")
+
+	// ErrUserNotDeletable — the row's IsDeletable flag is false (or
+	// the row doesn't exist). Some users (admins, system accounts)
+	// are explicitly protected from archiving.
+	ErrUserNotDeletable = errors.New("user is not deletable")
+)

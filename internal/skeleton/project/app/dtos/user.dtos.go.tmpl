@@ -4,9 +4,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"{{.ModulePath}}/app/models"
+	"{{.ModulePath}}/app/services"
 )
 
-// User is the output DTO for User. Will be overwritten by gqlgen when run.
+// User is the wire shape returned to clients. It's the projection of
+// the persistent User model with sensitive fields (Password) excluded.
 type User struct {
 	ID            uuid.UUID  `json:"id"`
 	RecordVersion int        `json:"recordVersion"`
@@ -21,24 +25,82 @@ type User struct {
 	DeletedAt     *time.Time `json:"deletedAt,omitempty"`
 }
 
-// TUserResponseDto is the response shape for endpoints that return a
-// single user — either Data on success or Errors on a validation failure.
-type TUserResponseDto struct {
-	Data   *User                 `json:"data,omitempty"`
-	Errors []*TCommonAPIErrorDto `json:"errors,omitempty"`
+// UserFromModel maps a persisted User onto its public-facing DTO.
+// Soft-delete handling: the DTO emits `deletedAt` only when the row
+// was actually soft-deleted (gorm.DeletedAt.Valid == true). A non-nil
+// pointer to a zero time would render as "0001-01-01T00:00:00Z" in
+// JSON instead of being omitted via the omitempty tag.
+func UserFromModel(m *models.User) *User {
+	out := &User{
+		ID:            m.ID,
+		RecordVersion: m.RecordVersion,
+		CreatedAt:     m.CreatedAt,
+		UpdatedAt:     m.UpdatedAt,
+		FirstName:     m.FirstName,
+		OtherNames:    m.OtherNames,
+		Email:         m.Email,
+		PhoneNumber:   m.PhoneNumber,
+		IsActive:      m.IsActive,
+		IsDeletable:   m.IsDeletable,
+	}
+	if m.DeletedAt.Valid {
+		t := m.DeletedAt.Time
+		out.DeletedAt = &t
+	}
+	return out
 }
 
-// TUsersResponseDto is the response shape for list endpoints, pairing
-// the page of records with the matching pagination metadata.
+// TUserResponseDto is the success-shape envelope for endpoints that
+// return a single user. Validation failures and other errors flow via
+// HTTP status codes (4xx) carrying the framework's apperrors envelope
+// — there is intentionally no `Errors` field here.
+type TUserResponseDto struct {
+	Data *User `json:"data,omitempty"`
+}
+
+// TUsersResponseDto is the success-shape envelope for list endpoints,
+// pairing the page of records with pagination metadata.
 type TUsersResponseDto struct {
 	Data       []*User               `json:"data"`
 	Pagination *TPaginationObjectDto `json:"pagination"`
 }
 
-// TUserFieldsForUpdateDto is the input for partial user updates. Every
-// optional field is a pointer so the controller can distinguish "absent"
-// from "present-but-empty" and forward only the deltas to the service.
-type TUserFieldsForUpdateDto struct {
+// UsersFromModels maps the slice form for list responses.
+func UsersFromModels(ms []*models.User) []*User {
+	out := make([]*User, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, UserFromModel(m))
+	}
+	return out
+}
+
+// TCreateUserDto is the input for the create-user endpoint. Every
+// field carries a validate tag so the controller can run the
+// AppValidator and reject malformed input with HTTP 422 before
+// reaching the service layer.
+type TCreateUserDto struct {
+	FirstName   string `json:"firstName" validate:"required,min=1,max=50"`
+	OtherNames  string `json:"otherNames" validate:"required,min=1,max=150"`
+	Email       string `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber string `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
+}
+
+// ToCreateInput translates the wire DTO into the typed domain input
+// the service expects. Keeps the service free of any wire-format knowledge.
+func (d TCreateUserDto) ToCreateInput() services.CreateUserInput {
+	return services.CreateUserInput{
+		FirstName:   d.FirstName,
+		OtherNames:  d.OtherNames,
+		Email:       d.Email,
+		PhoneNumber: d.PhoneNumber,
+	}
+}
+
+// TUpdateUserDto is the input for partial updates. Optional fields
+// are pointers so the controller can distinguish "absent from request"
+// (nil → don't touch) from "present-but-empty" (non-nil → update to
+// the empty value).
+type TUpdateUserDto struct {
 	ID            uuid.UUID `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification=users"`
 	RecordVersion int       `json:"recordVersion" validate:"required,min=1"`
 	FirstName     *string   `json:"firstName,omitempty" validate:"omitempty,min=1,max=50"`
@@ -49,20 +111,23 @@ type TUserFieldsForUpdateDto struct {
 	IsDeletable   *bool     `json:"isDeletable,omitempty"`
 }
 
-// TCreateUserDto is the input shape for the create-user endpoint. Every
-// field is required (validators enforce that) so the controller can
-// trust a valid struct on the way into the service.
-type TCreateUserDto struct {
-	FirstName      string  `json:"firstName" validate:"required,min=1,max=50"`
-	OtherNames     string  `json:"otherNames" validate:"required,min=1,max=150"`
-	Email          string  `json:"email" validate:"required,email,is_record_exist_by_email_for_conflict=users"`
-	PhoneNumber    string  `json:"phoneNumber" validate:"required,is_valid_phone_number,is_record_exist_by_phone_number_for_conflict=users"`
-	ProfilePicture *string `json:"profilePicture,omitempty" validate:"omitempty,is_valid_url"`
+// ToPatch translates the wire DTO into the typed domain patch the
+// service expects.
+func (d TUpdateUserDto) ToPatch() services.UpdateUserPatch {
+	return services.UpdateUserPatch{
+		FirstName:   d.FirstName,
+		OtherNames:  d.OtherNames,
+		Email:       d.Email,
+		PhoneNumber: d.PhoneNumber,
+		IsActive:    d.IsActive,
+		IsDeletable: d.IsDeletable,
+	}
 }
 
 // TArchiveUserDto is the input for the soft-delete endpoint. The
-// is_record_deletable validator ensures the row's IsDeletable flag is
-// true before the service runs the soft delete.
+// is_record_deletable validator gates rows whose IsDeletable flag is
+// false at the boundary; the service ALSO enforces this in the SQL
+// WHERE clause as a defense-in-depth measure.
 type TArchiveUserDto struct {
 	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users,is_record_deletable=users"`
 }
@@ -72,34 +137,45 @@ type TFindUserByIDDto struct {
 	UserID uuid.UUID `json:"userId" validate:"uuid4_valid,does_record_exist_by_id_for_verification=users"`
 }
 
-// UserFieldsForFiltersDto is the per-field filter block for list
-// queries. Every field is optional — a nil pointer means "don't filter
-// on this field".
-type UserFieldsForFiltersDto struct {
-	FirstName   *string `json:"firstName,omitempty" schema:"firstName"`
-	OtherNames  *string `json:"otherNames,omitempty" schema:"otherNames"`
-	Email       *string `json:"email,omitempty" schema:"email"`
-	PhoneNumber *string `json:"phoneNumber,omitempty" schema:"phoneNumber"`
-}
-
-// UserFiltersDto bundles the field filters, pagination, and sorting
-// instructions the service expects on a list-users call.
-type UserFiltersDto struct {
-	Fields     *UserFieldsForFiltersDto `json:"fields" schema:"fields"`
-	Pagination *TPaginationInputDto     `json:"pagination,omitempty" schema:"pagination"`
-	Sorting    *TSortingInputDto        `json:"sorting,omitempty" schema:"sorting"`
-}
-
 // TUserFiltersQueryParamsDto is the flat query-string shape decoded
-// from REST list requests, before the controller folds it into a
-// UserFiltersDto for the service layer.
+// from REST list requests. Every field is optional with defaults
+// applied at the boundary (page=1, limit=10, sort=createdAt DESC).
 type TUserFiltersQueryParamsDto struct {
 	FirstName       *string          `json:"firstName,omitempty" schema:"firstName"`
 	OtherNames      *string          `json:"otherNames,omitempty" schema:"otherNames"`
 	Email           *string          `json:"email,omitempty" schema:"email"`
 	PhoneNumber     *string          `json:"phoneNumber,omitempty" schema:"phoneNumber"`
-	Limit           *int             `json:"limit,omitempty" schema:"limit" validate:"gte=1"`
-	Page            *int             `json:"page,omitempty" schema:"page" validate:"gte=1"`
+	Limit           *int             `json:"limit,omitempty" schema:"limit" validate:"omitempty,gte=1"`
+	Page            *int             `json:"page,omitempty" schema:"page" validate:"omitempty,gte=1"`
 	SortByField     *string          `json:"sortByField,omitempty" schema:"sortByField"`
 	SortOrientation *SortOrientation `json:"sortOrientation,omitempty" schema:"sortOrientation" validate:"omitempty"`
+}
+
+// ToFilter translates the wire query DTO into the typed domain filter
+// the service expects, applying defaults (page=1, limit=10,
+// SortField=created_at, SortDesc=true).
+func (q TUserFiltersQueryParamsDto) ToFilter() services.ListUsersFilter {
+	f := services.ListUsersFilter{
+		FirstName:   q.FirstName,
+		OtherNames:  q.OtherNames,
+		Email:       q.Email,
+		PhoneNumber: q.PhoneNumber,
+		Page:        1,
+		Limit:       10,
+		SortField:   "created_at",
+		SortDesc:    true,
+	}
+	if q.Page != nil && *q.Page > 0 {
+		f.Page = *q.Page
+	}
+	if q.Limit != nil && *q.Limit > 0 {
+		f.Limit = *q.Limit
+	}
+	if q.SortByField != nil && *q.SortByField != "" {
+		f.SortField = *q.SortByField
+	}
+	if q.SortOrientation != nil && q.SortOrientation.IsValid() {
+		f.SortDesc = (*q.SortOrientation == SortOrientationDesc)
+	}
+	return f
 }

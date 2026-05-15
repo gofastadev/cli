@@ -99,34 +99,53 @@ func PatchJobConfig(d ScaffoldData) error {
 const jobTemplate = `package jobs
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/gofastadev/gofasta/pkg/scheduler"
+	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
 )
 
+const __LOWER_NAME__JobTracerName = "app/jobs/__SNAKE_NAME__"
+
 var _ scheduler.Job = (*__NAME__Job)(nil)
 
-// __NAME__Job runs the __SNAKE_NAME__ cron job.
-// Customize the Run() method with your business logic.
+// __NAME__Job runs the __SNAKE_NAME__ cron job. Replace the body of
+// Run with the business logic.
+//
+// Fields are unexported — Wire (or your own caller) injects them via
+// the constructor. Public fields would invite callers to mutate
+// dependencies after construction.
 type __NAME__Job struct {
-	DB     *gorm.DB
-	Logger *slog.Logger
+	db     *gorm.DB
+	logger *slog.Logger
 }
 
 // New__NAME__Job constructs the job.
 func New__NAME__Job(db *gorm.DB, logger *slog.Logger) *__NAME__Job {
-	return &__NAME__Job{DB: db, Logger: logger}
+	return &__NAME__Job{db: db, logger: logger}
 }
 
-// Name returns the scheduler-visible job name.
-func (j *__NAME__Job) Name() string {
-	return "__SNAKE_NAME__"
-}
+// Name returns the scheduler-visible job name. The framework matches
+// this to a ` + "`name`" + ` entry in the project's jobs config to look up
+// the cron schedule.
+func (j *__NAME__Job) Name() string { return "__SNAKE_NAME__" }
 
-// Run executes the job.
-func (j *__NAME__Job) Run() {
-	// TODO: Implement your job logic here
-	j.Logger.Info("__SNAKE_NAME__ job executed")
+// Run executes the job once. The accepted ctx is canceled when the
+// scheduler is stopped (via app shutdown). Long-running jobs should
+// periodically check ctx.Done() so a graceful shutdown doesn't have
+// to wait for them.
+//
+// Returning an error doesn't stop the scheduler — the next tick still
+// fires — but the framework logs the error at ERROR level with the
+// job name attached. Idempotency is the job's responsibility.
+func (j *__NAME__Job) Run(ctx context.Context) error {
+	ctx, span := otel.Tracer(__LOWER_NAME__JobTracerName).Start(ctx, "__NAME__Job.Run")
+	defer span.End()
+
+	// TODO: Implement your job logic here.
+	j.logger.InfoContext(ctx, "__SNAKE_NAME__ job executed")
+	return nil
 }
 `

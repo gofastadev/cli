@@ -25,6 +25,7 @@ import (
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/devtools"
+	"{{.ModulePath}}/app/services"
 	"{{.ModulePath}}/app/validators"
 )
 
@@ -73,6 +74,8 @@ var CoreSet = wire.NewSet(
 	ProvideI18nService,
 	ProvideEncrypter,
 	ProvideSessionStore,
+	// Service-layer abstractions that domain services consume.
+	services.NewDefaultPasswordGenerator,
 )
 
 // --- Config extractors ---
