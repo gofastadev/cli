@@ -49,6 +49,15 @@ Forward extra ` + "`go test`" + ` flags after a literal ` + "`--`" + `:
 
   gofasta test ./app/... -- -count=1 -tags=integration
 
+Use the global ` + "`--json`" + ` flag for machine-readable output:
+
+  gofasta test --json                # forwards -json to go test → NDJSON events
+
+In JSON mode the banner, the "▶ go test ..." progress line, and the
+coverage summary are suppressed so stdout stays a strict newline-
+delimited JSON stream that downstream tools (gotestsum, GitHub Actions
+test annotators, etc.) can parse directly.
+
 Loads .env so child processes (testcontainers, fixture configs reading
 project-prefixed env vars) inherit the same environment ` + "`gofasta dev`" + ` and
 ` + "`gofasta serve`" + ` use.`,
@@ -76,6 +85,7 @@ project-prefixed env vars) inherit the same environment ` + "`gofasta dev`" + ` 
 			runPattern:  testRunPattern,
 			noRace:      testNoRace,
 			verbose:     testVerbose,
+			jsonMode:    cliout.JSON(),
 			extraArgs:   extra,
 		})
 	},
@@ -91,7 +101,14 @@ type testOptions struct {
 	runPattern  string
 	noRace      bool
 	verbose     bool
-	extraArgs   []string
+	// jsonMode is mirrored from cliout.JSON() at the cobra layer. When
+	// true, `-json` is forwarded to `go test` so it emits newline-
+	// delimited JSON events (one per test action) — the format
+	// downstream tools (gotestsum, GitHub Actions test annotators, etc.)
+	// expect. Verbose-mode and the coverage summary line are suppressed
+	// in this mode so the stdout stream stays strictly NDJSON.
+	jsonMode  bool
+	extraArgs []string
 }
 
 // runTests builds the `go test` command line, streams the output to
@@ -104,7 +121,7 @@ func runTests(opts testOptions) error {
 
 	args := buildGoTestArgs(opts)
 
-	if !cliout.JSON() {
+	if !opts.jsonMode {
 		termcolor.PrintStep("go %s", strings.Join(args, " "))
 	}
 
@@ -116,7 +133,10 @@ func runTests(opts testOptions) error {
 		return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", err)
 	}
 
-	if opts.coverage {
+	// In JSON mode the coverage summary line would corrupt the NDJSON
+	// stream; agents that want a coverage value can parse the profile
+	// themselves or run `go tool cover -func=coverage.out` after.
+	if opts.coverage && !opts.jsonMode {
 		printCoverageTotal()
 	}
 	return nil
@@ -138,8 +158,14 @@ func buildGoTestArgs(opts testOptions) []string {
 	if opts.short {
 		args = append(args, "-short")
 	}
-	if opts.verbose {
+	// `-json` already streams every test action; layering `-v` on top
+	// just duplicates verbose lines inside the Output field. Skip -v
+	// in JSON mode and let the consumer's NDJSON parser do the work.
+	if opts.verbose && !opts.jsonMode {
 		args = append(args, "-v")
+	}
+	if opts.jsonMode {
+		args = append(args, "-json")
 	}
 	if opts.coverage {
 		args = append(args, "-coverprofile=coverage.out")
