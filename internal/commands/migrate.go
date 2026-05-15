@@ -90,10 +90,11 @@ func init() {
 // the interactive menu via a strings.Reader without wiring a real pipe.
 var downStdin io.Reader = os.Stdin
 
-// stdinIsTTY reports whether os.Stdin is an interactive terminal. Used
-// by the down command to decide between menu (interactive) and default
-// single-step (CI / piped input). Mirrors termcolor's isTTY helper.
-func stdinIsTTY() bool {
+// stdinIsTTY reports whether os.Stdin is an interactive terminal.
+// Wrapped in a package-level seam so tests can deterministically
+// simulate either side without depending on how the test runner wires
+// /dev/stdin (which differs between `go test`, IDE runners, and CI).
+var stdinIsTTY = func() bool {
 	info, err := os.Stdin.Stat()
 	if err != nil {
 		return false
