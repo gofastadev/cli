@@ -168,12 +168,20 @@ func (s *{{.Name}}Service) Archive(ctx context.Context, input dtos.TArchive{{.Na
 }
 
 func cast{{.Name}}ToDto(e *models.{{.Name}}) *dtos.{{.Name}} {
-	return &dtos.{{.Name}}{
+	dto := &dtos.{{.Name}}{
 		ID: e.ID, RecordVersion: e.RecordVersion,
 		CreatedAt: e.CreatedAt, UpdatedAt: e.UpdatedAt,
 		IsActive: e.IsActive, IsDeletable: e.IsDeletable,
-		DeletedAt: &e.DeletedAt,
 		// TODO: Map remaining model fields to DTO fields
 	}
+	// Only surface DeletedAt when the row has actually been soft-deleted
+	// (gorm.DeletedAt.Valid == true). A non-nil pointer to a zero time
+	// would render as "0001-01-01T00:00:00Z" in JSON instead of being
+	// omitted via the omitempty tag.
+	if e.DeletedAt.Valid {
+		t := e.DeletedAt.Time
+		dto.DeletedAt = &t
+	}
+	return dto
 }
 `

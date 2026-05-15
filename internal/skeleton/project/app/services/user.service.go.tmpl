@@ -182,7 +182,7 @@ func (u *UserService) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDt
 // handle errors. If a future field requires conversion that can fail,
 // reintroduce an error return at that point.
 func castUserModelToUserDto(user *models.User) *dtos.User {
-	return &dtos.User{
+	dto := &dtos.User{
 		ID:            user.ID,
 		RecordVersion: user.RecordVersion,
 		FirstName:     user.FirstName,
@@ -193,6 +193,14 @@ func castUserModelToUserDto(user *models.User) *dtos.User {
 		UpdatedAt:     user.UpdatedAt,
 		IsActive:      user.IsActive,
 		IsDeletable:   user.IsDeletable,
-		DeletedAt:     &user.DeletedAt,
 	}
+	// Only surface DeletedAt when the row has actually been soft-
+	// deleted (gorm.DeletedAt.Valid == true). A non-nil pointer to a
+	// zero time would render as "0001-01-01T00:00:00Z" in JSON instead
+	// of being omitted via the omitempty tag.
+	if user.DeletedAt.Valid {
+		t := user.DeletedAt.Time
+		dto.DeletedAt = &t
+	}
+	return dto
 }

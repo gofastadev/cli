@@ -43,9 +43,17 @@ func New{{.Name}}ControllerInstance(svc svcInterfaces.{{.Name}}ServiceInterface)
 //	@Router			/{{.PluralLower}} [get]
 {{- end}}
 func (c *{{.Name}}Controller) List(w http.ResponseWriter, r *http.Request) error {
+	// Default sort: most recently created first. Matches the skeleton's
+	// user controller convention so all generated resources behave the
+	// same way out of the box. Add query-string decoding here when the
+	// resource needs filterable/sortable list endpoints.
+	desc := dtos.SortOrientationDesc
 	filters := dtos.{{.Name}}FiltersDto{
 		Pagination: &dtos.TPaginationInputDto{},
-		Sorting:    &dtos.TSortingInputDto{SortByField: "created_at"},
+		Sorting: &dtos.TSortingInputDto{
+			SortByField:     "createdAt",
+			SortOrientation: &desc,
+		},
 	}
 	res, err := c.{{.Name}}Service.FindAll(r.Context(), filters)
 	if err != nil {

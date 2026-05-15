@@ -100,6 +100,6 @@ type TUserFiltersQueryParamsDto struct {
 	PhoneNumber     *string          `json:"phoneNumber,omitempty" schema:"phoneNumber"`
 	Limit           *int             `json:"limit,omitempty" schema:"limit" validate:"gte=1"`
 	Page            *int             `json:"page,omitempty" schema:"page" validate:"gte=1"`
-	SortByField     string           `json:"sortByField" schema:"sortByField" validate:"required"`
+	SortByField     *string          `json:"sortByField,omitempty" schema:"sortByField"`
 	SortOrientation *SortOrientation `json:"sortOrientation,omitempty" schema:"sortOrientation" validate:"omitempty"`
 }

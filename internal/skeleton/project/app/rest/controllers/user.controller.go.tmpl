@@ -36,10 +36,11 @@ func NewUserControllerInstance(userService svcInterfaces.UserServiceInterface) *
 //	@Description	Get all users with optional filtering, pagination, and sorting
 //	@Tags			users
 //	@Produce		json
-//	@Param			sortByField	query		string	true	"Field to sort by"
-//	@Success		200			{object}	dtos.TUsersResponseDto
-//	@Failure		400			{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500			{object}	dtos.TCommonAPIErrorDto
+//	@Param			sortByField		query		string	false	"Field to sort by (default: createdAt)"
+//	@Param			sortOrientation	query		string	false	"asc | desc (default: desc)"
+//	@Success		200				{object}	dtos.TUsersResponseDto
+//	@Failure		400				{object}	dtos.TCommonAPIErrorDto
+//	@Failure		500				{object}	dtos.TCommonAPIErrorDto
 //	@Router			/users [get]
 func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
 	if err := r.ParseForm(); err != nil {
@@ -61,13 +62,22 @@ func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) erro
 		Limit: filters.Limit,
 		Page:  filters.Page,
 	}
-	sortField := filters.SortByField
-	if sortField == "" {
-		sortField = "id"
+
+	// Default sort: most recently created first. Both fields are
+	// optional on the query string — a developer hitting GET /users
+	// shouldn't have to know the exact field name to get a sane list.
+	sortField := "createdAt"
+	if filters.SortByField != nil && *filters.SortByField != "" {
+		sortField = *filters.SortByField
+	}
+	sortOrientation := filters.SortOrientation
+	if sortOrientation == nil {
+		desc := dtos.SortOrientationDesc
+		sortOrientation = &desc
 	}
 	userFilters.Sorting = &dtos.TSortingInputDto{
 		SortByField:     sortField,
-		SortOrientation: filters.SortOrientation,
+		SortOrientation: sortOrientation,
 	}
 
 	usersRes, err := uc.UserService.FindUsersWithFilters(r.Context(), userFilters)
