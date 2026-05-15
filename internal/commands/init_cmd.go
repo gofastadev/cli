@@ -35,11 +35,11 @@ func runInit() error {
 	// Step 1: Create .env if missing
 	if _, err := os.Stat(".env"); os.IsNotExist(err) {
 		if _, err := os.Stat(".env.example"); err == nil {
-			termcolor.PrintStep("📋 Creating .env from .env.example...")
+			termcolor.PrintStep("Creating .env from .env.example")
 			input, _ := os.ReadFile(".env.example")
 			_ = os.WriteFile(".env", input, 0o644)
 		} else {
-			termcolor.PrintStep("📋 Creating empty .env file...")
+			termcolor.PrintStep("Creating empty .env file")
 			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
 		}
 	} else {
@@ -48,14 +48,14 @@ func runInit() error {
 
 	// Step 2: Install dependencies
 	fmt.Println()
-	termcolor.PrintStep("📦 Installing dependencies...")
+	termcolor.PrintStep("Installing dependencies")
 	if err := runCmd("go", "mod", "tidy"); err != nil {
 		return fmt.Errorf("go mod tidy failed: %w", err)
 	}
 
 	// Step 3: Generate Wire DI
 	fmt.Println()
-	termcolor.PrintStep("🔌 Generating Wire DI code...")
+	termcolor.PrintStep("Generating Wire DI code")
 	if err := runCmd("go", "tool", "wire", "./app/di/"); err != nil {
 		termcolor.PrintWarn("Wire generation failed (you may need to fix compilation errors first)")
 	}
@@ -63,17 +63,17 @@ func runInit() error {
 	// Step 4: Generate GraphQL (only if project has GraphQL support)
 	fmt.Println()
 	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		termcolor.PrintStep("📊 Generating GraphQL code...")
+		termcolor.PrintStep("Generating GraphQL code")
 		if err := runCmd("go", "tool", "gqlgen", "generate"); err != nil {
 			termcolor.PrintWarn("gqlgen generation failed (you may need to fix schema errors first)")
 		}
 	} else {
-		termcolor.PrintStep("📊 Skipping GraphQL (no gqlgen.yml found)")
+		termcolor.PrintStep("Skipping GraphQL (no gqlgen.yml found)")
 	}
 
 	// Step 5: Generate Swagger docs
 	fmt.Println()
-	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
+	termcolor.PrintStep("Generating Swagger/OpenAPI docs")
 	if err := runCmd("go", "tool", "swag", "init",
 		"-g", "app/main/main.go", "-o", "docs/",
 		"--parseDependency", "--parseInternal"); err != nil {
@@ -82,7 +82,7 @@ func runInit() error {
 
 	// Step 6: Run migrations
 	fmt.Println()
-	termcolor.PrintStep("🗄  Running database migrations...")
+	termcolor.PrintStep("Running database migrations")
 	// Load the .env we just created (or already had) so the migrate URL
 	// includes user/password/name and the host-side port mapping. See
 	// migrate.go for the full why — config.yaml in scaffolded projects
@@ -104,7 +104,7 @@ func runInit() error {
 
 	// Step 6: Verify build
 	fmt.Println()
-	termcolor.PrintStep("🔨 Verifying build...")
+	termcolor.PrintStep("Verifying build")
 	if err := runCmd("go", "build", "./..."); err != nil {
 		return fmt.Errorf("build verification failed: %w", err)
 	}

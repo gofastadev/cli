@@ -152,7 +152,7 @@ func TestUninstall_NotFoundFiles(t *testing.T) {
 }
 
 // TestUninstallResult_PrintText_AllSections — the human renderer
-// covers each section.
+// covers each section. Per-path decorated lines, not aggregate counts.
 func TestUninstallResult_PrintText_AllSections(t *testing.T) {
 	r := &UninstallResult{
 		Agent:     "claude",
@@ -164,10 +164,11 @@ func TestUninstallResult_PrintText_AllSections(t *testing.T) {
 	var buf bytes.Buffer
 	r.PrintText(&buf)
 	out := buf.String()
-	assert.Contains(t, out, "renamed 1 file(s)")
-	assert.Contains(t, out, "removed 2 file(s)")
-	assert.Contains(t, out, "preserved 1 locally-modified")
-	assert.Contains(t, out, "1 recorded file(s) already gone")
+	assert.Contains(t, out, "renamed: CLAUDE.md → AGENTS.md")
+	assert.Contains(t, out, "removed: .claude/settings.json")
+	assert.Contains(t, out, "removed: .claude/commands/verify.md")
+	assert.Contains(t, out, "preserved (locally modified): .claude/commands/scaffold.md")
+	assert.Contains(t, out, "already gone: .claude/hooks/pre-commit.sh")
 }
 
 // TestUninstallCmd_RunE — the cobra-bound RunE delegates to runUninstall.

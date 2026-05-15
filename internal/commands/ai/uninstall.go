@@ -9,6 +9,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -47,31 +48,20 @@ type UninstallResult struct {
 	NotFound  []string `json:"not_found,omitempty"` // recorded in manifest but already gone
 }
 
-// PrintText renders an UninstallResult as a human-friendly summary.
+// PrintText renders an UninstallResult as a human-friendly summary,
+// using the canonical termcolor vocabulary.
 func (r *UninstallResult) PrintText(w io.Writer) {
-	if len(r.Renamed) > 0 {
-		fprintf(w, "  renamed %d file(s):\n", len(r.Renamed))
-		for _, f := range r.Renamed {
-			fprintf(w, "    → %s\n", f)
-		}
+	for _, f := range r.Renamed {
+		fprintln(w, "  "+termcolor.Success("renamed: %s", f))
 	}
-	if len(r.Removed) > 0 {
-		fprintf(w, "  removed %d file(s):\n", len(r.Removed))
-		for _, f := range r.Removed {
-			fprintf(w, "    - %s\n", f)
-		}
+	for _, f := range r.Removed {
+		fprintln(w, "  "+termcolor.Success("removed: %s", f))
 	}
-	if len(r.Preserved) > 0 {
-		fprintf(w, "  preserved %d locally-modified file(s):\n", len(r.Preserved))
-		for _, f := range r.Preserved {
-			fprintf(w, "    ! %s\n", f)
-		}
+	for _, f := range r.Preserved {
+		fprintln(w, "  "+termcolor.Warn("preserved (locally modified): %s", f))
 	}
-	if len(r.NotFound) > 0 {
-		fprintf(w, "  %d recorded file(s) already gone:\n", len(r.NotFound))
-		for _, f := range r.NotFound {
-			fprintf(w, "    ? %s\n", f)
-		}
+	for _, f := range r.NotFound {
+		fprintln(w, "  "+termcolor.Info("already gone: %s", f))
 	}
 }
 
@@ -121,9 +111,9 @@ func runUninstall(key string, dryRun bool) error {
 
 	cliout.Print(result, func(w io.Writer) {
 		if dryRun {
-			fprintf(w, "Dry run: %s would be uninstalled from %s\n", agent.Name, root)
+			fprintln(w, termcolor.Step("Dry run: %s would be uninstalled from %s", agent.Name, root))
 		} else {
-			fprintf(w, "%s uninstalled from %s\n", agent.Name, root)
+			fprintln(w, termcolor.Success("%s uninstalled from %s", agent.Name, root))
 		}
 		result.PrintText(w)
 	})

@@ -196,25 +196,26 @@ func runVerify(opts verifyOptions) error {
 	return nil
 }
 
+// printVerifyStep prints one check's outcome using the canonical
+// termcolor vocabulary (✓/✗/—). Pass/fail/skip line up with what other
+// commands emit so users see one visual style across the CLI.
 func printVerifyStep(c verifyCheck) {
-	var mark string
 	switch c.Status {
 	case "pass":
-		mark = termcolor.CGreen("✓")
+		fmt.Println("  " + termcolor.Success("%-16s (%dms)", c.Name, c.Duration))
 	case "fail":
-		mark = termcolor.CRed("✗")
-	case "skip":
-		mark = termcolor.CDim("-")
-	}
-	suffix := ""
-	if c.Message != "" && c.Status != "pass" {
-		suffix = ": " + c.Message
-	}
-	fmt.Printf("  %s %-16s (%dms)%s\n", mark, c.Name, c.Duration, suffix)
-	if c.Status == "fail" && c.Output != "" {
-		for line := range strings.SplitSeq(strings.TrimRight(c.Output, "\n"), "\n") {
-			fmt.Printf("    %s\n", line)
+		suffix := ""
+		if c.Message != "" {
+			suffix = ": " + c.Message
 		}
+		fmt.Println("  " + termcolor.Fail("%-16s (%dms)%s", c.Name, c.Duration, suffix))
+		if c.Output != "" {
+			for line := range strings.SplitSeq(strings.TrimRight(c.Output, "\n"), "\n") {
+				fmt.Println("    " + termcolor.CDim(line))
+			}
+		}
+	case "skip":
+		fmt.Println("  " + termcolor.CDim(fmt.Sprintf("- %-16s (%dms): skip", c.Name, c.Duration)))
 	}
 }
 

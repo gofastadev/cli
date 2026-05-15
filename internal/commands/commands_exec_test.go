@@ -2,6 +2,7 @@ package commands
 
 import (
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -455,13 +456,14 @@ func TestCheckGoTool_FakeFail(t *testing.T) {
 	assert.Contains(t, msg, "air-verse/air")
 }
 
-// --- printCheck ---
+// --- printDoctorSection (replaces the old printCheck smoke test) ---
 
-func TestPrintCheck(t *testing.T) {
-	// Just smoke — it writes to stdout
+func TestPrintDoctorSection(t *testing.T) {
 	assert.NotPanics(t, func() {
-		printCheck("foo", "bar", true)
-		printCheck("foo", "bar", false)
+		printDoctorSection(io.Discard, "Required:", []doctorEntry{
+			{Name: "foo", Status: "ok", Message: "bar"},
+			{Name: "foo", Status: "fail", Message: "bar"},
+		})
 	})
 }
 

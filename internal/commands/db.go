@@ -1,10 +1,14 @@
 package commands
 
 import (
+	"bytes"
 	"fmt"
-	"log/slog"
+	"io"
 	"os"
+	"time"
 
+	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -52,6 +56,20 @@ func init() {
 	rootCmd.AddCommand(dbCmd)
 }
 
+// dbResetStep is one phase of `gofasta db reset` (drop / up / seed).
+type dbResetStep struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"` // "ok" | "fail" | "skip"
+	Message    string `json:"message,omitempty"`
+	DurationMs int64  `json:"duration_ms"`
+}
+
+// dbResetResult is the structured payload for `--json` consumers.
+type dbResetResult struct {
+	Steps      []dbResetStep `json:"steps"`
+	DurationMs int64         `json:"duration_ms"`
+}
+
 func runDBReset(skipSeed bool) error {
 	// See comment in migrate.go: scaffolded projects keep DB
 	// credentials in .env (not config.yaml), and compose maps host
@@ -65,39 +83,92 @@ func runDBReset(skipSeed bool) error {
 		return fmt.Errorf("failed to load config — ensure config.yaml exists")
 	}
 
-	// Step 1: Drop everything
-	slog.Info("dropping all tables")
-	dropCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "drop", "-f")
-	dropCmd.Stdout = os.Stdout
-	dropCmd.Stderr = os.Stderr
-	if err := dropCmd.Run(); err != nil {
-		return fmt.Errorf("drop failed: %w", err)
-	}
-	slog.Info("tables dropped")
+	totalStart := time.Now()
+	result := dbResetResult{}
 
-	// Step 2: Re-apply all migrations
-	slog.Info("applying all migrations")
-	upCmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
-	upCmd.Stdout = os.Stdout
-	upCmd.Stderr = os.Stderr
-	if err := upCmd.Run(); err != nil {
-		return fmt.Errorf("migration up failed: %w", err)
+	steps := []struct {
+		name string
+		fn   func() error
+	}{
+		{"drop", func() error {
+			return runDBStep("drop", "migrate", "-path", "db/migrations", "-database", dbURL, "drop", "-f")
+		}},
+		{"migrate up", func() error {
+			return runDBStep("migrate up", "migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		}},
 	}
-	slog.Info("migrations applied")
-
-	// Step 3: Seed
 	if !skipSeed {
-		slog.Info("seeding database")
-		seedCmd := execCommand("go", "run", "./app/main", "seed")
-		seedCmd.Stdout = os.Stdout
-		seedCmd.Stderr = os.Stderr
-		seedCmd.Stdin = os.Stdin
-		if err := seedCmd.Run(); err != nil {
-			return fmt.Errorf("seeding failed: %w", err)
-		}
-		slog.Info("seeding completed")
+		steps = append(steps, struct {
+			name string
+			fn   func() error
+		}{"seed", func() error {
+			return runDBStep("seed", "go", "run", "./app/main", "seed")
+		}})
 	}
 
-	slog.Info("database reset complete")
+	for _, s := range steps {
+		stepStart := time.Now()
+		err := s.fn()
+		entry := dbResetStep{
+			Name:       s.name,
+			Status:     "ok",
+			DurationMs: time.Since(stepStart).Milliseconds(),
+		}
+		if err != nil {
+			entry.Status = "fail"
+			entry.Message = err.Error()
+			result.Steps = append(result.Steps, entry)
+			result.DurationMs = time.Since(totalStart).Milliseconds()
+			cliout.Print(result, func(w io.Writer) { printDBResetSummary(w, result) })
+			// Preserve the original error wording for callers depending on it.
+			switch s.name {
+			case "drop":
+				return fmt.Errorf("drop failed: %w", err)
+			case "migrate up":
+				return fmt.Errorf("migration up failed: %w", err)
+			default:
+				return fmt.Errorf("seeding failed: %w", err)
+			}
+		}
+		result.Steps = append(result.Steps, entry)
+	}
+
+	result.DurationMs = time.Since(totalStart).Milliseconds()
+	cliout.Print(result, func(w io.Writer) { printDBResetSummary(w, result) })
 	return nil
+}
+
+// runDBStep runs one migrate/seed shell-out, streaming output to the
+// user (in text mode) and announcing the step with a ▶ line. In --json
+// mode output is suppressed so the final payload is the only thing
+// written to stdout.
+func runDBStep(label, name string, args ...string) error {
+	if !cliout.JSON() {
+		fmt.Println(termcolor.Step("Running %s", label))
+	}
+	cmd := execCommand(name, args...)
+	if cliout.JSON() {
+		cmd.Stdout = &bytes.Buffer{}
+		cmd.Stderr = &bytes.Buffer{}
+	} else {
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		cmd.Stdin = os.Stdin
+	}
+	return cmd.Run()
+}
+
+// printDBResetSummary writes one line per step plus a final tally.
+func printDBResetSummary(w io.Writer, r dbResetResult) {
+	for _, s := range r.Steps {
+		switch s.Status {
+		case "ok":
+			_, _ = fmt.Fprintln(w, termcolor.Success("%s complete (%dms)", s.Name, s.DurationMs))
+		case "fail":
+			_, _ = fmt.Fprintln(w, termcolor.Fail("%s failed: %s", s.Name, s.Message))
+		case "skip":
+			_, _ = fmt.Fprintln(w, termcolor.Info("%s skipped", s.Name))
+		}
+	}
+	_, _ = fmt.Fprintf(w, "\n%d step(s) · %dms\n", len(r.Steps), r.DurationMs)
 }

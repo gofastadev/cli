@@ -33,7 +33,7 @@ func TestStatusMark_EveryBranch(t *testing.T) {
 	cases := map[string]string{
 		"ok":      "✓",
 		"drift":   "✗",
-		"warn":    "!",
+		"warn":    "⚠",
 		"skip":    "-",
 		"unknown": "?",
 	}

@@ -338,7 +338,7 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) (map[strin
 		}
 	}
 
-	termcolor.PrintStep("  ✓ override applied — re-probing…")
+	termcolor.PrintSuccess("override applied — re-probing…")
 	return kvs, nil
 }
 

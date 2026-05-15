@@ -2,9 +2,11 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -43,14 +45,29 @@ type doctorCheck struct {
 	checkFn  func() (string, bool)
 }
 
+// doctorReport is the structured payload `gofasta doctor --json` emits.
+// One entry per check, grouped by section. The Status field is the
+// stable contract — "ok" / "fail" / "info" — so agents can branch.
+type doctorReport struct {
+	Required []doctorEntry `json:"required"`
+	Optional []doctorEntry `json:"optional"`
+	Project  []doctorEntry `json:"project,omitempty"`
+	Passed   bool          `json:"passed"`
+}
+
+type doctorEntry struct {
+	Name    string `json:"name"`
+	Status  string `json:"status"` // "ok" | "fail" | "info"
+	Message string `json:"message,omitempty"`
+}
+
 func runDoctor() error {
-	allPassed := true
+	report := doctorReport{Passed: true}
 
 	required := []doctorCheck{
 		{"go", true, checkGoVersion},
 		{"migrate", true, checkMigrateVersion},
 	}
-
 	optional := []doctorCheck{
 		{"docker", false, checkDockerVersion},
 		{"air", false, checkGoTool("air")},
@@ -59,65 +76,90 @@ func runDoctor() error {
 		{"swag", false, checkGoTool("swag")},
 	}
 
-	termcolor.PrintHeader("Required:")
 	for _, c := range required {
 		info, ok := c.checkFn()
-		printCheck(c.name, info, ok)
+		report.Required = append(report.Required, doctorEntryFor(c.name, info, ok))
 		if !ok {
-			allPassed = false
+			report.Passed = false
 		}
 	}
-
-	fmt.Println()
-	termcolor.PrintHeader("Optional:")
 	for _, c := range optional {
 		info, ok := c.checkFn()
-		printCheck(c.name, info, ok)
+		report.Optional = append(report.Optional, doctorEntryFor(c.name, info, ok))
 	}
 
-	// Project health checks — only when inside a project directory
+	// Project health checks — only when inside a project directory.
 	if _, err := os.Stat("config.yaml"); err == nil {
-		fmt.Println()
-		termcolor.PrintHeader("Project:")
-		printCheck("config.yaml", "found", true)
-
+		report.Project = append(report.Project, doctorEntry{
+			Name: "config.yaml", Status: "ok", Message: "found",
+		})
 		// Load .env BEFORE building the migration URL. config.yaml in
-		// scaffolded projects ships with in-container defaults (host:
-		// localhost, port: 5432 — what the app sees from inside the
-		// compose network); the .env file is where the host-side
-		// overrides live (e.g. PORT=5433 because docker maps host
-		// 5433 → container 5432). Without this, doctor builds a URL
-		// that points at port 5432 on the host (where nothing is
+		// scaffolded projects ships with in-container defaults; the
+		// .env file is where the host-side overrides live (compose
+		// maps host 5433 → container 5432). Without this, doctor
+		// builds a URL pointing at port 5432 on the host (nothing
 		// listening) and reports "not reachable" even when the DB is
-		// fully healthy. `gofasta dev` doesn't have this bug because
-		// it loads .env in its own Stage 0.
+		// healthy. See migrate.go for the full rationale.
 		_, _ = loadDotEnv(".env")
 
 		dbURL := configutil.BuildMigrationURL()
 		if dbURL != "" {
 			cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "version")
-			if err := cmd.Run(); err == nil {
-				printCheck("database", "reachable", true)
-			} else {
-				printCheck("database", "not reachable", false)
+			entry := doctorEntry{Name: "database", Status: "ok", Message: "reachable"}
+			if err := cmd.Run(); err != nil {
+				entry.Status = "fail"
+				entry.Message = "not reachable"
 			}
+			report.Project = append(report.Project, entry)
 		}
 	}
 
-	if !allPassed {
+	cliout.Print(report, func(w io.Writer) { printDoctorReport(w, report) })
+
+	if !report.Passed {
 		return fmt.Errorf("some required checks failed")
 	}
 	return nil
 }
 
-func printCheck(name, info string, ok bool) {
-	mark := termcolor.CGreen("✓")
-	styledInfo := info
+// doctorEntryFor turns the legacy (info, ok) tuple into a structured
+// entry. Both required and optional checks render the same way; the
+// caller decides whether a "fail" flips the overall passed flag.
+func doctorEntryFor(name, info string, ok bool) doctorEntry {
+	status := "ok"
 	if !ok {
-		mark = termcolor.CRed("✗")
-		styledInfo = termcolor.CDim(info)
+		status = "fail"
 	}
-	fmt.Printf("  %s %-12s %s\n", mark, termcolor.CBold(name), styledInfo)
+	return doctorEntry{Name: name, Status: status, Message: info}
+}
+
+// printDoctorReport renders the human view, grouping checks under a
+// brand-cyan header and using the canonical ✓/✗ vocabulary.
+func printDoctorReport(w io.Writer, r doctorReport) {
+	printDoctorSection(w, "Required:", r.Required)
+	_, _ = fmt.Fprintln(w)
+	printDoctorSection(w, "Optional:", r.Optional)
+	if len(r.Project) > 0 {
+		_, _ = fmt.Fprintln(w)
+		printDoctorSection(w, "Project:", r.Project)
+	}
+}
+
+func printDoctorSection(w io.Writer, header string, entries []doctorEntry) {
+	_, _ = fmt.Fprintln(w, termcolor.Header("%s", header))
+	for _, e := range entries {
+		switch e.Status {
+		case "ok":
+			_, _ = fmt.Fprintf(w, "  %s %s %s\n",
+				termcolor.CGreen("✓"), termcolor.CBold(fmt.Sprintf("%-12s", e.Name)), e.Message)
+		case "fail":
+			_, _ = fmt.Fprintf(w, "  %s %s %s\n",
+				termcolor.CRed("✗"), termcolor.CBold(fmt.Sprintf("%-12s", e.Name)), termcolor.CDim(e.Message))
+		default:
+			_, _ = fmt.Fprintf(w, "  %s %s %s\n",
+				" ", termcolor.CBold(fmt.Sprintf("%-12s", e.Name)), e.Message)
+		}
+	}
 }
 
 func checkGoVersion() (string, bool) {

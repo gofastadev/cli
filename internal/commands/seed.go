@@ -3,6 +3,8 @@ package commands
 import (
 	"os"
 
+	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -33,11 +35,31 @@ config.yaml via the project binary, not the CLI directly.`,
 		if fresh {
 			cmdArgs = append(cmdArgs, "--fresh")
 		}
+
+		// Announce the step in text mode; in --json mode the child's
+		// own output is the contract — wrapping it would corrupt JSON.
+		if !cliout.JSON() {
+			if fresh {
+				termcolor.PrintStep("Resetting + seeding database")
+			} else {
+				termcolor.PrintStep("Seeding database")
+			}
+		}
+
 		c := execCommand("go", cmdArgs...)
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
 		c.Stdin = os.Stdin
-		return c.Run()
+		err := c.Run()
+
+		if !cliout.JSON() {
+			if err != nil {
+				termcolor.PrintFail("Seed failed: %s", err.Error())
+			} else {
+				termcolor.PrintSuccess("Seed complete")
+			}
+		}
+		return err
 	},
 }
 

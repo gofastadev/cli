@@ -220,10 +220,14 @@ func TestInstallResult_PrintText_AllSections(t *testing.T) {
 	var buf bytes.Buffer
 	r.PrintText(&buf)
 	out := buf.String()
-	assert.Contains(t, out, "created 2 file(s)")
-	assert.Contains(t, out, "replaced 1 file(s)")
-	assert.Contains(t, out, "would replace 1 file(s)")
-	assert.Contains(t, out, "skipped 1 unchanged")
+	// The new vocabulary is per-line: each path gets its own decorated
+	// row rather than an aggregate count. Assertions check the
+	// per-path lines + the aggregate skipped summary.
+	assert.Contains(t, out, "created: a")
+	assert.Contains(t, out, "created: b")
+	assert.Contains(t, out, "replaced: c")
+	assert.Contains(t, out, "would replace (dry-run): d")
+	assert.Contains(t, out, "1 file(s) unchanged")
 }
 
 func TestInstallResult_PrintText_EmptyResultIsSilent(t *testing.T) {

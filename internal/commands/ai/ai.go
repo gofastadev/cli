@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -159,9 +160,9 @@ func runInstall(key string, dryRun, force bool) error {
 	// Render result — JSON payload or a human summary.
 	cliout.Print(result, func(w io.Writer) {
 		if dryRun {
-			fprintf(w, "Dry run: %s would be installed into %s\n", agent.Name, root)
+			fprintln(w, termcolor.Step("Dry run: %s would be installed into %s", agent.Name, root))
 		} else {
-			fprintf(w, "%s installed into %s\n", agent.Name, root)
+			fprintln(w, termcolor.Success("%s installed into %s", agent.Name, root))
 		}
 		result.PrintText(w)
 		printNextSteps(w, agent)

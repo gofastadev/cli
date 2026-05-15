@@ -143,7 +143,7 @@ func statusMark(s string) string {
 	case "drift":
 		return termcolor.CRed("✗")
 	case "warn":
-		return termcolor.CBrand("!")
+		return termcolor.CYellow("⚠")
 	case "skip":
 		return termcolor.CDim("-")
 	default:

@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // InstallData is the template payload — every .tmpl file under an
@@ -239,38 +240,27 @@ func writeFile(destAbs string, body []byte) error {
 
 // PrintText renders an InstallResult as a human-friendly summary. Used
 // only when cliout.JSON() is false — JSON mode emits the struct directly.
+//
+// Uses the canonical termcolor vocabulary so output is consistent with
+// the rest of the CLI: green ✓ for created/renamed, yellow ~ for
+// replaced/dry-run, dim - for unchanged.
 func (r *InstallResult) PrintText(w io.Writer) {
-	if len(r.Renamed) > 0 {
-		fprintf(w, "  renamed %d file(s):\n", len(r.Renamed))
-		for _, f := range r.Renamed {
-			fprintf(w, "    → %s\n", f)
-		}
+	for _, f := range r.Renamed {
+		fprintln(w, "  "+termcolor.Success("renamed: %s", f))
 	}
-	if len(r.WouldRename) > 0 {
-		fprintf(w, "  would rename %d file(s) (dry run):\n", len(r.WouldRename))
-		for _, f := range r.WouldRename {
-			fprintf(w, "    → %s\n", f)
-		}
+	for _, f := range r.WouldRename {
+		fprintln(w, "  "+termcolor.Warn("would rename (dry-run): %s", f))
 	}
-	if len(r.Created) > 0 {
-		fprintf(w, "  created %d file(s):\n", len(r.Created))
-		for _, f := range r.Created {
-			fprintf(w, "    + %s\n", f)
-		}
+	for _, f := range r.Created {
+		fprintln(w, "  "+termcolor.Success("created: %s", f))
 	}
-	if len(r.Replaced) > 0 {
-		fprintf(w, "  replaced %d file(s):\n", len(r.Replaced))
-		for _, f := range r.Replaced {
-			fprintf(w, "    ~ %s\n", f)
-		}
+	for _, f := range r.Replaced {
+		fprintln(w, "  "+termcolor.Warn("replaced: %s", f))
 	}
-	if len(r.WouldReplace) > 0 {
-		fprintf(w, "  would replace %d file(s) (dry run):\n", len(r.WouldReplace))
-		for _, f := range r.WouldReplace {
-			fprintf(w, "    ~ %s\n", f)
-		}
+	for _, f := range r.WouldReplace {
+		fprintln(w, "  "+termcolor.Warn("would replace (dry-run): %s", f))
 	}
 	if len(r.Skipped) > 0 {
-		fprintf(w, "  skipped %d unchanged file(s)\n", len(r.Skipped))
+		fprintln(w, "  "+termcolor.Info("%d file(s) unchanged (skipped)", len(r.Skipped)))
 	}
 }
