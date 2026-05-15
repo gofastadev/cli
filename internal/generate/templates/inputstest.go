@@ -35,11 +35,9 @@ func TestUpdate{{.Name}}Patch_AsMap_OnlyIncludesSetFields(t *testing.T) {
 	assert.Equal(t, false, got["is_active"])
 	assert.Len(t, got, 1, "only the one set field should appear")
 {{- range .Fields}}
-	_, presentField := got["{{.SnakeName}}"]
-	assert.False(t, presentField, "untouched field {{.SnakeName}} must not appear")
+	assert.NotContains(t, got, "{{.SnakeName}}", "untouched field {{.SnakeName}} must not appear")
 {{- end}}
-	_, presentDeletable := got["is_deletable"]
-	assert.False(t, presentDeletable, "untouched field is_deletable must not appear")
+	assert.NotContains(t, got, "is_deletable", "untouched field is_deletable must not appear")
 }
 
 // TestList{{.PluralName}}Filter_AsRepoFilter_EmptyMap — no filters → empty map.

@@ -12,30 +12,16 @@ import (
 // _test.go with executable behavior tests (Name(), Run happy path,
 // Run respects ctx cancellation).
 func GenJob(d ScaffoldData) error {
-	path := fmt.Sprintf("app/jobs/%s.go", d.SnakeName)
-	testPath := fmt.Sprintf("app/jobs/%s_test.go", d.SnakeName)
-
-	if _, err := os.Stat(path); err == nil {
-		termcolor.PrintSkip(path, "exists")
-	} else {
-		content := jobTemplate
-		content = strings.ReplaceAll(content, "__NAME__", d.Name)
-		content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
-		content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
-		if err := writeOrRecordCreate(path, []byte(content)); err != nil {
-			return err
-		}
+	subs := []tokenPair{
+		{"__NAME__", d.Name},
+		{"__LOWER_NAME__", d.LowerName},
+		{"__SNAKE_NAME__", d.SnakeName},
+		{"__MODULE_PATH__", d.ModulePath},
 	}
-
-	if _, err := os.Stat(testPath); err == nil {
-		termcolor.PrintSkip(testPath, "exists")
-		return nil
+	if err := renderAndEmit(fmt.Sprintf("app/jobs/%s.go", d.SnakeName), jobTemplate, subs); err != nil {
+		return err
 	}
-	test := jobTestTemplate
-	test = strings.ReplaceAll(test, "__NAME__", d.Name)
-	test = strings.ReplaceAll(test, "__SNAKE_NAME__", d.SnakeName)
-	test = strings.ReplaceAll(test, "__MODULE_PATH__", d.ModulePath)
-	return writeOrRecordCreate(testPath, []byte(test))
+	return renderAndEmit(fmt.Sprintf("app/jobs/%s_test.go", d.SnakeName), jobTestTemplate, subs)
 }
 
 // jobTestTemplate is the executable test file emitted alongside every

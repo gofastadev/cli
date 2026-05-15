@@ -15,12 +15,12 @@ import (
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 	"github.com/gofastadev/gofasta/pkg/utils"
-	"github.com/gofastadev/gofasta/pkg/validators"
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/services"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
+	"{{.ModulePath}}/app/validators"
 )
 
 // {{.Name}}Controller exposes the REST surface for the {{.Name}} resource.

@@ -125,6 +125,9 @@ linters:
       - path: app/repositories/
         linters:
           - dupl
+      - path: app/rest/controllers/
+        linters:
+          - dupl
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
       # writes the type defs after the methods that reference them. That's
       # gqlgen's intentional output — we don't get to reformat it without

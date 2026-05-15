@@ -2,40 +2,22 @@ package generate
 
 import (
 	"fmt"
-	"os"
-	"strings"
-
-	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // GenTask generates an async task handler file in app/tasks/ AND a
 // sibling _test.go with executable behavior tests (Handle valid +
 // invalid payloads; Enqueue round-trips through a captured queue).
 func GenTask(d ScaffoldData) error {
-	path := fmt.Sprintf("app/tasks/%s.task.go", d.SnakeName)
-	testPath := fmt.Sprintf("app/tasks/%s.task_test.go", d.SnakeName)
-
-	if _, err := os.Stat(path); err == nil {
-		termcolor.PrintSkip(path, "exists")
-	} else {
-		content := taskTemplate
-		content = strings.ReplaceAll(content, "__NAME__", d.Name)
-		content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
-		content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
-		if err := writeOrRecordCreate(path, []byte(content)); err != nil {
-			return err
-		}
+	subs := []tokenPair{
+		{"__NAME__", d.Name},
+		{"__LOWER_NAME__", d.LowerName},
+		{"__SNAKE_NAME__", d.SnakeName},
+		{"__MODULE_PATH__", d.ModulePath},
 	}
-
-	if _, err := os.Stat(testPath); err == nil {
-		termcolor.PrintSkip(testPath, "exists")
-		return nil
+	if err := renderAndEmit(fmt.Sprintf("app/tasks/%s.task.go", d.SnakeName), taskTemplate, subs); err != nil {
+		return err
 	}
-	test := taskTestTemplate
-	test = strings.ReplaceAll(test, "__NAME__", d.Name)
-	test = strings.ReplaceAll(test, "__SNAKE_NAME__", d.SnakeName)
-	test = strings.ReplaceAll(test, "__MODULE_PATH__", d.ModulePath)
-	return writeOrRecordCreate(testPath, []byte(test))
+	return renderAndEmit(fmt.Sprintf("app/tasks/%s.task_test.go", d.SnakeName), taskTestTemplate, subs)
 }
 
 // taskTestTemplate is the executable test file emitted alongside
@@ -58,6 +40,8 @@ import (
 
 // captureQueue is an inline queue.QueueService stand-in. It records
 // the bytes the task emits so the test can decode and inspect them.
+// The non-Enqueue methods are no-ops — Enqueue__NAME__ never invokes
+// them, so leaving them empty keeps the stub minimal.
 type captureQueue struct {
 	lastTask    string
 	lastPayload []byte
@@ -72,6 +56,10 @@ func (c *captureQueue) Enqueue(_ context.Context, taskName string, payload []byt
 	}
 	return &asynq.TaskInfo{}, nil
 }
+
+func (c *captureQueue) RegisterHandler(_ string, _ asynq.Handler) {}
+func (c *captureQueue) Start() error                              { return nil }
+func (c *captureQueue) Shutdown()                                 {}
 
 // TestEnqueue__NAME___RoundTripsPayload — payload marshaled and
 // passed to Enqueue with the right task name.

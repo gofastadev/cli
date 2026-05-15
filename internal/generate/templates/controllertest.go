@@ -20,8 +20,6 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/gofastadev/gofasta/pkg/httputil"
-	"github.com/gofastadev/gofasta/pkg/validators"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -33,6 +31,7 @@ import (
 	"{{.ModulePath}}/app/rest/controllers"
 	"{{.ModulePath}}/app/rest/routes"
 	"{{.ModulePath}}/app/services"
+	"{{.ModulePath}}/app/validators"
 )
 
 // mock{{.Name}}Service is an inline testify mock for the service.
