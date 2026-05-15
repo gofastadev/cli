@@ -1,0 +1,151 @@
+package dtos_test
+
+import (
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/dtos"
+	"{{.ModulePath}}/app/models"
+)
+
+// TestUserFromModel_OmitsDeletedAtForLiveRows pins the soft-delete
+// nil-safety: a row whose gorm.DeletedAt has Valid==false (not
+// soft-deleted) must produce a DTO with DeletedAt == nil so the
+// `omitempty` JSON tag elides the field instead of rendering
+// "0001-01-01T00:00:00Z".
+func TestUserFromModel_OmitsDeletedAtForLiveRows(t *testing.T) {
+	now := time.Now()
+	id := uuid.New()
+	m := &models.User{
+		FirstName:   "Alice",
+		OtherNames:  "Anderson",
+		Email:       "alice@example.com",
+		PhoneNumber: "0712345678",
+	}
+	m.ID = id
+	m.RecordVersion = 3
+	m.CreatedAt = now
+	m.UpdatedAt = now
+	m.IsActive = true
+	m.IsDeletable = true
+	// DeletedAt left at zero value — Valid is false → not soft-deleted.
+
+	dto := dtos.UserFromModel(m)
+	require.NotNil(t, dto)
+	assert.Equal(t, id, dto.ID)
+	assert.Equal(t, 3, dto.RecordVersion)
+	assert.Equal(t, "Alice", dto.FirstName)
+	assert.Equal(t, "alice@example.com", dto.Email)
+	assert.True(t, dto.IsActive)
+	assert.Nil(t, dto.DeletedAt, "live rows must not have a non-nil DeletedAt pointer in the DTO")
+}
+
+// TestUserFromModel_SurfaceDeletedAtForArchivedRows confirms the
+// inverse: when the row HAS been soft-deleted (Valid==true), the DTO
+// carries the timestamp.
+func TestUserFromModel_SurfaceDeletedAtForArchivedRows(t *testing.T) {
+	when := time.Date(2026, time.January, 15, 12, 0, 0, 0, time.UTC)
+	m := &models.User{}
+	m.ID = uuid.New()
+	m.DeletedAt = gorm.DeletedAt{Time: when, Valid: true}
+
+	dto := dtos.UserFromModel(m)
+	require.NotNil(t, dto.DeletedAt)
+	assert.True(t, dto.DeletedAt.Equal(when))
+}
+
+// TestUsersFromModels_PreservesOrder asserts the slice helper maps
+// each model in order without mutation.
+func TestUsersFromModels_PreservesOrder(t *testing.T) {
+	a := &models.User{FirstName: "A"}
+	a.ID = uuid.New()
+	b := &models.User{FirstName: "B"}
+	b.ID = uuid.New()
+
+	dtosOut := dtos.UsersFromModels([]*models.User{a, b})
+	require.Len(t, dtosOut, 2)
+	assert.Equal(t, "A", dtosOut[0].FirstName)
+	assert.Equal(t, "B", dtosOut[1].FirstName)
+}
+
+// TestTCreateUserDto_ToCreateInput pins the wire→domain mapping for create.
+func TestTCreateUserDto_ToCreateInput(t *testing.T) {
+	in := dtos.TCreateUserDto{
+		FirstName:   "Alice",
+		OtherNames:  "X",
+		Email:       "alice@example.com",
+		PhoneNumber: "0712345678",
+	}
+	got := in.ToCreateInput()
+	assert.Equal(t, "Alice", got.FirstName)
+	assert.Equal(t, "X", got.OtherNames)
+	assert.Equal(t, "alice@example.com", got.Email)
+	assert.Equal(t, "0712345678", got.PhoneNumber)
+}
+
+// TestTUpdateUserDto_ToPatch_PreservesNilness — nil pointers stay
+// nil so the patch's AsMap doesn't include them as "update to empty
+// value". Critical: this is what makes partial updates safe.
+func TestTUpdateUserDto_ToPatch_PreservesNilness(t *testing.T) {
+	name := "NewName"
+	in := dtos.TUpdateUserDto{
+		ID:            uuid.New(),
+		RecordVersion: 1,
+		FirstName:     &name,
+		// every other field nil
+	}
+	patch := in.ToPatch()
+	require.NotNil(t, patch.FirstName)
+	assert.Equal(t, "NewName", *patch.FirstName)
+	assert.Nil(t, patch.OtherNames)
+	assert.Nil(t, patch.Email)
+	assert.Nil(t, patch.PhoneNumber)
+	assert.Nil(t, patch.IsActive)
+}
+
+// TestTUserFiltersQueryParamsDto_ToFilter_AppliesDefaults — empty
+// query → page=1, limit=10, SortField=created_at, SortDesc=true.
+func TestTUserFiltersQueryParamsDto_ToFilter_AppliesDefaults(t *testing.T) {
+	q := dtos.TUserFiltersQueryParamsDto{}
+	f := q.ToFilter()
+	assert.Equal(t, 1, f.Page)
+	assert.Equal(t, 10, f.Limit)
+	assert.Equal(t, "created_at", f.SortField)
+	assert.True(t, f.SortDesc)
+}
+
+// TestTUserFiltersQueryParamsDto_ToFilter_HonorsExplicitValues — when
+// the caller specifies values, they override defaults.
+func TestTUserFiltersQueryParamsDto_ToFilter_HonorsExplicitValues(t *testing.T) {
+	page := 3
+	limit := 25
+	field := "first_name"
+	asc := dtos.SortOrientationAsc
+	q := dtos.TUserFiltersQueryParamsDto{
+		Page:            &page,
+		Limit:           &limit,
+		SortByField:     &field,
+		SortOrientation: &asc,
+	}
+	f := q.ToFilter()
+	assert.Equal(t, 3, f.Page)
+	assert.Equal(t, 25, f.Limit)
+	assert.Equal(t, "first_name", f.SortField)
+	assert.False(t, f.SortDesc, "ASC orientation should produce SortDesc=false")
+}
+
+// TestTUserFiltersQueryParamsDto_ToFilter_RejectsInvalidOrientation —
+// an unmarshaled string that isn't ASC/DESC must be ignored, falling
+// back to the default (DESC). Defense against malicious or buggy
+// clients.
+func TestTUserFiltersQueryParamsDto_ToFilter_RejectsInvalidOrientation(t *testing.T) {
+	bogus := dtos.SortOrientation("DROP TABLE users")
+	q := dtos.TUserFiltersQueryParamsDto{SortOrientation: &bogus}
+	f := q.ToFilter()
+	assert.True(t, f.SortDesc, "invalid orientation must fall back to default DESC")
+}

@@ -1,0 +1,54 @@
+package jobs_test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"{{.ModulePath}}/app/jobs"
+)
+
+// quietLogger discards every log line so tests don't pollute output.
+func quietLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// TestExampleJob_Name pins the registered name. Renaming this without
+// also updating the project's jobs config in config.yaml would
+// silently disable the job in production.
+func TestExampleJob_Name(t *testing.T) {
+	j := jobs.NewExampleJob(quietLogger())
+	assert.Equal(t, "example", j.Name())
+}
+
+// TestExampleJob_Run_Success — happy path: Run returns nil and the
+// scheduler treats this as success.
+func TestExampleJob_Run_Success(t *testing.T) {
+	j := jobs.NewExampleJob(quietLogger())
+	require.NoError(t, j.Run(context.Background()))
+}
+
+// TestExampleJob_Run_RespectsContext — well-behaved jobs check
+// ctx.Done() during long operations. The example job is short, so the
+// simplest contract test is: it returns even when the ctx is already
+// canceled (i.e., it doesn't block on a non-ctx-aware sleep).
+func TestExampleJob_Run_RespectsContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	j := jobs.NewExampleJob(quietLogger())
+	done := make(chan error, 1)
+	go func() { done <- j.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly when the context was already canceled — the body must respect ctx.Done()")
+	}
+}

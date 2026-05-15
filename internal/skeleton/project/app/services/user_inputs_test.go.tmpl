@@ -1,0 +1,88 @@
+package services_test
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	"{{.ModulePath}}/app/services"
+)
+
+// TestUpdateUserPatch_AsMap_OnlyIncludesSetFields — the central
+// promise of UpdateUserPatch. nil pointers MUST NOT appear in the
+// resulting SQL UPDATE map; otherwise GORM would write zero-values
+// over real data.
+func TestUpdateUserPatch_AsMap_OnlyIncludesSetFields(t *testing.T) {
+	name := "Alice"
+	active := false
+
+	patch := services.UpdateUserPatch{
+		FirstName: &name,
+		IsActive:  &active,
+		// every other field nil
+	}
+	got := patch.AsMap()
+
+	assert.Equal(t, "Alice", got["first_name"])
+	assert.Equal(t, false, got["is_active"])
+	assert.Len(t, got, 2, "only the two set fields should appear in the map")
+
+	// Critical negative assertion: the columns the caller didn't touch
+	// must NOT appear, even with their zero values.
+	for _, untouched := range []string{"other_names", "email", "phone_number", "is_deletable"} {
+		_, present := got[untouched]
+		assert.False(t, present, "untouched field %q must not appear in the AsMap output", untouched)
+	}
+}
+
+// TestUpdateUserPatch_AsMap_EmptyPatchIsEmptyMap — a patch with no
+// fields set produces an empty map (which GORM treats as a no-op).
+func TestUpdateUserPatch_AsMap_EmptyPatchIsEmptyMap(t *testing.T) {
+	got := services.UpdateUserPatch{}.AsMap()
+	assert.Empty(t, got)
+}
+
+// TestUpdateUserPatch_AsMap_SnakeCaseColumnNames — the framework
+// expects column names in snake_case (matches the GORM naming
+// convention). PascalCase or camelCase keys would fail SQL parsing.
+func TestUpdateUserPatch_AsMap_SnakeCaseColumnNames(t *testing.T) {
+	a, b, c, d := "a", "b", "c", "d"
+	active, deletable := true, false
+	patch := services.UpdateUserPatch{
+		FirstName:   &a,
+		OtherNames:  &b,
+		Email:       &c,
+		PhoneNumber: &d,
+		IsActive:    &active,
+		IsDeletable: &deletable,
+	}
+	got := patch.AsMap()
+	for _, col := range []string{"first_name", "other_names", "email", "phone_number", "is_active", "is_deletable"} {
+		_, ok := got[col]
+		assert.True(t, ok, "expected snake_case column %q in AsMap output", col)
+	}
+}
+
+// TestListUsersFilter_AsRepoFilter_OnlyPresentFilters — pointer
+// filter fields that are nil must not appear in the resulting filter
+// map (otherwise BuildQueryForAnyModel would add a meaningless WHERE
+// clause).
+func TestListUsersFilter_AsRepoFilter_OnlyPresentFilters(t *testing.T) {
+	email := "alice@example.com"
+	f := services.ListUsersFilter{
+		Email: &email,
+	}
+	got := f.AsRepoFilter()
+	assert.Equal(t, "alice@example.com", got["email"])
+	assert.Len(t, got, 1)
+	for _, untouched := range []string{"first_name", "other_names", "phone_number"} {
+		_, present := got[untouched]
+		assert.False(t, present)
+	}
+}
+
+// TestListUsersFilter_AsRepoFilter_EmptyMap — no filters → empty map.
+func TestListUsersFilter_AsRepoFilter_EmptyMap(t *testing.T) {
+	got := services.ListUsersFilter{}.AsRepoFilter()
+	assert.Empty(t, got)
+}

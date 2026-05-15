@@ -8,23 +8,100 @@ import (
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
-// GenJob generates a cron job file in app/jobs/.
+// GenJob generates a cron job file in app/jobs/ AND a sibling
+// _test.go with executable behavior tests (Name(), Run happy path,
+// Run respects ctx cancellation).
 func GenJob(d ScaffoldData) error {
 	path := fmt.Sprintf("app/jobs/%s.go", d.SnakeName)
+	testPath := fmt.Sprintf("app/jobs/%s_test.go", d.SnakeName)
+
 	if _, err := os.Stat(path); err == nil {
 		termcolor.PrintSkip(path, "exists")
-		return nil
+	} else {
+		content := jobTemplate
+		content = strings.ReplaceAll(content, "__NAME__", d.Name)
+		content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
+		content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
+		if err := writeOrRecordCreate(path, []byte(content)); err != nil {
+			return err
+		}
 	}
 
-	content := jobTemplate
-	content = strings.ReplaceAll(content, "__NAME__", d.Name)
-	content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
-	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
-
-	// writeOrRecordCreate handles MkdirAll + format.Source for .go files,
-	// so the emitted job file is preflight-clean by construction.
-	return writeOrRecordCreate(path, []byte(content))
+	if _, err := os.Stat(testPath); err == nil {
+		termcolor.PrintSkip(testPath, "exists")
+		return nil
+	}
+	test := jobTestTemplate
+	test = strings.ReplaceAll(test, "__NAME__", d.Name)
+	test = strings.ReplaceAll(test, "__SNAKE_NAME__", d.SnakeName)
+	test = strings.ReplaceAll(test, "__MODULE_PATH__", d.ModulePath)
+	return writeOrRecordCreate(testPath, []byte(test))
 }
+
+// jobTestTemplate is the executable test file emitted alongside every
+// generated job. No t.Skip — every test exercises real code paths
+// (Name() value, Run happy path, Run respects ctx cancellation).
+const jobTestTemplate = `package jobs_test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"__MODULE_PATH__/app/jobs"
+)
+
+func test__NAME__JobDeps(t *testing.T) (*gorm.DB, *slog.Logger) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	return db, slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// Test__NAME__Job_Name pins the registered name. Renaming this
+// without also updating jobs config in config.yaml would silently
+// disable the job in production.
+func Test__NAME__Job_Name(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	j := jobs.New__NAME__Job(db, logger)
+	assert.Equal(t, "__SNAKE_NAME__", j.Name())
+}
+
+// Test__NAME__Job_Run_Success — happy path: Run returns nil.
+func Test__NAME__Job_Run_Success(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	j := jobs.New__NAME__Job(db, logger)
+	require.NoError(t, j.Run(context.Background()))
+}
+
+// Test__NAME__Job_Run_RespectsContext — well-behaved jobs return
+// promptly when ctx is canceled. The starter body is short and
+// doesn't block on a non-ctx-aware sleep, so even a pre-canceled ctx
+// should let Run finish.
+func Test__NAME__Job_Run_RespectsContext(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	j := jobs.New__NAME__Job(db, logger)
+	done := make(chan error, 1)
+	go func() { done <- j.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly when ctx was already canceled")
+	}
+}
+`
 
 // PatchJobRegistry adds the new job to the registry in cmd/serve.go.
 func PatchJobRegistry(d ScaffoldData) error {
