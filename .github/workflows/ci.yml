@@ -108,18 +108,22 @@ jobs:
         run: go build ./...
 
       # ─────────────────────────────────────────────────────────────
-      # Generators — one representative per category that runs
-      # standalone. Mirrors local `make integration` and expands to
-      # every `gofasta g <kind>` whose preconditions are met by an
-      # empty scaffold so a regression in any single generator fails
-      # THIS workflow.
+      # Generators — one representative per category whose
+      # preconditions are met by an empty scaffold. Mirrors local
+      # `make integration` and expands to cover each `gofasta g
+      # <kind>` independently so a regression in any single one
+      # fails THIS workflow.
       #
-      # Excluded:
-      #   - g route / g provider — both expect an existing controller/
-      #     service; the `g scaffold Product` step above already
-      #     exercises them as part of the full chain.
-      #   - g resolver — needs `gofasta new --graphql` (the scaffold
-      #     in this job is REST-only).
+      # Excluded (NOT actually standalone — would break compilation
+      # of the generated project on their own; all three are already
+      # exercised as part of `g scaffold Product` above):
+      #   - g dto       — emits a file importing `models.<Name>` and
+      #                   `services.<Name>Input`; the model/service
+      #                   must already exist.
+      #   - g route     — patches an existing controller's routes.
+      #   - g provider  — wires an existing service into Wire.
+      #   - g resolver  — requires `gofasta new --graphql` (this
+      #                   scaffold is REST-only).
       # ─────────────────────────────────────────────────────────────
       - name: Exercise generators
         working-directory: /tmp/testproject
@@ -129,7 +133,6 @@ jobs:
           /tmp/gofasta g repository Tag name:string slug:string
           /tmp/gofasta g service Cart total:float currency:string
           /tmp/gofasta g controller Order status:string amount:float
-          /tmp/gofasta g dto Comment body:text author:string
           /tmp/gofasta g migration add_search_index
           /tmp/gofasta g email-template welcome
           /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
