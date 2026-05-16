@@ -184,3 +184,22 @@ func TestRunInit_GqlgenFails(t *testing.T) {
 	stagedFakeExec(t, 0, 0, 1, 0, 0, 0)
 	require.NoError(t, runInit())
 }
+
+// TestRunInit_JSONMode — runInit in JSON mode reroutes the migrate
+// child's stdout to stderr (line 131) so the structured init result
+// emitted at the end stays the only thing on stdout.
+func TestRunInit_JSONMode(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	withJSONMode(t)
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runInit())
+	})
+
+	var got initResult
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &got))
+	assert.Equal(t, "init", got.Action)
+	assert.True(t, got.Success)
+}

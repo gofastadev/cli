@@ -434,3 +434,26 @@ func TestRunTests_JSONMode_Success(t *testing.T) {
 	stubExecLookPathOK(t)
 	assert.NoError(t, runTests(testOptions{jsonMode: true, coverage: true}))
 }
+
+// TestTestCmd_RunE_NoArgs — exercise the cobra RunE wrapper with no
+// args (paths empty, no `--`, no extras). Covers the dashAt==-1 arm
+// of the switch inside the closure.
+func TestTestCmd_RunE_NoArgs(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0)
+	stubExecLookPathOK(t)
+	testCmd.SetArgs(nil)
+	assert.NoError(t, testCmd.RunE(testCmd, nil))
+}
+
+// TestTestCmd_RunE_PathsAndExtras — args include a path AND post-`--`
+// raw extras; the ArgsLenAtDash split fires (the default arm of the
+// switch).
+func TestTestCmd_RunE_PathsAndExtras(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0)
+	stubExecLookPathOK(t)
+	testCmd.SetArgs([]string{"./...", "--", "-count=1"})
+	t.Cleanup(func() { testCmd.SetArgs(nil) })
+	assert.NoError(t, testCmd.Execute())
+}

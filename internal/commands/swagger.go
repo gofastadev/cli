@@ -2,8 +2,6 @@ package commands
 
 import (
 	"bytes"
-	"fmt"
-	"io"
 	"os"
 
 	"github.com/gofastadev/cli/internal/cliout"
@@ -74,11 +72,7 @@ func runSwagger() error {
 	if runErr != nil {
 		result.Error = runErr.Error()
 	}
-	cliout.Print(result, func(w io.Writer) {
-		// Should be unreachable — JSON branch only — but defensive in
-		// case callers pass cliout.Print directly elsewhere.
-		_, _ = fmt.Fprintln(w, result.Output)
-	})
+	cliout.Print(result, nil)
 	return runErr
 }
 

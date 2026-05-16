@@ -35,7 +35,7 @@ func emitUpgradeResult(r upgradeResult) {
 	if !cliout.JSON() {
 		return
 	}
-	cliout.Print(r, func(_ io.Writer) {})
+	cliout.Print(r, nil)
 }
 
 // Package-level seams so tests can redirect network + URLs without hitting GitHub.

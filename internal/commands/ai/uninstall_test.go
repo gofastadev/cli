@@ -319,3 +319,50 @@ func TestRemoveEmptyParents_NonEmptyDir(t *testing.T) {
 	_, err := os.Stat(sub)
 	assert.NoError(t, err)
 }
+
+// TestRunUninstall_LoadManifestError — corrupt manifest causes
+// LoadManifest to fail; runUninstall surfaces the error.
+func TestRunUninstall_LoadManifestError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
+		[]byte("not-json"), 0o644))
+	err := runUninstall("claude", false)
+	require.Error(t, err)
+}
+
+// TestRunUninstall_BuildInstallDataError — go.mod unreadable so the
+// inner buildInstallData call inside runUninstall fails.
+func TestRunUninstall_BuildInstallDataError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
+
+	err := runUninstall("claude", false)
+	require.Error(t, err)
+}
+
+// TestReverseDocRename_DestMissing — install claude (which records a
+// rename), then delete CLAUDE.md so the dest doesn't exist. The early-
+// return `!fileExists(dstAbs)` branch fires and uninstall succeeds
+// without renaming.
+func TestReverseDocRename_DestMissing(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	// Remove CLAUDE.md so the rename target is gone.
+	require.NoError(t, os.Remove(filepath.Join(dir, "CLAUDE.md")))
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runUninstall("claude", false))
+	})
+}

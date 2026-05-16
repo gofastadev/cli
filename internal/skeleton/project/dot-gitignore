@@ -4,6 +4,7 @@ tmp/
 
 # Environment
 .env
+coverage*
 
 # IDE
 .idea/

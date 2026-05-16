@@ -446,3 +446,18 @@ func TestResolveRepairTarget_JSONIsNonInteractive(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "non-interactive")
 }
+
+// TestResolveRepairTarget_TTYRoutesToPrompt — interactive TTY + not
+// JSON-mode triggers the promptRepairTarget branch of the switch via
+// resolveRepairTarget, not the direct call covered elsewhere.
+func TestResolveRepairTarget_TTYRoutesToPrompt(t *testing.T) {
+	resetRepairFlags(t)
+	origTTY := stdinIsTTY
+	stdinIsTTY = func() bool { return true }
+	t.Cleanup(func() { stdinIsTTY = origTTY })
+	repairStdin = strings.NewReader("r\n")
+
+	target, err := resolveRepairTarget(7, t.TempDir())
+	require.NoError(t, err)
+	assert.Equal(t, 6, target, "revert at 7 should target 6")
+}

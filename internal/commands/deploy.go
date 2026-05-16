@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"io"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
@@ -309,7 +308,7 @@ func emitDeployResult(action string, cfg *deploy.DeployConfig, err error) {
 		App:     cfg.AppName,
 		Success: err == nil,
 		Error:   errString(err),
-	}, func(_ io.Writer) {})
+	}, nil)
 }
 
 func errString(err error) string {

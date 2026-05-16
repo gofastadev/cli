@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"io"
 	"os"
 
 	"github.com/gofastadev/cli/internal/cliout"
@@ -191,7 +190,7 @@ func finishInit(steps initSteps, err error) error {
 		if err != nil {
 			result.Error = err.Error()
 		}
-		cliout.Print(result, func(_ io.Writer) {})
+		cliout.Print(result, nil)
 	}
 	return err
 }

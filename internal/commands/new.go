@@ -2,7 +2,6 @@ package commands
 
 import (
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -159,7 +158,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 				GraphQL:    includeGraphQL,
 				Success:    resultErr == nil,
 				Error:      errString(resultErr),
-			}, func(_ io.Writer) {})
+			}, nil)
 		}()
 	}
 
