@@ -201,8 +201,6 @@ func finishInit(steps initSteps, err error) error {
 // to stderr so the structured result we emit at the end is the only
 // thing on stdout. The first argument is the program name; kept as a
 // parameter so tests and future callers can target other binaries.
-//
-//nolint:unparam // name parameter kept for future flexibility.
 func runCmd(name string, args ...string) error {
 	cmd := execCommand(name, args...)
 	if cliout.JSON() {
