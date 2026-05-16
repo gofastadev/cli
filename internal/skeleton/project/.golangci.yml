@@ -111,14 +111,17 @@ linters:
           - errcheck
           - revive
           - dupl
-      # CRUD scaffolds (`gofasta g scaffold`) produce service and
-      # repository methods with very similar shapes — Update, FindByID,
-      # SoftDelete, etc. — across resources. dupl flags these as
-      # duplicates even though the duplication is intentional and goes
-      # away as the developer adds resource-specific logic. Disable dupl
-      # on these paths so a fresh `gofasta g scaffold Product` run stays
-      # preflight-green; re-enable on a per-file basis if you want stricter
-      # checks once a service has accumulated significant business logic.
+      # CRUD scaffolds (`gofasta g scaffold`) produce service,
+      # repository, controller, and DTO files with very similar shapes
+      # — Update, FindByID, SoftDelete, FromModel, ToCreateInput, etc.
+      # — across resources. dupl flags these as duplicates even though
+      # the duplication is intentional and goes away as the developer
+      # adds resource-specific logic. Disable dupl on these paths so a
+      # fresh `gofasta g scaffold Product` (plus subsequent
+      # `gofasta g scaffold Order`, `g service Cart`, etc.) stays
+      # preflight-green; re-enable on a per-file basis if you want
+      # stricter checks once a service has accumulated significant
+      # business logic.
       - path: app/services/
         linters:
           - dupl
@@ -126,6 +129,9 @@ linters:
         linters:
           - dupl
       - path: app/rest/controllers/
+        linters:
+          - dupl
+      - path: app/dtos/
         linters:
           - dupl
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
