@@ -40,8 +40,24 @@ var migrateUpCmd = &cobra.Command{
 	Long: `Run all migration files whose version is newer than the last version recorded
 in the schema_migrations table. Safe to re-run: already-applied migrations are
 skipped. Fails fast on the first migration that errors, leaving the schema at
-the last successful version.`,
+the last successful version.
+
+Use --explain to preview the risk profile of every .up.sql file under
+db/migrations/ without opening a database connection. Static SQL analysis
+flags lock-impact, data-loss, and app-incompatibility patterns:
+
+  ALTER TABLE ... DROP COLUMN       → data-loss
+  ADD COLUMN ... NOT NULL (no DEFAULT) → lock-and-fill (table rewrite)
+  CREATE INDEX without CONCURRENTLY → lock-table (Postgres)
+  RENAME COLUMN / RENAME TABLE      → app-incompatibility
+  ALTER COLUMN ... TYPE             → lock-and-rewrite
+
+Combine with --strict to exit non-zero when any high-severity warning fires
+(useful in CI). --explain never opens a DB connection — works offline.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if migrateExplainFlags.enabled {
+			return runMigrateExplain()
+		}
 		return runMigrationUp()
 	},
 }
@@ -75,6 +91,11 @@ var (
 )
 
 func init() {
+	migrateUpCmd.Flags().BoolVar(&migrateExplainFlags.enabled, "explain", false,
+		"static analysis of every pending .up.sql (no DB connection) — flags risky DDL")
+	migrateUpCmd.Flags().BoolVar(&migrateExplainFlags.strict, "strict", false,
+		"with --explain: exit non-zero when any high-severity warning fires (CI gate)")
+
 	migrateCmd.AddCommand(migrateUpCmd)
 	migrateCmd.AddCommand(migrateDownCmd)
 	migrateDownCmd.Flags().BoolVar(&downAll, "all", false,

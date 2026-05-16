@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/commands/gitdiff"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -34,9 +36,13 @@ Steps, in order:
   7. routes           — app/rest/routes/ parses and has at least one entry
 
 Flags:
-  --no-lint    Skip golangci-lint (useful on a machine without it)
-  --no-race    Skip the race detector in ` + "`go test`" + `
-  --keep-going Continue after the first failure and report every result
+  --no-lint     Skip golangci-lint (useful on a machine without it)
+  --no-race     Skip the race detector in ` + "`go test`" + `
+  --keep-going  Continue after the first failure and report every result
+  --since=<ref> Scope fmt/vet/lint/test/build to files changed since <ref>
+                (Wire drift and routes are whole-project invariants, always full)
+  --changed     Shortcut: scope to working-tree + staged + untracked changes
+                (no committed comparison)
 
 Use ` + "`--json`" + ` (inherited from the root command) to emit one JSON object
 per check, suitable for agent consumption.`,
@@ -45,6 +51,8 @@ per check, suitable for agent consumption.`,
 			skipLint:  verifyNoLint,
 			skipRace:  verifyNoRace,
 			keepGoing: verifyKeepGoing,
+			since:     verifySince,
+			changed:   verifyChanged,
 		}
 		return runVerify(opts)
 	},
@@ -54,6 +62,8 @@ var (
 	verifyNoLint    bool
 	verifyNoRace    bool
 	verifyKeepGoing bool
+	verifySince     string
+	verifyChanged   bool
 )
 
 func init() {
@@ -63,6 +73,10 @@ func init() {
 		"Skip the race detector in go test")
 	verifyCmd.Flags().BoolVar(&verifyKeepGoing, "keep-going", false,
 		"Continue after the first failure and report every result")
+	verifyCmd.Flags().StringVar(&verifySince, "since", "",
+		"Scope fmt/vet/lint/test/build to files changed since <git-ref> (e.g. HEAD~1, main)")
+	verifyCmd.Flags().BoolVar(&verifyChanged, "changed", false,
+		"Scope to working-tree + staged + untracked changes (no committed comparison)")
 	rootCmd.AddCommand(verifyCmd)
 }
 
@@ -72,6 +86,8 @@ type verifyOptions struct {
 	skipLint  bool
 	skipRace  bool
 	keepGoing bool
+	since     string // git ref to diff against ("" = no committed comparison)
+	changed   bool   // include working-tree + staged + untracked
 }
 
 // verifyCheck is one step's result. The JSON tags are the stable API.
@@ -84,13 +100,35 @@ type verifyCheck struct {
 }
 
 // verifyResult aggregates every check into a single structured payload.
+// Scoped fields are populated only when --since / --changed is in effect.
 type verifyResult struct {
-	Checks   []verifyCheck `json:"checks"`
-	Passed   int           `json:"passed"`
-	Failed   int           `json:"failed"`
-	Skipped  int           `json:"skipped"`
-	Duration int64         `json:"duration_ms"`
+	Checks         []verifyCheck `json:"checks"`
+	Passed         int           `json:"passed"`
+	Failed         int           `json:"failed"`
+	Skipped        int           `json:"skipped"`
+	Duration       int64         `json:"duration_ms"`
+	Scoped         bool          `json:"scoped,omitempty"`
+	Since          string        `json:"since,omitempty"`
+	ChangedFiles   []string      `json:"changed_files,omitempty"`
+	ScopedPackages []string      `json:"scoped_packages,omitempty"`
 }
+
+// verifyScopeData is the resolved file/package scope when --since or
+// --changed is in effect. Step functions read currentVerifyScope to
+// decide whether to scope their work. nil = full project (default).
+type verifyScopeData struct {
+	Since     string
+	Files     []string // every changed file (any extension), repo-relative
+	GoFiles   []string // subset that are *.go
+	Dirs      []string // unique parent dirs of GoFiles (relative)
+	Packages  []string // import paths derived from Dirs
+	TestSet   []string // packages to test = Packages + reverse-deps
+	NonGoOnly bool     // true when files changed but none are .go
+}
+
+// currentVerifyScope is the active scope for the duration of one
+// runVerify call. Step functions read it. Reset to nil after the run.
+var currentVerifyScope *verifyScopeData
 
 // verifyStepDef describes one step in the verify pipeline.
 type verifyStepDef struct {
@@ -119,6 +157,17 @@ func runVerify(opts verifyOptions) error {
 	_, _ = loadDotEnv(".env")
 
 	start := time.Now()
+
+	// Compute scope first if --since or --changed was passed. Errors
+	// (no git, bad ref) surface as clierr immediately — no partial run.
+	if opts.since != "" || opts.changed {
+		scope, err := resolveVerifyScope(opts)
+		if err != nil {
+			return err
+		}
+		currentVerifyScope = scope
+		defer func() { currentVerifyScope = nil }()
+	}
 
 	// Each step is {Name, Runner}. Runners return a verifyCheck with
 	// status/message/output already filled in — runVerify only times
@@ -182,9 +231,20 @@ func runVerify(opts verifyOptions) error {
 
 	result.Duration = time.Since(start).Milliseconds()
 
+	if s := currentVerifyScope; s != nil {
+		result.Scoped = true
+		result.Since = s.Since
+		result.ChangedFiles = s.Files
+		result.ScopedPackages = s.Packages
+	}
+
 	// JSON mode: emit the aggregated result. Text mode: summary footer.
 	cliout.Print(result, func(w io.Writer) {
 		_, _ = fmt.Fprintln(w)
+		if result.Scoped {
+			_, _ = fmt.Fprintf(w, "Scoped: %d changed file(s), %d package(s)\n",
+				len(result.ChangedFiles), len(result.ScopedPackages))
+		}
 		_, _ = fmt.Fprintf(w, "%d passed · %d failed · %d skipped · %dms\n",
 			result.Passed, result.Failed, result.Skipped, result.Duration)
 	})
@@ -240,9 +300,19 @@ func runShell(name string, args ...string) (string, error) {
 
 // stepGofmt runs `gofmt -s -l .` and fails if any file would be reformatted.
 // gofmt prints the list of non-conforming files to stdout with exit 0, so
-// we check the output rather than the exit code.
+// we check the output rather than the exit code. Under --since, scopes
+// to changed *.go files only.
 func stepGofmt() (message, output string, err error) {
-	out, runErr := runShellFn("gofmt", "-s", "-l", ".")
+	args := []string{"-s", "-l"}
+	if s := currentVerifyScope; s != nil {
+		if len(s.GoFiles) == 0 {
+			return "skip", "", nil
+		}
+		args = append(args, s.GoFiles...)
+	} else {
+		args = append(args, ".")
+	}
+	out, runErr := runShellFn("gofmt", args...)
 	if runErr != nil {
 		return "", out, runErr
 	}
@@ -254,7 +324,18 @@ func stepGofmt() (message, output string, err error) {
 }
 
 func stepGoVet() (message, output string, err error) {
-	out, err := runShellFn("go", "vet", "./...")
+	args := []string{"vet"}
+	if s := currentVerifyScope; s != nil && !s.NonGoOnly {
+		if len(s.Packages) == 0 {
+			return "skip", "", nil
+		}
+		for _, p := range s.Packages {
+			args = append(args, p)
+		}
+	} else {
+		args = append(args, "./...")
+	}
+	out, err := runShellFn("go", args...)
 	if err != nil {
 		return "vet reported issues", out, err
 	}
@@ -268,12 +349,17 @@ var golangciLintLookPath = func() (string, error) { return exec.LookPath("golang
 // stepGolangciLint tries to run golangci-lint. If the binary is not on
 // $PATH it returns ("skip", "", nil) which the aggregator treats as
 // skipped, not failed — agents that lack the linter should not be
-// blocked by its absence.
+// blocked by its absence. Under --since, uses golangci-lint's native
+// `--new-from-rev=<ref>` flag.
 func stepGolangciLint() (message, output string, err error) {
 	if _, err := golangciLintLookPath(); err != nil {
 		return "skip", "", nil
 	}
-	out, err := runShellFn("golangci-lint", "run")
+	args := []string{"run"}
+	if s := currentVerifyScope; s != nil && s.Since != "" {
+		args = append(args, "--new-from-rev="+s.Since)
+	}
+	out, err := runShellFn("golangci-lint", args...)
 	if err != nil {
 		return "lint reported issues", out, err
 	}
@@ -285,7 +371,14 @@ func stepGoTest(skipRace bool) (message, output string, err error) {
 	if !skipRace {
 		args = append(args, "-race")
 	}
-	args = append(args, "./...")
+	if s := currentVerifyScope; s != nil && !s.NonGoOnly {
+		if len(s.TestSet) == 0 {
+			return "skip", "", nil
+		}
+		args = append(args, s.TestSet...)
+	} else {
+		args = append(args, "./...")
+	}
 	out, err := runShellFn("go", args...)
 	if err != nil {
 		return "tests failed", out, err
@@ -294,7 +387,16 @@ func stepGoTest(skipRace bool) (message, output string, err error) {
 }
 
 func stepGoBuild() (message, output string, err error) {
-	out, err := runShellFn("go", "build", "./...")
+	args := []string{"build"}
+	if s := currentVerifyScope; s != nil && !s.NonGoOnly {
+		if len(s.Packages) == 0 {
+			return "skip", "", nil
+		}
+		args = append(args, s.Packages...)
+	} else {
+		args = append(args, "./...")
+	}
+	out, err := runShellFn("go", args...)
 	if err != nil {
 		return "build failed", out, err
 	}
@@ -364,4 +466,57 @@ func stepRoutes() (message, output string, err error) {
 		return "routes command failed", "", err
 	}
 	return "", "", nil
+}
+
+// --- scope resolution (-- since / --changed) --------------------------------
+
+// resolveVerifyScopeFn is a package-level seam so tests can stub the
+// (expensive, side-effectful) git + go list calls.
+var resolveVerifyScopeFn = resolveVerifyScopeImpl
+
+// resolveVerifyScope is the wrapper indirected via the seam.
+func resolveVerifyScope(opts verifyOptions) (*verifyScopeData, error) {
+	return resolveVerifyScopeFn(opts)
+}
+
+// resolveVerifyScopeImpl computes the changed-file + package set for a
+// scoped verify run. Returns a clierr (CodeGit* or CodeGoBuildFailed) on
+// failure so the caller can short-circuit without producing a partial
+// verify report.
+func resolveVerifyScopeImpl(opts verifyOptions) (*verifyScopeData, error) {
+	ctx := context.Background()
+	files, err := gitdiff.ChangedFiles(ctx, opts.since, gitdiff.Options{})
+	if err != nil {
+		return nil, err
+	}
+
+	goFiles := gitdiff.FilterGoFiles(files)
+	scope := &verifyScopeData{
+		Since:   opts.since,
+		Files:   files,
+		GoFiles: goFiles,
+	}
+	if len(files) > 0 && len(goFiles) == 0 {
+		scope.NonGoOnly = true
+		return scope, nil
+	}
+	if len(goFiles) == 0 {
+		return scope, nil
+	}
+
+	scope.Dirs = gitdiff.UniqueDirs(goFiles)
+	pkgs, err := gitdiff.PackagesForDirs(ctx, scope.Dirs)
+	if err != nil {
+		return nil, err
+	}
+	scope.Packages = pkgs
+
+	// Reverse-dep walk for the test set; fall back to scoped packages
+	// when the walk errors so we still produce useful output.
+	if rev, err := gitdiff.ReverseDeps(ctx, pkgs); err == nil {
+		scope.TestSet = rev
+	} else {
+		scope.TestSet = pkgs
+	}
+	return scope, nil
 }
