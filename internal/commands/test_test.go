@@ -449,11 +449,17 @@ func TestTestCmd_RunE_NoArgs(t *testing.T) {
 // TestTestCmd_RunE_PathsAndExtras — args include a path AND post-`--`
 // raw extras; the ArgsLenAtDash split fires (the default arm of the
 // switch).
+//
+// Subtlety: SetArgs + Execute on testCmd itself doesn't dispatch
+// through cobra's argument parser the way `gofasta test ...` does;
+// the dash-aware split is computed during rootCmd's parse pass. So
+// drive the whole thing through rootCmd so ArgsLenAtDash returns the
+// real index (not -1) when testCmd's RunE runs.
 func TestTestCmd_RunE_PathsAndExtras(t *testing.T) {
 	chdirTemp(t)
 	stagedFakeExec(t, 0)
 	stubExecLookPathOK(t)
-	testCmd.SetArgs([]string{"./...", "--", "-count=1"})
-	t.Cleanup(func() { testCmd.SetArgs(nil) })
-	assert.NoError(t, testCmd.Execute())
+	rootCmd.SetArgs([]string{"test", "./...", "--", "-count=1"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	assert.NoError(t, rootCmd.Execute())
 }
