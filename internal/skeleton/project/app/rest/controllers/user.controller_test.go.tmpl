@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/gofastadev/gofasta/pkg/httputil"
@@ -196,25 +197,86 @@ func TestGetUser_InvalidUUID_400(t *testing.T) {
 
 // ── UpdateUser ────────────────────────────────────────────────────────
 
-// TestUpdateUser_VersionConflict_409 — services.ErrUserVersionConflict
-// must surface as 409.
-func TestUpdateUser_VersionConflict_409(t *testing.T) {
+// makeUpdateReq is the shared request builder for UpdateUser tests.
+// Centralizes the body shape (no id, no recordVersion — both removed
+// from TUpdateUserDto when the senior-architecture refactor moved
+// version into the If-Match header per RFC 7232) and the header
+// plumbing so individual test cases stay focused on the assertion.
+func makeUpdateReq(id uuid.UUID, ifMatch, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/users/%s", id), bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if ifMatch != "" {
+		req.Header.Set("If-Match", ifMatch)
+	}
+	return req
+}
+
+// TestUpdateUser_OK_200 — happy path. If-Match matches; the service
+// returns the updated user; the response carries the bumped
+// RecordVersion in the ETag header for the next round-trip.
+func TestUpdateUser_OK_200(t *testing.T) {
+	svc := &mocks.MockUserService{}
+	id := uuid.New()
+	updated := validUserModel(id)
+	updated.RecordVersion = 8 // bumped from 7
+	svc.On("Update", mock.Anything, id, 7, mock.Anything).Return(updated, nil)
+
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
+	rec := httptest.NewRecorder()
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, `"7"`, `{"firstName":"Changed"}`))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, `"8"`, rec.Header().Get("ETag"),
+		"response ETag must advance to the new RecordVersion so the client can chain updates")
+}
+
+// TestUpdateUser_MissingIfMatch_428 — RFC 6585: 428 Precondition
+// Required when the If-Match header is missing. Protects against the
+// lost-update problem.
+func TestUpdateUser_MissingIfMatch_428(t *testing.T) {
+	svc := &mocks.MockUserService{}
+	id := uuid.New()
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
+	rec := httptest.NewRecorder()
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, "", `{"firstName":"X"}`))
+
+	assert.Equal(t, http.StatusPreconditionRequired, rec.Code)
+	svc.AssertNotCalled(t, "Update")
+}
+
+// TestUpdateUser_VersionConflict_412 — RFC 7232: 412 Precondition
+// Failed when If-Match doesn't match the persisted RecordVersion.
+// (Was 409 in the pre-If-Match design — switched to 412 because the
+// HTTP-native condition is "precondition failed", not "conflict".)
+func TestUpdateUser_VersionConflict_412(t *testing.T) {
 	svc := &mocks.MockUserService{}
 	id := uuid.New()
 	svc.On("Update", mock.Anything, id, 7, mock.Anything).
 		Return(nil, services.ErrUserVersionConflict)
 
 	c := controllers.NewUserControllerInstance(svc, noopValidator{})
-	body := fmt.Sprintf(`{"id":"%s","recordVersion":7,"firstName":"Changed"}`, id)
-	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/users/%s", id), bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	mountController(c).ServeHTTP(rec, req)
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, `"7"`, `{"firstName":"Changed"}`))
 
-	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, http.StatusPreconditionFailed, rec.Code)
 }
 
-// TestUpdateUser_NotFound_404 — sentinel translation.
+// TestUpdateUser_BadIfMatch_400 — non-numeric If-Match is a client
+// error; we surface 400 (not 412) because the value couldn't be
+// compared at all.
+func TestUpdateUser_BadIfMatch_400(t *testing.T) {
+	svc := &mocks.MockUserService{}
+	id := uuid.New()
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
+	rec := httptest.NewRecorder()
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, `"not-a-number"`, `{"firstName":"X"}`))
+
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+	svc.AssertNotCalled(t, "Update")
+}
+
+// TestUpdateUser_NotFound_404 — sentinel translation when the service
+// reports the row doesn't exist.
 func TestUpdateUser_NotFound_404(t *testing.T) {
 	svc := &mocks.MockUserService{}
 	id := uuid.New()
@@ -222,37 +284,59 @@ func TestUpdateUser_NotFound_404(t *testing.T) {
 		Return(nil, services.ErrUserNotFound)
 
 	c := controllers.NewUserControllerInstance(svc, noopValidator{})
-	body := fmt.Sprintf(`{"id":"%s","recordVersion":1,"firstName":"X"}`, id)
-	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/users/%s", id), bytes.NewBufferString(body))
-	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	mountController(c).ServeHTTP(rec, req)
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, `"1"`, `{"firstName":"X"}`))
 
 	assert.Equal(t, http.StatusNotFound, rec.Code)
 }
 
 // ── ArchiveUser ───────────────────────────────────────────────────────
 
-// TestArchiveUser_NoContent_204 — success returns 204 with no body.
-func TestArchiveUser_NoContent_204(t *testing.T) {
+// TestArchiveUser_OK_200 — success returns 200 with the soft-deleted
+// record (Stripe pattern), NOT 204 No Content. The body carries
+// `deletedAt` and `isActive: false` so the client can immediately
+// reflect the change in the UI without re-fetching.
+func TestArchiveUser_OK_200(t *testing.T) {
 	svc := &mocks.MockUserService{}
 	id := uuid.New()
-	svc.On("Archive", mock.Anything, id).Return(nil)
+	deleted := validUserModel(id)
+	deleted.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+	deleted.IsActive = false
+	svc.On("Archive", mock.Anything, id).Return(deleted, nil)
 
 	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/users/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mountController(c).ServeHTTP(rec, req)
 
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Empty(t, rec.Body.String(), "204 must not have a body")
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.NotEmpty(t, rec.Body.String(), "200 must carry the deleted record")
+	assert.Contains(t, rec.Body.String(), `"deletedAt"`)
 }
 
-// TestArchiveUser_NotDeletable_409 — services.ErrUserNotDeletable → 409.
+// TestArchiveUser_NotFound_404 — idempotency contract: a second
+// archive of the same id (or an unknown id) returns 404, NOT a
+// spurious 409. Matches GitHub / Kubernetes DELETE semantics.
+func TestArchiveUser_NotFound_404(t *testing.T) {
+	svc := &mocks.MockUserService{}
+	id := uuid.New()
+	svc.On("Archive", mock.Anything, id).Return(nil, services.ErrUserNotFound)
+
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/users/%s", id), nil)
+	rec := httptest.NewRecorder()
+	mountController(c).ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// TestArchiveUser_NotDeletable_409 — policy refusal: the row exists
+// but its IsDeletable flag is false. Distinct from 404 above so
+// callers can branch on "the row exists, you just can't delete it".
 func TestArchiveUser_NotDeletable_409(t *testing.T) {
 	svc := &mocks.MockUserService{}
 	id := uuid.New()
-	svc.On("Archive", mock.Anything, id).Return(services.ErrUserNotDeletable)
+	svc.On("Archive", mock.Anything, id).Return(nil, services.ErrUserNotDeletable)
 
 	c := controllers.NewUserControllerInstance(svc, noopValidator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/users/%s", id), nil)

@@ -115,23 +115,29 @@ func (s *{{.Name}}Service) Update(ctx context.Context, id uuid.UUID, expectedVer
 	return entity, nil
 }
 
-// Archive soft-deletes the {{.LowerName}}. The is_deletable flag is
-// checked inside the SQL WHERE clause so the operation is atomic.
-// Returns Err{{.Name}}NotDeletable when the row is missing OR is
-// flagged as not deletable.
-func (s *{{.Name}}Service) Archive(ctx context.Context, id uuid.UUID) error {
+// Archive soft-deletes the {{.LowerName}} and returns the deleted
+// record so the caller can respond 200-with-payload (Stripe pattern).
+// Three outcomes the REST controller maps to distinct HTTP statuses:
+//
+//   - Err{{.Name}}NotFound — row missing OR already soft-deleted (404).
+//   - Err{{.Name}}NotDeletable — row exists but IsDeletable=false (409).
+//   - (*models.{{.Name}}, nil) — soft-deleted; payload carries the
+//     freshly-stamped DeletedAt + IsActive=false.
+func (s *{{.Name}}Service) Archive(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error) {
 	ctx, span := otel.Tracer({{.LowerName}}ServiceTracerName).Start(ctx, "{{.Name}}Service.Archive")
 	defer span.End()
 
-	affected, err := s.repo.SoftDeleteIfDeletable(ctx, id)
-	if err != nil {
+	entity, err := s.repo.SoftDeleteIfDeletable(ctx, id)
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, Err{{.Name}}NotFound
+	case errors.Is(err, repoInterfaces.Err{{.Name}}NotDeletable):
+		return nil, Err{{.Name}}NotDeletable
+	case err != nil:
 		span.RecordError(err)
-		return fmt.Errorf("{{.Name}}Service.Archive: %w", err)
+		return nil, fmt.Errorf("{{.Name}}Service.Archive: %w", err)
 	}
-	if affected == 0 {
-		return Err{{.Name}}NotDeletable
-	}
-	return nil
+	return entity, nil
 }
 
 // build{{.Name}}SortClause turns the typed sort intent into the string

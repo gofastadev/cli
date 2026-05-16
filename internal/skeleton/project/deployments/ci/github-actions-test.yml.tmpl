@@ -65,3 +65,26 @@ jobs:
 
       - name: Preflight
         run: make preflight
+
+      # Re-run the suite via `gofasta test --coverage` so a per-package
+      # coverage profile lands as coverage.out. Distinct from `make
+      # preflight`'s plain `go test -race ./...` because --coverage
+      # adds `-coverpkg=./...` — required in projects with `tool`
+      # directives in go.mod (wire/gqlgen/swag/air all qualify) to
+      # avoid the per-package "go: no such tool covdata" warning.
+      #
+      # gofasta CLI is not in the project's go.mod tool list (only
+      # wire/air/swag/gqlgen are — gofasta is a developer tool, not a
+      # build-time dependency), so the runner installs it inline.
+      - name: Install gofasta CLI
+        run: go install github.com/gofastadev/cli/cmd/gofasta@latest
+
+      - name: Test with coverage
+        run: gofasta test --coverage
+
+      - name: Upload coverage to codecov
+        uses: codecov/codecov-action@v5
+        if: success()
+        with:
+          files: ./coverage.out
+          fail_ci_if_error: false

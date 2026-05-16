@@ -129,23 +129,30 @@ func (s *UserService) Update(ctx context.Context, id uuid.UUID, expectedVersion 
 	return user, nil
 }
 
-// Archive soft-deletes the user. The is_deletable flag is checked
-// inside the SQL WHERE clause so the operation is atomic. Returns
-// ErrUserNotDeletable when the row is missing OR is flagged as not
-// deletable (system accounts, etc.).
-func (s *UserService) Archive(ctx context.Context, id uuid.UUID) error {
+// Archive soft-deletes the user and returns the soft-deleted record so
+// the caller can respond 200-with-payload (the Stripe pattern). The
+// repo's transaction reads + classifies + writes atomically — three
+// outcomes the controller maps to distinct HTTP statuses:
+//
+//   - ErrUserNotFound — row missing OR already soft-deleted (404).
+//   - ErrUserNotDeletable — row exists but IsDeletable=false (409).
+//   - (*models.User, nil) — soft-deleted; payload contains the
+//     freshly-stamped deleted_at + is_active=false.
+func (s *UserService) Archive(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.Archive")
 	defer span.End()
 
-	affected, err := s.repo.SoftDeleteIfDeletable(ctx, id)
-	if err != nil {
+	user, err := s.repo.SoftDeleteIfDeletable(ctx, id)
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, ErrUserNotFound
+	case errors.Is(err, repoInterfaces.ErrUserNotDeletable):
+		return nil, ErrUserNotDeletable
+	case err != nil:
 		span.RecordError(err)
-		return fmt.Errorf("UserService.Archive: %w", err)
+		return nil, fmt.Errorf("UserService.Archive: %w", err)
 	}
-	if affected == 0 {
-		return ErrUserNotDeletable
-	}
-	return nil
+	return user, nil
 }
 
 // buildSortClause turns the typed sort intent into the string GORM

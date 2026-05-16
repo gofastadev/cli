@@ -147,9 +147,10 @@ func runTests(opts testOptions) error {
 		pr, pw := io.Pipe()
 		c.Stderr = pw
 		filterDone := make(chan struct{})
+		var filterRes filterResult
 		go func() {
 			defer close(filterDone)
-			dropLDWarnings(pr, os.Stderr)
+			filterRes = dropLDWarnings(pr, os.Stderr)
 		}()
 		runErr := c.Run()
 		// Close the writer so the filter sees EOF and finishes draining
@@ -157,7 +158,16 @@ func runTests(opts testOptions) error {
 		_ = pw.Close()
 		<-filterDone
 		if runErr != nil {
-			return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", runErr)
+			// Go's per-package coverage merge invokes `go tool covdata`,
+			// which the project's go.mod tool list shadows in scaffolded
+			// projects (wire/air/swag/gqlgen — every gofasta scaffold).
+			// Each shadowing emits `go: no such tool "covdata"` and
+			// makes go test exit 1 even when every test binary ran ok.
+			// If the filter saw only covdata warnings (no real
+			// diagnostics), trust the test result and clear the exit.
+			if !filterRes.exitClearedByCovdata() {
+				return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", runErr)
+			}
 		}
 	}
 
@@ -196,7 +206,17 @@ func buildGoTestArgs(opts testOptions) []string {
 		args = append(args, "-json")
 	}
 	if opts.coverage {
-		args = append(args, "-coverprofile=coverage.out")
+		// -coverpkg=./... is load-bearing alongside -coverprofile in
+		// projects whose go.mod has `tool` directives (Wire / gqlgen /
+		// air / swag — every scaffolded gofasta project does). Without
+		// -coverpkg, `go test` instruments per-package and tries to
+		// invoke `go tool covdata` to merge profiles for packages with
+		// no test files; the lookup hits the project's tool list,
+		// doesn't find covdata, and prints "go: no such tool covdata"
+		// per package + non-zero exit. -coverpkg consolidates coverage
+		// at the meta level so the merge happens in-process and the
+		// tool lookup is never triggered.
+		args = append(args, "-coverpkg=./...", "-coverprofile=coverage.out")
 	}
 	switch {
 	case opts.integration:
@@ -240,23 +260,56 @@ func printCoverageTotal() {
 // golang/go#61229 for the upstream tracking issue.
 var ldDYSYMTABWarning = regexp.MustCompile(`^ld: warning:.*LC_DYSYMTAB`)
 
+// covdataNoSuchTool matches the `go: no such tool "covdata"` line Go's
+// per-package coverage merge emits in projects whose go.mod has any
+// `tool` directive (wire / air / swag / gqlgen all qualify — every
+// gofasta scaffold does). Go resolves the covdata sub-tool by walking
+// the project's tool list first, which doesn't contain stdlib's
+// covdata, and reports the bogus "no such tool" error per package
+// without test files. The test binaries succeed; only the merge
+// invocation fails. The lines are noise, and the non-zero exit they
+// produce is misleading — see filterResult.exitClearedByCovdata.
+var covdataNoSuchTool = regexp.MustCompile(`^go: no such tool "covdata"$`)
+
 // goBuildMarker matches the `# <package>[.test]` line `go test` /
 // `go build` emit just before any stderr output produced while
 // building that package. Used to identify lines we may need to drop
 // alongside the warnings they head.
 var goBuildMarker = regexp.MustCompile(`^# \S+`)
 
+// filterResult is what dropLDWarnings reports back. exitClearedByCovdata
+// signals that the filter dropped ONLY covdata-tool warnings and no
+// other content — runTests uses this to override a non-zero `go test`
+// exit code when the only "failure" was Go's per-package merge tripping
+// over the tool directive. realDiagnostics flips true the moment a
+// non-filtered line arrives, so any genuine build error or test failure
+// keeps the original exit code intact.
+type filterResult struct {
+	covdataWarnings int
+	realDiagnostics bool
+}
+
+// exitClearedByCovdata reports whether a non-zero `go test` exit code
+// can be safely treated as success. True when at least one covdata
+// warning was dropped AND no real diagnostics survived the filter.
+func (f filterResult) exitClearedByCovdata() bool {
+	return f.covdataWarnings > 0 && !f.realDiagnostics
+}
+
 // dropLDWarnings copies r to w line-by-line, dropping each
-// LC_DYSYMTAB warning and any preceding `# <pkg>` build marker that
-// turns out to head only such warnings. Real build errors keep their
-// marker because the marker is flushed as soon as a non-filtered line
-// arrives.
-func dropLDWarnings(r io.Reader, w io.Writer) {
+// LC_DYSYMTAB / covdata-tool warning and any preceding `# <pkg>` build
+// marker that turns out to head only such warnings. Real build errors
+// keep their marker because the marker is flushed as soon as a
+// non-filtered line arrives. Returns a filterResult so the caller can
+// decide whether a non-zero exit was caused only by the dropped
+// warnings.
+func dropLDWarnings(r io.Reader, w io.Writer) filterResult {
 	sc := bufio.NewScanner(r)
 	// go test build errors can be long (full compiler diagnostics);
 	// bump beyond the default 64KiB so we don't truncate them.
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	var pendingHeader string
+	res := filterResult{}
 	flushPending := func() {
 		if pendingHeader != "" {
 			_, _ = fmt.Fprintln(w, pendingHeader)
@@ -273,13 +326,19 @@ func dropLDWarnings(r io.Reader, w io.Writer) {
 			pendingHeader = line
 		case ldDYSYMTABWarning.MatchString(line):
 			// Drop. Header stays pending in case more arrive.
+		case covdataNoSuchTool.MatchString(line):
+			// Drop AND track — runTests uses the count to decide
+			// whether to override a non-zero exit code.
+			res.covdataWarnings++
 		default:
 			flushPending()
+			res.realDiagnostics = true
 			_, _ = fmt.Fprintln(w, line)
 		}
 	}
 	// EOF: any still-pending header headed only warnings — drop it
 	// by not flushing.
+	return res
 }
 
 func init() {

@@ -13,6 +13,7 @@ import (
 
 	"{{.ModulePath}}/app/models"
 	"{{.ModulePath}}/app/repositories"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 )
 
 // setupUserRepoTest spins up a testcontainers Postgres + AutoMigrates
@@ -164,14 +165,19 @@ func TestUserRepository_UpdateIfVersionMatches_AtomicityUnderRace(t *testing.T) 
 }
 
 // TestUserRepository_SoftDeleteIfDeletable_HappyPath — IsDeletable=true
-// row gets archived; subsequent FindByID returns ErrRecordNotFound.
+// row gets archived, the returned record carries the freshly-stamped
+// DeletedAt + cleared IsActive, and a subsequent FindByID returns
+// ErrRecordNotFound (the row is soft-deleted, so GORM's auto-filter
+// excludes it from live reads).
 func TestUserRepository_SoftDeleteIfDeletable_HappyPath(t *testing.T) {
 	db, repo := setupUserRepoTest(t)
 	u := makeUser(t, db, "softdel@example.com")
 
-	affected, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	deleted, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), affected)
+	require.NotNil(t, deleted, "happy path must return the soft-deleted record so the controller can respond 200 with payload")
+	assert.True(t, deleted.DeletedAt.Valid, "returned record's DeletedAt must reflect the just-written value")
+	assert.False(t, deleted.IsActive, "returned record's IsActive must reflect the cleared value")
 
 	_, err = repo.FindByID(context.Background(), u.ID)
 	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
@@ -180,27 +186,63 @@ func TestUserRepository_SoftDeleteIfDeletable_HappyPath(t *testing.T) {
 	// re-querying with .Unscoped().
 	var fresh models.User
 	require.NoError(t, db.Unscoped().Where("id = ?", u.ID).First(&fresh).Error)
-	assert.True(t, fresh.DeletedAt.Valid, "deleted_at should be set")
-	assert.False(t, fresh.IsActive, "is_active should be cleared on soft-delete")
+	assert.True(t, fresh.DeletedAt.Valid, "deleted_at should be set in DB")
+	assert.False(t, fresh.IsActive, "is_active should be cleared in DB")
 }
 
 // TestUserRepository_SoftDeleteIfDeletable_BlockedByFlag — when
-// is_deletable is false, the UPDATE writes 0 rows; the row stays
-// alive and active.
+// is_deletable is false the repo returns ErrUserNotDeletable; the
+// row stays alive and active. Controller maps to 409.
 func TestUserRepository_SoftDeleteIfDeletable_BlockedByFlag(t *testing.T) {
 	db, repo := setupUserRepoTest(t)
 	u := makeUser(t, db, "protected@example.com")
 	// Mark the row as not deletable (e.g. system account).
 	require.NoError(t, db.Model(u).Update("is_deletable", false).Error)
 
-	affected, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
-	require.NoError(t, err)
-	assert.Equal(t, int64(0), affected, "is_deletable=false must block the soft-delete")
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, repoInterfaces.ErrUserNotDeletable,
+		"is_deletable=false must surface as ErrUserNotDeletable (service maps to 409)")
 
 	// Still findable, still active.
-	got, err := repo.FindByID(context.Background(), u.ID)
+	live, err := repo.FindByID(context.Background(), u.ID)
 	require.NoError(t, err)
-	assert.True(t, got.IsActive)
+	assert.True(t, live.IsActive)
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_AlreadyDeleted — a second
+// archive of the same id returns gorm.ErrRecordNotFound, NOT 0 rows
+// affected and not ErrUserNotDeletable. This is the idempotency
+// contract: from the API's perspective, "already deleted" and "never
+// existed" are indistinguishable and both translate to 404.
+func TestUserRepository_SoftDeleteIfDeletable_AlreadyDeleted(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "twice@example.com")
+
+	// First delete succeeds.
+	_, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.NoError(t, err)
+
+	// Second delete: the row's gorm.DeletedAt auto-filter excludes it
+	// from the repo's First() lookup, surfacing as ErrRecordNotFound.
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"second DELETE must return ErrRecordNotFound (idempotent 404), not a spurious conflict")
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_NotFound — archiving an
+// unknown id returns ErrRecordNotFound, same as the already-deleted
+// case. Same idempotency reason; the controller treats both as 404.
+func TestUserRepository_SoftDeleteIfDeletable_NotFound(t *testing.T) {
+	_, repo := setupUserRepoTest(t)
+
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
 // TestUserRepository_List_PaginationAndSort — verifies List honors

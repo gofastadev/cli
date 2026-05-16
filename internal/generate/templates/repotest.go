@@ -25,6 +25,7 @@ import (
 
 	"{{.ModulePath}}/app/models"
 	"{{.ModulePath}}/app/repositories"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 )
 
 func setup{{.Name}}RepoTest(t *testing.T) (*gorm.DB, *repositories.{{.Name}}Repository) {
@@ -149,14 +150,18 @@ func Test{{.Name}}Repository_UpdateIfVersionMatches_AtomicityUnderRace(t *testin
 }
 
 // Test{{.Name}}Repository_SoftDeleteIfDeletable_HappyPath — IsDeletable=true
-// row gets archived; subsequent FindByID returns ErrRecordNotFound.
+// row gets archived, the returned record carries the freshly-stamped
+// DeletedAt + cleared IsActive, and a subsequent FindByID returns
+// ErrRecordNotFound.
 func Test{{.Name}}Repository_SoftDeleteIfDeletable_HappyPath(t *testing.T) {
 	db, repo := setup{{.Name}}RepoTest(t)
 	e := make{{.Name}}(t, db)
 
-	affected, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
+	deleted, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), affected)
+	require.NotNil(t, deleted, "happy path must return the soft-deleted record so the controller can respond 200 with payload")
+	assert.True(t, deleted.DeletedAt.Valid)
+	assert.False(t, deleted.IsActive)
 
 	_, err = repo.FindByID(context.Background(), e.ID)
 	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
@@ -168,15 +173,44 @@ func Test{{.Name}}Repository_SoftDeleteIfDeletable_HappyPath(t *testing.T) {
 }
 
 // Test{{.Name}}Repository_SoftDeleteIfDeletable_BlockedByFlag — when
-// is_deletable is false, the UPDATE writes 0 rows.
+// is_deletable is false the repo returns Err{{.Name}}NotDeletable;
+// controller maps to 409.
 func Test{{.Name}}Repository_SoftDeleteIfDeletable_BlockedByFlag(t *testing.T) {
 	db, repo := setup{{.Name}}RepoTest(t)
 	e := make{{.Name}}(t, db)
 	require.NoError(t, db.Model(e).Update("is_deletable", false).Error)
 
-	affected, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, repoInterfaces.Err{{.Name}}NotDeletable)
+}
+
+// Test{{.Name}}Repository_SoftDeleteIfDeletable_AlreadyDeleted — second
+// archive returns gorm.ErrRecordNotFound (idempotent 404).
+func Test{{.Name}}Repository_SoftDeleteIfDeletable_AlreadyDeleted(t *testing.T) {
+	db, repo := setup{{.Name}}RepoTest(t)
+	e := make{{.Name}}(t, db)
+
+	_, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), affected)
+
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), e.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"second DELETE must return ErrRecordNotFound (idempotent), not a spurious conflict")
+}
+
+// Test{{.Name}}Repository_SoftDeleteIfDeletable_NotFound — unknown id
+// returns gorm.ErrRecordNotFound, same as already-deleted.
+func Test{{.Name}}Repository_SoftDeleteIfDeletable_NotFound(t *testing.T) {
+	_, repo := setup{{.Name}}RepoTest(t)
+
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
 }
 
 // Test{{.Name}}Repository_List_PaginationAndSort — verifies List

@@ -3,6 +3,7 @@ package controllers
 import (
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
@@ -14,6 +15,14 @@ import (
 	"{{.ModulePath}}/app/services"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 )
+
+// recordVersionETag formats a record version as an ETag value the
+// controller responses set on Get / Create / Update / Archive. The
+// quoting matches what httputil.ParseIfMatch unquotes, so a client
+// round-trip (GET → If-Match → PUT) is symmetric.
+func recordVersionETag(v int) string {
+	return httputil.ETagOf(strconv.Itoa(v))
+}
 
 // UserController is the REST surface for the user resource.
 //
@@ -104,6 +113,10 @@ func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) erro
 	if err != nil {
 		return apperrors.NewInternal("failed to create user", err)
 	}
+	// ETag header carries the current RecordVersion so the client can
+	// supply it back as If-Match on a follow-up PUT without an extra
+	// GET round-trip.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
 	return httputil.Created(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }
 
@@ -132,61 +145,100 @@ func (c *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
 	case err != nil:
 		return apperrors.NewInternal("failed to find user", err)
 	}
+	// ETag carries the current RecordVersion so the client can supply
+	// it on a follow-up PUT via If-Match.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
 	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }
 
 // UpdateUser handles PUT /users/{id}.
 //
+// Optimistic concurrency control uses the HTTP-native If-Match /
+// ETag mechanism (RFC 7232):
+//   - Caller GETs the resource; the response carries ETag: "<version>".
+//   - Caller PUTs the update with If-Match: "<version>".
+//   - Server returns 412 Precondition Failed if the version mismatches,
+//     428 Precondition Required if the header is missing.
+//
+// Putting the version in a header (not the body) keeps the body
+// strictly the fields being updated — see TUpdateUserDto's doc for
+// the full rationale.
+//
 //	@Summary		Update a user
-//	@Description	Update user fields by ID
+//	@Description	Update user fields by ID. Send the current RecordVersion as `If-Match: "<n>"`.
 //	@Tags			users
 //	@Accept			json
 //	@Produce		json
-//	@Param			id		path		string				true	"User ID"
-//	@Param			user	body		dtos.TUpdateUserDto	true	"Fields to update"
-//	@Success		200		{object}	dtos.TUserResponseDto
-//	@Failure		400		{object}	apperrors.AppError
-//	@Failure		404		{object}	apperrors.AppError
-//	@Failure		409		{object}	apperrors.AppError	"record version mismatch"
-//	@Failure		422		{object}	apperrors.AppError
-//	@Failure		500		{object}	apperrors.AppError
+//	@Param			id			path		string				true	"User ID"
+//	@Param			If-Match	header		string				true	"Current RecordVersion, RFC 7232 strong validator (e.g. \"3\")"
+//	@Param			user		body		dtos.TUpdateUserDto	true	"Fields to update"
+//	@Success		200			{object}	dtos.TUserResponseDto
+//	@Failure		400			{object}	apperrors.AppError
+//	@Failure		404			{object}	apperrors.AppError
+//	@Failure		412			{object}	apperrors.AppError	"If-Match doesn't match current version"
+//	@Failure		422			{object}	apperrors.AppError
+//	@Failure		428			{object}	apperrors.AppError	"If-Match header is required"
+//	@Failure		500			{object}	apperrors.AppError
 //	@Router			/users/{id} [put]
 func (c *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
 	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
+	// If-Match comes before the body parse so a missing header fails
+	// fast with 428 — the body decode would have succeeded but the
+	// version is mandatory for safe updates.
+	ifMatch, err := httputil.ParseIfMatch(r)
+	if err != nil {
+		// ParseIfMatch already returns the right *apperrors.AppError
+		// (PreconditionRequired) — bubble it up unchanged.
+		return err
+	}
+	expectedVersion, err := strconv.Atoi(ifMatch)
+	if err != nil {
+		return apperrors.NewBadRequest(`If-Match must be a positive integer wrapped in quotes (e.g. "3")`, nil)
+	}
 	in, err := httputil.DecodeJSON[dtos.TUpdateUserDto](r)
 	if err != nil {
 		return apperrors.NewBadRequest("invalid request body", nil)
 	}
-	in.ID = id
 	if errs := c.validator.ValidateStruct(in); len(errs) > 0 {
 		return apperrors.NewValidation("invalid input", errs)
 	}
 
-	user, err := c.svc.Update(r.Context(), id, in.RecordVersion, in.ToPatch())
+	user, err := c.svc.Update(r.Context(), id, expectedVersion, in.ToPatch())
 	switch {
 	case errors.Is(err, services.ErrUserVersionConflict):
-		return apperrors.NewConflict("record version mismatch — refetch and retry", nil)
+		return apperrors.NewPreconditionFailed(
+			"If-Match doesn't match current record version — GET to fetch the latest ETag and retry", nil)
 	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
 		return apperrors.NewNotFound("user not found", nil)
 	case err != nil:
 		return apperrors.NewInternal("failed to update user", err)
 	}
+	// Response ETag advances to the new version so the client can
+	// chain immediate subsequent updates without re-GETing.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
 	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }
 
-// ArchiveUser handles DELETE /users/{id}. Returns 204 No Content on
-// success — the soft-delete is acknowledged with no body.
+// ArchiveUser handles DELETE /users/{id}. Soft-delete with idempotent
+// HTTP semantics: first call returns 200 with the soft-deleted record
+// (Stripe pattern — body carries the WHICH + WHEN, not a content-less
+// 204); a second call on the same id returns 404 (no longer
+// addressable via the public API — matches GitHub / Kubernetes
+// idempotency); a call against a row with IsDeletable=false returns
+// 409 (legitimate policy refusal — the row exists but the API
+// forbids archiving it).
 //
 //	@Summary		Archive a user
-//	@Description	Soft-delete a user by ID
+//	@Description	Soft-delete a user by ID. Idempotent: a second call returns 404.
 //	@Tags			users
+//	@Produce		json
 //	@Param			id	path	string	true	"User ID"
-//	@Success		204
+//	@Success		200	{object}	dtos.TUserResponseDto	"the soft-deleted record"
 //	@Failure		400	{object}	apperrors.AppError
-//	@Failure		404	{object}	apperrors.AppError
+//	@Failure		404	{object}	apperrors.AppError	"row missing OR already deleted"
 //	@Failure		409	{object}	apperrors.AppError	"user is not deletable"
 //	@Failure		500	{object}	apperrors.AppError
 //	@Router			/users/{id} [delete]
@@ -196,12 +248,14 @@ func (c *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) err
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
 
-	err = c.svc.Archive(r.Context(), id)
+	user, err := c.svc.Archive(r.Context(), id)
 	switch {
+	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+		return apperrors.NewNotFound("user not found", nil)
 	case errors.Is(err, services.ErrUserNotDeletable):
 		return apperrors.NewConflict("user is not deletable", nil)
 	case err != nil:
 		return apperrors.NewInternal("failed to archive user", err)
 	}
-	return httputil.NoContent(w)
+	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }

@@ -36,7 +36,10 @@ extend type Query {
 extend type Mutation {
   create{{.Name}}(input: TCreate{{.Name}}Input!): {{.Name}}!
   update{{.Name}}(input: TUpdate{{.Name}}Input!): {{.Name}}!
-  archive{{.Name}}(input: TArchive{{.Name}}Input!): Boolean!
+  # archive returns the soft-deleted record (matches REST's 200 + body
+  # response). Idempotent: a second archive of the same id returns a
+  # NOT_FOUND gqlerror.
+  archive{{.Name}}(input: TArchive{{.Name}}Input!): {{.Name}}!
 }
 
 input TFind{{.Name}}ByIdInput {

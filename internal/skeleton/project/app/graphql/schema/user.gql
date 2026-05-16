@@ -20,20 +20,32 @@ type TUsersResponseDto {
 
 type TUserResponseDto {
   data: User
-  errors: [TCommonAPIErrorDto]
 }
 
 # QUERIES
 extend type Query {
   findUsersWithFilters(filters: UserFiltersDto!): TUsersResponseDto!
-  findUserById(filters: TFindUserByIdDto!): TUserResponseDto!
+  # Returns the User directly — error conditions surface as structured
+  # GraphQL errors with a `code` extension (NOT_FOUND, VALIDATION_FAILED,
+  # INTERNAL) instead of an in-band errors field. Matches the senior-
+  # architecture rule REST follows: success and failure travel through
+  # different channels.
+  findUserById(filters: TFindUserByIdDto!): User
 }
 
 # MUTATIONS
 extend type Mutation {
-  createUser(input: TCreateUserDto!): TUserResponseDto!
-  updateUser(input: TUserFieldsForUpdateDto!): TUserResponseDto!
-  archiveUser(input: TArchiveUserDto!): TCommonResponseDto!
+  # Each mutation returns the User directly. Errors flow through
+  # extensions.code (see findUserById comment above) so a single
+  # `data { … }` block on the client is enough — no per-field error
+  # decoding.
+  createUser(input: TCreateUserDto!): User!
+  updateUser(input: TUpdateUserGraphQLInput!): User!
+  # archiveUser returns the soft-deleted record so the client can show
+  # `{deletedAt: …, isActive: false}` immediately. Idempotency: a second
+  # archive of the same id returns a NOT_FOUND error (the row is no
+  # longer addressable). Matches REST's DELETE semantics.
+  archiveUser(input: TArchiveUserDto!): User!
 }
 
 # INPUTS
@@ -63,7 +75,11 @@ input UserFiltersDto {
   sorting: TSortingInputDto
 }
 
-input TUserFieldsForUpdateDto {
+# GraphQL keeps id + recordVersion inside the input because GraphQL has
+# no HTTP-style headers or URL paths to carry them. REST uses the
+# If-Match header + URL {id} instead — see TUpdateUserDto in
+# app/dtos/user.dtos.go for the REST counterpart.
+input TUpdateUserGraphQLInput {
   id: ID!
   recordVersion: Int!
   firstName: String

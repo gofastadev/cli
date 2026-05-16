@@ -27,8 +27,13 @@ func (r *mutationResolver) CreateUser(ctx context.Context, input dtos.TCreateUse
 	return dtos.UserFromModel(user), nil
 }
 
-// UpdateUser is the resolver for the updateUser field.
-func (r *mutationResolver) UpdateUser(ctx context.Context, input dtos.TUpdateUserDto) (*dtos.User, error) {
+// UpdateUser is the resolver for the updateUser field. GraphQL has no
+// equivalent of HTTP's If-Match header, so id + recordVersion live in
+// the input object (TUpdateUserGraphQLInput) rather than as separate
+// arguments. The REST controller uses a different DTO (TUpdateUserDto)
+// without those fields — see the doc on TUpdateUserGraphQLInput for the
+// split rationale.
+func (r *mutationResolver) UpdateUser(ctx context.Context, input dtos.TUpdateUserGraphQLInput) (*dtos.User, error) {
 	if errs := r.Validator.ValidateStruct(input); len(errs) > 0 {
 		return nil, validationGqlError(errs)
 	}
@@ -44,19 +49,25 @@ func (r *mutationResolver) UpdateUser(ctx context.Context, input dtos.TUpdateUse
 	return dtos.UserFromModel(user), nil
 }
 
-// ArchiveUser is the resolver for the archiveUser field.
-func (r *mutationResolver) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (bool, error) {
+// ArchiveUser is the resolver for the archiveUser field. Returns the
+// soft-deleted user payload (matching the REST controller's Stripe-
+// style 200-with-record response). A second archive of the same id
+// returns NOT_FOUND because the row is no longer addressable via the
+// public API — same idempotency rule as REST's DELETE.
+func (r *mutationResolver) ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.User, error) {
 	if errs := r.Validator.ValidateStruct(input); len(errs) > 0 {
-		return false, validationGqlError(errs)
+		return nil, validationGqlError(errs)
 	}
-	err := r.UserService.Archive(ctx, input.UserID)
+	user, err := r.UserService.Archive(ctx, input.UserID)
 	switch {
+	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+		return nil, gqlError("NOT_FOUND", "user not found")
 	case errors.Is(err, services.ErrUserNotDeletable):
-		return false, gqlError("CONFLICT", "user is not deletable")
+		return nil, gqlError("CONFLICT", "user is not deletable")
 	case err != nil:
-		return false, internalGqlError("failed to archive user", err)
+		return nil, internalGqlError("failed to archive user", err)
 	}
-	return true, nil
+	return dtos.UserFromModel(user), nil
 }
 
 // FindUsersWithFilters is the resolver for the users field.

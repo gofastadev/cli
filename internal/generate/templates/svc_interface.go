@@ -27,6 +27,10 @@ type {{.Name}}ServiceInterface interface {
 	Get(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error)
 	Create(ctx context.Context, in services.Create{{.Name}}Input) (*models.{{.Name}}, error)
 	Update(ctx context.Context, id uuid.UUID, expectedVersion int, patch services.Update{{.Name}}Patch) (*models.{{.Name}}, error)
-	Archive(ctx context.Context, id uuid.UUID) error
+	// Archive soft-deletes the {{.LowerName}} and returns the deleted
+	// record. The REST controller responds 200 + payload (Stripe
+	// pattern); a second archive of the same id returns
+	// Err{{.Name}}NotFound for idempotency.
+	Archive(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error)
 }
 `

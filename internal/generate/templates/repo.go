@@ -141,23 +141,52 @@ func (r *{{.Name}}Repository) UpdateIfVersionMatches(ctx context.Context, id uui
 	return &entity, affected, nil
 }
 
-// SoftDeleteIfDeletable archives the row only if its is_deletable
-// flag is true. Setting deleted_at + clearing is_active happens in a
-// single UPDATE; GORM's auto-filter on gorm.DeletedAt excludes the
-// row from subsequent reads.
+// SoftDeleteIfDeletable archives the row and returns the soft-deleted
+// record on success. Three failure modes the controller maps to
+// distinct HTTP statuses (404 / 409):
 //
-// Returns RowsAffected. The service maps 0 to Err{{.Name}}NotDeletable.
-func (r *{{.Name}}Repository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (int64, error) {
+//   - row missing OR already soft-deleted → gorm.ErrRecordNotFound
+//     (service translates to Err{{.Name}}NotFound → 404). Idempotency:
+//     a second DELETE returns 404, matching GitHub / Kubernetes.
+//   - row exists, deletable=false → Err{{.Name}}NotDeletable
+//     (policy refusal → 409).
+//   - row exists, deletable=true → soft-deleted; returned record
+//     carries the freshly-stamped DeletedAt + cleared IsActive so the
+//     controller can respond 200 with payload (Stripe pattern).
+//
+// All inside one transaction so a concurrent caller can't flip
+// is_deletable between the check and the write.
+func (r *{{.Name}}Repository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.SoftDeleteIfDeletable")
 	defer span.End()
 
-	res := r.db.WithContext(ctx).Model(&models.{{.Name}}{}).
-		Where("id = ? AND is_deletable = ?", id, true).
-		Updates(map[string]any{"deleted_at": time.Now(), "is_active": false})
-	if res.Error != nil {
-		span.RecordError(res.Error)
-		return 0, fmt.Errorf("{{.Name}}Repository.SoftDeleteIfDeletable: %w", res.Error)
+	var entity models.{{.Name}}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Live rows only — GORM's gorm.DeletedAt auto-filter excludes
+		// already-soft-deleted rows so this returns ErrRecordNotFound
+		// for both "never existed" and "already deleted", which is
+		// exactly the bucketing we want for idempotent DELETE.
+		if err := tx.Where("id = ?", id).First(&entity).Error; err != nil {
+			return err
+		}
+		if !entity.IsDeletable {
+			return repoInterfaces.Err{{.Name}}NotDeletable
+		}
+		now := time.Now()
+		res := tx.Model(&models.{{.Name}}{}).
+			Where("id = ?", id).
+			Updates(map[string]any{"deleted_at": now, "is_active": false})
+		if res.Error != nil {
+			return res.Error
+		}
+		entity.DeletedAt = gorm.DeletedAt{Time: now, Valid: true}
+		entity.IsActive = false
+		return nil
+	})
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("{{.Name}}Repository.SoftDeleteIfDeletable: %w", err)
 	}
-	return res.RowsAffected, nil
+	return &entity, nil
 }
 `

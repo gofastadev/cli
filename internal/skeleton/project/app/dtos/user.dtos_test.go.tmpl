@@ -91,12 +91,13 @@ func TestTCreateUserDto_ToCreateInput(t *testing.T) {
 // TestTUpdateUserDto_ToPatch_PreservesNilness — nil pointers stay
 // nil so the patch's AsMap doesn't include them as "update to empty
 // value". Critical: this is what makes partial updates safe.
+//
+// The DTO no longer carries ID (URL path) or RecordVersion (If-Match
+// header) — see the type doc for the REST/GraphQL split rationale.
 func TestTUpdateUserDto_ToPatch_PreservesNilness(t *testing.T) {
 	name := "NewName"
 	in := dtos.TUpdateUserDto{
-		ID:            uuid.New(),
-		RecordVersion: 1,
-		FirstName:     &name,
+		FirstName: &name,
 		// every other field nil
 	}
 	patch := in.ToPatch()

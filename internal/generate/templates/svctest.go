@@ -15,6 +15,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -23,6 +24,7 @@ import (
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"{{.ModulePath}}/app/services"
 )
 
@@ -59,9 +61,12 @@ func (m *mock{{.Name}}Repository) UpdateIfVersionMatches(ctx context.Context, id
 	}
 	return args.Get(0).(*models.{{.Name}}), args.Get(1).(int64), args.Error(2)
 }
-func (m *mock{{.Name}}Repository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (int64, error) {
+func (m *mock{{.Name}}Repository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error) {
 	args := m.Called(ctx, id)
-	return args.Get(0).(int64), args.Error(1)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.{{.Name}}), args.Error(1)
 }
 
 // Test{{.Name}}Service_Get covers the three branches of Get:
@@ -138,22 +143,44 @@ func Test{{.Name}}Service_Update(t *testing.T) {
 	})
 }
 
-// Test{{.Name}}Service_Archive covers the deletable-guard branch.
+// Test{{.Name}}Service_Archive covers the three-way classification the
+// repo surfaces and the service translates to domain sentinels.
 func Test{{.Name}}Service_Archive(t *testing.T) {
 	id := uuid.New()
 
-	t.Run("happy path returns nil", func(t *testing.T) {
+	t.Run("happy path returns the soft-deleted record", func(t *testing.T) {
 		repo := &mock{{.Name}}Repository{}
 		svc := services.New{{.Name}}Service(repo)
-		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(int64(1), nil)
-		require.NoError(t, svc.Archive(context.Background(), id))
+		deleted := &models.{{.Name}}{}
+		deleted.ID = id
+		deleted.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+		deleted.IsActive = false
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(deleted, nil)
+
+		got, err := svc.Archive(context.Background(), id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.DeletedAt.Valid)
+		assert.False(t, got.IsActive)
 	})
 
-	t.Run("RowsAffected==0 becomes Err{{.Name}}NotDeletable", func(t *testing.T) {
+	t.Run("gorm.ErrRecordNotFound becomes Err{{.Name}}NotFound", func(t *testing.T) {
 		repo := &mock{{.Name}}Repository{}
 		svc := services.New{{.Name}}Service(repo)
-		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(int64(0), nil)
-		err := svc.Archive(context.Background(), id)
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, gorm.ErrRecordNotFound)
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.Err{{.Name}}NotFound),
+			"missing OR already deleted must translate to Err{{.Name}}NotFound (404), not 409")
+	})
+
+	t.Run("repoInterfaces.Err{{.Name}}NotDeletable becomes Err{{.Name}}NotDeletable", func(t *testing.T) {
+		repo := &mock{{.Name}}Repository{}
+		svc := services.New{{.Name}}Service(repo)
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, repoInterfaces.Err{{.Name}}NotDeletable)
+
+		_, err := svc.Archive(context.Background(), id)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, services.Err{{.Name}}NotDeletable))
 	})

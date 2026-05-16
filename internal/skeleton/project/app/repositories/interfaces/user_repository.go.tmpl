@@ -2,11 +2,25 @@ package interfaces
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
 	"{{.ModulePath}}/app/models"
 )
+
+// ErrUserNotDeletable is the typed error SoftDeleteIfDeletable returns
+// when the row exists but its IsDeletable flag is false. Lives in the
+// interfaces package because it's part of the contract — every
+// implementation must surface this error class so callers (services)
+// can translate it to ErrUserNotDeletable in the services package
+// without depending on the concrete repository type.
+//
+// "Not found" (and the "already soft-deleted" case it covers, by
+// design) flows through as gorm.ErrRecordNotFound — no separate
+// sentinel needed because that distinction lives in the ORM already
+// and renaming it would just add a translation layer.
+var ErrUserNotDeletable = errors.New("user is not deletable")
 
 // UserRepositoryInterface is the persistence contract for users.
 //
@@ -43,9 +57,18 @@ type UserRepositoryInterface interface {
 	//   (nil, 0, err)  — infrastructure failure
 	UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.User, int64, error)
 
-	// SoftDeleteIfDeletable runs an atomic UPDATE with the deletable
-	// guard in the WHERE clause. Returns RowsAffected; 0 means the
-	// row was missing OR not deletable (caller maps to
-	// ErrUserNotDeletable / ErrUserNotFound depending on policy).
-	SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (int64, error)
+	// SoftDeleteIfDeletable archives the row and returns the soft-
+	// deleted record so the caller can respond 200-with-payload
+	// (Stripe-style) rather than 204. Distinguishes three outcomes:
+	//
+	//   (user, nil)                       — row found, deletable, archived
+	//   (nil,  gorm.ErrRecordNotFound)    — row missing OR already deleted
+	//                                       (the API surface treats these
+	//                                       identically — second DELETE
+	//                                       returns 404, matching GitHub /
+	//                                       Kubernetes idempotency)
+	//   (nil,  ErrUserNotDeletable)       — row exists, IsDeletable=false
+	//                                       (legitimate policy refusal → 409)
+	//   (nil,  err)                       — infrastructure failure
+	SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (*models.User, error)
 }

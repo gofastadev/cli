@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -12,6 +13,7 @@ import (
 	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 	"{{.ModulePath}}/app/services"
 	"{{.ModulePath}}/testutil/mocks"
 )
@@ -101,24 +103,58 @@ func TestUserService_Update(t *testing.T) {
 	})
 }
 
-// TestUserService_Archive covers the deletable-guard translation.
+// TestUserService_Archive covers the three-way classification the repo
+// surfaces and the service translates to domain sentinels.
 func TestUserService_Archive(t *testing.T) {
 	id := uuid.New()
 
-	t.Run("happy path returns nil", func(t *testing.T) {
+	t.Run("happy path returns the soft-deleted record", func(t *testing.T) {
 		repo := &mocks.MockUserRepository{}
 		svc := services.NewUserService(repo, stubPasswordGenerator{})
-		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(int64(1), nil)
-		require.NoError(t, svc.Archive(context.Background(), id))
+		deleted := &models.User{}
+		deleted.ID = id
+		deleted.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+		deleted.IsActive = false
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(deleted, nil)
+
+		got, err := svc.Archive(context.Background(), id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.DeletedAt.Valid, "service must surface the freshly-stamped DeletedAt")
+		assert.False(t, got.IsActive, "service must surface the cleared IsActive")
 	})
 
-	t.Run("RowsAffected==0 becomes ErrUserNotDeletable", func(t *testing.T) {
+	t.Run("gorm.ErrRecordNotFound becomes ErrUserNotFound", func(t *testing.T) {
 		repo := &mocks.MockUserRepository{}
 		svc := services.NewUserService(repo, stubPasswordGenerator{})
-		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(int64(0), nil)
-		err := svc.Archive(context.Background(), id)
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, gorm.ErrRecordNotFound)
+
+		_, err := svc.Archive(context.Background(), id)
 		require.Error(t, err)
-		assert.True(t, errors.Is(err, services.ErrUserNotDeletable))
+		assert.True(t, errors.Is(err, services.ErrUserNotFound),
+			"row missing OR already deleted must translate to ErrUserNotFound (404), not 409")
+	})
+
+	t.Run("repoInterfaces.ErrUserNotDeletable becomes ErrUserNotDeletable", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, repoInterfaces.ErrUserNotDeletable)
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.ErrUserNotDeletable),
+			"policy-refusal must translate to ErrUserNotDeletable (409)")
+	})
+
+	t.Run("infrastructure error is wrapped", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, errors.New("db down"))
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, services.ErrUserNotFound))
+		assert.False(t, errors.Is(err, services.ErrUserNotDeletable))
 	})
 }
 

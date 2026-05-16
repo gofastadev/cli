@@ -76,11 +76,15 @@ func TestBuildGoTestArgs_IntegrationOverridesRunPattern(t *testing.T) {
 	assert.NotContains(t, got, "ignored")
 }
 
-// TestBuildGoTestArgs_Coverage — --coverage emits the coverprofile
-// flag. The summary printing is exercised separately.
+// TestBuildGoTestArgs_Coverage — --coverage emits BOTH
+// -coverpkg=./... (load-bearing in projects with `tool` directives;
+// see the inline comment in buildGoTestArgs for the covdata regression
+// this prevents) AND -coverprofile=coverage.out (where the merged
+// profile lands). Pinned in this exact order so future refactors that
+// reshuffle the flag pile don't silently regress the covdata fix.
 func TestBuildGoTestArgs_Coverage(t *testing.T) {
 	got := buildGoTestArgs(testOptions{coverage: true})
-	assert.Equal(t, []string{"test", "-race", "-coverprofile=coverage.out", "./..."}, got)
+	assert.Equal(t, []string{"test", "-race", "-coverpkg=./...", "-coverprofile=coverage.out", "./..."}, got)
 }
 
 // TestBuildGoTestArgs_NoRace — --no-race drops `-race` (faster, less
@@ -151,7 +155,7 @@ func TestBuildGoTestArgs_AllFlagsTogether(t *testing.T) {
 	})
 	assert.Equal(t, []string{
 		"test", "-race", "-short", "-v",
-		"-coverprofile=coverage.out",
+		"-coverpkg=./...", "-coverprofile=coverage.out",
 		"-run", "TestX",
 		"-count=1",
 		"./app/...",
@@ -331,8 +335,71 @@ func TestDropLDWarnings_TrailingPendingHeaderDropped(t *testing.T) {
 func TestDropLDWarnings_KeepsOtherLDWarnings(t *testing.T) {
 	in := strings.NewReader("ld: warning: directory not found for option '-L/missing'\n")
 	var out bytes.Buffer
-	dropLDWarnings(in, &out)
+	res := dropLDWarnings(in, &out)
 	assert.Equal(t, "ld: warning: directory not found for option '-L/missing'\n", out.String())
+	assert.True(t, res.realDiagnostics, "a real ld warning must mark realDiagnostics so the exit-clear shortcut doesn't fire")
+	assert.False(t, res.exitClearedByCovdata())
+}
+
+// TestDropLDWarnings_StripsCovdataNoSuchTool — Go's per-package
+// coverage merge invokes `go tool covdata`, which the project's go.mod
+// tool list shadows in scaffolded projects (every gofasta scaffold
+// has wire/air/swag in `tool` directives). Each shadowing emits one
+// `go: no such tool "covdata"` line PER package. The lines are
+// always preceded by a `# <pkg>` build marker. Filter drops both AND
+// the count is tracked so runTests can clear the non-zero exit.
+func TestDropLDWarnings_StripsCovdataNoSuchTool(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"# scaffold/app/devtools",
+		`go: no such tool "covdata"`,
+		"# scaffold/cmd",
+		`go: no such tool "covdata"`,
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	res := dropLDWarnings(in, &out)
+	assert.Empty(t, out.String(), "covdata warnings + their headers must be dropped")
+	assert.Equal(t, 2, res.covdataWarnings,
+		"both covdata warnings should be counted so runTests can override the non-zero exit")
+	assert.False(t, res.realDiagnostics)
+	assert.True(t, res.exitClearedByCovdata(),
+		"covdata-only stderr must clear the exit code — otherwise --coverage always fails in scaffolds")
+}
+
+// TestDropLDWarnings_CovdataMixedWithRealError — when a covdata
+// warning AND a genuine build error are both present, the real
+// diagnostic survives AND realDiagnostics flips. The exit-clear
+// shortcut must NOT fire — Go's non-zero exit was caused by the real
+// error, not the warning.
+func TestDropLDWarnings_CovdataMixedWithRealError(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"# scaffold/app/devtools",
+		`go: no such tool "covdata"`,
+		"# scaffold/app/broken",
+		"./broken.go:5:1: undefined: missing",
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	res := dropLDWarnings(in, &out)
+	want := "# scaffold/app/broken\n./broken.go:5:1: undefined: missing\n"
+	assert.Equal(t, want, out.String(), "real error keeps its package marker")
+	assert.Equal(t, 1, res.covdataWarnings)
+	assert.True(t, res.realDiagnostics)
+	assert.False(t, res.exitClearedByCovdata(),
+		"presence of a real diagnostic must prevent the exit-clear shortcut")
+}
+
+// TestFilterResult_ExitClearedByCovdata_Branches pins the helper's
+// truth table so future refactors don't subtly break the override.
+func TestFilterResult_ExitClearedByCovdata_Branches(t *testing.T) {
+	assert.False(t, filterResult{}.exitClearedByCovdata(),
+		"empty result: no covdata seen, no clear")
+	assert.True(t, filterResult{covdataWarnings: 1}.exitClearedByCovdata(),
+		"covdata-only: clear")
+	assert.False(t, filterResult{covdataWarnings: 1, realDiagnostics: true}.exitClearedByCovdata(),
+		"covdata + real diagnostic: do not clear")
+	assert.False(t, filterResult{realDiagnostics: true}.exitClearedByCovdata(),
+		"real diagnostic alone: do not clear (no covdata to attribute the exit to)")
 }
 
 // stubExecLookPathOK satisfies any execLookPath probes runTests might

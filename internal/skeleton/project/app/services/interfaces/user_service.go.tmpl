@@ -24,5 +24,10 @@ type UserServiceInterface interface {
 	Get(ctx context.Context, id uuid.UUID) (*models.User, error)
 	Create(ctx context.Context, in services.CreateUserInput) (*models.User, error)
 	Update(ctx context.Context, id uuid.UUID, expectedVersion int, patch services.UpdateUserPatch) (*models.User, error)
-	Archive(ctx context.Context, id uuid.UUID) error
+	// Archive soft-deletes the user and returns the deleted record.
+	// The payload carries the freshly-stamped DeletedAt / IsActive
+	// fields so REST controllers can respond 200 with `{data: …}`
+	// (Stripe pattern) instead of 204 No Content — the client gets
+	// proof of which row was deleted and when.
+	Archive(ctx context.Context, id uuid.UUID) (*models.User, error)
 }

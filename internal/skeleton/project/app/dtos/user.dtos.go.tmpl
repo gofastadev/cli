@@ -100,20 +100,65 @@ func (d TCreateUserDto) ToCreateInput() services.CreateUserInput {
 // are pointers so the controller can distinguish "absent from request"
 // (nil → don't touch) from "present-but-empty" (non-nil → update to
 // the empty value).
+//
+// `ID` and `RecordVersion` are intentionally NOT here:
+//   - The ID comes from the URL path (`PUT /users/{id}`) — putting
+//     the same value in two places of one request is awkward and
+//     opens a class of mismatch bugs ("body.id == url.id?").
+//   - RecordVersion is a precondition, not data, so it travels in the
+//     `If-Match` header per RFC 7232. The controller reads the header,
+//     parses it, and passes it to the service alongside the patch.
+//     This is the industry standard (Azure, GCP, Kubernetes, GitHub) —
+//     QuickBooks' SyncToken-in-body pattern is the outlier.
 type TUpdateUserDto struct {
+	FirstName   *string `json:"firstName,omitempty" validate:"omitempty,min=1,max=50"`
+	OtherNames  *string `json:"otherNames,omitempty" validate:"omitempty,min=1,max=150"`
+	Email       *string `json:"email,omitempty" validate:"omitempty,email,is_record_exist_by_email_for_conflict=users"`
+	PhoneNumber *string `json:"phoneNumber,omitempty" validate:"omitempty,is_record_exist_by_phone_number_for_conflict=users"`
+	IsActive    *bool   `json:"isActive,omitempty"`
+	IsDeletable *bool   `json:"isDeletable,omitempty"`
+}
+
+// ToPatch translates the wire DTO into the typed domain patch the
+// service expects.
+func (d TUpdateUserDto) ToPatch() services.UpdateUserPatch {
+	return services.UpdateUserPatch{
+		FirstName:   d.FirstName,
+		OtherNames:  d.OtherNames,
+		Email:       d.Email,
+		PhoneNumber: d.PhoneNumber,
+		IsActive:    d.IsActive,
+		IsDeletable: d.IsDeletable,
+	}
+}
+
+// TUpdateUserGraphQLInput is the GraphQL-only counterpart to
+// TUpdateUserDto. GraphQL has no HTTP headers and no URL paths, so
+// the id + recordVersion that REST carries in `PUT /users/{id}` +
+// `If-Match: "<v>"` live inside the input object instead. Two distinct
+// types (rather than reusing TUpdateUserDto) keep the REST shape
+// strict — the JSON body for a REST PUT must not include id or
+// recordVersion, and a shared type with optional fields would lose
+// that guarantee.
+//
+// gqlgen's `autobind: app/dtos` config picks this type up automatically
+// because its name matches the schema's input `TUpdateUserGraphQLInput`
+// — no models block in gqlgen.yml needed.
+type TUpdateUserGraphQLInput struct {
 	ID            uuid.UUID `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification=users"`
 	RecordVersion int       `json:"recordVersion" validate:"required,min=1"`
 	FirstName     *string   `json:"firstName,omitempty" validate:"omitempty,min=1,max=50"`
 	OtherNames    *string   `json:"otherNames,omitempty" validate:"omitempty,min=1,max=150"`
 	Email         *string   `json:"email,omitempty" validate:"omitempty,email,is_record_exist_by_email_for_conflict=users"`
 	PhoneNumber   *string   `json:"phoneNumber,omitempty" validate:"omitempty,is_record_exist_by_phone_number_for_conflict=users"`
-	IsActive      *bool     `json:"isActive,omitempty"`
-	IsDeletable   *bool     `json:"isDeletable,omitempty"`
+	IsActive      *bool     `json:"IsActive,omitempty"`
+	IsDeletable   *bool     `json:"IsDeletable,omitempty"`
 }
 
-// ToPatch translates the wire DTO into the typed domain patch the
-// service expects.
-func (d TUpdateUserDto) ToPatch() services.UpdateUserPatch {
+// ToPatch translates the GraphQL input into the typed domain patch the
+// service consumes. Symmetric with TUpdateUserDto.ToPatch so the two
+// resolver paths converge on services.UpdateUserPatch.
+func (d TUpdateUserGraphQLInput) ToPatch() services.UpdateUserPatch {
 	return services.UpdateUserPatch{
 		FirstName:   d.FirstName,
 		OtherNames:  d.OtherNames,

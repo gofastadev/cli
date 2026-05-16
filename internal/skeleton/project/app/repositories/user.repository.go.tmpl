@@ -135,22 +135,59 @@ func (r *UserRepository) UpdateIfVersionMatches(ctx context.Context, id uuid.UUI
 	return &user, affected, nil
 }
 
-// SoftDeleteIfDeletable archives the user only if its is_deletable
-// flag is true. Setting deleted_at + clearing is_active happens in a
-// single UPDATE; GORM's auto-filter on gorm.DeletedAt excludes the
-// row from subsequent reads.
+// SoftDeleteIfDeletable archives the user, returning the soft-deleted
+// record on success. Distinguishes three failure modes the controller
+// maps to different HTTP statuses (404 / 409):
 //
-// Returns RowsAffected. The service maps 0 to ErrUserNotDeletable.
-func (r *UserRepository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (int64, error) {
+//   - row missing OR already soft-deleted → gorm.ErrRecordNotFound
+//     (service translates to ErrUserNotFound → HTTP 404). "Already
+//     deleted" is bucketed with "not found" because the resource is
+//     no longer addressable via the public API surface; this matches
+//     the GitHub / Kubernetes convention and gives DELETE proper
+//     idempotency semantics (a second DELETE returns 404, not a
+//     spurious 409).
+//   - row exists, deletable=false → ErrUserNotDeletable wrapped by
+//     the service (HTTP 409, legitimate policy refusal).
+//   - row exists, deletable=true → soft-deleted; return the model so
+//     the controller can respond 200 with the updated payload (Stripe-
+//     style "here's the deleted record" instead of 204 No Content).
+//
+// Both the find-and-classify and the UPDATE run inside one transaction
+// so a concurrent caller can't flip is_deletable between the check and
+// the write.
+func (r *UserRepository) SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.SoftDeleteIfDeletable")
 	defer span.End()
 
-	res := r.db.WithContext(ctx).Model(&models.User{}).
-		Where("id = ? AND is_deletable = ?", id, true).
-		Updates(map[string]any{"deleted_at": time.Now(), "is_active": false})
-	if res.Error != nil {
-		span.RecordError(res.Error)
-		return 0, fmt.Errorf("UserRepository.SoftDeleteIfDeletable: %w", res.Error)
+	var user models.User
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Live rows only — GORM's auto-filter on gorm.DeletedAt
+		// excludes already-soft-deleted rows so this returns
+		// ErrRecordNotFound for both "never existed" and "already
+		// deleted", which is exactly the bucketing we want.
+		if err := tx.Where("id = ?", id).First(&user).Error; err != nil {
+			return err
+		}
+		if !user.IsDeletable {
+			return repoInterfaces.ErrUserNotDeletable
+		}
+		now := time.Now()
+		res := tx.Model(&models.User{}).
+			Where("id = ?", id).
+			Updates(map[string]any{"deleted_at": now, "is_active": false})
+		if res.Error != nil {
+			return res.Error
+		}
+		// Reflect the just-written fields on the returned struct
+		// without a separate refetch — the row's other fields are
+		// already loaded above and don't change in this UPDATE.
+		user.DeletedAt = gorm.DeletedAt{Time: now, Valid: true}
+		user.IsActive = false
+		return nil
+	})
+	if err != nil {
+		span.RecordError(err)
+		return nil, fmt.Errorf("UserRepository.SoftDeleteIfDeletable: %w", err)
 	}
-	return res.RowsAffected, nil
+	return &user, nil
 }

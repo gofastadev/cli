@@ -18,12 +18,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/dtos"
 	"{{.ModulePath}}/app/models"
@@ -65,8 +67,12 @@ func (m *mock{{.Name}}Service) Update(ctx context.Context, id uuid.UUID, expecte
 	}
 	return args.Get(0).(*models.{{.Name}}), args.Error(1)
 }
-func (m *mock{{.Name}}Service) Archive(ctx context.Context, id uuid.UUID) error {
-	return m.Called(ctx, id).Error(0)
+func (m *mock{{.Name}}Service) Archive(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.{{.Name}}), args.Error(1)
 }
 
 // noop{{.Name}}Validator passes every input. These tests assert the
@@ -143,41 +149,80 @@ func Test{{.Name}}Controller_Create_BadJSON_400(t *testing.T) {
 	svc.AssertNotCalled(t, "Create")
 }
 
-// Test{{.Name}}Controller_Update_VersionConflict_409 — sentinel → 409.
-func Test{{.Name}}Controller_Update_VersionConflict_409(t *testing.T) {
+// Test{{.Name}}Controller_Update_VersionConflict_412 — sentinel maps
+// to 412 Precondition Failed (RFC 7232). The legacy 409 mapping
+// belonged to the body-recordVersion design — see TUpdate{{.Name}}Dto
+// for the If-Match migration rationale.
+func Test{{.Name}}Controller_Update_VersionConflict_412(t *testing.T) {
 	svc := &mock{{.Name}}Service{}
 	id := uuid.New()
 	svc.On("Update", mock.Anything, id, 7, mock.Anything).
 		Return(nil, services.Err{{.Name}}VersionConflict)
 
 	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
-	body := fmt.Sprintf(` + "`" + `{"id":"%s","recordVersion":7}` + "`" + `, id)
-	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", ` + "`" + `"7"` + "`" + `)
+	rec := httptest.NewRecorder()
+	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusPreconditionFailed, rec.Code)
+}
+
+// Test{{.Name}}Controller_Update_MissingIfMatch_428 — RFC 6585 428
+// Precondition Required when If-Match is absent. Service must not be
+// called (asserted to guard against future regressions that skip the
+// header parse).
+func Test{{.Name}}Controller_Update_MissingIfMatch_428(t *testing.T) {
+	svc := &mock{{.Name}}Service{}
+	id := uuid.New()
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString("{}"))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusConflict, rec.Code)
+	assert.Equal(t, http.StatusPreconditionRequired, rec.Code)
+	svc.AssertNotCalled(t, "Update")
 }
 
-// Test{{.Name}}Controller_Archive_NoContent_204 — success returns 204.
-func Test{{.Name}}Controller_Archive_NoContent_204(t *testing.T) {
+// Test{{.Name}}Controller_Archive_OK_200 — success returns 200 with
+// the soft-deleted record (Stripe pattern), not 204 No Content.
+func Test{{.Name}}Controller_Archive_OK_200(t *testing.T) {
 	svc := &mock{{.Name}}Service{}
 	id := uuid.New()
-	svc.On("Archive", mock.Anything, id).Return(nil)
+	deleted := valid{{.Name}}Model(id)
+	deleted.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+	deleted.IsActive = false
+	svc.On("Archive", mock.Anything, id).Return(deleted, nil)
 
 	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
 	rec := httptest.NewRecorder()
 	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
-	assert.Equal(t, http.StatusNoContent, rec.Code)
-	assert.Empty(t, rec.Body.String())
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), ` + "`" + `"deletedAt"` + "`" + `)
 }
 
-// Test{{.Name}}Controller_Archive_NotDeletable_409 — sentinel → 409.
+// Test{{.Name}}Controller_Archive_NotFound_404 — idempotent DELETE:
+// a second archive of the same id returns 404, not 409. Matches
+// GitHub / Kubernetes DELETE semantics.
+func Test{{.Name}}Controller_Archive_NotFound_404(t *testing.T) {
+	svc := &mock{{.Name}}Service{}
+	id := uuid.New()
+	svc.On("Archive", mock.Anything, id).Return(nil, services.Err{{.Name}}NotFound)
+
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
+	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)
+	rec := httptest.NewRecorder()
+	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// Test{{.Name}}Controller_Archive_NotDeletable_409 — policy refusal
+// (row exists but IsDeletable=false). Distinct from 404 above.
 func Test{{.Name}}Controller_Archive_NotDeletable_409(t *testing.T) {
 	svc := &mock{{.Name}}Service{}
 	id := uuid.New()
-	svc.On("Archive", mock.Anything, id).Return(services.Err{{.Name}}NotDeletable)
+	svc.On("Archive", mock.Anything, id).Return(nil, services.Err{{.Name}}NotDeletable)
 
 	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
 	req := httptest.NewRequest(http.MethodDelete, fmt.Sprintf("/{{.PluralSnake}}/%s", id), nil)

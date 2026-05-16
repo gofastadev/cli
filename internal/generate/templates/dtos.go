@@ -99,11 +99,18 @@ func (d TCreate{{.Name}}Dto) ToCreateInput() services.Create{{.Name}}Input {
 	}
 }
 
-// TUpdate{{.Name}}Dto is the input for partial updates. Optional fields
-// are pointers so the controller can distinguish absent from empty.
+// TUpdate{{.Name}}Dto is the REST input for partial updates. Optional
+// fields are pointers so the controller can distinguish absent from
+// empty.
+//
+// ` + "`id`" + ` and ` + "`recordVersion`" + ` are intentionally NOT here:
+//   - id comes from the URL path (` + "`PUT /{{.PluralLower}}/{id}`" + `)
+//   - recordVersion is a precondition, not data, so it travels in the
+//     ` + "`If-Match`" + ` header per RFC 7232 (Azure / GCP / Kubernetes /
+//     GitHub all use this — QuickBooks' SyncToken-in-body is the
+//     outlier). The controller reads the header and passes the
+//     parsed int to the service.
 type TUpdate{{.Name}}Dto struct {
-	ID            uuid.UUID ` + "`" + `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification={{.PluralSnake}}"` + "`" + `
-	RecordVersion int       ` + "`" + `json:"recordVersion" validate:"required,min=1"` + "`" + `
 {{- range .Fields}}
 	{{.Name}} *{{.GoType}} ` + "`" + `json:"{{.JSONName}},omitempty"` + "`" + `
 {{- end}}
