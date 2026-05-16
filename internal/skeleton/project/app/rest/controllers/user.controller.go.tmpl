@@ -170,7 +170,7 @@ func (c *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
 //	@Accept			json
 //	@Produce		json
 //	@Param			id			path		string				true	"User ID"
-//	@Param			If-Match	header		string				true	"Current RecordVersion, RFC 7232 strong validator (e.g. \"3\")"
+//	@Param			If-Match	header		string				true	"Current RecordVersion, RFC 7232 strong validator (e.g. &quot;3&quot;)"
 //	@Param			user		body		dtos.TUpdateUserDto	true	"Fields to update"
 //	@Success		200			{object}	dtos.TUserResponseDto
 //	@Failure		400			{object}	apperrors.AppError
