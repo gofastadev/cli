@@ -422,6 +422,30 @@ func TestSwitchUninstall_UninstallError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestRunInstall_SwitchUninstallError — runInstall with --switch
+// where switchUninstall fails (osRename stubbed to fail inside the
+// Uninstall path). Surfaces the line `if err := switchUninstall(...)
+// ... return err` branch inside runInstall.
+func TestRunInstall_SwitchUninstallError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	orig := osRename
+	osRename = func(_, _ string) error { return assertError("rename boom") }
+	t.Cleanup(func() { osRename = orig })
+
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+
+	err := runInstall("aider", false, false)
+	require.Error(t, err)
+	_ = dir
+}
+
 // ─────────────────────────────────────────────────────────────────────
 // agentOwnedFiles
 // ─────────────────────────────────────────────────────────────────────

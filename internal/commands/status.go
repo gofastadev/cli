@@ -341,11 +341,10 @@ func readAppliedMigrationVersion(dir, dbURL string) (current int, dirty bool, er
 	if text == "" || strings.Contains(text, "no migration") {
 		return 0, false, nil
 	}
-	// Format: "<number>" or "<number> (dirty)"
+	// Format: "<number>" or "<number> (dirty)". text is non-empty here
+	// (the early-return above caught that), so strings.Fields guarantees
+	// at least one element — no need for a len(parts)==0 check.
 	parts := strings.Fields(text)
-	if len(parts) == 0 {
-		return 0, false, fmt.Errorf("unexpected migrate version output: %q", text)
-	}
 	v, perr := strconv.Atoi(parts[0])
 	if perr != nil {
 		return 0, false, fmt.Errorf("could not parse migrate version output %q: %w", text, perr)
