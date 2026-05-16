@@ -7,6 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
 
@@ -36,6 +38,15 @@ func init() {
 }
 
 func runConsole() error {
+	// console is a REPL — stdin is the human's keyboard, stdout is the
+	// REPL's prompts. Honor --json by refusing with a structured error
+	// rather than launching a yaegi process whose interactive output
+	// would be unparseable. Agents pattern-match on INTERACTIVE_ONLY.
+	if cliout.JSON() {
+		return clierr.Newf(clierr.CodeInteractiveOnly,
+			"console is an interactive REPL and cannot run in --json mode")
+	}
+
 	yaegiPath, err := execLookPath("yaegi")
 	if err != nil {
 		return fmt.Errorf("yaegi is not installed. Install it with:\n  go install github.com/traefik/yaegi/cmd/yaegi@latest")

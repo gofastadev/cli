@@ -11,7 +11,7 @@ const setupTotalSteps = 6
 func SetupServer(cfg *DeployConfig) error {
 	step := 0
 
-	fmt.Printf("Setting up %s for %s deployment...\n\n", cfg.Host, cfg.Method)
+	dprintf("Setting up %s for %s deployment...\n\n", cfg.Host, cfg.Method)
 
 	// Step 1: Test connectivity
 	step++
@@ -112,13 +112,13 @@ func SetupServer(cfg *DeployConfig) error {
 		PrintStep(step, setupTotalSteps, "Finalizing setup...")
 	}
 
-	fmt.Println()
+	dprintln()
 	PrintSuccess(fmt.Sprintf("Server %s is ready for deployment!", cfg.Host))
-	fmt.Println()
+	dprintln()
 	PrintInfo("Next steps:")
 	PrintInfo("  gofasta deploy                  # Deploy your application")
 	PrintInfo("  gofasta deploy status            # Check service status")
-	fmt.Println()
+	dprintln()
 
 	// Suggest HTTPS setup
 	PrintInfo("For HTTPS (recommended):")

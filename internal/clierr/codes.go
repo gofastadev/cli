@@ -103,6 +103,13 @@ const (
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
 	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
 	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
+
+	// CodeInteractiveOnly is returned when a command that REQUIRES an
+	// interactive terminal (REPL, TUI, etc.) is invoked with --json.
+	// Agents and CI runners can pattern-match on the code and refuse
+	// to call interactive commands programmatically rather than getting
+	// a hung process or garbled output.
+	CodeInteractiveOnly Code = "INTERACTIVE_ONLY"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -313,6 +320,10 @@ var registry = map[Code]meta{
 	CodeDevPreflightCancel: {
 		Hint: "preflight was canceled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeInteractiveOnly: {
+		Hint: "this command requires an interactive terminal and cannot run in --json / headless mode; drop --json or invoke a non-interactive equivalent",
+		Docs: "https://gofasta.dev/docs/cli-reference",
 	},
 
 	CodeDebugAppUnreachable: {

@@ -10,7 +10,7 @@ var execLookPath = exec.LookPath
 
 // PreflightChecks verifies that all prerequisites are met before deploying.
 func PreflightChecks(cfg *DeployConfig) error {
-	fmt.Println("Running pre-flight checks...")
+	dprintln("Running pre-flight checks...")
 	allPassed := true
 
 	// Local tool checks
@@ -56,7 +56,7 @@ func PreflightChecks(cfg *DeployConfig) error {
 
 	if cfg.DryRun {
 		printCheck("remote tools", "[dry-run] skipped", true)
-		fmt.Println()
+		dprintln()
 		return nil
 	}
 
@@ -82,7 +82,7 @@ func PreflightChecks(cfg *DeployConfig) error {
 		}
 	}
 
-	fmt.Println()
+	dprintln()
 	if !allPassed {
 		return fmt.Errorf("pre-flight checks failed")
 	}
@@ -94,5 +94,5 @@ func printCheck(name, info string, ok bool) {
 	if !ok {
 		mark = "\033[31m✗\033[0m"
 	}
-	fmt.Printf("  %s %-25s %s\n", mark, name, info)
+	dprintf("  %s %-25s %s\n", mark, name, info)
 }

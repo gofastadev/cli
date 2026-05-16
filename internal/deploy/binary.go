@@ -160,7 +160,7 @@ func DeployBinary(cfg *DeployConfig) error {
 	// Cleanup local temp binary
 	_ = os.Remove(binaryPath)
 
-	fmt.Println()
+	dprintln()
 	PrintSuccess(fmt.Sprintf("Deployed %s to %s (binary)", cfg.ReleaseTag, cfg.Host))
 	PrintInfo(fmt.Sprintf("Release:  %s", releasePath))
 	PrintInfo(fmt.Sprintf("Binary:   /usr/local/bin/%s", cfg.AppName))

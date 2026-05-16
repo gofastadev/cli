@@ -8,7 +8,7 @@ import (
 // CheckHealth polls the health endpoint on the remote server until it responds or times out.
 func CheckHealth(cfg *DeployConfig) error {
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] curl -sf http://localhost:%s%s (retrying for %ds)\033[0m\n",
+		dprintf("   \033[90m[dry-run] curl -sf http://localhost:%s%s (retrying for %ds)\033[0m\n",
 			cfg.ServerPort, cfg.HealthPath, cfg.HealthTimeout)
 		return nil
 	}

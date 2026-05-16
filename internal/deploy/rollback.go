@@ -8,7 +8,7 @@ import (
 
 // Rollback reverts to the previous release.
 func Rollback(cfg *DeployConfig) error {
-	fmt.Printf("Rolling back %s on %s...\n\n", cfg.AppName, cfg.Host)
+	dprintf("Rolling back %s on %s...\n\n", cfg.AppName, cfg.Host)
 
 	// Step 1: List releases
 	PrintStep(1, 4, "Finding previous release...")
@@ -44,7 +44,7 @@ func Rollback(cfg *DeployConfig) error {
 	previousPath := filepath.Join(releasesDir, previous)
 	PrintInfo(fmt.Sprintf("Current:  %s", current))
 	PrintInfo(fmt.Sprintf("Rolling back to: %s", previous))
-	fmt.Println()
+	dprintln()
 
 	// Step 2: Activate previous release
 	PrintStep(2, 4, "Activating previous release...")
@@ -78,7 +78,7 @@ func Rollback(cfg *DeployConfig) error {
 		return err
 	}
 
-	fmt.Println()
+	dprintln()
 	PrintSuccess(fmt.Sprintf("Rolled back to release %s", previous))
 	return nil
 }

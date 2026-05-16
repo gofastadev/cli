@@ -2,16 +2,32 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"text/template"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
+
+// newResult is the JSON contract for `gofasta new --json`. Captures
+// the resolved paths plus the GraphQL toggle so an agent has every
+// derived value at a glance — no need to rerun the command in text
+// mode to learn what got created.
+type newResult struct {
+	Action     string `json:"action"`
+	Project    string `json:"project"`
+	Directory  string `json:"directory"`
+	ModulePath string `json:"module_path"`
+	GraphQL    bool   `json:"graphql"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
 
 // ProjectData holds template variables for project generation.
 type ProjectData struct {
@@ -118,8 +134,34 @@ var projectFSOverride fs.FS
 var osChdir = os.Chdir
 
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
-func runNew(nameOrPath string, includeGraphQL bool) error {
+func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
+
+	// In --json mode, redirect stdout to stderr for the duration of
+	// the scaffold so the dozens of decorative `termcolor.Print*` and
+	// `fmt.Print*` calls below — plus the streamed stdout of every
+	// child `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation — go
+	// to stderr. Restore stdout in a deferred closure and emit a
+	// single structured JSON result so agents see one parseable
+	// document on stdout. Safe because runNew is fully sequential
+	// (no goroutines), so swapping the package-level os.Stdout has
+	// no concurrency hazard.
+	if cliout.JSON() {
+		savedStdout := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() {
+			os.Stdout = savedStdout
+			cliout.Print(newResult{
+				Action:     "new",
+				Project:    projectName,
+				Directory:  projectDir,
+				ModulePath: modulePath,
+				GraphQL:    includeGraphQL,
+				Success:    resultErr == nil,
+				Error:      errString(resultErr),
+			}, func(_ io.Writer) {})
+		}()
+	}
 
 	if _, err := os.Stat(projectDir); err == nil {
 		return fmt.Errorf("directory %q already exists", projectDir)
