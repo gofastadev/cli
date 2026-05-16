@@ -135,15 +135,12 @@ jobs:
           /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
           /tmp/gofasta g task send-welcome
 
-      # Install golangci-lint at the version the scaffold's Makefile
-      # pins so `make preflight` doesn't re-install it from scratch
-      # inside the runner.
-      - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.11.4
-          install-mode: binary
-          args: --version
+      # NOTE: golangci-lint is installed lazily by the scaffold's own
+      # Makefile (`lint-install` target — go installs the pinned
+      # version if it isn't on $PATH at that version). We don't need
+      # to pre-install via golangci/golangci-lint-action here; the
+      # action's `args: --version` form is appended to `golangci-lint
+      # run` and trips "unknown flag --version" → exit 3.
 
       # Full quality gate against the generated project (post-generator
       # exercise) — mirrors what the scaffold ships as its own CI
