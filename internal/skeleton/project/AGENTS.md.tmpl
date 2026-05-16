@@ -520,12 +520,127 @@ These are the workhorse commands. Prefer them over writing CRUD by hand:
 | `gofasta g migration AddIndexToUsers` | Empty migration pair |
 | `gofasta g job cleanup-tokens "0 0 * * *"` | Scheduled cron job |
 | `gofasta g task send-welcome-email` | Async task handler (asynq) |
+| `gofasta g method Order Archive [param:type ...]` | **Modify-aware.** Append a method to an existing service: signature in `app/services/interfaces/<snake>_service.go`, stub impl in `app/services/<snake>.service.go`. AST-based (no marker comments left behind, doc comments preserved). `--dry-run` for preview. |
+| `gofasta g field Order archive_reason:string` | **Modify-aware.** Add a column to an existing model + DTOs + a paired migration. Patches the model struct, every DTO variant (Create / Update / Response — each opt-out via `--no-create` / `--no-update` / `--no-response`), and writes `db/migrations/NNNNNN_add_<field>_to_<plural>.{up,down}.sql`. `--dry-run` for preview. |
+| `gofasta g mock OrderService` | Generate (or refresh) a testify/mock implementation under `testutil/mocks/`. `--all` walks both `app/services/interfaces/` and `app/repositories/interfaces/`; `--check` exits non-zero with `MOCK_DRIFT` if the on-disk mock no longer matches the interface (CI gate). |
 | `gofasta wire` | Regenerate `app/di/wire_gen.go` from Wire's sources |
 | `gofasta swagger` | Regenerate OpenAPI docs from code annotations |
 | `gofasta routes` | Print every registered REST route (static grep of route files) |
 | `gofasta config schema` | Emit the JSON Schema for `config.yaml` — feed to a YAML language server or validate edits before writing |
 
 Supported field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
+
+### Modifying an existing resource — the modify-aware generator family
+
+When a resource already exists and you only need to add one method, one
+field, or one endpoint, use the modify-aware generator family rather
+than running `g scaffold` (which refuses to overwrite existing files)
+or hand-editing 4–6 files in lockstep.
+
+| When you want to … | Use |
+|---|---|
+| Add a service method | `gofasta g method <Resource> <Method> [param:type ...]` |
+| Add a model column (+ DTOs + migration) | `gofasta g field <Resource> <name>:<type>` |
+| Refresh test doubles after an interface change | `gofasta g mock <Interface>` or `--all` |
+
+Every modify-aware generator honors `--dry-run --json` and emits the
+same `[]PlannedAction` shape `g scaffold --dry-run --json` does — agents
+can preview the full diff before applying. Patching is done via the
+`dst` (decorated AST) library so the existing file's comments, blank
+lines, and import groupings are preserved through the modify → write-
+back round trip. No marker comments are introduced into user-edited
+code.
+
+Idempotency checks surface as `METHOD_ALREADY_EXISTS`,
+`FIELD_ALREADY_EXISTS`, and `MOCK_DRIFT` codes — agents can branch on
+"fresh add" vs "no-op" without re-parsing the source tree.
+
+Examples:
+
+    gofasta g method Order Archive
+    gofasta g method Order ChangeStatus status:string reason:string
+    gofasta g field Order deleted_at:time --no-create --no-update
+    gofasta g mock OrderService
+    gofasta g mock --all --check     # CI drift gate
+
+### Change-scoped quality gates — `verify --since`
+
+For tight TDD loops, scope the gauntlet to only the files your branch
+touched:
+
+    gofasta verify --since=HEAD~1            # diff vs last commit
+    gofasta verify --since=origin/main       # diff vs upstream main
+    gofasta verify --changed                 # working-tree + staged + untracked
+
+| Check | Behavior under `--since` |
+|---|---|
+| `gofmt` | Only the changed `.go` files |
+| `go vet` | Packages containing changed Go files |
+| `golangci-lint` | Uses native `--new-from-rev=<ref>` |
+| `go test -race` | Packages depending (transitively) on changed packages |
+| `go build` | Affected packages only |
+| Wire drift / routes | **Always full** — whole-project invariants |
+
+Non-Go changes (config.yaml, migrations, README) fall back to whole-
+project for `vet` / `build` / `test` since they can affect runtime
+behavior. Only `gofmt` skips when no `.go` files changed. JSON output
+gains `scoped: true`, `since: "<ref>"`, `changed_files: [...]`, and
+`scoped_packages: [...]` so the iteration is fully observable.
+
+### Migration safety preview — `migrate up --explain`
+
+Before applying a migration, lint every pending `.up.sql` for risky
+DDL patterns:
+
+    gofasta migrate up --explain --json | jq '.max_risk'
+
+No DB connection required — works offline, in CI, before deploy. Built-
+in rules flag:
+
+| Rule | Risk |
+|---|---|
+| `DropColumn`, `DropTable`, `Truncate` | `data-loss` |
+| `AddColumnNotNullNoDefault` | `lock-and-fill` (table rewrite) |
+| `AlterColumnType` | `lock-and-rewrite` |
+| `CreateIndexBlocking` (Postgres / MySQL / SQL Server) | `lock-table` (skips on Postgres `CONCURRENTLY`, SQL Server `ONLINE`) |
+| `AddPrimaryKey` | `lock-table` |
+| `RenameColumn`, `RenameTable` | `app-incompatibility` |
+
+Combine with `--strict` to exit non-zero when any high-severity warning
+fires — suitable for CI gates.
+
+### Stack-frame source resolver — `debug stack`
+
+Stacks captured by the devtools middleware (`TraceSpan.Stack`,
+`ExceptionEntry.Stack`) are stored as `file:line function` strings.
+`debug stack` reads each frame and shows a context window of source
+lines around the target:
+
+    gofasta debug stack --last-error           # most recent panic
+    gofasta debug stack --trace=01HXYZ         # every span in a trace
+    go test ./... 2>&1 | gofasta debug stack -  # raw frames from stdin
+
+JSON output emits `{ frames: [{ raw, file, line, func, external,
+source: { before, current, after } }] }`. Frames whose file isn't in
+the working tree (GOROOT, vendored, deleted) are marked
+`external: true` and returned without source — never errors the run.
+
+### Job / task introspection — `inspect-jobs`, `inspect-tasks`
+
+The REST-resource counterpart of `inspect <Resource>`. Static AST scan
+of `app/jobs/*.go` and `app/tasks/*.task.go`:
+
+    gofasta inspect-jobs --json
+    gofasta inspect-tasks --json
+    gofasta inspect-jobs cleanup-tokens   # filter to a single entry
+
+`inspect-jobs` pairs each registered job (types implementing
+`Name() string` + `Run(ctx) error`) with its cron schedule from
+`config.yaml`. `inspect-tasks` reports the `Task<Name>` constant,
+payload struct fields, and presence of the matching `Handle<Name>` +
+`Enqueue<Name>` helpers. Both return `JOBS_DIR_MISSING` /
+`TASKS_DIR_MISSING` when the corresponding directory hasn't been
+generated yet.
 
 ### Database
 
@@ -553,8 +668,13 @@ prefer them over hand-running the underlying checks. They honor `--json`.
 | Command | What it does |
 |---|---|
 | `gofasta verify` | Full preflight gauntlet — gofmt, vet, golangci-lint, tests with the race detector, build, Wire drift, routes. The single "am I done?" check. |
+| `gofasta verify --since=<ref>` | Change-scoped gauntlet — fmt / vet / lint / test / build run only against files touched since `<ref>`. Wire drift + routes stay whole-project. |
 | `gofasta status` | Offline drift report — stale Wire, stale Swagger, pending migrations, uncommitted generated files, `go.sum` freshness. |
 | `gofasta inspect <Resource>` | AST-parsed structured report of a resource's model, DTOs, service methods, controller methods, and routes. |
+| `gofasta inspect-jobs [<name>]` | Static AST scan of `app/jobs/*.go` — every registered job, its Go type, and its cron schedule from `config.yaml`. |
+| `gofasta inspect-tasks [<name>]` | Static AST scan of `app/tasks/*.task.go` — every `Task<Name>` constant plus its payload struct + Handle / Enqueue presence flags. |
+| `gofasta migrate up --explain` | Static SQL analysis of every pending `.up.sql` — flags lock-impact, data-loss, and app-incompatibility patterns before they hit the DB. `--strict` exits non-zero on high-severity warnings (CI gate). |
+| `gofasta debug stack` | Resolve captured stack frames (`TraceSpan.Stack` / `ExceptionEntry.Stack`) to source-context windows. Three input modes: `--trace=<id>`, `--last-error`, or `-` (stdin). |
 | `gofasta debug <...>` | Query a running dev app's `/debug/*` surface — requests, SQL, traces, logs, errors, goroutines, pprof, HAR. See the dedicated Debug section above for the full command list. |
 | `gofasta config schema` | Emit the JSON Schema for `config.yaml`. Validates edits before writing; powers editor autocomplete. |
 | `gofasta do <workflow>` | Named workflow chains: `new-rest-endpoint`, `rebuild`, `fresh-start`, `clean-slate`, `health-check`. |

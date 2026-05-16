@@ -3,6 +3,7 @@ package generate
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -74,6 +75,31 @@ func init() {
 	Cmd.AddCommand(emailTemplateCmd)
 	Cmd.AddCommand(jobCmd)
 	Cmd.AddCommand(taskCmd)
+	Cmd.AddCommand(mockCmd)
+	mockCmd.Flags().BoolVar(&mockAll, "all", false,
+		"Regenerate every mock under app/services/interfaces and app/repositories/interfaces")
+	mockCmd.Flags().BoolVar(&mockCheck, "check", false,
+		"Don't write — exit non-zero with MOCK_DRIFT if the on-disk mock differs from the interface")
+
+	// Modify-aware generators (g method, g field) — each appends to an
+	// existing resource using dst-based AST patching. The --dry-run flag
+	// reuses the same plan-recording machinery that powers `g scaffold
+	// --dry-run`.
+	Cmd.AddCommand(methodCmd)
+	methodCmd.Flags().BoolVar(&methodDryRun, "dry-run", false,
+		"Preview the patches without writing")
+
+	Cmd.AddCommand(fieldCmd)
+	fieldCmd.Flags().BoolVar(&fieldDryRun, "dry-run", false,
+		"Preview the patches + migration without writing")
+	fieldCmd.Flags().BoolVar(&fieldNoDTO, "no-dto", false,
+		"Skip DTO patches (only model + migration are updated)")
+	fieldCmd.Flags().BoolVar(&fieldNoCreate, "no-create", false,
+		"Skip the CreateRequest DTO when --no-dto is not set")
+	fieldCmd.Flags().BoolVar(&fieldNoUpdate, "no-update", false,
+		"Skip the UpdateRequest DTO when --no-dto is not set")
+	fieldCmd.Flags().BoolVar(&fieldNoResponse, "no-response", false,
+		"Skip the Response DTO when --no-dto is not set")
 
 	// Register --graphql flag on commands that support it
 	for _, cmd := range []*cobra.Command{scaffoldCmd, serviceCmd, controllerCmd} {
@@ -631,5 +657,161 @@ written services that were not created through ` + "`gofasta g service`" + `.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), providerSteps())
+	},
+}
+
+// mockAll / mockCheck are the cobra-bound flag receivers. mockAll
+// regenerates every mock under the standard interface dirs; mockCheck
+// is the CI gate — exits non-zero with MOCK_DRIFT if the on-disk mock
+// differs from what the interface would currently produce.
+var (
+	mockAll   bool
+	mockCheck bool
+)
+
+// methodDryRun / fieldDryRun / fieldNo* — modify-aware generator flags.
+var (
+	methodDryRun    bool
+	fieldDryRun     bool
+	fieldNoDTO      bool
+	fieldNoCreate   bool
+	fieldNoUpdate   bool
+	fieldNoResponse bool
+)
+
+// methodCmd is `gofasta g method <Resource> <Method> [param:type ...]`.
+// Appends a method to an existing service interface + impl using dst-
+// based AST patching (no marker comments, comments preserved).
+var methodCmd = &cobra.Command{
+	Use:   "method <Resource> <Method> [param:type ...]",
+	Short: "Add a method to an existing service interface + impl",
+	Long: `Append a new method to an already-scaffolded service. The
+interface in app/services/interfaces/<snake>_service.go gains the
+signature; app/services/<snake>.service.go gains a stub implementation
+that returns a "not implemented" error.
+
+ctx context.Context is always prepended as the first parameter — the
+gofasta convention — so callers stay context-aware without having to
+spell it out.
+
+Use --dry-run to preview the patches (same {create, patch} JSON shape
+as g scaffold --dry-run).
+
+Examples:
+  gofasta g method Order Archive
+  gofasta g method Order ChangeStatus status:string reason:string`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resource := args[0]
+		method := args[1]
+		fields := ParseFields(args[2:])
+		d := MethodData{
+			Resource:   toPascalCase(resource),
+			MethodName: toPascalCase(method),
+			Args:       fields,
+		}
+		if methodDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenMethod(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenMethod(d)
+	},
+}
+
+// fieldCmd is `gofasta g field <Resource> <name>:<type>`. Adds the field
+// to the model + DTOs + a paired migration in one shot.
+var fieldCmd = &cobra.Command{
+	Use:   "field <Resource> <name>:<type>",
+	Short: "Add a field to an existing model, its DTOs, and emit a migration pair",
+	Long: `Append a column to an already-scaffolded resource. Patches:
+
+  • app/models/<snake>.model.go               (struct field + GORM tag)
+  • app/dtos/<snake>.dtos.go                  (Create / Update / Response DTOs)
+  • db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
+
+Supported types: string, text, int, float, bool, uuid, time.
+
+DTO patches are opt-out:
+  --no-dto       Skip every DTO patch (model + migration only)
+  --no-create    Skip the CreateRequest DTO
+  --no-update    Skip the UpdateRequest DTO
+  --no-response  Skip the Response DTO
+
+Use --dry-run to preview the patches and the migration that would be
+written (same {create, patch} JSON shape as g scaffold --dry-run).
+
+Examples:
+  gofasta g field Order archive_reason:string
+  gofasta g field Order deleted_at:time --no-create --no-update`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resource := args[0]
+		fieldArg := args[1]
+		fields := ParseFields([]string{fieldArg})
+		if len(fields) == 0 {
+			return clierr.New(clierr.CodeInvalidName,
+				"field argument must be name:type (e.g. archive_reason:string)")
+		}
+		d := FieldData{
+			Resource:     toPascalCase(resource),
+			Field:        fields[0],
+			WithDTO:      !fieldNoDTO,
+			WithCreate:   !fieldNoCreate,
+			WithUpdate:   !fieldNoUpdate,
+			WithResponse: !fieldNoResponse,
+		}
+		if fieldDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenField(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenField(d)
+	},
+}
+
+// mockCmd is `gofasta g mock <Interface> [--all] [--check]`. Generates a
+// testify/mock implementation that satisfies the named interface and
+// writes it under testutil/mocks/. The generated mock includes a
+// compile-time assertion so a future interface change breaks the build
+// rather than silently producing a mock that no longer satisfies its
+// target.
+var mockCmd = &cobra.Command{
+	Use:   "mock [InterfaceName]",
+	Short: "Generate (or refresh) a testify/mock for one interface, or --all to refresh every mock",
+	Long: `Walk the project's interface declarations and emit a testify/mock
+implementation under testutil/mocks/<snake>_mock.go.
+
+Two modes:
+
+  gofasta g mock OrderService     — generate one mock by exact interface name
+  gofasta g mock --all            — refresh every mock under
+                                    app/services/interfaces and
+                                    app/repositories/interfaces
+
+Use --check to detect drift without rewriting (suitable for CI). Exits
+non-zero with MOCK_DRIFT if the on-disk mock doesn't match the current
+interface signature.
+
+The generated mock embeds testify's mock.Mock, includes a compile-time
+assertion that the mock satisfies the interface, and chooses the right
+testify accessor per return type (Error / String / Int / Bool / typed
+Get with nil-safe assertion). Pointer / slice / map / qualified-type
+returns are guarded so a nil return value doesn't panic the test.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		}
+		return GenMock(name, GenMockOpts{All: mockAll, Check: mockCheck})
 	},
 }
