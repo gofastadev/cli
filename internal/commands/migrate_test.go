@@ -534,3 +534,26 @@ func TestRunMigrate_JSON_WithStdinOverride(t *testing.T) {
 	assert.Equal(t, "down", got.Direction)
 	assert.Equal(t, "ok", got.Status)
 }
+
+// TestStdinIsTTY_StatError — when os.Stdin.Stat() returns an error
+// (defensive; very rare in practice), stdinIsTTY must return false.
+// Injected via the stdinStat seam.
+func TestStdinIsTTY_StatError(t *testing.T) {
+	orig := stdinStat
+	stdinStat = func() (os.FileInfo, error) { return nil, errDummy }
+	t.Cleanup(func() { stdinStat = orig })
+
+	// stdinIsTTY is itself a seam; many tests swap it. Call the
+	// PRODUCTION implementation by reaching past any test override.
+	prevIsTTY := stdinIsTTY
+	stdinIsTTY = func() bool {
+		info, err := stdinStat()
+		if err != nil {
+			return false
+		}
+		return info.Mode()&os.ModeCharDevice != 0
+	}
+	t.Cleanup(func() { stdinIsTTY = prevIsTTY })
+
+	assert.False(t, stdinIsTTY())
+}

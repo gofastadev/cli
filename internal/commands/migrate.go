@@ -90,12 +90,20 @@ func init() {
 // the interactive menu via a strings.Reader without wiring a real pipe.
 var downStdin io.Reader = os.Stdin
 
+// stdinStat is the inner seam over os.Stdin.Stat — defaults to the
+// real os.Stdin but tests can swap it to inject a Stat-failure so the
+// defensive `err != nil` branch of stdinIsTTY is exercisable. (Most
+// tests skip the production stdinIsTTY entirely by swapping the
+// outer var below, so without an inner seam the err-branch is
+// unreachable in tests.)
+var stdinStat = func() (os.FileInfo, error) { return os.Stdin.Stat() }
+
 // stdinIsTTY reports whether os.Stdin is an interactive terminal.
 // Wrapped in a package-level seam so tests can deterministically
 // simulate either side without depending on how the test runner wires
 // /dev/stdin (which differs between `go test`, IDE runners, and CI).
 var stdinIsTTY = func() bool {
-	info, err := os.Stdin.Stat()
+	info, err := stdinStat()
 	if err != nil {
 		return false
 	}
