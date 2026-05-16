@@ -55,6 +55,35 @@ jobs:
   integration:
     runs-on: ubuntu-latest
     needs: test
+
+    # Real Postgres for the scaffold's repository-layer integration
+    # tests. The scaffold uses testcontainers-go for some suites but
+    # also reads ${PREFIX}_DATABASE_* env vars; exposing a service
+    # avoids the testcontainers DinD overhead and matches what the
+    # scaffold's own CI template (deployments/ci/github-actions-test.yml)
+    # provisions for downstream users.
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: testproject
+          POSTGRES_PASSWORD: testproject
+          POSTGRES_DB: testproject_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U testproject"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TESTPROJECT_DATABASE_HOST: localhost
+      TESTPROJECT_DATABASE_PORT: "5432"
+      TESTPROJECT_DATABASE_USER: testproject
+      TESTPROJECT_DATABASE_PASSWORD: testproject
+      TESTPROJECT_DATABASE_NAME: testproject_test
+
     steps:
       - name: Check out CLI repo
         uses: actions/checkout@v4
@@ -77,3 +106,34 @@ jobs:
       - name: Verify generated project compiles
         working-directory: /tmp/testproject
         run: go build ./...
+
+      # Install golangci-lint at the version the scaffold's Makefile
+      # pins so `make preflight` doesn't re-install it from scratch
+      # inside the runner.
+      - name: Install golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.4
+          install-mode: binary
+          args: --version
+
+      # Full quality gate against the generated project — mirrors what
+      # the scaffold ships as its own CI (deployments/ci/github-actions-
+      # test.yml.tmpl) so a scaffolded-but-broken project fails THIS
+      # workflow rather than only being caught downstream once a real
+      # user runs it. Chain (per scaffold's Makefile): gofmt-check, go
+      # vet, golangci-lint, go test -race, go build.
+      - name: Preflight generated project (fmt, vet, lint, test, build)
+        working-directory: /tmp/testproject
+        run: make preflight
+
+      # Run the scaffold's tests with coverage via the same gofasta
+      # binary we just built. Exercises gofasta test's covdata-warning
+      # filter against a real scaffolded project (the bug this command
+      # exists to work around only surfaces when go.mod has tool
+      # directives — which every scaffold has). Failure here means the
+      # CLI's coverage path is broken even though `make preflight`
+      # passed.
+      - name: Test generated project with coverage
+        working-directory: /tmp/testproject
+        run: /tmp/gofasta test --coverage
