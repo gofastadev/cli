@@ -156,6 +156,28 @@ jobs:
           /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
           /tmp/gofasta g task send-welcome
 
+      # Regenerate Wire + Swagger so the introspection step below sees
+      # a clean tree. After the generator exercise above, new
+      # controllers + routes exist but docs/swagger.json + wire_gen.go
+      # may be stale — `gofasta status` would flag them as drift and
+      # exit non-zero. Running the regenerators here also covers
+      # `gofasta wire` / `gofasta swagger` themselves.
+      - name: Regenerate Wire and Swagger
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta wire
+          /tmp/gofasta swagger
+
+      # Apply migrations against the Postgres service so `gofasta
+      # status` doesn't flag pending migrations as drift below.
+      # `gofasta init` also runs wire/gqlgen/swag generation
+      # (idempotent) and `go build`, so it serves as a comprehensive
+      # "ready the project" step that also exercises the init command
+      # itself.
+      - name: Initialize generated project (init = deps + migrations)
+        working-directory: /tmp/testproject
+        run: /tmp/gofasta init
+
       # NOTE: golangci-lint is installed lazily by the scaffold's own
       # Makefile (`lint-install` target — go installs the pinned
       # version if it isn't on $PATH at that version). We don't need
@@ -186,27 +208,23 @@ jobs:
       # Read-only / introspection commands. Each is small; bundled to
       # save runner minutes. --json flag is exercised on a couple so
       # the structured-output contract is also smoke-tested.
+      #
+      # NOTE: `gofasta status` is intentionally NOT in this bundle —
+      # the generator exercise + init step above leave uncommitted
+      # generated files (wire_gen.go, docs/swagger.json, etc.) that
+      # status reports as a warning (not failure), but also surfaces
+      # any drift we might have missed. We run it last (post-DB-
+      # lifecycle / post-AI-roundtrip) where the tree is otherwise
+      # stable.
       # ─────────────────────────────────────────────────────────────
-      - name: Inspect / status / routes / config
+      - name: Inspect / routes / config
         working-directory: /tmp/testproject
         run: |
           /tmp/gofasta version
           /tmp/gofasta doctor
           /tmp/gofasta routes
           /tmp/gofasta inspect Product
-          /tmp/gofasta status
           /tmp/gofasta config schema | head -1
-          /tmp/gofasta --json status > /tmp/status.json
-          test -s /tmp/status.json
-
-      # Regenerate Wire + Swagger to confirm those wrappers still
-      # round-trip on the scaffold (covers `gofasta wire` and
-      # `gofasta swagger`).
-      - name: Regenerate Wire and Swagger
-        working-directory: /tmp/testproject
-        run: |
-          /tmp/gofasta wire
-          /tmp/gofasta swagger
 
       # Verify gauntlet — runs gofmt/vet/lint/build/test/wire-drift/
       # routes-list in one shot. Re-runs many of the above checks but
@@ -217,17 +235,14 @@ jobs:
         run: /tmp/gofasta verify
 
       # ─────────────────────────────────────────────────────────────
-      # Database lifecycle — needs the Postgres service. Tests the
-      # migrate/seed/db-reset commands end-to-end against a real DB.
-      # `gofasta init` runs the same wire/gqlgen/swag steps `new` did
-      # (idempotent) and then applies migrations, so it's the cleanest
-      # entrypoint for the lifecycle suite.
+      # Database lifecycle (migrate / seed / db reset) — needs the
+      # Postgres service. `gofasta init` was already run above (it
+      # applied the migrations), so this block only exercises the
+      # remaining migrate-down / migrate-up / seed / db-reset paths.
       # ─────────────────────────────────────────────────────────────
-      - name: Database lifecycle (init, migrate, seed, db reset)
+      - name: Database lifecycle (migrate down/up, seed, db reset)
         working-directory: /tmp/testproject
         run: |
-          /tmp/gofasta init
-          /tmp/gofasta migrate up
           /tmp/gofasta migrate down --steps 1 --yes
           /tmp/gofasta migrate up
           /tmp/gofasta seed
@@ -270,3 +285,17 @@ jobs:
           curl -fsS http://localhost:8080/health/live
           curl -fsS http://localhost:8080/health/ready || true
           kill $SERVE_PID 2>/dev/null || true
+
+      # ─────────────────────────────────────────────────────────────
+      # Final status check — runs last so the tree has settled (wire
+      # + swagger regenerated, migrations applied via init, db reset
+      # restored to a clean state). Any drift surfaced here is a
+      # genuine bug, not a leftover from earlier exercise steps.
+      # `--json` also smoke-tests the structured-output contract.
+      # ─────────────────────────────────────────────────────────────
+      - name: Status (drift check on the final tree)
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta status
+          /tmp/gofasta --json status > /tmp/status.json
+          test -s /tmp/status.json
