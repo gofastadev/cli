@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/gofastadev/cli/internal/clierr"
@@ -232,6 +234,105 @@ func TestPrintCoverageTotal_NoTotalLine(t *testing.T) {
 func TestPrintCoverageTotal_ShellError(t *testing.T) {
 	withStubShell(t, stubResponse{out: "", err: errors.New("no coverage.out")})
 	printCoverageTotal()
+}
+
+// --- dropLDWarnings ---------------------------------------------------------
+
+// TestDropLDWarnings_PassesThroughNormalOutput — any line that's
+// neither a build marker nor an LC_DYSYMTAB warning must round-trip
+// untouched. This is the no-op baseline for the filter.
+func TestDropLDWarnings_PassesThroughNormalOutput(t *testing.T) {
+	in := strings.NewReader("--- PASS: TestFoo\nok\tpkg/foo\t0.123s\n")
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	assert.Equal(t, "--- PASS: TestFoo\nok\tpkg/foo\t0.123s\n", out.String())
+}
+
+// TestDropLDWarnings_StripsLDWarning — the canonical LC_DYSYMTAB
+// warning is dropped. The preceding `# <pkg>.test` build marker is
+// also dropped at EOF because nothing real followed it. Models
+// realistic `go test` stderr (no `ok` result lines — those go to
+// stdout via a separate file descriptor that bypasses this filter).
+func TestDropLDWarnings_StripsLDWarning(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"# github.com/gofastadev/gofasta/pkg/cache.test",
+		"ld: warning: '/tmp/x.o' has malformed LC_DYSYMTAB, expected 98 undefined symbols",
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	assert.Empty(t, out.String())
+}
+
+// TestDropLDWarnings_KeepsHeaderForRealError — when the same
+// `# <pkg>.test` marker heads a REAL compiler error, the marker
+// MUST survive so the user can find the package whose build broke.
+// This is the regression driver for "don't lose legitimate build
+// diagnostics in the noise filter".
+func TestDropLDWarnings_KeepsHeaderForRealError(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"# github.com/example/badpkg",
+		"./main.go:42:5: undefined: notDefined",
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	want := "# github.com/example/badpkg\n./main.go:42:5: undefined: notDefined\n"
+	assert.Equal(t, want, out.String())
+}
+
+// TestDropLDWarnings_MixedSequence — interleaved stream covering
+// the state machine end-to-end: a marker followed only by
+// LC_DYSYMTAB warnings is dropped when the NEXT marker arrives (the
+// only unambiguous "section is empty" signal stderr can give us);
+// a marker followed by a real error keeps both. Models the actual
+// shape of `go test`'s stderr (markers + build output only — `ok`
+// result lines go to stdout, not stderr).
+func TestDropLDWarnings_MixedSequence(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"# pkg/a.test",
+		"ld: warning: malformed LC_DYSYMTAB at offset 1",
+		"# pkg/b",
+		"./b.go:10:1: syntax error",
+		"# pkg/c.test",
+		"ld: warning: malformed LC_DYSYMTAB at offset 99",
+		"# pkg/d.test",
+		"ld: warning: malformed LC_DYSYMTAB at offset 7",
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	want := strings.Join([]string{
+		"# pkg/b",
+		"./b.go:10:1: syntax error",
+		"",
+	}, "\n")
+	assert.Equal(t, want, out.String())
+}
+
+// TestDropLDWarnings_TrailingPendingHeaderDropped — if the stream
+// ends while a header is still pending (only LC_DYSYMTAB lines
+// followed it), the header is discarded. Verifies the EOF branch.
+func TestDropLDWarnings_TrailingPendingHeaderDropped(t *testing.T) {
+	in := strings.NewReader(strings.Join([]string{
+		"ok\tpkg/before\t0.1s",
+		"# pkg/last.test",
+		"ld: warning: malformed LC_DYSYMTAB at offset 5",
+		"",
+	}, "\n"))
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	assert.Equal(t, "ok\tpkg/before\t0.1s\n", out.String())
+}
+
+// TestDropLDWarnings_KeepsOtherLDWarnings — only the LC_DYSYMTAB
+// variant is filtered. Other ld warnings (real ones) survive so the
+// user still sees genuine linker problems.
+func TestDropLDWarnings_KeepsOtherLDWarnings(t *testing.T) {
+	in := strings.NewReader("ld: warning: directory not found for option '-L/missing'\n")
+	var out bytes.Buffer
+	dropLDWarnings(in, &out)
+	assert.Equal(t, "ld: warning: directory not found for option '-L/missing'\n", out.String())
 }
 
 // stubExecLookPathOK satisfies any execLookPath probes runTests might

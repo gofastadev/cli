@@ -1,9 +1,12 @@
 package commands
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
@@ -127,10 +130,35 @@ func runTests(opts testOptions) error {
 
 	c := execCommand("go", args...)
 	c.Stdout = os.Stdout
-	c.Stderr = os.Stderr
 	c.Stdin = os.Stdin
-	if err := c.Run(); err != nil {
-		return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", err)
+
+	// In text mode, route the child's stderr through dropLDWarnings so
+	// macOS ld's harmless LC_DYSYMTAB noise (golang/go#61229 — Apple's
+	// new linker emits a warning for every cgo object Go produces with
+	// -race) doesn't bury real diagnostics. JSON mode bypasses the
+	// filter because `go test -json` consumers expect raw stderr if
+	// they read it at all.
+	if opts.jsonMode {
+		c.Stderr = os.Stderr
+		if err := c.Run(); err != nil {
+			return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", err)
+		}
+	} else {
+		pr, pw := io.Pipe()
+		c.Stderr = pw
+		filterDone := make(chan struct{})
+		go func() {
+			defer close(filterDone)
+			dropLDWarnings(pr, os.Stderr)
+		}()
+		runErr := c.Run()
+		// Close the writer so the filter sees EOF and finishes draining
+		// any held-back header line; then wait for it before returning.
+		_ = pw.Close()
+		<-filterDone
+		if runErr != nil {
+			return clierr.Newf(clierr.CodeGoTestFailed, "tests failed: %v", runErr)
+		}
 	}
 
 	// In JSON mode the coverage summary line would corrupt the NDJSON
@@ -204,6 +232,54 @@ func printCoverageTotal() {
 		}
 		return
 	}
+}
+
+// ldDYSYMTABWarning matches Apple ld's LC_DYSYMTAB warning. The exact
+// text format is stable enough to anchor on: every variant carries
+// "ld: warning:" and "LC_DYSYMTAB" with the same wording. See
+// golang/go#61229 for the upstream tracking issue.
+var ldDYSYMTABWarning = regexp.MustCompile(`^ld: warning:.*LC_DYSYMTAB`)
+
+// goBuildMarker matches the `# <package>[.test]` line `go test` /
+// `go build` emit just before any stderr output produced while
+// building that package. Used to identify lines we may need to drop
+// alongside the warnings they head.
+var goBuildMarker = regexp.MustCompile(`^# \S+`)
+
+// dropLDWarnings copies r to w line-by-line, dropping each
+// LC_DYSYMTAB warning and any preceding `# <pkg>` build marker that
+// turns out to head only such warnings. Real build errors keep their
+// marker because the marker is flushed as soon as a non-filtered line
+// arrives.
+func dropLDWarnings(r io.Reader, w io.Writer) {
+	sc := bufio.NewScanner(r)
+	// go test build errors can be long (full compiler diagnostics);
+	// bump beyond the default 64KiB so we don't truncate them.
+	sc.Buffer(make([]byte, 64*1024), 1<<20)
+	var pendingHeader string
+	flushPending := func() {
+		if pendingHeader != "" {
+			_, _ = fmt.Fprintln(w, pendingHeader)
+			pendingHeader = ""
+		}
+	}
+	for sc.Scan() {
+		line := sc.Text()
+		switch {
+		case goBuildMarker.MatchString(line):
+			// A new build marker arrived while another was still
+			// pending — that earlier marker had only warnings, so
+			// drop it and queue the new one.
+			pendingHeader = line
+		case ldDYSYMTABWarning.MatchString(line):
+			// Drop. Header stays pending in case more arrive.
+		default:
+			flushPending()
+			_, _ = fmt.Fprintln(w, line)
+		}
+	}
+	// EOF: any still-pending header headed only warnings — drop it
+	// by not flushing.
 }
 
 func init() {
