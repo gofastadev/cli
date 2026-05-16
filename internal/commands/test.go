@@ -125,7 +125,7 @@ func runTests(opts testOptions) error {
 	args := buildGoTestArgs(opts)
 
 	if !opts.jsonMode {
-		termcolor.PrintStep("go %s", strings.Join(args, " "))
+		cliout.Step("go %s", strings.Join(args, " "))
 	}
 
 	c := execCommand("go", args...)
@@ -228,7 +228,7 @@ func printCoverageTotal() {
 			continue
 		}
 		if !cliout.JSON() {
-			fmt.Println("  " + termcolor.Success("%s", line))
+			cliout.Plainln("  " + termcolor.Success("%s", line))
 		}
 		return
 	}

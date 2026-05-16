@@ -52,9 +52,9 @@ func runConsole() error {
 		return fmt.Errorf("yaegi is not installed. Install it with:\n  go install github.com/traefik/yaegi/cmd/yaegi@latest")
 	}
 
-	fmt.Println("Starting gofasta console (yaegi)...")
-	fmt.Println("Type Go code interactively. Press Ctrl+D to exit.")
-	fmt.Println()
+	cliout.Plainln("Starting gofasta console (yaegi)...")
+	cliout.Plainln("Type Go code interactively. Press Ctrl+D to exit.")
+	cliout.Blank()
 
 	cmd := execCommand(yaegiPath)
 	cmd.Stdout = os.Stdout

@@ -15,8 +15,8 @@ import (
 	"time"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/commands/configutil"
-	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -79,7 +79,7 @@ DEPRECATED: --all-in-docker is a one-release alias for --services all.`,
 		// We rewrite it here (before parseServicesList) so the rest of
 		// the pipeline only sees the canonical form.
 		if devFlagValues.allInDocker && devFlagValues.servicesRaw == "" {
-			termcolor.PrintWarn("--all-in-docker is deprecated; use --services all (silently mapped for one release)")
+			cliout.Warn("--all-in-docker is deprecated; use --services all (silently mapped for one release)")
 			devFlagValues.servicesRaw = "all"
 		}
 		devFlagValues.servicesList = parseServicesList(devFlagValues.servicesRaw)
@@ -984,7 +984,7 @@ func runMigrations() error {
 	if err := runMigrateUp(dbURL); err == nil {
 		return nil
 	}
-	termcolor.PrintHint("Database not ready, retrying in 2 seconds...")
+	cliout.Hint("Database not ready, retrying in 2 seconds...")
 	time.Sleep(2 * time.Second)
 	return runMigrateUp(dbURL)
 }

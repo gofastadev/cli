@@ -181,11 +181,11 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 		GraphQL:          includeGraphQL,
 	}
 
-	termcolor.PrintHeader("🚀 Creating new gofasta project: %s", projectName)
-	fmt.Println()
+	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
+	cliout.Blank()
 
 	// Create project directory
-	termcolor.PrintStep("📁 Creating directory %s/", projectDir)
+	cliout.Step("📁 Creating directory %s/", projectDir)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
@@ -198,7 +198,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	defer func() { _ = osChdir(origDir) }()
 
 	// Initialize go module
-	termcolor.PrintStep("📦 Initializing Go module: %s", modulePath)
+	cliout.Step("📦 Initializing Go module: %s", modulePath)
 	if err := runCmdSilent("go", "mod", "init", modulePath); err != nil {
 		return fmt.Errorf("go mod init failed: %w", err)
 	}
@@ -210,11 +210,11 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	// still works, it just ships with the developer's toolchain version
 	// instead of the declared minimum.
 	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
-		termcolor.PrintWarn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
+		cliout.Warn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
 	}
 
 	// Walk embedded skeleton and generate files
-	termcolor.PrintStep("🏗  Creating project structure...")
+	cliout.Step("🏗  Creating project structure...")
 	projectFS := projectFSOverride
 	if projectFS == nil {
 		projectFS = skeleton.ProjectFS
@@ -285,7 +285,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 			output = content
 		}
 
-		termcolor.PrintPath(outputPath)
+		cliout.Path(outputPath)
 		return os.WriteFile(outputPath, output, 0o644)
 	})
 	if err != nil {
@@ -295,7 +295,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	// Copy .env from .env.example
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
 		_ = os.WriteFile(".env", envExample, 0o644)
-		termcolor.PrintPath(".env")
+		cliout.Path(".env")
 	}
 
 	// Install gofasta library as a project dependency.
@@ -307,29 +307,29 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	// must abort the scaffold rather than silently continuing with a broken
 	// project. A vague warning misleads the developer into thinking the
 	// project is usable.
-	fmt.Println()
-	termcolor.PrintStep("📦 Installing gofasta library...")
+	cliout.Blank()
+	cliout.Step("📦 Installing gofasta library...")
 	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
 		// Print the longform hint to the user then return a short,
 		// punctuation-clean error that satisfies ST1005.
-		termcolor.PrintWarn("gofasta library install failed. Common causes:")
-		fmt.Println("  • sum.golang.org hasn't yet indexed a freshly-published release")
-		fmt.Printf("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
-		fmt.Println("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
-		fmt.Println("      generated project to retry after the sum DB catches up.")
-		fmt.Println("  • your network blocks the Go module proxy or github.com.")
-		fmt.Println("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
-		fmt.Println()
+		cliout.Warn("gofasta library install failed. Common causes:")
+		cliout.Plainln("  • sum.golang.org hasn't yet indexed a freshly-published release")
+		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
+		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
+		cliout.Plainln("      generated project to retry after the sum DB catches up.")
+		cliout.Plainln("  • your network blocks the Go module proxy or github.com.")
+		cliout.Plainln("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
+		cliout.Blank()
 		return fmt.Errorf("failed to install github.com/gofastadev/gofasta: %w", err)
 	}
 
 	// Install cobra for project commands
 	if err := runCmdSilent("go", "get", "github.com/spf13/cobra@latest"); err != nil {
-		termcolor.PrintWarn("Could not install cobra")
+		cliout.Warn("Could not install cobra")
 	}
 
 	// Add tool dependencies
-	termcolor.PrintStep("📦 Installing tool dependencies...")
+	cliout.Step("📦 Installing tool dependencies...")
 	if includeGraphQL {
 		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
 	}
@@ -347,39 +347,39 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
 
 	// Tidy
-	termcolor.PrintStep("📦 Running go mod tidy...")
+	cliout.Step("📦 Running go mod tidy...")
 	_ = runCmdSilent("go", "mod", "tidy")
 
 	// Generate code
-	fmt.Println()
-	termcolor.PrintStep("🔌 Generating Wire DI code...")
+	cliout.Blank()
+	cliout.Step("🔌 Generating Wire DI code...")
 	if err := runCmdSilent("go", "tool", "wire", "./app/di/"); err != nil {
-		termcolor.PrintWarn("Wire generation skipped (can be run later with: make wire)")
+		cliout.Warn("Wire generation skipped (can be run later with: make wire)")
 	}
 
 	if includeGraphQL {
-		termcolor.PrintStep("📊 Generating GraphQL code...")
+		cliout.Step("📊 Generating GraphQL code...")
 		if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
-			termcolor.PrintWarn("gqlgen generation skipped (can be run later with: make gqlgen)")
+			cliout.Warn("gqlgen generation skipped (can be run later with: make gqlgen)")
 		}
 	}
 
-	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
+	cliout.Step("📝 Generating Swagger/OpenAPI docs...")
 	if err := runCmdSilent("go", "tool", "swag", "init",
 		"-g", "app/main/main.go", "-o", "docs/",
 		"--parseDependency", "--parseInternal"); err != nil {
-		termcolor.PrintWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
+		cliout.Warn("Swagger generation skipped (can be run later with: gofasta swagger)")
 	}
 
 	// Initialize git
-	fmt.Println()
-	termcolor.PrintStep("🔧 Initializing git repository...")
+	cliout.Blank()
+	cliout.Step("🔧 Initializing git repository...")
 	_ = runCmdSilent("git", "init")
 	_ = runCmdSilent("git", "add", ".")
 	_ = runCmdSilent("git", "commit", "-m", "Initial commit: gofasta project scaffold")
 
-	fmt.Println()
-	termcolor.PrintSuccess("Project %s created successfully!", termcolor.CBold(projectName))
+	cliout.Blank()
+	cliout.Success("Project %s created successfully!", termcolor.CBold(projectName))
 	printGetStarted(projectName)
 	return nil
 }
@@ -390,12 +390,12 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 // cloned an existing one. Pass an empty projectName to skip the `cd` line
 // (useful for init, which runs from inside the project directory).
 func printGetStarted(projectName string) {
-	fmt.Println()
-	termcolor.PrintHeader("Next steps:")
-	fmt.Println()
+	cliout.Blank()
+	cliout.Header("Next steps:")
+	cliout.Blank()
 	if projectName != "" {
-		fmt.Printf("  %s\n", termcolor.CBold("cd "+projectName))
-		fmt.Println()
+		cliout.Plain("  %s\n", termcolor.CBold("cd "+projectName))
+		cliout.Blank()
 	}
 
 	// --- Development workflows ---------------------------------------------
@@ -404,36 +404,36 @@ func printGetStarted(projectName string) {
 	// tradeoff so the developer can pick without having to read the docs.
 	// gofasta commands are shown first; `make` targets are demoted to an
 	// "Also available as" block at the bottom.
-	termcolor.PrintHeader("Pick a development workflow:")
-	fmt.Println()
+	cliout.Header("Pick a development workflow:")
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("A."),
 		termcolor.CBold("Everything in Docker"),
 		termcolor.CDim(" — fully containerized, zero host setup"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up -d        "), termcolor.CDim("# build + start app and db"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose logs -f app  "), termcolor.CDim("# tail application logs"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose down         "), termcolor.CDim("# stop everything"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose up -d        "), termcolor.CDim("# build + start app and db"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose logs -f app  "), termcolor.CDim("# tail application logs"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose down         "), termcolor.CDim("# stop everything"))
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("B."),
 		termcolor.CBold("App on host, db in Docker"),
 		termcolor.CDim(" — fastest iteration, Air hot reload"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up db -d     "), termcolor.CDim("# start only the database"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# run app with hot reload + auto-migrate"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose up db -d     "), termcolor.CDim("# start only the database"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# run app with hot reload + auto-migrate"))
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("C."),
 		termcolor.CBold("Everything on host"),
 		termcolor.CDim(" — you manage your own database"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# expects db at the address in config.yaml"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# expects db at the address in config.yaml"))
+	cliout.Blank()
 
 	// --- Common tasks -------------------------------------------------------
-	termcolor.PrintHeader("Common tasks:")
-	fmt.Println()
+	cliout.Header("Common tasks:")
+	cliout.Blank()
 	tasks := [][2]string{
 		{"gofasta g scaffold Product name:string price:float", "generate a full REST resource, auto-wired end-to-end"},
 		{"gofasta g model Product name:string price:float", "just the model + matching migration"},
@@ -447,13 +447,13 @@ func printGetStarted(projectName string) {
 		{"gofasta doctor", "check prerequisites and project health"},
 	}
 	for _, ln := range tasks {
-		fmt.Printf("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
+		cliout.Plain("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
 	}
-	fmt.Println()
+	cliout.Blank()
 
 	// --- Make shortcuts (thin wrappers over the gofasta commands above) ---
-	termcolor.PrintHeader("Also available as Make targets:")
-	fmt.Println()
+	cliout.Header("Also available as Make targets:")
+	cliout.Blank()
 	makeShortcuts := [][2]string{
 		{"make up", "docker compose up -d"},
 		{"make down", "docker compose down"},
@@ -462,16 +462,16 @@ func printGetStarted(projectName string) {
 		{"make seed", "gofasta seed"},
 	}
 	for _, ln := range makeShortcuts {
-		fmt.Printf("  %-14s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("→ "+ln[1]))
+		cliout.Plain("  %-14s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("→ "+ln[1]))
 	}
-	fmt.Println()
+	cliout.Blank()
 
 	// --- Where to go next ---------------------------------------------------
-	termcolor.PrintHeader("Full command reference:")
-	fmt.Println()
-	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
-	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
-	fmt.Println()
+	cliout.Header("Full command reference:")
+	cliout.Blank()
+	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
+	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
+	cliout.Blank()
 }
 
 // envVarSafeUpper returns name uppercased with every non-[A-Z0-9_] character

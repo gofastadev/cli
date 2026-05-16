@@ -107,18 +107,8 @@ func TestErrString_Branches(t *testing.T) {
 	assert.Equal(t, "boom", errString(errors.New("boom")))
 }
 
-// --- ifText ------------------------------------------------------------------
-
-// TestIfText_GatesOnJSONMode — ifText runs the closure in text mode
-// and skips it in JSON mode. The init steps depend on this contract
-// to keep the JSON stdout stream clean.
-func TestIfText_GatesOnJSONMode(t *testing.T) {
-	called := false
-	ifText(func() { called = true })
-	assert.True(t, called, "ifText must run fn in text mode")
-
-	withJSONMode(t)
-	called = false
-	ifText(func() { called = true })
-	assert.False(t, called, "ifText must skip fn in JSON mode")
-}
+// (ifText helper was removed when initSteps.print* delegates were
+// inlined to cliout helpers — cliout.{Step,Success,Warn,Hint} now
+// route by JSON mode themselves, so no command-side gate is needed.
+// The routing contract is covered by TestEveryVerb_RoutingConsistent
+// in pkg/cliout.)

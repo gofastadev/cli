@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 )
 
 // GenJob generates a cron job file in app/jobs/ AND a sibling
@@ -101,7 +101,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 	// Check for uncommented registry line (tab-indented, not //-prefixed)
 	uncommentedRegistry := fmt.Sprintf("\t\t%q: jobs.New%sJob(", d.SnakeName, d.Name)
 	if strings.Contains(s, uncommentedRegistry) {
-		termcolor.PrintSkip(path, "already registered")
+		cliout.Skip(path, "already registered")
 		return nil
 	}
 
@@ -137,7 +137,7 @@ func PatchJobConfig(d ScaffoldData) error {
 	// Check for an active (uncommented) entry with this job name
 	activeEntry := fmt.Sprintf("  - name: %s\n", d.SnakeName)
 	if strings.Contains(s, activeEntry) {
-		termcolor.PrintSkip(path, "already in config")
+		cliout.Skip(path, "already in config")
 		return nil
 	}
 

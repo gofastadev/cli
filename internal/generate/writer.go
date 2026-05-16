@@ -7,7 +7,7 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 )
 
 // tokenPair is one __TOKEN__ → value substitution for renderAndEmit.
@@ -28,7 +28,7 @@ type tokenPair struct {
 // larger ones if they could appear as substrings.
 func renderAndEmit(path, tmpl string, substitutions []tokenPair) error {
 	if _, err := os.Stat(path); err == nil {
-		termcolor.PrintSkip(path, "exists")
+		cliout.Skip(path, "exists")
 		return nil
 	}
 	content := tmpl
@@ -44,7 +44,7 @@ func renderAndEmit(path, tmpl string, substitutions []tokenPair) error {
 // is recorded in the plan instead of written to disk.
 func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if _, err := os.Stat(path); err == nil {
-		termcolor.PrintSkip(path, "exists")
+		cliout.Skip(path, "exists")
 		return nil
 	}
 	funcMap := template.FuncMap{

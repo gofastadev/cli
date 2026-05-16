@@ -164,18 +164,18 @@ func resolveRepairTarget(dirtyVersion int, migrationsDir string) (int, error) {
 func promptRepairTarget(dirtyVersion int, migrationsDir string) (int, error) {
 	reader := bufio.NewReader(repairStdin)
 	for {
-		fmt.Println(termcolor.Warn("Schema is dirty at version %d", dirtyVersion))
-		fmt.Println("A migration started but didn't complete cleanly. The DB might be in")
-		fmt.Println("any in-between state. You need to manually reconcile the DB before")
-		fmt.Println("clearing the dirty flag. Choose how:")
-		fmt.Println()
-		fmt.Println("  r — REVERT: I manually undid migration", dirtyVersion,
+		cliout.Plainln(termcolor.Warn("Schema is dirty at version %d", dirtyVersion))
+		cliout.Plainln("A migration started but didn't complete cleanly. The DB might be in")
+		cliout.Plainln("any in-between state. You need to manually reconcile the DB before")
+		cliout.Plainln("clearing the dirty flag. Choose how:")
+		cliout.Blank()
+		cliout.Plainln("  r — REVERT: I manually undid migration", dirtyVersion,
 			"→ mark version", dirtyVersion-1, "as current")
-		fmt.Println("  c — COMPLETE: I manually finished migration", dirtyVersion,
+		cliout.Plainln("  c — COMPLETE: I manually finished migration", dirtyVersion,
 			"→ mark version", dirtyVersion, "as current")
-		fmt.Println("  s — SHOW the .up.sql and .down.sql so I can decide")
-		fmt.Println("  q — QUIT without changing anything")
-		fmt.Print("Choice: ")
+		cliout.Plainln("  s — SHOW the .up.sql and .down.sql so I can decide")
+		cliout.Plainln("  q — QUIT without changing anything")
+		cliout.Plain("Choice: ")
 
 		line, _ := reader.ReadString('\n')
 		choice := strings.ToLower(strings.TrimSpace(line))
@@ -187,13 +187,13 @@ func promptRepairTarget(dirtyVersion int, migrationsDir string) (int, error) {
 			return dirtyVersion, nil
 		case "s", "show":
 			showMigrationSQL(migrationsDir, dirtyVersion)
-			fmt.Println()
+			cliout.Blank()
 			continue
 		case "q", "quit", "cancel", "":
 			return 0, fmt.Errorf("repair canceled")
 		default:
-			fmt.Println(termcolor.Warn("Invalid choice %q — please enter r, c, s, or q", choice))
-			fmt.Println()
+			cliout.Plainln(termcolor.Warn("Invalid choice %q — please enter r, c, s, or q", choice))
+			cliout.Blank()
 		}
 	}
 }
@@ -205,17 +205,17 @@ func showMigrationSQL(migrationsDir string, version int) {
 	downPath := findMigrationFile(migrationsDir, version, "down.sql")
 
 	if upPath != "" {
-		fmt.Println(termcolor.Step("Up migration: %s", upPath))
+		cliout.Plainln(termcolor.Step("Up migration: %s", upPath))
 		printFileWithIndent(upPath, "    ")
 	} else {
-		fmt.Println(termcolor.Warn("No .up.sql found for version %d", version))
+		cliout.Plainln(termcolor.Warn("No .up.sql found for version %d", version))
 	}
-	fmt.Println()
+	cliout.Blank()
 	if downPath != "" {
-		fmt.Println(termcolor.Step("Down migration: %s", downPath))
+		cliout.Plainln(termcolor.Step("Down migration: %s", downPath))
 		printFileWithIndent(downPath, "    ")
 	} else {
-		fmt.Println(termcolor.Warn("No .down.sql found for version %d", version))
+		cliout.Plainln(termcolor.Warn("No .down.sql found for version %d", version))
 	}
 }
 
@@ -250,11 +250,11 @@ func findMigrationFile(migrationsDir string, version int, suffix string) string 
 func printFileWithIndent(path, indent string) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		fmt.Println(indent + termcolor.Warn("could not read %s: %s", path, err.Error()))
+		cliout.Plainln(indent + termcolor.Warn("could not read %s: %s", path, err.Error()))
 		return
 	}
 	for line := range strings.SplitSeq(strings.TrimRight(string(body), "\n"), "\n") {
-		fmt.Println(indent + termcolor.CDim(line))
+		cliout.Plainln(indent + termcolor.CDim(line))
 	}
 }
 
@@ -272,7 +272,7 @@ func repairForceTo(target int, dbURL, migrationsDir string) error {
 	// already errored in non-TTY non-flag cases, so we only reach here
 	// non-TTY when explicit flags were passed — trust the caller).
 	if !repairYes && stdinIsTTY() && !cliout.JSON() {
-		fmt.Print(termcolor.Warn("This will set schema_migrations.version=%d, dirty=false. Continue? [y/N]: ", target))
+		cliout.Plain("%s", termcolor.Warn("This will set schema_migrations.version=%d, dirty=false. Continue? [y/N]: ", target))
 		reader := bufio.NewReader(repairStdin)
 		line, _ := reader.ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
@@ -287,7 +287,7 @@ func repairForceTo(target int, dbURL, migrationsDir string) error {
 	}
 
 	if !cliout.JSON() {
-		fmt.Println(termcolor.Step("Running `migrate force %d`", target))
+		cliout.Plainln(termcolor.Step("Running `migrate force %d`", target))
 	}
 
 	cmd := execCommand("migrate",

@@ -4,7 +4,6 @@ import (
 	"os"
 
 	"github.com/gofastadev/cli/internal/cliout"
-	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -40,9 +39,9 @@ config.yaml via the project binary, not the CLI directly.`,
 		// own output is the contract — wrapping it would corrupt JSON.
 		if !cliout.JSON() {
 			if fresh {
-				termcolor.PrintStep("Resetting + seeding database")
+				cliout.Step("Resetting + seeding database")
 			} else {
-				termcolor.PrintStep("Seeding database")
+				cliout.Step("Seeding database")
 			}
 		}
 
@@ -54,9 +53,9 @@ config.yaml via the project binary, not the CLI directly.`,
 
 		if !cliout.JSON() {
 			if err != nil {
-				termcolor.PrintFail("Seed failed: %s", err.Error())
+				cliout.Fail("Seed failed: %s", err.Error())
 			} else {
-				termcolor.PrintSuccess("Seed complete")
+				cliout.Success("Seed complete")
 			}
 		}
 		return err

@@ -4,7 +4,6 @@ import (
 	"os"
 
 	"github.com/gofastadev/cli/internal/cliout"
-	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -32,7 +31,7 @@ subcommand are forwarded through unchanged.`,
 		// In text mode, announce we're handing off to the child.
 		// In --json mode the child's own output is the contract.
 		if !cliout.JSON() {
-			termcolor.PrintStep("Starting project server (go run ./app/main serve)")
+			cliout.Step("Starting project server (go run ./app/main serve)")
 		}
 
 		c := execCommand("go", "run", "./app/main", "serve")

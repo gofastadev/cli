@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/commands/configutil"
-	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -338,7 +338,7 @@ func menuActionEnterConnString(reader *bufio.Reader, _ []probeResult) (map[strin
 		}
 	}
 
-	termcolor.PrintSuccess("override applied — re-probing…")
+	cliout.Success("override applied — re-probing…")
 	return kvs, nil
 }
 
@@ -414,7 +414,7 @@ func promptPersistConnString(reader *bufio.Reader, kvs map[string]string) error 
 	}
 	ans := strings.ToLower(strings.TrimSpace(line))
 	if ans != "y" && ans != "yes" {
-		termcolor.PrintStep("  (skipped persistence — this session only)")
+		cliout.Step("  (skipped persistence — this session only)")
 		return nil
 	}
 

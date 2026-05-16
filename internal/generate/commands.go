@@ -3,6 +3,7 @@ package generate
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -370,7 +371,7 @@ logic in app/services/<name>.service.go.`,
 			}
 		}
 		fmt.Println()
-		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
+		cliout.Success("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
 		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
 		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
 		if d.IncludeSwagger {

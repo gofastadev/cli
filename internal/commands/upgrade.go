@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/cliout"
-	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -115,7 +114,7 @@ func runUpgrade() error {
 
 	if current == latestClean {
 		if !cliout.JSON() {
-			termcolor.PrintSuccess("gofasta is already up to date (v%s)", current)
+			cliout.Success("gofasta is already up to date (v%s)", current)
 		}
 		emitUpgradeResult(upgradeResult{
 			Action: "upgrade", Method: "none", OldVersion: current,
@@ -125,7 +124,7 @@ func runUpgrade() error {
 	}
 
 	if !cliout.JSON() {
-		termcolor.PrintHeader("Upgrading gofasta: v%s → v%s", current, latestClean)
+		cliout.Header("Upgrading gofasta: v%s → v%s", current, latestClean)
 	}
 
 	execPath, err := osExecutable()
@@ -224,7 +223,7 @@ func readBinaryVersion(binPath string) (string, error) {
 func upgradeViaGoInstall(rawTag, expectedVersion, oldVersion string) error {
 	modulePath := "github.com/gofastadev/cli/cmd/gofasta@" + rawTag
 	if !cliout.JSON() {
-		termcolor.PrintStep("Detected `go install`. Running: go install %s", modulePath)
+		cliout.Step("Detected `go install`. Running: go install %s", modulePath)
 	}
 	cmd := execCommand("go", "install", modulePath)
 	if cliout.JSON() {
@@ -248,7 +247,7 @@ func upgradeViaGoInstall(rawTag, expectedVersion, oldVersion string) error {
 	target, err := goInstallTargetPath()
 	if err != nil {
 		if !cliout.JSON() {
-			termcolor.PrintWarn("Upgrade complete (could not determine install path for verification).")
+			cliout.Warn("Upgrade complete (could not determine install path for verification).")
 			printShellHashHint()
 		}
 		emitUpgradeResult(upgradeResult{
@@ -261,8 +260,8 @@ func upgradeViaGoInstall(rawTag, expectedVersion, oldVersion string) error {
 	installed, err := readBinaryVersion(target)
 	if err != nil {
 		if !cliout.JSON() {
-			termcolor.PrintSuccess("Upgrade complete. Installed to %s", target)
-			termcolor.PrintWarn("Could not verify the version of the new binary — it may still be correct.")
+			cliout.Success("Upgrade complete. Installed to %s", target)
+			cliout.Warn("Could not verify the version of the new binary — it may still be correct.")
 			printShellHashHint()
 		}
 		emitUpgradeResult(upgradeResult{
@@ -288,7 +287,7 @@ func upgradeViaGoInstall(rawTag, expectedVersion, oldVersion string) error {
 	}
 
 	if !cliout.JSON() {
-		termcolor.PrintSuccess("Upgraded to %s at %s", installed, target)
+		cliout.Success("Upgraded to %s at %s", installed, target)
 		printShellHashHint()
 	}
 	emitUpgradeResult(upgradeResult{
@@ -313,7 +312,7 @@ func upgradeViaBinary(execPath, version, oldVersion string) error {
 
 	url := fmt.Sprintf(githubDownloadURLFmt, version, binary)
 	if !cliout.JSON() {
-		termcolor.PrintStep("Downloading %s...", url)
+		cliout.Step("Downloading %s...", url)
 	}
 
 	emitFail := func(err error) error {
@@ -360,7 +359,7 @@ func upgradeViaBinary(execPath, version, oldVersion string) error {
 	}
 
 	if !cliout.JSON() {
-		termcolor.PrintSuccess("Installed %s to %s", version, execPath)
+		cliout.Success("Installed %s to %s", version, execPath)
 		printShellHashHint()
 	}
 	emitUpgradeResult(upgradeResult{
@@ -392,7 +391,7 @@ func replaceViaCopy(src, dst, oldVersion, version string) error {
 	}
 
 	if !cliout.JSON() {
-		termcolor.PrintSuccess("Installed to %s", dst)
+		cliout.Success("Installed to %s", dst)
 		printShellHashHint()
 	}
 	emitUpgradeResult(upgradeResult{
@@ -407,12 +406,12 @@ func replaceViaCopy(src, dst, oldVersion, version string) error {
 // still resolve `gofasta` to the old binary's cached inode. Text-mode only;
 // the JSON consumer doesn't need shell-cache advice.
 func printShellHashHint() {
-	fmt.Println()
-	fmt.Println("If `gofasta --version` still reports the old version in this shell,")
-	fmt.Println("your shell has cached the old executable. Refresh it with:")
-	fmt.Println()
-	fmt.Println("    hash -r        # bash / zsh")
-	fmt.Println("    rehash         # zsh (alternative)")
-	fmt.Println()
-	fmt.Println("…or just open a new terminal.")
+	cliout.Blank()
+	cliout.Plainln("If `gofasta --version` still reports the old version in this shell,")
+	cliout.Plainln("your shell has cached the old executable. Refresh it with:")
+	cliout.Blank()
+	cliout.Plainln("    hash -r        # bash / zsh")
+	cliout.Plainln("    rehash         # zsh (alternative)")
+	cliout.Blank()
+	cliout.Plainln("…or just open a new terminal.")
 }

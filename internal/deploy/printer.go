@@ -2,22 +2,21 @@ package deploy
 
 import (
 	"fmt"
-	"os"
+	"io"
 
 	"github.com/gofastadev/cli/internal/cliout"
 )
 
-// In --json mode every Print* below routes to stderr instead of stdout
-// so the deploy result the calling command emits via cliout.Print stays
-// the only thing on stdout — agents parsing stdout get a single JSON
-// document, humans running --json with stderr visible still see live
-// progress decorations.
-func printOut() *os.File {
-	if cliout.JSON() {
-		return os.Stderr
-	}
-	return os.Stdout
-}
+// Every printer in this file delegates to cliout.Out() so the deploy
+// package shares the same stdout (text mode) / stderr (--json mode)
+// routing as the rest of the CLI — keeps the JSON document the
+// command emits at the end as the only thing on stdout in --json mode.
+
+// printOut returns the writer all deploy-package output flows through.
+// Kept package-private so callers outside deploy can't accidentally
+// pick a different writer; ssh.go's RunRemote uses it to redirect a
+// child SSH session's stdout to the same destination as our prints.
+func printOut() io.Writer { return cliout.Out() }
 
 // PrintStep prints a numbered step message.
 func PrintStep(step, total int, msg string) {
@@ -44,16 +43,15 @@ func PrintInfo(msg string) {
 	_, _ = fmt.Fprintf(printOut(), "   %s\n", msg)
 }
 
-// dprintf is a deploy-package internal sibling of fmt.Printf that
-// honors --json (writing to stderr instead of stdout). Use it at every
-// call site that previously called fmt.Printf for progress chatter, so
-// the deploy command's final cliout.Print(...) is the only thing on
-// stdout in JSON mode.
+// dprintf is the deploy-package printf used by the multi-step flows
+// (binary.go, docker.go, etc.) for inline progress text that doesn't
+// fit the Print* verbs above. Routes through the same writer as the
+// rest so --json mode stays clean.
 func dprintf(format string, args ...any) {
 	_, _ = fmt.Fprintf(printOut(), format, args...)
 }
 
-// dprintln is the Println sibling of dprintf — same redirect rules.
+// dprintln is the Println sibling of dprintf — same routing.
 func dprintln(args ...any) {
 	_, _ = fmt.Fprintln(printOut(), args...)
 }

@@ -144,7 +144,7 @@ func runDBReset(skipSeed bool) error {
 // written to stdout.
 func runDBStep(label, name string, args ...string) error {
 	if !cliout.JSON() {
-		fmt.Println(termcolor.Step("Running %s", label))
+		cliout.Plainln(termcolor.Step("Running %s", label))
 	}
 	cmd := execCommand(name, args...)
 	if cliout.JSON() {

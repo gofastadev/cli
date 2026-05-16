@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/gofastadev/cli/internal/cliout"
-	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
 
@@ -52,70 +51,70 @@ func runInit() error {
 	steps := initSteps{}
 
 	if !cliout.JSON() {
-		termcolor.PrintHeader("Initializing gofasta project...")
+		cliout.Header("Initializing gofasta project...")
 	}
 
 	// Step 1: Create .env if missing
 	if _, err := os.Stat(".env"); os.IsNotExist(err) {
 		if _, err := os.Stat(".env.example"); err == nil {
-			steps.printText("Creating .env from .env.example")
+			cliout.Step("Creating .env from .env.example")
 			input, _ := os.ReadFile(".env.example")
 			_ = os.WriteFile(".env", input, 0o644)
 			steps.add("env.create", "ok", nil)
 		} else {
-			steps.printText("Creating empty .env file")
+			cliout.Step("Creating empty .env file")
 			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
 			steps.add("env.create", "ok", nil)
 		}
 	} else {
-		steps.printSuccess(".env already exists")
+		cliout.Success(".env already exists")
 		steps.add("env.create", "skip", nil)
 	}
 
-	steps.blank()
-	steps.printText("Installing dependencies")
+	cliout.Blank()
+	cliout.Step("Installing dependencies")
 	if err := runCmd("go", "mod", "tidy"); err != nil {
 		steps.add("go.mod.tidy", "fail", err)
 		return finishInit(steps, fmt.Errorf("go mod tidy failed: %w", err))
 	}
 	steps.add("go.mod.tidy", "ok", nil)
 
-	steps.blank()
-	steps.printText("Generating Wire DI code")
+	cliout.Blank()
+	cliout.Step("Generating Wire DI code")
 	if err := runCmd("go", "tool", "wire", "./app/di/"); err != nil {
-		steps.printWarn("Wire generation failed (you may need to fix compilation errors first)")
+		cliout.Warn("Wire generation failed (you may need to fix compilation errors first)")
 		steps.add("wire", "warn", err)
 	} else {
 		steps.add("wire", "ok", nil)
 	}
 
-	steps.blank()
+	cliout.Blank()
 	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		steps.printText("Generating GraphQL code")
+		cliout.Step("Generating GraphQL code")
 		if err := runCmd("go", "tool", "gqlgen", "generate"); err != nil {
-			steps.printWarn("gqlgen generation failed (you may need to fix schema errors first)")
+			cliout.Warn("gqlgen generation failed (you may need to fix schema errors first)")
 			steps.add("gqlgen", "warn", err)
 		} else {
 			steps.add("gqlgen", "ok", nil)
 		}
 	} else {
-		steps.printText("Skipping GraphQL (no gqlgen.yml found)")
+		cliout.Step("Skipping GraphQL (no gqlgen.yml found)")
 		steps.add("gqlgen", "skip", nil)
 	}
 
-	steps.blank()
-	steps.printText("Generating Swagger/OpenAPI docs")
+	cliout.Blank()
+	cliout.Step("Generating Swagger/OpenAPI docs")
 	if err := runCmd("go", "tool", "swag", "init",
 		"-g", "app/main/main.go", "-o", "docs/",
 		"--parseDependency", "--parseInternal"); err != nil {
-		steps.printWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
+		cliout.Warn("Swagger generation skipped (can be run later with: gofasta swagger)")
 		steps.add("swagger", "warn", err)
 	} else {
 		steps.add("swagger", "ok", nil)
 	}
 
-	steps.blank()
-	steps.printText("Running database migrations")
+	cliout.Blank()
+	cliout.Step("Running database migrations")
 	// Load the .env we just created (or already had) so the migrate URL
 	// includes user/password/name and the host-side port mapping. See
 	// migrate.go for the full why — config.yaml in scaffolded projects
@@ -135,19 +134,19 @@ func runInit() error {
 		}
 		migrateCmd.Stderr = os.Stderr
 		if err := migrateCmd.Run(); err != nil {
-			steps.printWarn("Migrations failed (is the database running?)")
-			steps.printHint("Hint: run 'docker compose up db -d' to start the database")
+			cliout.Warn("Migrations failed (is the database running?)")
+			cliout.Hint("Hint: run 'docker compose up db -d' to start the database")
 			steps.add("migrate", "warn", err)
 		} else {
 			steps.add("migrate", "ok", nil)
 		}
 	} else {
-		steps.printWarn("Could not load config (skipping migrations)")
+		cliout.Warn("Could not load config (skipping migrations)")
 		steps.add("migrate", "skip", nil)
 	}
 
-	steps.blank()
-	steps.printText("Verifying build")
+	cliout.Blank()
+	cliout.Step("Verifying build")
 	if err := runCmd("go", "build", "./..."); err != nil {
 		steps.add("build", "fail", err)
 		return finishInit(steps, fmt.Errorf("build verification failed: %w", err))
@@ -155,8 +154,8 @@ func runInit() error {
 	steps.add("build", "ok", nil)
 
 	if !cliout.JSON() {
-		fmt.Println()
-		termcolor.PrintSuccess("Project initialized successfully!")
+		cliout.Blank()
+		cliout.Success("Project initialized successfully!")
 		// Reuse the same onboarding block that `gofasta new` prints so fresh
 		// projects and cloned projects see identical next-steps. Pass an empty
 		// name to skip the `cd` line — init runs from inside the project dir.
@@ -177,24 +176,6 @@ func (s *initSteps) add(name, status string, err error) {
 		step.Error = err.Error()
 	}
 	*s = append(*s, step)
-}
-
-// printText / printSuccess / printWarn / printHint / blank are no-ops
-// in JSON mode so the structured stdout document is the only content
-// the agent sees. In text mode they delegate to termcolor.
-func (s *initSteps) printText(msg string)    { ifText(func() { termcolor.PrintStep("%s", msg) }) }
-func (s *initSteps) printSuccess(msg string) { ifText(func() { termcolor.PrintSuccess("%s", msg) }) }
-func (s *initSteps) printWarn(msg string)    { ifText(func() { termcolor.PrintWarn("%s", msg) }) }
-func (s *initSteps) printHint(msg string)    { ifText(func() { termcolor.PrintHint("%s", msg) }) }
-func (s *initSteps) blank()                  { ifText(func() { fmt.Println() }) }
-
-// ifText runs fn only when the CLI is in text mode. Centralizes the
-// cliout.JSON() check so the call sites read top-to-bottom.
-func ifText(fn func()) {
-	if cliout.JSON() {
-		return
-	}
-	fn()
 }
 
 // finishInit emits the final structured result in JSON mode and

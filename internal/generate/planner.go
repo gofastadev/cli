@@ -11,7 +11,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 )
 
 // formatGoIfNeeded runs gofmt on body when path looks like Go source
@@ -138,7 +138,7 @@ func writeOrRecordCreate(path string, body []byte) error {
 	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordCreate(path, len(body))
-		termcolor.PrintCreate(path + " (dry-run)")
+		cliout.Create(path + " (dry-run)")
 		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -147,7 +147,7 @@ func writeOrRecordCreate(path string, body []byte) error {
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		return err
 	}
-	termcolor.PrintCreate(path)
+	cliout.Create(path)
 	return nil
 }
 
@@ -158,13 +158,13 @@ func writeOrRecordPatch(path, detail string, body []byte) error {
 	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordPatch(path, detail, len(body))
-		termcolor.PrintPatch(path+" (dry-run)", detail)
+		cliout.Patch(path+" (dry-run)", detail)
 		return nil
 	}
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		return err
 	}
-	termcolor.PrintPatch(path, detail)
+	cliout.Patch(path, detail)
 	return nil
 }
 

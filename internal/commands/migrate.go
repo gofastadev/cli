@@ -194,12 +194,12 @@ func resolveDownPlan() (migrateDownPlan, error) {
 // Reading via `downStdin` (not os.Stdin directly) lets tests drive
 // the menu with a strings.Reader.
 func promptDownPlan() (migrateDownPlan, error) {
-	fmt.Println(termcolor.Step("Roll back how many migrations?"))
-	fmt.Println("  1 — latest only (default)")
-	fmt.Println("  a — all migrations (destructive)")
-	fmt.Println("  n — specific number")
-	fmt.Println("  q — cancel")
-	fmt.Print("Choice [1]: ")
+	cliout.Plainln(termcolor.Step("Roll back how many migrations?"))
+	cliout.Plainln("  1 — latest only (default)")
+	cliout.Plainln("  a — all migrations (destructive)")
+	cliout.Plainln("  n — specific number")
+	cliout.Plainln("  q — cancel")
+	cliout.Plain("Choice [1]: ")
 
 	reader := bufio.NewReader(downStdin)
 	line, _ := reader.ReadString('\n')
@@ -211,7 +211,7 @@ func promptDownPlan() (migrateDownPlan, error) {
 	case "a", "all":
 		return migrateDownPlan{steps: 0, confirm: true}, nil
 	case "n":
-		fmt.Print("How many steps? ")
+		cliout.Plain("How many steps? ")
 		nLine, _ := reader.ReadString('\n')
 		n, perr := strconv.Atoi(strings.TrimSpace(nLine))
 		if perr != nil || n <= 0 {
@@ -239,7 +239,7 @@ func confirmDestructive(plan migrateDownPlan) bool {
 	} else {
 		msg = fmt.Sprintf("This will roll back %d migrations. Confirm? [y/N]: ", plan.steps)
 	}
-	fmt.Print(termcolor.Warn("%s", msg))
+	cliout.Plain("%s", termcolor.Warn("%s", msg))
 
 	reader := bufio.NewReader(downStdin)
 	line, _ := reader.ReadString('\n')
@@ -279,7 +279,7 @@ func runMigrate(direction string, migrateArgs []string, stdinOverride io.Reader)
 	// it through cliout.Print at the end with the right shape.
 	var captured bytes.Buffer
 	if !cliout.JSON() {
-		fmt.Println(termcolor.Step("Applying migrations (%s)", direction))
+		cliout.Plainln(termcolor.Step("Applying migrations (%s)", direction))
 	}
 
 	args := append([]string{"-path", "db/migrations", "-database", dbURL}, migrateArgs...)

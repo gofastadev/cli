@@ -170,7 +170,7 @@ func runDeploy(cmd *cobra.Command) error {
 	}
 
 	if !cliout.JSON() {
-		fmt.Printf("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)
+		cliout.Plain("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)
 	}
 
 	var deployErr error
@@ -204,7 +204,7 @@ func runDeployStatus(cmd *cobra.Command) error {
 	}
 
 	if !cliout.JSON() {
-		fmt.Printf("Checking status of %s on %s...\n\n", cfg.AppName, cfg.Host)
+		cliout.Plain("Checking status of %s on %s...\n\n", cfg.AppName, cfg.Host)
 	}
 
 	// Show current release
@@ -214,7 +214,7 @@ func runDeployStatus(cmd *cobra.Command) error {
 	}
 
 	if !cliout.JSON() {
-		fmt.Println()
+		cliout.Blank()
 	}
 
 	// Show service status — service stdout (docker compose ps / systemctl
@@ -275,7 +275,7 @@ func runDeployLogs(cmd *cobra.Command) error {
 		return err
 	}
 
-	fmt.Printf("Tailing logs for %s on %s (Ctrl+C to stop)...\n\n", cfg.AppName, cfg.Host)
+	cliout.Plain("Tailing logs for %s on %s (Ctrl+C to stop)...\n\n", cfg.AppName, cfg.Host)
 
 	if cfg.Method == "docker" {
 		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())

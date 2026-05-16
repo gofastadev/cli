@@ -202,20 +202,20 @@ func runVerify(opts verifyOptions) error {
 func printVerifyStep(c verifyCheck) {
 	switch c.Status {
 	case "pass":
-		fmt.Println("  " + termcolor.Success("%-16s (%dms)", c.Name, c.Duration))
+		cliout.Plainln("  " + termcolor.Success("%-16s (%dms)", c.Name, c.Duration))
 	case "fail":
 		suffix := ""
 		if c.Message != "" {
 			suffix = ": " + c.Message
 		}
-		fmt.Println("  " + termcolor.Fail("%-16s (%dms)%s", c.Name, c.Duration, suffix))
+		cliout.Plainln("  " + termcolor.Fail("%-16s (%dms)%s", c.Name, c.Duration, suffix))
 		if c.Output != "" {
 			for line := range strings.SplitSeq(strings.TrimRight(c.Output, "\n"), "\n") {
-				fmt.Println("    " + termcolor.CDim(line))
+				cliout.Plainln("    " + termcolor.CDim(line))
 			}
 		}
 	case "skip":
-		fmt.Println("  " + termcolor.CDim(fmt.Sprintf("- %-16s (%dms): skip", c.Name, c.Duration)))
+		cliout.Plainln("  " + termcolor.CDim(fmt.Sprintf("- %-16s (%dms): skip", c.Name, c.Duration)))
 	}
 }
 
