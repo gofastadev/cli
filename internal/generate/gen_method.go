@@ -104,7 +104,9 @@ func methodDataDefaults(d MethodData) MethodData {
 		d.Snake = toSnakeCase(d.Resource)
 	}
 	if d.InterfaceName == "" {
-		d.InterfaceName = d.Resource + "Service"
+		// gofasta's scaffold names service interfaces "<Name>ServiceInterface"
+		// (see internal/generate/templates/svc_interface.go). Honor that.
+		d.InterfaceName = d.Resource + "ServiceInterface"
 	}
 	if d.ImplStructName == "" {
 		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Service"

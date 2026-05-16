@@ -24,8 +24,8 @@ func setupScaffoldedResource(t *testing.T) string {
 
 import "context"
 
-// OrderService is the order business-logic contract.
-type OrderService interface {
+// OrderServiceInterface is the order business-logic contract.
+type OrderServiceInterface interface {
 	// Create persists a new order.
 	Create(ctx context.Context, name string) error
 }
@@ -56,7 +56,7 @@ func TestGenMethod_AppendsToInterfaceAndImpl(t *testing.T) {
 	iface, err := os.ReadFile(filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"))
 	require.NoError(t, err)
 	require.Contains(t, string(iface), "Archive(ctx context.Context) error")
-	require.Contains(t, string(iface), "// OrderService is the order business-logic contract.")
+	require.Contains(t, string(iface), "// OrderServiceInterface is the order business-logic contract.")
 
 	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
 	require.NoError(t, err)

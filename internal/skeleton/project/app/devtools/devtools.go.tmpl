@@ -38,6 +38,11 @@ import (
 // of the root span its middleware chain opened, so the dashboard can
 // render a "drill into trace" link per request row.
 type RequestEntry struct {
+	// ID is a per-request opaque identifier (monotonic + short) that
+	// agents and humans use to address one captured request by name.
+	// Surfaced by /debug/requests/{id} for single-entry lookups and by
+	// /debug/replay for SSRF-safe re-fires. Format: "req_<int>".
+	ID         string    `json:"id"`
 	Time       time.Time `json:"time"`
 	Method     string    `json:"method"`
 	Path       string    `json:"path"`
@@ -45,6 +50,14 @@ type RequestEntry struct {
 	DurationMS int64     `json:"duration_ms"`
 	RemoteAddr string    `json:"remote_addr,omitempty"`
 	TraceID    string    `json:"trace_id,omitempty"`
+	// Headers captures the incoming request headers verbatim — needed so
+	// /debug/replay can re-fire a request with the same content-type +
+	// auth context. Capped: only the first 32 headers are kept and each
+	// value is truncated at 2KiB so a malicious client can't blow up
+	// memory. Authorization / Cookie are left intact because dev-time
+	// replay needs them; production builds compile this whole package
+	// out via the !devtools build tag.
+	Headers map[string][]string `json:"headers,omitempty"`
 	// Body is the captured request body (capped at 64KiB). Used by the
 	// /api/replay endpoint in the dashboard to re-fire the exact same
 	// request. Only populated for requests with a body ≤ cap.
@@ -58,6 +71,10 @@ type RequestEntry struct {
 	// so the dashboard can render JSON / plain text bodies correctly
 	// and the HAR export carries the right MIME type.
 	ResponseContentType string `json:"response_content_type,omitempty"`
+	// Replay is true when this entry was created by /debug/replay rather
+	// than a real client request. Lets the dashboard render replayed
+	// requests distinctly (and lets users filter them out of HAR).
+	Replay bool `json:"replay,omitempty"`
 }
 
 // QueryEntry is a single captured SQL query. Populated by the GORM
