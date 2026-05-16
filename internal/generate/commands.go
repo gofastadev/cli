@@ -370,12 +370,12 @@ logic in app/services/<name>.service.go.`,
 				return err
 			}
 		}
-		fmt.Println()
+		cliout.Blank()
 		cliout.Success("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
-		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
-		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
+		cliout.Plain("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
+		cliout.Plain("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
 		if d.IncludeSwagger {
-			fmt.Printf("  %s  %s\n", termcolor.CDim("Regenerate docs:"), termcolor.CBold("gofasta swagger"))
+			cliout.Plain("  %s  %s\n", termcolor.CDim("Regenerate docs:"), termcolor.CBold("gofasta swagger"))
 		}
 		return nil
 	},

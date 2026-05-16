@@ -7,6 +7,7 @@ import (
 	"os/exec"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
@@ -34,7 +35,7 @@ func RunSteps(d ScaffoldData, steps []Step) error {
 // can act on programmatically (template regression, missing Wire rerun,
 // outdated deps).
 func AutoVerify() error {
-	fmt.Printf("  %s go build ./...\n", termcolor.CBrand("verifying:"))
+	cliout.Plain("  %s go build ./...\n", termcolor.CBrand("verifying:"))
 	cmd := execCommand("go", "build", "./...")
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
@@ -51,7 +52,7 @@ func AutoVerify() error {
 
 // RunWire regenerates the Wire dependency injection code.
 func RunWire(_ ScaffoldData) error {
-	fmt.Printf("  %s go tool wire ./app/di/\n", termcolor.CBrand("running:"))
+	cliout.Plain("  %s go tool wire ./app/di/\n", termcolor.CBrand("running:"))
 	cmd := execCommand("go", "tool", "wire", "./app/di/")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -60,7 +61,7 @@ func RunWire(_ ScaffoldData) error {
 
 // RunGqlgen regenerates the GraphQL code from schema files.
 func RunGqlgen(_ ScaffoldData) error {
-	fmt.Printf("  %s go tool gqlgen generate\n", termcolor.CBrand("running:"))
+	cliout.Plain("  %s go tool gqlgen generate\n", termcolor.CBrand("running:"))
 	cmd := execCommand("go", "tool", "gqlgen", "generate")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

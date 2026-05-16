@@ -109,7 +109,8 @@ func Skip(path, reason string) {
 }
 
 // Blank writes one empty line. Use as a visual separator instead of
-// fmt.Println() — picks up the same stdout/stderr routing as the rest.
+// a raw stdlib println — picks up the same stdout/stderr routing as
+// the rest of the cliout helpers.
 func Blank() {
 	_, _ = fmt.Fprintln(progressOut())
 }

@@ -83,7 +83,7 @@ func CopyFile(cfg *DeployConfig, localPath, remotePath string) error {
 	}
 
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] scp %s %s\033[0m\n", localPath, dest)
+		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] scp %s %s\033[0m\n", localPath, dest)
 		return nil
 	}
 
@@ -104,7 +104,7 @@ func CopyDir(cfg *DeployConfig, localDir, remoteDir string) error {
 	}
 
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] scp -r %s %s\033[0m\n", localDir, dest)
+		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] scp -r %s %s\033[0m\n", localDir, dest)
 		return nil
 	}
 
@@ -117,7 +117,7 @@ func CopyDir(cfg *DeployConfig, localDir, remoteDir string) error {
 // RunLocalPiped runs a piped shell command locally (e.g., docker save | ssh load).
 func RunLocalPiped(cfg *DeployConfig, shellCmd string) error {
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] sh -c %q\033[0m\n", shellCmd)
+		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] sh -c %q\033[0m\n", shellCmd)
 		return nil
 	}
 
@@ -130,7 +130,7 @@ func RunLocalPiped(cfg *DeployConfig, shellCmd string) error {
 // RunLocal runs a local command with stdout/stderr passthrough.
 func RunLocal(cfg *DeployConfig, name string, args ...string) error {
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] %s %s\033[0m\n", name, strings.Join(args, " "))
+		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] %s %s\033[0m\n", name, strings.Join(args, " "))
 		return nil
 	}
 
