@@ -422,7 +422,21 @@ func detectNPlusOne(queries []scrapedQuery) []nPlusOneFinding {
 			}
 		}
 	}
-	// Sort by count desc so the worst offenders render first.
+	// Sort by count desc so the worst offenders render first. Extracted
+	// so tests can hit the swap branches with a deterministic, pre-
+	// ordered input — detectNPlusOne's source map has randomized
+	// iteration order, which made the inline sort's swap branches
+	// statistically flaky (when the map happened to emit findings
+	// already sorted descending, the swap was a no-op and the
+	// uncovered branches stayed uncovered).
+	sortNPlusOneByCountDesc(out)
+	return out
+}
+
+// sortNPlusOneByCountDesc selection-sorts findings by Count in
+// descending order. Stable enough for the tiny slices detectNPlusOne
+// produces; extracted purely for testability of the inner swap path.
+func sortNPlusOneByCountDesc(out []nPlusOneFinding) {
 	for a := 0; a < len(out); a++ {
 		best := a
 		for b := a + 1; b < len(out); b++ {
@@ -434,7 +448,6 @@ func detectNPlusOne(queries []scrapedQuery) []nPlusOneFinding {
 			out[a], out[best] = out[best], out[a]
 		}
 	}
-	return out
 }
 
 // normalizeSQL collapses string / number literals and whitespace so

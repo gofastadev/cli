@@ -532,6 +532,52 @@ func TestDevtoolsAvailable_Stub(t *testing.T) {
 	assert.False(t, devtoolsAvailable(srv.URL))
 }
 
+// TestSortNPlusOneByCountDesc_SwapsAndUpdates — drives the selection
+// sort directly with a guaranteed out-of-order input. Hits both the
+// inner `best = b` update branch AND the outer `out[a], out[best] =
+// ...` swap branch on every run, which `detectNPlusOne`'s map-driven
+// callers cannot do deterministically (map iteration order is
+// randomized, so the slice arriving at the sort may already be
+// sorted descending ~1-in-N! runs).
+func TestSortNPlusOneByCountDesc_SwapsAndUpdates(t *testing.T) {
+	in := []nPlusOneFinding{
+		{TraceID: "low", Count: 1},
+		{TraceID: "high", Count: 9},
+		{TraceID: "mid", Count: 5},
+	}
+	sortNPlusOneByCountDesc(in)
+	assert.Equal(t, "high", in[0].TraceID)
+	assert.Equal(t, "mid", in[1].TraceID)
+	assert.Equal(t, "low", in[2].TraceID)
+}
+
+// TestSortNPlusOneByCountDesc_AlreadySorted — input is in correct
+// order; the `best != a` swap branch should NOT fire (no-op pass).
+// Pairs with the swap test above to cover both sides of the if.
+func TestSortNPlusOneByCountDesc_AlreadySorted(t *testing.T) {
+	in := []nPlusOneFinding{
+		{TraceID: "a", Count: 9},
+		{TraceID: "b", Count: 5},
+		{TraceID: "c", Count: 1},
+	}
+	sortNPlusOneByCountDesc(in)
+	assert.Equal(t, "a", in[0].TraceID)
+	assert.Equal(t, "b", in[1].TraceID)
+	assert.Equal(t, "c", in[2].TraceID)
+}
+
+// TestSortNPlusOneByCountDesc_Empty — empty + single-element slices
+// must not panic and must remain untouched.
+func TestSortNPlusOneByCountDesc_Empty(t *testing.T) {
+	var empty []nPlusOneFinding
+	sortNPlusOneByCountDesc(empty)
+	assert.Empty(t, empty)
+
+	one := []nPlusOneFinding{{TraceID: "solo", Count: 1}}
+	sortNPlusOneByCountDesc(one)
+	assert.Equal(t, "solo", one[0].TraceID)
+}
+
 // TestDetectNPlusOne_SortsBySelectionSort — a larger input with out-of-
 // order Count values exercises the swap path in the selection sort.
 // Also seeds an out-of-order distribution so the `best = b` branch
