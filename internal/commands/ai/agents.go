@@ -111,6 +111,12 @@ func ListKeys() []string {
 	return keys
 }
 
+// fsWalkDir is a package-level seam over fs.WalkDir so tests can
+// inject a synthetic walk error (other than fs.ErrNotExist) to exercise
+// TemplateFiles's wrap-and-return branch. Production callers see
+// fs.WalkDir's behavior unchanged.
+var fsWalkDir = fs.WalkDir
+
 // TemplateFiles walks the agent's template directory and returns every
 // .tmpl file it contains, each mapped to the destination path it should
 // be written to (relative to the project root).
@@ -131,7 +137,7 @@ func ListKeys() []string {
 //     producing the right dotfile tree in the project.
 func TemplateFiles(a *Agent) ([]TemplateFile, error) {
 	var out []TemplateFile
-	err := fs.WalkDir(templatesFS, a.TemplateDir, func(path string, d fs.DirEntry, err error) error {
+	err := fsWalkDir(templatesFS, a.TemplateDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

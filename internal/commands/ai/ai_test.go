@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -456,6 +457,92 @@ func TestAiCmd_NoArgsShowsHelp(t *testing.T) {
 	_ = captureStdout(t, func() {
 		require.NoError(t, Cmd.RunE(Cmd, nil))
 	})
+}
+
+// TestTemplateFiles_WalkErrorPropagates — inject a non-IsNotExist
+// walk error via the fsWalkDir seam. TemplateFiles must surface it
+// so the callers (agentOwnedFiles, Install, expectedRenderings) hit
+// their error-return branches.
+func TestTemplateFiles_WalkErrorPropagates(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_, err := TemplateFiles(AgentByKey("claude"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "synthetic walk failure")
+}
+
+// TestAgentOwnedFiles_WalkErrorPropagates — fsWalkDir failure
+// surfaces through agentOwnedFiles as a CodeAIInstallFailed clierr.
+func TestAgentOwnedFiles_WalkErrorPropagates(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_, err := agentOwnedFiles(AgentByKey("claude"))
+	require.Error(t, err)
+}
+
+// TestRunInstall_AgentOwnedFilesError — fsWalkDir failure: the
+// agentOwnedFiles call inside runInstall returns an error after the
+// install succeeded, so runInstall propagates it before saving the
+// manifest.
+func TestRunInstall_AgentOwnedFilesError(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+
+	// Install succeeds, but the post-install ownedFiles lookup fails.
+	// To trigger this ordering: let TemplateFiles succeed once (for
+	// Install's own use) and fail on the second call (agentOwnedFiles).
+	orig := fsWalkDir
+	calls := 0
+	fsWalkDir = func(fsys fs.FS, root string, fn fs.WalkDirFunc) error {
+		calls++
+		if calls >= 2 {
+			return assertError("synthetic walk failure on second call")
+		}
+		return fs.WalkDir(fsys, root, fn)
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_ = captureStdout(t, func() {
+		err := runInstall("claude", false, false)
+		require.Error(t, err)
+	})
+}
+
+// TestInstall_TemplateFilesError — Install's first call site for
+// TemplateFiles. fsWalkDir failure on the very first call surfaces
+// as a CodeAIInstallFailed wrap.
+func TestInstall_TemplateFilesError(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	dir := t.TempDir()
+	_, err := Install(AgentByKey("claude"), dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not enumerate templates")
+}
+
+// TestExpectedRenderings_TemplateFilesError — expectedRenderings
+// swallows TemplateFiles errors (returns an empty map) per design;
+// this exercises that branch via the fsWalkDir seam.
+func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	got := expectedRenderings(AgentByKey("claude"), sampleData())
+	assert.Empty(t, got)
 }
 
 // TestInstallResult_PrintText_RenameSections — covers the Renamed

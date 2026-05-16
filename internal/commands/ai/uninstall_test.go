@@ -366,3 +366,24 @@ func TestReverseDocRename_DestMissing(t *testing.T) {
 		require.NoError(t, runUninstall("claude", false))
 	})
 }
+
+// TestRemoveEmptyParents_RemoveFails — empty directory inside a
+// read-only parent. os.Remove fails (EACCES) and the loop early-
+// returns from the `if err := os.Remove(dir); err != nil { return }`
+// branch instead of recursing.
+func TestRemoveEmptyParents_RemoveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	empty := filepath.Join(parent, "empty")
+	require.NoError(t, os.MkdirAll(empty, 0o755))
+	require.NoError(t, os.Chmod(parent, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
+
+	removeEmptyParents(root, empty)
+	// `empty` should still exist — Remove failed and the loop returned.
+	_, err := os.Stat(empty)
+	assert.NoError(t, err)
+}

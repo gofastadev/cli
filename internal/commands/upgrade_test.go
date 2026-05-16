@@ -212,6 +212,18 @@ func TestUpgradeViaGoInstall_Success(t *testing.T) {
 	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
 
+// TestUpgradeViaGoInstall_JSONMode — JSON mode routes the child's
+// stdout to stderr so the upgrade result emitted at the end stays
+// the only thing on stdout. Covers the JSON branch of the
+// `if cliout.JSON()` inside upgradeViaGoInstall (the only branch
+// the text-mode tests above don't reach).
+func TestUpgradeViaGoInstall_JSONMode(t *testing.T) {
+	t.Setenv("GOBIN", "/fake/gobin")
+	withFakeExecVersion(t, 0, "v2.0.0")
+	withJSONMode(t)
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
+}
+
 func TestUpgradeViaGoInstall_InstallFailure(t *testing.T) {
 	withFakeExec(t, 1)
 	err := upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1")
