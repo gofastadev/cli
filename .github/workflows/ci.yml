@@ -95,6 +95,24 @@ jobs:
       - name: Build CLI
         run: go build -o /tmp/gofasta ./cmd/gofasta/
 
+      # golang-migrate is a required runtime dep for the scaffolded
+      # project — `gofasta doctor` flags it as missing, `gofasta migrate
+      # up/down` shells out to it, `gofasta init` runs migrations during
+      # setup. Without this, the doctor / migrate / init / db-reset
+      # steps below all fail with non-zero exit codes.
+      #
+      # Pinned to v4.18.1 — same version the CLI's own dev-mode
+      # bootstrap recommends to users (see internal/commands/dev.go's
+      # install hint). Pinning here matches what a freshly-onboarded
+      # developer ends up with and protects CI from surprise breakage
+      # when a new migrate release drops (e.g. one that requires a
+      # newer Go toolchain than ours). Bump in lockstep with the
+      # dev.go hint.
+      - name: Install golang-migrate
+        run: |
+          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+          migrate -version
+
       - name: Scaffold a new project
         # `gofasta new` runs `go get github.com/gofastadev/gofasta@latest`
         # against the public Go module proxy. If this step fails right
