@@ -107,6 +107,34 @@ jobs:
         working-directory: /tmp/testproject
         run: go build ./...
 
+      # ─────────────────────────────────────────────────────────────
+      # Generators — one representative per category that runs
+      # standalone. Mirrors local `make integration` and expands to
+      # every `gofasta g <kind>` whose preconditions are met by an
+      # empty scaffold so a regression in any single generator fails
+      # THIS workflow.
+      #
+      # Excluded:
+      #   - g route / g provider — both expect an existing controller/
+      #     service; the `g scaffold Product` step above already
+      #     exercises them as part of the full chain.
+      #   - g resolver — needs `gofasta new --graphql` (the scaffold
+      #     in this job is REST-only).
+      # ─────────────────────────────────────────────────────────────
+      - name: Exercise generators
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta g scaffold Product name:string price:float description:text active:bool
+          /tmp/gofasta g model Article title:string body:text published:bool
+          /tmp/gofasta g repository Tag name:string slug:string
+          /tmp/gofasta g service Cart total:float currency:string
+          /tmp/gofasta g controller Order status:string amount:float
+          /tmp/gofasta g dto Comment body:text author:string
+          /tmp/gofasta g migration add_search_index
+          /tmp/gofasta g email-template welcome
+          /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
+          /tmp/gofasta g task send-welcome
+
       # Install golangci-lint at the version the scaffold's Makefile
       # pins so `make preflight` doesn't re-install it from scratch
       # inside the runner.
@@ -117,12 +145,12 @@ jobs:
           install-mode: binary
           args: --version
 
-      # Full quality gate against the generated project — mirrors what
-      # the scaffold ships as its own CI (deployments/ci/github-actions-
-      # test.yml.tmpl) so a scaffolded-but-broken project fails THIS
-      # workflow rather than only being caught downstream once a real
-      # user runs it. Chain (per scaffold's Makefile): gofmt-check, go
-      # vet, golangci-lint, go test -race, go build.
+      # Full quality gate against the generated project (post-generator
+      # exercise) — mirrors what the scaffold ships as its own CI
+      # (deployments/ci/github-actions-test.yml.tmpl) so a scaffolded-
+      # but-broken project fails THIS workflow rather than only being
+      # caught downstream. Chain (per scaffold's Makefile): gofmt-check,
+      # go vet, golangci-lint, go test -race, go build.
       - name: Preflight generated project (fmt, vet, lint, test, build)
         working-directory: /tmp/testproject
         run: make preflight
@@ -131,9 +159,96 @@ jobs:
       # binary we just built. Exercises gofasta test's covdata-warning
       # filter against a real scaffolded project (the bug this command
       # exists to work around only surfaces when go.mod has tool
-      # directives — which every scaffold has). Failure here means the
-      # CLI's coverage path is broken even though `make preflight`
-      # passed.
+      # directives — which every scaffold has).
       - name: Test generated project with coverage
         working-directory: /tmp/testproject
         run: /tmp/gofasta test --coverage
+
+      # ─────────────────────────────────────────────────────────────
+      # Read-only / introspection commands. Each is small; bundled to
+      # save runner minutes. --json flag is exercised on a couple so
+      # the structured-output contract is also smoke-tested.
+      # ─────────────────────────────────────────────────────────────
+      - name: Inspect / status / routes / config
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta version
+          /tmp/gofasta doctor
+          /tmp/gofasta routes
+          /tmp/gofasta inspect Product
+          /tmp/gofasta status
+          /tmp/gofasta config schema | head -1
+          /tmp/gofasta --json status > /tmp/status.json
+          test -s /tmp/status.json
+
+      # Regenerate Wire + Swagger to confirm those wrappers still
+      # round-trip on the scaffold (covers `gofasta wire` and
+      # `gofasta swagger`).
+      - name: Regenerate Wire and Swagger
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta wire
+          /tmp/gofasta swagger
+
+      # Verify gauntlet — runs gofmt/vet/lint/build/test/wire-drift/
+      # routes-list in one shot. Re-runs many of the above checks but
+      # via the `verify` orchestrator so a regression in that wrapper
+      # itself is caught.
+      - name: Verify gauntlet
+        working-directory: /tmp/testproject
+        run: /tmp/gofasta verify
+
+      # ─────────────────────────────────────────────────────────────
+      # Database lifecycle — needs the Postgres service. Tests the
+      # migrate/seed/db-reset commands end-to-end against a real DB.
+      # `gofasta init` runs the same wire/gqlgen/swag steps `new` did
+      # (idempotent) and then applies migrations, so it's the cleanest
+      # entrypoint for the lifecycle suite.
+      # ─────────────────────────────────────────────────────────────
+      - name: Database lifecycle (init, migrate, seed, db reset)
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta init
+          /tmp/gofasta migrate up
+          /tmp/gofasta migrate down --steps 1 --yes
+          /tmp/gofasta migrate up
+          /tmp/gofasta seed
+          /tmp/gofasta db reset --skip-seed
+
+      # ─────────────────────────────────────────────────────────────
+      # AI agent configuration — install Claude config, verify it
+      # shows up in status, uninstall, verify it's gone. Covers
+      # `gofasta ai list/<agent>/status/uninstall`.
+      # ─────────────────────────────────────────────────────────────
+      - name: AI agent install/uninstall round-trip
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta ai list
+          /tmp/gofasta ai claude
+          /tmp/gofasta ai status | grep -q claude
+          /tmp/gofasta ai uninstall claude
+          ! /tmp/gofasta ai status | grep -q claude
+
+      # ─────────────────────────────────────────────────────────────
+      # Server smoke — start `gofasta serve` in the background, wait
+      # for the health endpoint, hit it, then stop. Catches regressions
+      # where the scaffolded server can't even bind a port (which the
+      # build-only check would miss).
+      # ─────────────────────────────────────────────────────────────
+      - name: Server smoke (serve + /health/live)
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta serve &
+          SERVE_PID=$!
+          trap "kill $SERVE_PID 2>/dev/null || true" EXIT
+          # Poll for readiness — give the server up to ~30s to bind.
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/health/live >/dev/null 2>&1; then
+              echo "serve is ready"
+              break
+            fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8080/health/live
+          curl -fsS http://localhost:8080/health/ready || true
+          kill $SERVE_PID 2>/dev/null || true
