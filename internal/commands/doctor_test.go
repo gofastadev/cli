@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
@@ -75,4 +76,35 @@ func TestRunDoctor_LoadsDotEnvBeforeDBCheck(t *testing.T) {
 	// regardless of whether the migrate child process succeeded.
 	assert.Equal(t, "5433", os.Getenv("GOFASTA_DATABASE_PORT"),
 		"doctor must load .env so the DB-reachability probe uses the host-mapped port, not config.yaml's in-container default")
+}
+
+// TestPrintDoctorSection_DefaultStatus — entries with a status that
+// isn't "ok" or "fail" (e.g. "skip", "warn", unknown) fall through to
+// the default switch arm. Covered nowhere else because all live
+// doctorEntry producers emit only "ok"/"fail".
+func TestPrintDoctorSection_DefaultStatus(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorSection(&buf, "Skipped:", []doctorEntry{
+		{Status: "skip", Name: "thing", Message: "n/a"},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "Skipped:")
+	assert.Contains(t, out, "thing")
+	assert.Contains(t, out, "n/a")
+}
+
+// TestPrintDoctorSection_AllStatuses — exercises ok / fail / default
+// in a single call so the three switch arms are hit in one place
+// independent of which check produced what.
+func TestPrintDoctorSection_AllStatuses(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorSection(&buf, "Mixed:", []doctorEntry{
+		{Status: "ok", Name: "good", Message: "running"},
+		{Status: "fail", Name: "broken", Message: "missing"},
+		{Status: "skip", Name: "unknown", Message: "tbd"},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "good")
+	assert.Contains(t, out, "broken")
+	assert.Contains(t, out, "unknown")
 }

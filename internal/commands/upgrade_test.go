@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestEmitUpgradeResult_JSON — JSON mode emits a cliout.Print
+// document for the supplied upgradeResult.
+func TestEmitUpgradeResult_JSON(t *testing.T) {
+	withJSONMode(t)
+	out := captureStdout(t, func() {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "binary", OldVersion: "0.0.1",
+			NewVersion: "0.0.2", Upgraded: true, Success: true,
+		})
+	})
+	assert.Contains(t, out, "\"upgrade\"")
+	assert.Contains(t, out, "\"binary\"")
+}
+
+// TestEmitUpgradeResult_TextNoOp — text mode is silent (the human
+// progress UX uses termcolor directly elsewhere).
+func TestEmitUpgradeResult_TextNoOp(t *testing.T) {
+	out := captureStdout(t, func() {
+		emitUpgradeResult(upgradeResult{Action: "upgrade", Success: true})
+	})
+	assert.Empty(t, out)
+}
+
 // errReader is an io.ReadCloser that always errors — used to simulate a
 // network body that fails partway through io.Copy.
 type errReader struct{}

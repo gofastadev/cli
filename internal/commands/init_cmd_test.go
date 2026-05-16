@@ -161,3 +161,26 @@ func TestRunInit_BuildFailureStops(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "build verification failed")
 }
+
+// TestRunInit_GqlgenYmlPresent — the gqlgen.yml-exists branch of Step
+// 4. Sequence: mod-tidy(0), wire(0), gqlgen(0), swag(0), migrate(0),
+// build(0). All six steps succeed.
+func TestRunInit_GqlgenYmlPresent(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	require.NoError(t, os.WriteFile("gqlgen.yml", []byte("# stub\n"), 0o644))
+	stagedFakeExec(t, 0, 0, 0, 0, 0, 0)
+	require.NoError(t, runInit())
+}
+
+// TestRunInit_GqlgenFails — gqlgen.yml exists but gqlgen invocation
+// fails — the "gqlgen generation failed" warn branch fires while
+// runInit continues to swag/migrate/build.
+func TestRunInit_GqlgenFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	require.NoError(t, os.WriteFile("gqlgen.yml", []byte("# stub\n"), 0o644))
+	// mod-tidy(0), wire(0), gqlgen(1=fail), swag(0), migrate(0), build(0).
+	stagedFakeExec(t, 0, 0, 1, 0, 0, 0)
+	require.NoError(t, runInit())
+}

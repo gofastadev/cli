@@ -258,3 +258,23 @@ func TestInstall_RenameFails_PropagatesError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "rename")
 }
+
+// TestInstall_StatReadFails_NonIsNotExist — destAbs is a DIRECTORY,
+// so os.ReadFile returns "is a directory" — not IsNotExist. This
+// covers the `default` arm of the switch in Install that wraps the
+// stat error.
+func TestInstall_StatReadFails_NonIsNotExist(t *testing.T) {
+	dir := t.TempDir()
+	agent := AgentByKey("claude")
+	files, err := TemplateFiles(agent)
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+	// Replace the first template's destination path with a directory
+	// so the os.ReadFile call returns EISDIR rather than IsNotExist.
+	dst := filepath.Join(dir, files[0].DestPath)
+	require.NoError(t, os.MkdirAll(dst, 0o755))
+
+	_, err = Install(agent, dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stat")
+}

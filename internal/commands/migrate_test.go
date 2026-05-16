@@ -514,3 +514,23 @@ func TestRunMigrate_JSON_Failure(t *testing.T) {
 	assert.Equal(t, "fail", got.Status)
 	assert.NotEmpty(t, got.Message)
 }
+
+// TestRunMigrate_JSON_WithStdinOverride — JSON mode + a non-nil
+// stdinOverride: the override is wired to the child's stdin so prompts
+// auto-answer instead of blocking forever on Read. Mirrors the
+// down-all flow used in real life.
+func TestRunMigrate_JSON_WithStdinOverride(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	withJSONMode(t)
+
+	override := strings.NewReader("y\n")
+	out := captureStdout(t, func() {
+		require.NoError(t, runMigrate("down", []string{"down"}, override))
+	})
+	var got migrateResult
+	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &got))
+	assert.Equal(t, "down", got.Direction)
+	assert.Equal(t, "ok", got.Status)
+}

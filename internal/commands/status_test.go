@@ -250,3 +250,37 @@ func TestRunStatus_DriftReturnsError(t *testing.T) {
 		require.Error(t, err)
 	})
 }
+
+// TestReadAppliedMigrationVersion_EmptyStdoutSuccess — migrate version
+// returned successfully but with empty stdout. Treat as a clean schema
+// with no migrations applied.
+func TestReadAppliedMigrationVersion_EmptyStdoutSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeMigrateOutput(t, "", 0)
+	current, dirty, err := readAppliedMigrationVersion("db/migrations", "postgres://stub")
+	require.NoError(t, err)
+	assert.Equal(t, 0, current)
+	assert.False(t, dirty)
+}
+
+// TestReadAppliedMigrationVersion_NoMigrationSuccess — exit 0 + "no
+// migration" output (some versions of migrate emit this on a clean
+// schema_migrations table). Treat as 0/clean.
+func TestReadAppliedMigrationVersion_NoMigrationSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeMigrateOutput(t, "no migration\n", 0)
+	current, _, err := readAppliedMigrationVersion("db/migrations", "postgres://stub")
+	require.NoError(t, err)
+	assert.Equal(t, 0, current)
+}
+
+// TestCheckPendingMigrations_NoMigrationsDefined — empty
+// db/migrations dir → "no migrations defined" ok status.
+func TestCheckPendingMigrations_NoMigrationsDefined(t *testing.T) {
+	chdirTemp(t)
+	mDir := filepath.Join("db", "migrations")
+	require.NoError(t, os.MkdirAll(mDir, 0o755))
+	check := checkPendingMigrations()
+	assert.Equal(t, "ok", check.Status)
+	assert.Contains(t, check.Message, "no migrations defined")
+}

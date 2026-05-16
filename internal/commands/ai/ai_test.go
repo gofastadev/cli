@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -455,4 +456,20 @@ func TestAiCmd_NoArgsShowsHelp(t *testing.T) {
 	_ = captureStdout(t, func() {
 		require.NoError(t, Cmd.RunE(Cmd, nil))
 	})
+}
+
+// TestInstallResult_PrintText_RenameSections — covers the Renamed
+// and WouldRename branches that the aggregate sections test in
+// runners_test.go doesn't exercise.
+func TestInstallResult_PrintText_RenameSections(t *testing.T) {
+	r := &InstallResult{
+		Agent:       "claude",
+		Renamed:     []string{"AGENTS.md → CLAUDE.md"},
+		WouldRename: []string{"AGENTS.md → CLAUDE.md"},
+	}
+	var buf bytes.Buffer
+	r.PrintText(&buf)
+	out := buf.String()
+	assert.Contains(t, out, "renamed: AGENTS.md → CLAUDE.md")
+	assert.Contains(t, out, "would rename (dry-run): AGENTS.md → CLAUDE.md")
 }
