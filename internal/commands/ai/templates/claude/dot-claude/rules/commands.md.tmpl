@@ -1,0 +1,193 @@
+# Commands to run — dev, test, codegen, db, deploy
+
+Always-on rule (no `paths:` frontmatter). The command catalog Claude
+needs whenever it considers running anything in this project.
+
+## Development
+
+| Command | What it does |
+|---|---|
+| `make up` | Start app + PostgreSQL in Docker (production-like) |
+| `make dev` | Start with Air hot reload (needs DB running separately) |
+| `make down` | Stop everything |
+| `gofasta dev` | Full dev environment: start services → health-wait → migrate → Air hot reload. Ctrl+C tears it all down. |
+
+### `gofasta dev` flags
+
+| Flag | Purpose |
+|---|---|
+| `--no-services` | Skip all compose orchestration; just run Air |
+| `--no-db` / `--no-cache` / `--no-queue` | Skip individual service classes |
+| `--services=<list>` | Comma-separated explicit list |
+| `--profile=<name>` | Pass through to `docker compose --profile` |
+| `--no-migrate` | Skip `migrate up` after services become healthy |
+| `--no-teardown` | Leave compose services running on exit |
+| `--keep-volumes` | Preserve named volumes on teardown (default `true`) |
+| `--fresh` | Drop every compose volume before starting |
+| `--wait-timeout=<dur>` | Healthcheck wait timeout (default `30s`) |
+| `--env-file=<path>` | Alternate env file (default `.env`) |
+| `--port=<n>` | Override `PORT` env var |
+| `--rebuild` | Delete Air's `tmp/` cache for a fresh build |
+| `--seed` | Run seeders after migrations |
+| `--dry-run` | Print the resolved plan and exit (no side effects) |
+| `--attach-logs` | Stream `docker compose logs -f` alongside Air output |
+| `--dashboard` | Start the local dev dashboard (`:9090`) |
+| `--json` | Structured NDJSON events instead of human log lines |
+
+**Error codes:** `DEV_DOCKER_UNAVAILABLE`, `DEV_COMPOSE_NOT_FOUND`,
+`DEV_SERVICE_UNHEALTHY`, `DEV_MIGRATION_FAILED`,
+`DEV_AIR_NOT_INSTALLED`, `DEV_PORT_IN_USE`. Each carries a specific
+remediation hint in the JSON error payload.
+
+## Testing
+
+| Command | What it does |
+|---|---|
+| `go test ./...` | Run all tests |
+| `go test -race ./...` | Run with the race detector (required before commit) |
+| `make test` | Project's configured test target |
+
+## Code generation
+
+Prefer generators over hand-written CRUD:
+
+| Command | What it generates |
+|---|---|
+| `gofasta g scaffold Product name:string price:float` | Full REST resource — model, migration, repository, service, DTOs, controller, routes, Wire provider. Auto-wires into the DI container, routes index, and `cmd/serve.go`. |
+| `gofasta g model Product name:string` | Model + migration only |
+| `gofasta g service Product name:string` | Model + repository + service + DTOs |
+| `gofasta g controller Product name:string` | Full REST stack for existing service |
+| `gofasta g migration AddIndexToUsers` | Empty migration pair |
+| `gofasta g job cleanup-tokens "0 0 * * *"` | Scheduled cron job |
+| `gofasta g task send-welcome-email` | Async task handler (asynq) |
+| `gofasta g method Order Archive [param:type ...]` | **Modify-aware.** Append a method to an existing service. |
+| `gofasta g field Order archive_reason:string` | **Modify-aware.** Add a column to model + DTOs + paired migration. |
+| `gofasta g endpoint Order POST /orders/{id}/archive` | **Modify-aware.** Add one REST endpoint. |
+| `gofasta g middleware POST /orders/{id}/archive auth.RequireRole("admin")` | **Modify-aware.** Wrap a route with a chi middleware. Idempotent. |
+| `gofasta g repo-method Order FindByCustomer customerID:string` | **Modify-aware.** Add a repository method. |
+| `gofasta g relation Order belongs_to Customer` | **Modify-aware.** Wire a GORM association. |
+| `gofasta g rename Order.Total AmountCents` | **Modify-aware.** Preview by default; `--apply` to write. |
+| `gofasta g mock OrderService` | Generate/refresh testify mock. `--all` walks every interface; `--check` is a CI drift gate. |
+| `gofasta wire` | Regenerate `app/di/wire_gen.go` |
+| `gofasta swagger` | Regenerate OpenAPI docs from code annotations |
+| `gofasta routes` | Print every registered REST route |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml` |
+
+Field types: `string`, `text`, `int`, `float`, `bool`, `uuid`, `time`.
+
+### Modify-aware generators
+
+When a resource already exists and you only need to add one method,
+one field, or one endpoint, prefer the modify-aware family over
+running `g scaffold` (which refuses to overwrite existing files) or
+hand-editing 4–6 files in lockstep.
+
+| When you want to … | Use |
+|---|---|
+| Add a service method | `gofasta g method <Resource> <Method> [param:type ...]` |
+| Add a model column (+ DTOs + migration) | `gofasta g field <Resource> <name>:<type>` |
+| Add a REST endpoint to an existing controller | `gofasta g endpoint <Resource> <METHOD> <path>` |
+| Attach a middleware to an existing route | `gofasta g middleware <METHOD> <path> <middleware-ref>` |
+| Add a repository method | `gofasta g repo-method <Resource> <Method>` |
+| Wire a GORM association | `gofasta g relation <Resource> belongs_to|has_many|has_one <Other>` |
+| Rename a field across every layer | `gofasta g rename <Resource>.<OldField> <NewField>` (preview), then `--apply` |
+| Refresh test doubles | `gofasta g mock <Interface>` or `--all` |
+
+Every modify-aware generator honors `--dry-run --json` and emits the
+same `[]PlannedAction` shape `g scaffold --dry-run --json` does.
+Patching uses `dst` (decorated AST) so comments, blank lines, and
+import groupings round-trip cleanly. No marker comments are introduced
+into user-edited code.
+
+Idempotency surfaces as `METHOD_ALREADY_EXISTS`, `FIELD_ALREADY_EXISTS`,
+`MOCK_DRIFT` codes — branch on "fresh add" vs "no-op" without
+re-parsing the source.
+
+## Change-scoped quality gates — `verify --since`
+
+```bash
+gofasta verify --since=HEAD~1            # diff vs last commit
+gofasta verify --since=origin/main       # diff vs upstream main
+gofasta verify --changed                 # working-tree + staged + untracked
+```
+
+| Check | Behavior under `--since` |
+|---|---|
+| `gofmt` | Only the changed `.go` files |
+| `go vet` | Packages containing changed Go files |
+| `golangci-lint` | Uses native `--new-from-rev=<ref>` |
+| `go test -race` | Packages depending (transitively) on changed packages |
+| `go build` | Affected packages only |
+| Wire drift / routes | **Always full** — whole-project invariants |
+
+Non-Go changes (config.yaml, migrations, README) fall back to whole-
+project for `vet` / `build` / `test`. JSON output gains `scoped: true`,
+`since: "<ref>"`, `changed_files: [...]`, `scoped_packages: [...]`.
+
+## Migration safety preview — `migrate up --explain`
+
+```bash
+gofasta migrate up --explain --json | jq '.max_risk'
+```
+
+No DB connection required. Flags:
+
+| Rule | Risk |
+|---|---|
+| `DropColumn`, `DropTable`, `Truncate` | `data-loss` |
+| `AddColumnNotNullNoDefault` | `lock-and-fill` (table rewrite) |
+| `AlterColumnType` | `lock-and-rewrite` |
+| `CreateIndexBlocking` (Postgres / MySQL / SQL Server) | `lock-table` |
+| `AddPrimaryKey` | `lock-table` |
+| `RenameColumn`, `RenameTable` | `app-incompatibility` |
+
+`--strict` exits non-zero on any high-severity warning (CI gate).
+
+## Job / task introspection — `inspect-jobs`, `inspect-tasks`
+
+```bash
+gofasta inspect-jobs --json
+gofasta inspect-tasks --json
+gofasta inspect-jobs cleanup-tokens   # filter to a single entry
+```
+
+Returns `JOBS_DIR_MISSING` / `TASKS_DIR_MISSING` when the corresponding
+directory hasn't been generated yet.
+
+## Database
+
+| Command | What it does |
+|---|---|
+| `gofasta migrate up` | Apply all pending migrations |
+| `gofasta migrate down` | Roll back the most recent migration |
+| `gofasta seed` | Run seed functions (`--fresh` drops + re-migrates first) |
+
+## Deployment (VPS)
+
+| Command | What it does |
+|---|---|
+| `gofasta deploy setup --host user@server` | One-time server prep |
+| `gofasta deploy` | Build + ship + migrate + health-check + swap symlink |
+| `gofasta deploy status` | Show current release + service status |
+| `gofasta deploy logs` | Tail remote logs |
+| `gofasta deploy rollback` | Revert to previous release |
+
+## Agent-first helpers
+
+| Command | What it does |
+|---|---|
+| `gofasta verify` | Full preflight gauntlet — the single "am I done?" check |
+| `gofasta verify --since=<ref>` | Change-scoped gauntlet |
+| `gofasta status` | Offline drift report |
+| `gofasta inspect <Resource>` | AST-parsed structured report of a resource |
+| `gofasta inspect-jobs [<name>]` | Job inventory + cron schedule |
+| `gofasta inspect-tasks [<name>]` | Task inventory + payload struct |
+| `gofasta migrate up --explain` | Static SQL safety analysis |
+| `gofasta xrefs <symbol>` | Type-aware reverse symbol lookup |
+| `gofasta impact <file-or-package>` | Reverse-dependency analysis |
+| `gofasta config schema` | Emit the JSON Schema for `config.yaml` |
+| `gofasta do <workflow>` | Named workflow chains |
+| `gofasta do list` | List every registered workflow |
+| `gofasta ai <agent>` | Install per-agent configuration (idempotent) |
+
+See `debugging.md` for the full `gofasta debug` family.

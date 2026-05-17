@@ -1,0 +1,64 @@
+# CONVENTIONS.md — Guidance for Aider
+
+Aider reads this file every session (configured via `.aider.conf.yml`'s
+`read:` directive). Detailed guidance lives in `.aider/docs/`, also
+loaded via `read:` so every chunk is cached on session start.
+
+This setup was installed by `gofasta ai aider`. Run
+`gofasta ai uninstall aider` to remove every file it added.
+
+## Project at a glance
+
+- **Name:** {{.ProjectName}}
+- **Go module:** `{{.ModulePath}}`
+- **Toolkit:** [gofasta](https://gofasta.dev) — plain Go, no runtime framework
+- **Layer rule:** Request → Controller → Service → Repository → Database
+- **Self-check before claiming done:** `gofasta verify` then `gofasta status`
+  (or `gofasta do health-check`)
+
+## Topic chunks under `.aider/docs/`
+
+Loaded automatically via `.aider.conf.yml`'s `read:` array:
+
+| File | What it covers |
+|---|---|
+| `.aider/docs/conventions.md` | Must-follow rules + must-NOT-do list + Wire gotcha + feature flags |
+| `.aider/docs/overview.md` | Tech stack + directory tree |
+| `.aider/docs/workflow.md` | `--json`, `inspect`, `status`, workflows, `verify` |
+| `.aider/docs/commands.md` | Dev, test, code generation, migrate, deploy |
+| `.aider/docs/debugging.md` | The `gofasta debug` command family |
+| `.aider/docs/docs-index.md` | Pointers to gofasta.dev docs (`llms.txt`) |
+
+If you only read one chunk before starting work, read
+`.aider/docs/conventions.md`.
+
+## Auto-test + auto-lint
+
+Configured in `.aider.conf.yml`:
+
+- `auto-test: true` — runs `gofasta verify --json` after every edit so
+  Aider self-verifies before returning control.
+- `auto-lint: true` — runs `gofmt -s -w && go vet ./...` after every
+  edit.
+
+## Things you must NOT do
+
+(Full list with rationale in `.aider/docs/conventions.md`. The top 3:)
+
+1. **Do not edit `app/di/wire_gen.go`** — it's generated. Edit
+   `app/di/wire.go`, then run `gofasta wire`.
+2. **Do not skip migrations.** If you add a field to a model, write a
+   migration pair in `db/migrations/`.
+3. **Do not call the database from a service.** Call the repository
+   interface — `Service → Repository → Database`.
+
+## Self-check before finishing a task
+
+```bash
+gofasta verify --json    # full quality-gate gauntlet
+gofasta status --json    # drift detection
+```
+
+Or in one call: `gofasta do health-check --json`. If anything fails,
+the JSON output names the failing check and lists the remediation in
+its `hint` field.

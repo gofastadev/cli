@@ -53,15 +53,24 @@ func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// At minimum, claude installs settings.json + the pre-commit hook +
-	// the three slash commands, all under .claude/. Verify each one
-	// ended up on disk.
+	// Claude installs:
+	//   - CLAUDE.md root briefing
+	//   - .claude/settings.json + the pre-commit hook
+	//   - the three slash commands
+	//   - six topic rules under .claude/rules/
 	expected := []string{
+		"CLAUDE.md",
 		".claude/settings.json",
 		".claude/hooks/pre-commit.sh",
 		".claude/commands/verify.md",
 		".claude/commands/scaffold.md",
 		".claude/commands/inspect.md",
+		".claude/rules/conventions.md",
+		".claude/rules/overview.md",
+		".claude/rules/workflow.md",
+		".claude/rules/commands.md",
+		".claude/rules/debugging.md",
+		".claude/rules/docs-index.md",
 	}
 	for _, rel := range expected {
 		path := filepath.Join(dir, rel)
@@ -80,6 +89,116 @@ func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
 	assert.Len(t, result.Created, len(expected))
 	assert.Empty(t, result.Skipped)
 	assert.Empty(t, result.Replaced)
+}
+
+// TestInstall_PerAgentTreeShape is a table-driven check that every
+// agent's template tree lands at the right paths and that each
+// install is fully isolated (no shared chunk directory, no rename of
+// pre-existing files). One row per supported agent; if a future agent
+// is added to the registry, add a row here.
+func TestInstall_PerAgentTreeShape(t *testing.T) {
+	cases := []struct {
+		key  string
+		want []string
+	}{
+		{
+			key: "claude",
+			want: []string{
+				"CLAUDE.md",
+				".claude/settings.json",
+				".claude/hooks/pre-commit.sh",
+				".claude/commands/verify.md",
+				".claude/commands/scaffold.md",
+				".claude/commands/inspect.md",
+				".claude/rules/conventions.md",
+				".claude/rules/overview.md",
+				".claude/rules/workflow.md",
+				".claude/rules/commands.md",
+				".claude/rules/debugging.md",
+				".claude/rules/docs-index.md",
+			},
+		},
+		{
+			key: "cursor",
+			want: []string{
+				".cursor/rules/conventions.mdc",
+				".cursor/rules/overview.mdc",
+				".cursor/rules/workflow.mdc",
+				".cursor/rules/commands.mdc",
+				".cursor/rules/debugging.mdc",
+				".cursor/rules/docs-index.mdc",
+			},
+		},
+		{
+			key: "codex",
+			want: []string{
+				"AGENTS.md",
+				".codex/config.toml",
+				".codex/docs/conventions.md",
+				".codex/docs/overview.md",
+				".codex/docs/workflow.md",
+				".codex/docs/commands.md",
+				".codex/docs/debugging.md",
+				".codex/docs/docs-index.md",
+			},
+		},
+		{
+			key: "aider",
+			want: []string{
+				"CONVENTIONS.md",
+				".aider.conf.yml",
+				".aider/docs/conventions.md",
+				".aider/docs/overview.md",
+				".aider/docs/workflow.md",
+				".aider/docs/commands.md",
+				".aider/docs/debugging.md",
+				".aider/docs/docs-index.md",
+			},
+		},
+		{
+			key: "windsurf",
+			want: []string{
+				".windsurf/rules/conventions.md",
+				".windsurf/rules/overview.md",
+				".windsurf/rules/workflow.md",
+				".windsurf/rules/commands.md",
+				".windsurf/rules/debugging.md",
+				".windsurf/rules/docs-index.md",
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dir := t.TempDir()
+			agent := AgentByKey(tc.key)
+			require.NotNil(t, agent, "registry must include %s", tc.key)
+			result, err := Install(agent, dir, sampleData(), InstallOptions{})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			for _, rel := range tc.want {
+				info, err := os.Stat(filepath.Join(dir, rel))
+				require.NoError(t, err, "%s install must produce %s", tc.key, rel)
+				assert.False(t, info.IsDir(), "%s should be a file, not a directory", rel)
+			}
+			assert.Len(t, result.Created, len(tc.want),
+				"every template file should land on disk on a fresh install")
+			// Windsurf has a hard 12 KB per-rule cap.
+			if tc.key == "windsurf" {
+				entries, _ := filepath.Glob(filepath.Join(dir, ".windsurf", "rules", "*.md"))
+				for _, f := range entries {
+					info, _ := os.Stat(f)
+					assert.LessOrEqual(t, info.Size(), int64(12000),
+						"windsurf rule %s must stay under 12 KB", filepath.Base(f))
+				}
+			}
+			// Codex has a 32 KiB hard cap on AGENTS.md.
+			if tc.key == "codex" {
+				info, _ := os.Stat(filepath.Join(dir, "AGENTS.md"))
+				assert.LessOrEqual(t, info.Size(), int64(32*1024),
+					"codex AGENTS.md must stay under 32 KiB")
+			}
+		})
+	}
 }
 
 // TestInstall_Idempotent — running the installer twice should mark every
@@ -176,6 +295,15 @@ func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
 	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
+}
+
+// TestJoinShort covers both inline and "(+N more)" overflow branches.
+func TestJoinShort(t *testing.T) {
+	assert.Equal(t, "", joinShort(nil))
+	assert.Equal(t, "a", joinShort([]string{"a"}))
+	assert.Equal(t, "a, b, c, d", joinShort([]string{"a", "b", "c", "d"}))
+	assert.Equal(t, "a, b, c, d (+2 more)",
+		joinShort([]string{"a", "b", "c", "d", "e", "f"}))
 }
 
 // TestExtractModulePath — parses `module ...` lines out of go.mod text.
@@ -276,20 +404,17 @@ func TestAgentConflictError_PrevUnknownAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "legacyx is currently installed")
 }
 
-// TestAgentConflictError_NoDiff — prev is an unknown agent (no rename
-// diff, no remove diff), target also has no templates and no DocFilename
-// (cursor). Diff stays empty and we hit the fallback message.
+// TestAgentConflictError_NoDiff — prev is an unknown agent (no remove
+// diff), target has no templates (synthetic Agent pointing at a
+// nonexistent template dir). Diff stays empty and we hit the fallback
+// message that includes the `--switch` hint.
 func TestAgentConflictError_NoDiff(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	m, err := LoadManifest(dir)
-	require.NoError(t, err)
-	m.ActiveAgent = "legacyx"
-	require.NoError(t, m.Save(dir))
-	t.Cleanup(func() { installSwitch = false })
-
-	err = runInstall("cursor", false, false)
+	m := &Manifest{ActiveAgent: "legacyx", Installed: map[string]InstallRecord{}}
+	target := &Agent{Key: "synthetic", Name: "Synthetic", TemplateDir: "templates/nonexistent"}
+	err := agentConflictError(m, target, "/nowhere", InstallData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Re-run with `--switch`")
+	assert.Contains(t, err.Error(), "Synthetic")
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -441,12 +566,13 @@ func TestAgentOwnedFiles_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, files)
 }
 
-// TestAgentOwnedFiles_EmptyForAgentWithoutTemplates — cursor has no
-// embedded template dir; agentOwnedFiles returns an empty slice and
-// no error (the "agent installs nothing on disk" representation).
+// TestAgentOwnedFiles_EmptyForAgentWithoutTemplates — a synthetic
+// agent pointing at a nonexistent template dir returns an empty slice
+// and no error. Every shipping agent now has templates; this branch
+// stays exercised for safety because future agents may register before
+// their template tree is authored.
 func TestAgentOwnedFiles_EmptyForAgentWithoutTemplates(t *testing.T) {
-	agent := AgentByKey("cursor")
-	require.NotNil(t, agent)
+	agent := &Agent{Key: "synthetic", TemplateDir: "templates/nonexistent"}
 	files, err := agentOwnedFiles(agent)
 	require.NoError(t, err)
 	assert.Empty(t, files)

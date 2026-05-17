@@ -1,0 +1,176 @@
+---
+paths:
+  - "app/**"
+  - "cmd/**"
+  - "db/**"
+  - "configs/**"
+---
+# How to work in this codebase as an agent
+
+Loaded when Claude is touching app code, CLI commands, migrations, or
+configs. Cuts round-trips, eliminates guessing, prevents the most
+common failure modes.
+
+## Always prefer structured output (`--json`)
+
+`--json` is the contract between agents and the CLI. Every command that
+produces structured output honors it. Text output is for humans; JSON
+is the stable machine-readable shape, versioned as API.
+
+**Flag position.** `--json` is a persistent flag on the root command,
+so both positions are valid:
+
+```bash
+gofasta --json verify    # before the subcommand
+gofasta verify --json    # after — equivalent
+```
+
+**Output modes.** Two shapes, depending on the command:
+
+1. **Single document.** One JSON object or array on stdout, followed by
+   a newline. Parse with `jq`, `json.Unmarshal`, etc.
+
+   ```bash
+   gofasta routes --json | jq '.[] | select(.method == "POST") | .path'
+   gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+   gofasta inspect User --json | jq '.service_methods[].name'
+   gofasta status --json | jq '.checks[] | select(.status == "drift")'
+   gofasta g scaffold Invoice total:float --dry-run --json | jq '.planned_files'
+   ```
+
+2. **NDJSON (newline-delimited).** One JSON object per line, emitted as
+   events happen. `gofasta dev --json` is the main example — emits
+   `preflight`, `service`, `migrate`, `air`, and `shutdown` events:
+
+   ```bash
+   gofasta dev --json | jq -c 'select(.event=="service" and .status=="unhealthy")'
+   gofasta dev --json | jq -c 'select(.event=="air" and .status=="running")' | head -1
+   ```
+
+**Exit codes.** `--json` does NOT suppress exit codes. A failing
+command still exits non-zero; the JSON on stderr tells you why. Always
+branch on the exit code first, then read the error payload:
+
+```bash
+if ! gofasta verify --json > result.json 2> error.json; then
+  jq -r '.code' error.json   # e.g. "GO_TEST_FAILED"
+  jq -r '.hint' error.json   # remediation in one line
+  exit 1
+fi
+```
+
+**Stream separation.** Success output goes to **stdout**; errors go to
+**stderr**. Never mix them.
+
+**Error shape.** Every error in `--json` mode serializes as:
+
+```json
+{
+  "code": "WIRE_MISSING_PROVIDER",
+  "message": "undefined: NewOrderProvider",
+  "hint": "add NewOrderProvider to app/di/providers/order.go and run `gofasta wire`",
+  "docs": "https://gofasta.dev/docs/cli-reference/wire"
+}
+```
+
+Pattern-match on `code` (stable API, never renamed). The `hint` is the
+exact remediation. The `docs` URL is the most relevant reference.
+
+## Parse error codes, not error text
+
+Codes are grouped by subsystem — `WIRE_*`, `HEALTH_*`, `DEV_*`,
+`DEPLOY_*`, `SEED_*`, `ROUTES_*`, `INIT_*` — and are never renamed once
+shipped.
+
+## Understand a resource before modifying it
+
+When asked to change an existing resource (e.g. "add a `SoftArchive`
+method to `Order`"), **run `gofasta inspect <Resource>` first**. It
+AST-parses the model, DTOs, service interface, controller methods, and
+routes, emitting the whole resource shape as one structured document.
+
+```bash
+gofasta inspect Order --json
+```
+
+Reveals every field in the model, every DTO type, every service-
+interface method signature, every controller method signature, every
+registered route — in one call, in a shape that parses cleanly.
+Replaces opening six files and guessing.
+
+## Check for drift before making changes
+
+`gofasta status` is the offline "is this project in a clean state?"
+check. Reports when derived artifacts (Wire, Swagger) are out of sync
+with their inputs, when migrations are pending, and when regenerated
+files show up as uncommitted in git. Run it when entering the project
+cold — if anything reports `drift`, fix it before starting work.
+
+```bash
+gofasta status            # one-glance drift report
+gofasta status --json     # structured consumption
+```
+
+## Use workflows to avoid multi-round-trip command chains
+
+When a task requires multiple gofasta commands in sequence, use
+`gofasta do <workflow>` instead of invoking each command separately.
+Fewer tool calls, stable atomic contract, transparent step list.
+
+```bash
+gofasta do list                                            # every workflow
+gofasta do new-rest-endpoint Invoice total:float           # scaffold + migrate up + swagger
+gofasta do rebuild                                         # wire + swagger
+gofasta do clean-slate                                     # db reset + seed
+gofasta do health-check                                    # verify + status
+```
+
+Pass `--dry-run` to preview without executing. Use `--json` for a
+structured `{workflow, steps[], status, duration_ms}` result.
+
+## Validate config edits against the schema
+
+When editing `config.yaml`, generate the schema first to know what keys
+and values are valid — don't guess from memory:
+
+```bash
+gofasta config schema > /tmp/config.schema.json
+ajv validate -s /tmp/config.schema.json -d config.yaml
+```
+
+The schema is emitted by a project-local helper (`./cmd/schema`) so it
+always matches the exact `gofasta` version pinned in `go.mod`.
+
+## Use the right generator, not hand-written CRUD
+
+Before writing any CRUD code by hand, check whether a `gofasta g *`
+generator produces the right starting point. See the commands rule
+(`commands.md`) for the full generator catalog. The scaffold auto-wires
+every layer and runs `go build ./...` after generation to catch
+template regressions immediately.
+
+If unsure what a generator would produce, run it with `--dry-run` —
+every file it would create and every patch it would apply is printed
+without touching disk.
+
+```bash
+gofasta g scaffold Invoice total:float --dry-run
+```
+
+## One command to verify your work
+
+The single most important command for agents: **`gofasta verify`**.
+Runs gofmt, `go vet`, `golangci-lint`, `go test -race`, `go build`,
+Wire drift check, and routes sanity — in one invocation. Run it
+**before** claiming any task is done. `--json` output gives per-check
+status so you can pinpoint failures:
+
+```bash
+gofasta verify --json | jq '.checks[] | select(.status == "fail")'
+```
+
+Wrap in `gofasta do health-check` to also run `gofasta status` (drift
+detection) at the same time.
+
+See `debugging.md` for the `gofasta debug` family that turns failing
+requests into structured JSON instead of grep-through-logs sessions.

@@ -378,19 +378,21 @@ Pass `--dry-run` to preview the chain.
 
 ### `gofasta ai <agent>` — install agent-specific configuration
 
-Every scaffolded project ships `AGENTS.md` at the root by default (the universal file every modern agent reads). For agent-specific configuration — permission allowlists, pre-commit hooks, slash commands, conventions files — opt in with one command:
+A brand-new `gofasta new` project ships **zero** agent-related files. Agent setup is fully opt-in, per agent. Running `gofasta ai <key>` installs a self-contained tree at the locations that agent reads natively — no rename of pre-existing files, every file lands at its final path on first install and is removed wholesale on uninstall.
 
 ```bash
-gofasta ai claude       # .claude/ settings + hooks + slash commands
-gofasta ai cursor       # .cursor/rules/gofasta.mdc
-gofasta ai codex        # .codex/config.toml
-gofasta ai aider        # .aider.conf.yml + .aider/CONVENTIONS.md
-gofasta ai windsurf     # .windsurfrules
+gofasta ai claude       # CLAUDE.md + .claude/{settings,hooks,commands,rules}/
+gofasta ai cursor       # .cursor/rules/*.mdc (6 topic rules, no root briefing)
+gofasta ai codex        # AGENTS.md + .codex/{config.toml, docs/*.md}
+gofasta ai aider        # CONVENTIONS.md + .aider.conf.yml + .aider/docs/*.md
+gofasta ai windsurf     # .windsurf/rules/*.md (6 topic rules, no root briefing)
 gofasta ai list         # supported agents
 gofasta ai status       # what's currently installed in this project
 ```
 
-Installs are idempotent, support `--dry-run`, and are tracked in `.gofasta/ai.json`.
+Every install ships a slim root briefing (where the agent expects one) plus six topic chunks — `conventions`, `overview`, `workflow`, `commands`, `debugging`, `docs-index` — wrapped with the right activation metadata for that agent (Claude's `paths:`, Cursor's `alwaysApply` / `globs` / `description`, Windsurf's `trigger:`, etc.). Each chunk stays under the agent's per-file size cap (Claude 200-line target, Codex 32 KiB, Windsurf 12 KB).
+
+Installs are idempotent, support `--dry-run`, and are tracked in `.gofasta/ai.json`. Only one agent can be active at a time — pass `--switch` to atomically uninstall the previous one and install the new one.
 
 ### `--json` on every command
 

@@ -344,16 +344,21 @@ func printNextSteps(w io.Writer, agent *Agent) {
 	switch agent.Key {
 	case "claude":
 		fprintln(w, "  Open this project in Claude Code. It will read CLAUDE.md.")
-		fprintln(w, "  Pre-approved commands: gofasta *, make *, go build/test/vet, gofmt, common read-only git")
-		fprintln(w, "  Slash commands available: /verify, /scaffold, /inspect")
+		fprintln(w, "  Topic rules auto-load from .claude/rules/ — read conventions.md first.")
+		fprintln(w, "  Pre-approved commands: gofasta *, make *, go build/test/vet, gofmt, common read-only git.")
+		fprintln(w, "  Slash commands: /verify, /scaffold, /inspect.")
 	case "cursor":
-		fprintln(w, "  Open this project in Cursor. It reads AGENTS.md from the project root.")
+		fprintln(w, "  Open this project in Cursor. Rules auto-load from .cursor/rules/.")
+		fprintln(w, "  conventions.mdc is alwaysApply; other chunks auto-attach by file pattern or on agent request.")
 	case "codex":
 		fprintln(w, "  Run Codex from the project root. It reads AGENTS.md and .codex/config.toml.")
+		fprintln(w, "  Topic chunks live under .codex/docs/ — AGENTS.md links into them.")
 	case "aider":
-		fprintln(w, "  Start `aider` from the project root. It will load CONVENTIONS.md and run `gofasta verify` after each edit.")
+		fprintln(w, "  Start `aider` from the project root. CONVENTIONS.md and every .aider/docs/ chunk preload via .aider.conf.yml.")
+		fprintln(w, "  `gofasta verify` runs after every edit; `gofmt + go vet` after every save.")
 	case "windsurf":
-		fprintln(w, "  Open this project in Windsurf. Cascade reads AGENTS.md.")
+		fprintln(w, "  Open this project in Windsurf. Cascade auto-discovers .windsurf/rules/.")
+		fprintln(w, "  conventions.md is always-on; other chunks load on glob match or agent request.")
 	}
 }
 
