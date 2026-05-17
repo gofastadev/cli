@@ -1,0 +1,8 @@
+---
+description: List every registered cron job with its schedule (static AST scan of app/jobs/).
+argument-hint: [<job-name>]
+---
+Run `gofasta inspect-jobs $ARGUMENTS --json`. Report each job's
+name, type, schedule (from config.yaml), and source file. Use this
+before adding a new job to avoid name collisions or schedule
+overlaps.

@@ -192,3 +192,20 @@ If you're about to take any of those actions and haven't run the
 matching command, run it first. The cost is one tool call; the cost
 of skipping it can be a broken build or a lock-the-table migration
 applied in production.
+
+## Hooks wired in `.windsurf/hooks.json`
+
+`post_write_code` hooks under `.windsurf/hooks/` surface reminders
+without blocking:
+
+- Edit `app/di/wire.go` or `app/di/providers/*` → reminder to run
+  `gofasta wire`
+- Edit `app/models/*` → reminder to write a migration
+- Edit `app/rest/controllers/*` → reminder to run `gofasta swagger`
+
+Hook scripts require `jq` (`brew install jq` on macOS). Cascade
+prints hook stdout when `show_output: true` is set in `hooks.json`.
+
+No session-start hook ships — Cascade doesn't expose a session-start
+event. Run `/status` (workflow) manually to get the same drift
+report when opening a project cold.

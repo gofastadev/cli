@@ -1,0 +1,7 @@
+---
+description: Run `gofasta verify` + `gofasta status` together — the full project health report. Use as the final gate before claiming a task done.
+---
+Run `gofasta do health-check --json` and summarize the result.
+Verify covers fmt/vet/lint/test/build/wire-drift/routes; status
+covers generated-file drift and pending migrations. Report every
+failing check with its `hint` field.

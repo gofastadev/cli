@@ -39,6 +39,31 @@ PostToolUse (Edit/Write/apply_patch) and SessionStart hooks under
 Run `/hooks` in Codex on first session to trust them. Hook scripts
 require `jq` (`brew install jq` on macOS).
 
+## Pre-authored slash commands under `.codex/prompts/`
+
+This project ships 21 ready-to-use Codex prompts (status, health-check,
+routes, rebuild, migrate-explain, inspect-jobs, inspect-tasks, xrefs,
+impact, debug-slow, debug-error, n-plus-one, g-method, g-field,
+g-endpoint, g-middleware, g-repo-method, g-relation, g-rename,
+g-mock, seed-memory).
+
+**Codex reads custom prompts only from `~/.codex/prompts/`** (user
+home, not project tree). To activate this project's prompts, run
+once from the project root:
+
+```bash
+mkdir -p ~/.codex/prompts && for f in .codex/prompts/*.md; do \
+  ln -sf "$PWD/$f" "$HOME/.codex/prompts/gofasta-$(basename "$f")"; \
+done
+```
+
+The `gofasta-` filename prefix prevents collisions when multiple
+gofasta projects are symlinked. Restart Codex (or open a new chat)
+so it picks them up, then invoke any prompt with
+`/prompts:gofasta-<name>` (e.g. `/prompts:gofasta-xrefs UserService`).
+
+To remove the symlinks later: `rm ~/.codex/prompts/gofasta-*.md`.
+
 ## Project at a glance
 
 - **Name:** {{.ProjectName}}

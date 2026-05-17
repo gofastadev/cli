@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# afterFileEdit hook for Cursor. Reminds the agent to write a
+# migration when a GORM model file is edited.
+
+path=$(jq -r '.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/models/*.go)
+    cat <<'JSON'
+{"additional_context": "Reminder: you edited a GORM model. Write a matching migration pair in db/migrations/ (or run `gofasta g migration <Name>`)."}
+JSON
+    ;;
+esac

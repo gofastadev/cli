@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# sessionStart hook for Cursor. Runs `gofasta status --json` to
+# surface drift at the start of every Composer session. Silent on a
+# clean project. Exit code is always 0.
+#
+# Returns its findings via the `additional_context` field of the
+# Cursor sessionStart response so Cascade picks them up as context.
+
+if ! command -v gofasta >/dev/null 2>&1; then
+  echo '{}'
+  exit 0
+fi
+
+report=$(gofasta status --json 2>/dev/null || true)
+if [ -z "$report" ]; then
+  echo '{}'
+  exit 0
+fi
+
+drift=$(echo "$report" | jq -r '
+  (.checks // [])
+  | map(select(.status == "drift" or .status == "pending"))
+  | if length == 0 then ""
+    else (["gofasta status: " + (length | tostring) + " issue(s) detected:"]
+          + (map("  - " + .name + (if .detail then ": " + .detail else "" end)))) | join("\n")
+    end
+' 2>/dev/null || echo "")
+
+if [ -z "$drift" ]; then
+  echo '{}'
+else
+  jq -nc --arg ctx "$drift" '{additional_context: $ctx}'
+fi

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Cascade post_write_code hook. Reminds the agent to regenerate
+# Swagger after editing a REST controller.
+
+path=$(jq -r '.tool_info.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/rest/controllers/*.go)
+    echo "Reminder: you edited a controller. Run \`gofasta swagger\` to regenerate OpenAPI docs."
+    ;;
+esac

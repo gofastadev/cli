@@ -101,6 +101,11 @@ func cursorExpectedFiles() []string {
 		".cursor/commands/g-rename.md",
 		".cursor/commands/g-mock.md",
 		".cursor/commands/seed-memory.md",
+		".cursor/hooks.json",
+		".cursor/hooks/wire-reminder.sh",
+		".cursor/hooks/migration-reminder.sh",
+		".cursor/hooks/swagger-reminder.sh",
+		".cursor/hooks/session-start.sh",
 	}
 }
 
@@ -119,6 +124,27 @@ func codexExpectedFiles() []string {
 		".codex/docs/commands.md",
 		".codex/docs/debugging.md",
 		".codex/docs/docs-index.md",
+		".codex/prompts/status.md",
+		".codex/prompts/health-check.md",
+		".codex/prompts/routes.md",
+		".codex/prompts/rebuild.md",
+		".codex/prompts/migrate-explain.md",
+		".codex/prompts/inspect-jobs.md",
+		".codex/prompts/inspect-tasks.md",
+		".codex/prompts/xrefs.md",
+		".codex/prompts/impact.md",
+		".codex/prompts/debug-slow.md",
+		".codex/prompts/debug-error.md",
+		".codex/prompts/n-plus-one.md",
+		".codex/prompts/g-method.md",
+		".codex/prompts/g-field.md",
+		".codex/prompts/g-endpoint.md",
+		".codex/prompts/g-middleware.md",
+		".codex/prompts/g-repo-method.md",
+		".codex/prompts/g-relation.md",
+		".codex/prompts/g-rename.md",
+		".codex/prompts/g-mock.md",
+		".codex/prompts/seed-memory.md",
 	}
 }
 
@@ -168,6 +194,10 @@ func windsurfExpectedFiles() []string {
 		".windsurf/workflows/g-rename.md",
 		".windsurf/workflows/g-mock.md",
 		".windsurf/workflows/seed-memory.md",
+		".windsurf/hooks.json",
+		".windsurf/hooks/wire-reminder.sh",
+		".windsurf/hooks/migration-reminder.sh",
+		".windsurf/hooks/swagger-reminder.sh",
 	}
 }
 

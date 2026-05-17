@@ -1,0 +1,6 @@
+---
+description: Offline drift report — Wire/Swagger staleness, pending migrations, uncommitted generated files, go.sum freshness.
+---
+Run `gofasta status --json` and report each check's status. If any
+check reports `drift` or `pending`, surface the remediation hint
+from its JSON payload and ask whether to fix before continuing.

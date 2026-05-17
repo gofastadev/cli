@@ -1,0 +1,8 @@
+---
+description: Static SQL safety preview for pending migrations — flags data-loss, lock-impact, app-incompatibility patterns. No DB connection required.
+---
+Run `gofasta migrate up --explain --strict --json` before applying
+any migration. Surface the `max_risk` field and every migration
+whose risk is `data-loss`, `lock-and-fill`, `lock-and-rewrite`, or
+`app-incompatibility`. Ask before running `gofasta migrate up` if
+any high-severity warning fires.

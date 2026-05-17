@@ -192,3 +192,18 @@ If you're about to take any of those actions and haven't run the
 matching command, run it first. The cost is one tool call; the cost
 of skipping it can be a broken build or a lock-the-table migration
 applied in production.
+
+## Hooks wired in `.cursor/hooks.json`
+
+`afterFileEdit` and `sessionStart` hooks under `.cursor/hooks/`
+surface reminders without blocking:
+
+- Edit `app/di/wire.go` or `app/di/providers/*` → reminder to run
+  `gofasta wire`
+- Edit `app/models/*` → reminder to write a migration
+- Edit `app/rest/controllers/*` → reminder to run `gofasta swagger`
+- Session start → runs `gofasta status` and surfaces drift via
+  `additional_context`
+
+Cursor must trust the workspace for project hooks to execute. Hook
+scripts require `jq` (`brew install jq` on macOS).

@@ -115,8 +115,10 @@ func TestInstall_Codex_HookConfigValid(t *testing.T) {
 // (which keys off the .sh suffix).
 func TestInstall_AllAgents_HookScriptsExecutable(t *testing.T) {
 	hookDirs := map[string]string{
-		"claude": ".claude/hooks",
-		"codex":  ".codex/hooks",
+		"claude":   ".claude/hooks",
+		"codex":    ".codex/hooks",
+		"cursor":   ".cursor/hooks",
+		"windsurf": ".windsurf/hooks",
 	}
 	for agent, dir := range hookDirs {
 		t.Run(agent, func(t *testing.T) {
@@ -145,8 +147,10 @@ func TestInstall_AllAgents_HookScriptsExecutable(t *testing.T) {
 // confusing output.
 func TestInstall_AllAgents_HookScriptsShebang(t *testing.T) {
 	hookDirs := map[string]string{
-		"claude": ".claude/hooks",
-		"codex":  ".codex/hooks",
+		"claude":   ".claude/hooks",
+		"codex":    ".codex/hooks",
+		"cursor":   ".cursor/hooks",
+		"windsurf": ".windsurf/hooks",
 	}
 	for agent, dir := range hookDirs {
 		t.Run(agent, func(t *testing.T) {
@@ -409,6 +413,137 @@ func isCoveredByAllow(pattern string, allow []string) bool {
 	return false
 }
 
+// cursorHooksShape mirrors only the keys the tests assert on for
+// Cursor's hooks.json (schema v1).
+type cursorHooksShape struct {
+	Version int `json:"version"`
+	Hooks   map[string][]struct {
+		Command string `json:"command"`
+		Matcher string `json:"matcher,omitempty"`
+	} `json:"hooks"`
+}
+
+// windsurfHooksShape mirrors only the keys the tests assert on for
+// Cascade Hooks. No `version` field; entries use `command` (bash) or
+// `powershell` (Windows).
+type windsurfHooksShape struct {
+	Hooks map[string][]struct {
+		Command    string `json:"command,omitempty"`
+		Powershell string `json:"powershell,omitempty"`
+		ShowOutput bool   `json:"show_output,omitempty"`
+	} `json:"hooks"`
+}
+
+// TestInstall_Cursor_HooksJSONValid renders .cursor/hooks.json,
+// confirms it's valid JSON, asserts schema version is 1, and that
+// afterFileEdit + sessionStart events are wired with non-empty
+// commands.
+func TestInstall_Cursor_HooksJSONValid(t *testing.T) {
+	body := renderAgentFile(t, "cursor", ".cursor/hooks.json")
+
+	var hooks cursorHooksShape
+	require.NoError(t, json.Unmarshal(body, &hooks),
+		".cursor/hooks.json must be valid JSON")
+
+	assert.Equal(t, 1, hooks.Version, "Cursor hooks schema must be version 1")
+	require.NotEmpty(t, hooks.Hooks, "hooks block must be present")
+
+	require.Contains(t, hooks.Hooks, "afterFileEdit", "afterFileEdit must be configured")
+	require.Contains(t, hooks.Hooks, "sessionStart", "sessionStart must be configured")
+
+	for event, entries := range hooks.Hooks {
+		require.NotEmpty(t, entries, "%s must have at least one hook entry", event)
+		for _, e := range entries {
+			require.NotEmpty(t, e.Command, "%s entry command must not be empty", event)
+		}
+	}
+}
+
+// TestInstall_Windsurf_HooksJSONValid renders .windsurf/hooks.json,
+// confirms it's valid JSON, asserts post_write_code is wired with
+// non-empty bash commands. Cascade Hooks doesn't require a `version`
+// field.
+func TestInstall_Windsurf_HooksJSONValid(t *testing.T) {
+	body := renderAgentFile(t, "windsurf", ".windsurf/hooks.json")
+
+	var hooks windsurfHooksShape
+	require.NoError(t, json.Unmarshal(body, &hooks),
+		".windsurf/hooks.json must be valid JSON")
+
+	require.NotEmpty(t, hooks.Hooks, "hooks block must be present")
+	require.Contains(t, hooks.Hooks, "post_write_code", "post_write_code must be configured")
+
+	for event, entries := range hooks.Hooks {
+		require.NotEmpty(t, entries, "%s must have at least one entry", event)
+		for _, e := range entries {
+			require.NotEmpty(t, e.Command, "%s entry command must not be empty", event)
+		}
+	}
+}
+
+// TestHook_Cursor_WireReminder_Matches feeds Cursor's afterFileEdit
+// payload (file_path at the top level, not under tool_input) and
+// asserts the reminder fires.
+func TestHook_Cursor_WireReminder_Matches(t *testing.T) {
+	out := runHookWithPayload(t, "cursor", ".cursor/hooks/wire-reminder.sh",
+		`{"file_path":"app/di/wire.go"}`)
+	assert.Contains(t, out, "gofasta wire",
+		"cursor wire-reminder should mention `gofasta wire`")
+}
+
+// TestHook_Cursor_WireReminder_NonMatchingSilent feeds a non-Wire
+// path and asserts stdout is empty (no false-positive reminder).
+func TestHook_Cursor_WireReminder_NonMatchingSilent(t *testing.T) {
+	out := runHookWithPayload(t, "cursor", ".cursor/hooks/wire-reminder.sh",
+		`{"file_path":"README.md"}`)
+	assert.Empty(t, strings.TrimSpace(out),
+		"non-matching path must produce no output")
+}
+
+// TestHook_Windsurf_WireReminder_Matches feeds Cascade's
+// post_write_code payload (file_path nested under tool_info) and
+// asserts the reminder fires.
+func TestHook_Windsurf_WireReminder_Matches(t *testing.T) {
+	out := runHookWithPayload(t, "windsurf", ".windsurf/hooks/wire-reminder.sh",
+		`{"agent_action_name":"post_write_code","tool_info":{"file_path":"app/di/wire.go"}}`)
+	assert.Contains(t, out, "gofasta wire",
+		"windsurf wire-reminder should mention `gofasta wire`")
+}
+
+// TestHook_Windsurf_WireReminder_NonMatchingSilent feeds a non-Wire
+// path and asserts stdout is empty.
+func TestHook_Windsurf_WireReminder_NonMatchingSilent(t *testing.T) {
+	out := runHookWithPayload(t, "windsurf", ".windsurf/hooks/wire-reminder.sh",
+		`{"agent_action_name":"post_write_code","tool_info":{"file_path":"README.md"}}`)
+	assert.Empty(t, strings.TrimSpace(out),
+		"non-matching path must produce no output")
+}
+
+// TestInstall_Codex_PromptsHaveFrontmatter walks every Codex prompt
+// markdown file and asserts each starts with YAML frontmatter and
+// declares a `description:` (Codex's only required frontmatter key).
+// `argument-hint:` is checked per-file where present but not
+// required globally — some prompts have no positional args.
+func TestInstall_Codex_PromptsHaveFrontmatter(t *testing.T) {
+	root := renderAgentToTempDir(t, "codex")
+	entries, err := os.ReadDir(filepath.Join(root, ".codex/prompts"))
+	require.NoError(t, err)
+	require.NotEmpty(t, entries)
+
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		body, err := os.ReadFile(filepath.Join(root, ".codex/prompts", e.Name()))
+		require.NoError(t, err)
+		text := string(body)
+		assert.True(t, strings.HasPrefix(text, "---\n"),
+			"%s should start with YAML frontmatter", e.Name())
+		assert.Contains(t, text, "description:",
+			"%s frontmatter should include `description:`", e.Name())
+	}
+}
+
 // TestPrintNextSteps_MentionsNewFamilies — calls printNextSteps for
 // each agent and asserts the output mentions the new families we
 // added (hooks for claude/codex, slash/workflow counts for
@@ -420,9 +555,9 @@ func TestPrintNextSteps_MentionsNewFamilies(t *testing.T) {
 		wants []string
 	}{
 		{"claude", []string{"/status", "/g-method", "/seed-memory", "Hooks", "jq"}},
-		{"cursor", []string{"/status", "/g-method", ".cursor/commands"}},
-		{"codex", []string{"Hooks", ".codex/hooks", "/hooks"}},
-		{"windsurf", []string{"/status", "/g-method", ".windsurf/workflows"}},
+		{"cursor", []string{"/status", "/g-method", ".cursor/commands", "Hooks", "afterFileEdit"}},
+		{"codex", []string{"Hooks", ".codex/hooks", "/hooks", "prompts", "symlink"}},
+		{"windsurf", []string{"/status", "/g-method", ".windsurf/workflows", "Hooks", "post_write_code"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.agent, func(t *testing.T) {

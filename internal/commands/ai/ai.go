@@ -360,12 +360,21 @@ func printNextSteps(w io.Writer, agent *Agent) {
 		fprintln(w, "  Slash commands installed under .cursor/commands/ — type / to discover:")
 		fprintln(w, "    /status, /health-check, /routes, /xrefs, /impact, /migrate-explain,")
 		fprintln(w, "    /debug-slow, /debug-error, /n-plus-one, /g-method, /g-field, and more.")
+		fprintln(w, "  Hooks (afterFileEdit + sessionStart) wired in .cursor/hooks.json surface")
+		fprintln(w, "    wire/migration/swagger reminders and session-start drift checks.")
+		fprintln(w, "    Cursor must trust the workspace for project hooks to run. Requires `jq`.")
 	case "codex":
 		fprintln(w, "  Run Codex from the project root. It reads AGENTS.md and .codex/config.toml.")
 		fprintln(w, "  Topic chunks live under .codex/docs/ — AGENTS.md links into them.")
 		fprintln(w, "  Hooks (PostToolUse + SessionStart) under .codex/hooks/ surface reminders for")
 		fprintln(w, "    wire/migration/swagger drift and project status. Requires `jq`.")
 		fprintln(w, "  Run /hooks inside Codex on first session to trust the new project hooks.")
+		fprintln(w, "  21 slash-command prompts shipped under .codex/prompts/. Codex reads only")
+		fprintln(w, "    from ~/.codex/prompts/, so activate them with one symlink command:")
+		fprintln(w, "      mkdir -p ~/.codex/prompts && for f in .codex/prompts/*.md; do \\")
+		fprintln(w, "        ln -sf \"$PWD/$f\" \"$HOME/.codex/prompts/gofasta-$(basename \"$f\")\"; done")
+		fprintln(w, "    Restart Codex, then invoke with /prompts:gofasta-<name>")
+		fprintln(w, "    (e.g. /prompts:gofasta-xrefs UserService). See AGENTS.md for details.")
 	case "aider":
 		fprintln(w, "  Start `aider` from the project root. CONVENTIONS.md and every .aider/docs/ chunk preload via .aider.conf.yml.")
 		fprintln(w, "  `gofasta verify` runs after every edit; `gofmt + go vet` after every save.")
@@ -375,6 +384,9 @@ func printNextSteps(w io.Writer, agent *Agent) {
 		fprintln(w, "  Workflows installed under .windsurf/workflows/ — invoke with /<workflow-name>:")
 		fprintln(w, "    /status, /health-check, /routes, /xrefs, /impact, /migrate-explain,")
 		fprintln(w, "    /debug-slow, /debug-error, /n-plus-one, /g-method, /g-field, and more.")
+		fprintln(w, "  Cascade Hooks (post_write_code) wired in .windsurf/hooks.json surface")
+		fprintln(w, "    wire/migration/swagger reminders. Requires `jq`. No session-start event")
+		fprintln(w, "    exists in Cascade; run /status manually for drift checks.")
 	}
 }
 
