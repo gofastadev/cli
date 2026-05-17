@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -158,7 +157,7 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 }
 
 // TestManifest_LoadSaveRoundtrip — manifest round-trips cleanly through
-// disk and InstallRecord data (including v2 fields) survives intact.
+// disk and InstallRecord data survives intact.
 func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	m, err := LoadManifest(dir)
@@ -167,8 +166,7 @@ func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	assert.Equal(t, manifestSchemaVersion, m.Version)
 
 	m.RecordInstall("claude", "v0.5.0-test",
-		[]string{".claude/settings.json", ".claude/commands/verify.md"},
-		"AGENTS.md", "CLAUDE.md")
+		[]string{".claude/settings.json", ".claude/commands/verify.md"})
 	require.NoError(t, m.Save(dir))
 
 	m2, err := LoadManifest(dir)
@@ -178,8 +176,6 @@ func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
 	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
-	assert.Equal(t, "AGENTS.md", rec.RenamedFrom)
-	assert.Equal(t, "CLAUDE.md", rec.RenamedTo)
 }
 
 // TestExtractModulePath — parses `module ...` lines out of go.mod text.
@@ -245,42 +241,23 @@ func TestStatusCmdRunE(t *testing.T) {
 // agentConflictError — every diff branch
 // ─────────────────────────────────────────────────────────────────────
 
-// TestAgentConflictError_PrevRenamedTargetHasDoc — prev agent renamed
-// AGENTS.md (aider→CONVENTIONS.md), target also has a DocFilename
-// (claude→CLAUDE.md). The diff should describe "rename CONVENTIONS.md → CLAUDE.md".
-func TestAgentConflictError_PrevRenamedTargetHasDoc(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("aider", false, false))
-	})
-	t.Cleanup(func() { installSwitch = false })
-
-	err := runInstall("claude", false, false)
-	require.Error(t, err)
-	b, _ := json.Marshal(err)
-	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
-	assert.Contains(t, err.Error(), "rename CONVENTIONS.md → CLAUDE.md")
-}
-
-// TestAgentConflictError_PrevRenamedTargetNoDoc — prev agent renamed
-// AGENTS.md (claude→CLAUDE.md), target has NO DocFilename (cursor).
-// The diff should reverse the rename: "CLAUDE.md → AGENTS.md".
-func TestAgentConflictError_PrevRenamedTargetNoDoc(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-
+// TestAgentConflictError_DiffListsRemoveAndAdd — install a previous
+// agent, attempt to install another without --switch. The conflict
+// error must list the files the previous agent will remove and the
+// files the new agent will add.
+func TestAgentConflictError_DiffListsRemoveAndAdd(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 	t.Cleanup(func() { installSwitch = false })
 
-	err := runInstall("cursor", false, false)
+	err := runInstall("codex", false, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rename CLAUDE.md → AGENTS.md")
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
+	assert.Contains(t, err.Error(), "remove")
+	assert.Contains(t, err.Error(), "add")
 }
 
 // TestAgentConflictError_PrevUnknownAgent — manifest references an
@@ -402,48 +379,52 @@ func TestSwitchUninstall_BuildInstallDataError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSwitchUninstall_UninstallError — fail osRename inside Uninstall
-// to hit the Uninstall-error branch of switchUninstall.
+// TestSwitchUninstall_UninstallError — make Uninstall fail inside
+// switchUninstall by chmod'ing a parent dir of a recorded file so
+// os.Remove returns EACCES. Hits the `err != nil` branch of the
+// Uninstall call.
 func TestSwitchUninstall_UninstallError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
 	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 
-	orig := osRename
-	osRename = func(_, _ string) error { return assertError("rename boom") }
-	t.Cleanup(func() { osRename = orig })
+	// Make .claude/commands read-only so os.Remove on a file in it fails.
+	cmds := filepath.Join(dir, ".claude", "commands")
+	require.NoError(t, os.Chmod(cmds, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(cmds, 0o755) })
 
 	err = switchUninstall(m, dir, false)
 	require.Error(t, err)
 }
 
 // TestRunInstall_SwitchUninstallError — runInstall with --switch
-// where switchUninstall fails (osRename stubbed to fail inside the
-// Uninstall path). Surfaces the line `if err := switchUninstall(...)
+// where switchUninstall fails: chmod a parent dir read-only so the
+// inner Uninstall errors. Surfaces the line `if err := switchUninstall(...)
 // ... return err` branch inside runInstall.
 func TestRunInstall_SwitchUninstallError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
 	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 
-	orig := osRename
-	osRename = func(_, _ string) error { return assertError("rename boom") }
-	t.Cleanup(func() { osRename = orig })
+	cmds := filepath.Join(dir, ".claude", "commands")
+	require.NoError(t, os.Chmod(cmds, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(cmds, 0o755) })
 
 	installSwitch = true
 	t.Cleanup(func() { installSwitch = false })
 
 	err := runInstall("aider", false, false)
 	require.Error(t, err)
-	_ = dir
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -567,20 +548,4 @@ func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
 
 	got := expectedRenderings(AgentByKey("claude"), sampleData())
 	assert.Empty(t, got)
-}
-
-// TestInstallResult_PrintText_RenameSections — covers the Renamed
-// and WouldRename branches that the aggregate sections test in
-// runners_test.go doesn't exercise.
-func TestInstallResult_PrintText_RenameSections(t *testing.T) {
-	r := &InstallResult{
-		Agent:       "claude",
-		Renamed:     []string{"AGENTS.md → CLAUDE.md"},
-		WouldRename: []string{"AGENTS.md → CLAUDE.md"},
-	}
-	var buf bytes.Buffer
-	r.PrintText(&buf)
-	out := buf.String()
-	assert.Contains(t, out, "renamed: AGENTS.md → CLAUDE.md")
-	assert.Contains(t, out, "would rename (dry-run): AGENTS.md → CLAUDE.md")
 }

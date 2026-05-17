@@ -151,7 +151,7 @@ func runInstall(key string, dryRun, force bool) error {
 		if ferr != nil {
 			return ferr
 		}
-		m.RecordInstall(agent.Key, data.CLIVersion, ownedFiles, result.renameFrom, result.renameTo)
+		m.RecordInstall(agent.Key, data.CLIVersion, ownedFiles)
 		if err := m.Save(root); err != nil {
 			return err
 		}
@@ -197,19 +197,6 @@ func agentConflictError(m *Manifest, target *Agent, root string, data InstallDat
 	}
 
 	var diff []string
-
-	// Doc-file rename swap: previous agent → AGENTS.md → target.
-	if prev != nil {
-		if rec, ok := m.Installed[prev.Key]; ok && rec.RenamedTo != "" && rec.RenamedFrom != "" {
-			if target.DocFilename != "" {
-				diff = append(diff, "  rename "+rec.RenamedTo+" → "+target.DocFilename)
-			} else {
-				diff = append(diff, "  rename "+rec.RenamedTo+" → "+rec.RenamedFrom)
-			}
-		} else if target.DocFilename != "" {
-			diff = append(diff, "  rename AGENTS.md → "+target.DocFilename)
-		}
-	}
 
 	// Files the previous agent owns (will be removed).
 	if prev != nil {
