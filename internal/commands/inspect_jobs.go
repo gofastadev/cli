@@ -139,9 +139,16 @@ func scanJobsFile(path string) ([]inspectJobEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	structs := collectStructTypeNames(f)
+	methods := collectJobMethods(f, structs)
+	return buildJobEntries(methods, path), nil
+}
 
-	// First pass: collect every struct type declared in this file.
-	structs := map[string]bool{}
+// collectStructTypeNames returns the set of struct type names declared
+// at file scope. Lets the receiver-walk later skip method decls whose
+// receiver isn't a struct in this file.
+func collectStructTypeNames(f *ast.File) map[string]bool {
+	out := map[string]bool{}
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok {
@@ -153,18 +160,27 @@ func scanJobsFile(path string) ([]inspectJobEntry, error) {
 				continue
 			}
 			if _, isStruct := ts.Type.(*ast.StructType); isStruct {
-				structs[ts.Name.Name] = true
+				out[ts.Name.Name] = true
 			}
 		}
 	}
+	return out
+}
 
-	// Second pass: collect methods per receiver.
-	type methodSet struct {
-		hasName bool
-		hasRun  bool
-		nameLit string // string literal returned by Name(), if any
-	}
-	methods := map[string]*methodSet{}
+// jobMethodSet tracks which of the Name() / Run() contract a receiver
+// satisfies — and, for Name(), the string literal value if the body is
+// trivial enough to extract.
+type jobMethodSet struct {
+	hasName bool
+	hasRun  bool
+	nameLit string
+}
+
+// collectJobMethods walks every method declaration on a struct in
+// structs, recording whether each receiver satisfies the Name() + Run()
+// pair the job interface requires.
+func collectJobMethods(f *ast.File, structs map[string]bool) map[string]*jobMethodSet {
+	out := map[string]*jobMethodSet{}
 	for _, decl := range f.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Recv == nil || len(fd.Recv.List) == 0 {
@@ -174,10 +190,10 @@ func scanJobsFile(path string) ([]inspectJobEntry, error) {
 		if !structs[recv] {
 			continue
 		}
-		m, exists := methods[recv]
+		m, exists := out[recv]
 		if !exists {
-			m = &methodSet{}
-			methods[recv] = m
+			m = &jobMethodSet{}
+			out[recv] = m
 		}
 		switch fd.Name.Name {
 		case "Name":
@@ -187,7 +203,13 @@ func scanJobsFile(path string) ([]inspectJobEntry, error) {
 			m.hasRun = true
 		}
 	}
+	return out
+}
 
+// buildJobEntries materializes the inspectJobEntry list for receivers
+// that satisfy the full contract. Falls back to the type name when
+// Name()'s body returns a non-literal expression.
+func buildJobEntries(methods map[string]*jobMethodSet, path string) []inspectJobEntry {
 	var out []inspectJobEntry
 	for typ, m := range methods {
 		if !m.hasName || !m.hasRun {
@@ -195,18 +217,11 @@ func scanJobsFile(path string) ([]inspectJobEntry, error) {
 		}
 		name := m.nameLit
 		if name == "" {
-			// Fall back to the type name lowered to kebab-case so the
-			// entry is still distinguishable when Name() returns a
-			// computed value.
 			name = strings.ToLower(typ)
 		}
-		out = append(out, inspectJobEntry{
-			Name: name,
-			Type: typ,
-			File: path,
-		})
+		out = append(out, inspectJobEntry{Name: name, Type: typ, File: path})
 	}
-	return out, nil
+	return out
 }
 
 // extractSingleReturnString returns the string-literal value of a function

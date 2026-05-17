@@ -17,153 +17,195 @@ import (
 // statement. That's sufficient for migration files written by humans or
 // by gofasta's generators.
 func SplitStatements(sql string) ([]string, error) {
-	var (
-		out      []string
-		buf      strings.Builder
-		i        int
-		runes    = []rune(sql)
-		dollar   string // current dollar-quote tag ("$$", "$tag$", or "" when not in one)
-		inString byte   // '\'', '"' or 0
-		inLine   bool   // -- line comment
-		inBlock  bool   // /* block comment */
-	)
-
-	flush := func() {
-		s := strings.TrimSpace(buf.String())
-		if s != "" {
-			out = append(out, s)
-		}
-		buf.Reset()
+	st := newSplitState(sql)
+	for st.i < len(st.runes) {
+		st.advance()
 	}
-
-	for i < len(runes) {
-		r := runes[i]
-
-		// Line comment runs to newline.
-		if inLine {
-			buf.WriteRune(r)
-			if r == '\n' {
-				inLine = false
-			}
-			i++
-			continue
-		}
-
-		// Block comment runs to "*/".
-		if inBlock {
-			buf.WriteRune(r)
-			if r == '*' && i+1 < len(runes) && runes[i+1] == '/' {
-				buf.WriteRune('/')
-				i += 2
-				inBlock = false
-				continue
-			}
-			i++
-			continue
-		}
-
-		// Inside a string literal — only the matching quote (not preceded
-		// by an escape backslash) closes it. SQL doubles ('' or "") also
-		// escape the quote; we handle those by peeking ahead.
-		if inString != 0 {
-			buf.WriteRune(r)
-			if byte(r) == inString {
-				if i+1 < len(runes) && byte(runes[i+1]) == inString {
-					// Doubled quote — write the second and continue inside.
-					buf.WriteRune(runes[i+1])
-					i += 2
-					continue
-				}
-				inString = 0
-			} else if r == '\\' && i+1 < len(runes) {
-				// Backslash-escape: consume the next rune verbatim.
-				buf.WriteRune(runes[i+1])
-				i += 2
-				continue
-			}
-			i++
-			continue
-		}
-
-		// Inside a dollar-quote block — closes at matching tag.
-		if dollar != "" {
-			buf.WriteRune(r)
-			if r == '$' {
-				if rest := string(runes[i:]); strings.HasPrefix(rest, dollar) {
-					for j := 1; j < len(dollar); j++ {
-						buf.WriteRune(runes[i+j])
-					}
-					i += len(dollar)
-					dollar = ""
-					continue
-				}
-			}
-			i++
-			continue
-		}
-
-		// Top-level: detect entry into a special context first.
-		if r == '-' && i+1 < len(runes) && runes[i+1] == '-' {
-			buf.WriteRune(r)
-			buf.WriteRune(runes[i+1])
-			i += 2
-			inLine = true
-			continue
-		}
-		if r == '/' && i+1 < len(runes) && runes[i+1] == '*' {
-			buf.WriteRune(r)
-			buf.WriteRune(runes[i+1])
-			i += 2
-			inBlock = true
-			continue
-		}
-		if r == '\'' || r == '"' {
-			buf.WriteRune(r)
-			inString = byte(r)
-			i++
-			continue
-		}
-		if r == '$' {
-			// Detect dollar-quote tag: $$, $tag$ (tag is letters/digits/_).
-			j := i + 1
-			for j < len(runes) && (unicode.IsLetter(runes[j]) || unicode.IsDigit(runes[j]) || runes[j] == '_') {
-				j++
-			}
-			if j < len(runes) && runes[j] == '$' {
-				dollar = string(runes[i : j+1])
-				for k := i; k <= j; k++ {
-					buf.WriteRune(runes[k])
-				}
-				i = j + 1
-				continue
-			}
-		}
-
-		// Statement terminator.
-		if r == ';' {
-			buf.WriteRune(r)
-			flush()
-			i++
-			continue
-		}
-
-		buf.WriteRune(r)
-		i++
+	if err := st.finishError(); err != nil {
+		return nil, err
 	}
+	st.flush()
+	return st.out, nil
+}
 
-	// Unterminated contexts are migration bugs — surface them.
+// splitState is the splitter's run-time state. Each top-level branch in
+// SplitStatements moved into a dedicated method on splitState so the
+// outer loop stays linear and gocognit doesn't trip on the deeply-nested
+// switch-with-state-machine pattern.
+type splitState struct {
+	out      []string
+	buf      strings.Builder
+	i        int
+	runes    []rune
+	dollar   string // active dollar-quote tag, or "" outside one
+	inString byte   // '\'', '"', or 0
+	inLine   bool
+	inBlock  bool
+}
+
+func newSplitState(sql string) *splitState {
+	return &splitState{runes: []rune(sql)}
+}
+
+func (s *splitState) flush() {
+	stmt := strings.TrimSpace(s.buf.String())
+	if stmt != "" {
+		s.out = append(s.out, stmt)
+	}
+	s.buf.Reset()
+}
+
+// finishError surfaces unterminated-context bugs to the caller. Called
+// once at EOF, before the final flush.
+func (s *splitState) finishError() error {
 	switch {
-	case inString != 0:
-		return nil, clierr.Newf(clierr.CodeMigrationParseFailed,
-			"unterminated string literal (opened with %q)", string(inString))
-	case inBlock:
-		return nil, clierr.New(clierr.CodeMigrationParseFailed,
+	case s.inString != 0:
+		return clierr.Newf(clierr.CodeMigrationParseFailed,
+			"unterminated string literal (opened with %q)", string(s.inString))
+	case s.inBlock:
+		return clierr.New(clierr.CodeMigrationParseFailed,
 			"unterminated /* ... */ block comment")
-	case dollar != "":
-		return nil, clierr.Newf(clierr.CodeMigrationParseFailed,
-			"unterminated dollar-quote block (tag %s)", dollar)
+	case s.dollar != "":
+		return clierr.Newf(clierr.CodeMigrationParseFailed,
+			"unterminated dollar-quote block (tag %s)", s.dollar)
 	}
+	return nil
+}
 
-	flush()
-	return out, nil
+// advance dispatches one rune through the right context handler.
+func (s *splitState) advance() {
+	switch {
+	case s.inLine:
+		s.advanceInLineComment()
+	case s.inBlock:
+		s.advanceInBlockComment()
+	case s.inString != 0:
+		s.advanceInString()
+	case s.dollar != "":
+		s.advanceInDollarQuote()
+	default:
+		s.advanceTopLevel()
+	}
+}
+
+func (s *splitState) advanceInLineComment() {
+	r := s.runes[s.i]
+	s.buf.WriteRune(r)
+	if r == '\n' {
+		s.inLine = false
+	}
+	s.i++
+}
+
+func (s *splitState) advanceInBlockComment() {
+	r := s.runes[s.i]
+	s.buf.WriteRune(r)
+	if r == '*' && s.i+1 < len(s.runes) && s.runes[s.i+1] == '/' {
+		s.buf.WriteRune('/')
+		s.i += 2
+		s.inBlock = false
+		return
+	}
+	s.i++
+}
+
+// advanceInString handles characters inside a '...' or "..." literal.
+// SQL doubles the quote to escape it (” or ""); a backslash also
+// escapes the following character.
+func (s *splitState) advanceInString() {
+	r := s.runes[s.i]
+	s.buf.WriteRune(r)
+	if byte(r) == s.inString {
+		if s.i+1 < len(s.runes) && byte(s.runes[s.i+1]) == s.inString {
+			s.buf.WriteRune(s.runes[s.i+1])
+			s.i += 2
+			return
+		}
+		s.inString = 0
+	} else if r == '\\' && s.i+1 < len(s.runes) {
+		s.buf.WriteRune(s.runes[s.i+1])
+		s.i += 2
+		return
+	}
+	s.i++
+}
+
+// advanceInDollarQuote handles characters inside an active $$/$tag$
+// block — closes at the matching tag.
+func (s *splitState) advanceInDollarQuote() {
+	r := s.runes[s.i]
+	s.buf.WriteRune(r)
+	if r == '$' {
+		if rest := string(s.runes[s.i:]); strings.HasPrefix(rest, s.dollar) {
+			for j := 1; j < len(s.dollar); j++ {
+				s.buf.WriteRune(s.runes[s.i+j])
+			}
+			s.i += len(s.dollar)
+			s.dollar = ""
+			return
+		}
+	}
+	s.i++
+}
+
+// advanceTopLevel is the default dispatch when no special context is
+// active. Detects entry into comments / strings / dollar-quotes and
+// terminates statements on semicolons.
+func (s *splitState) advanceTopLevel() {
+	r := s.runes[s.i]
+	switch {
+	case r == '-' && s.peek(1) == '-':
+		s.buf.WriteRune(r)
+		s.buf.WriteRune(s.runes[s.i+1])
+		s.i += 2
+		s.inLine = true
+	case r == '/' && s.peek(1) == '*':
+		s.buf.WriteRune(r)
+		s.buf.WriteRune(s.runes[s.i+1])
+		s.i += 2
+		s.inBlock = true
+	case r == '\'' || r == '"':
+		s.buf.WriteRune(r)
+		s.inString = byte(r)
+		s.i++
+	case r == '$' && s.tryEnterDollarQuote():
+		// Side-effect handled in tryEnterDollarQuote; no further action.
+	case r == ';':
+		s.buf.WriteRune(r)
+		s.flush()
+		s.i++
+	default:
+		s.buf.WriteRune(r)
+		s.i++
+	}
+}
+
+// peek returns the rune at offset n from the current position, or 0 if
+// out of range. Used by advanceTopLevel to detect two-character starts
+// ("--", "/*") without bounds-checking inline.
+func (s *splitState) peek(n int) rune {
+	if s.i+n >= len(s.runes) {
+		return 0
+	}
+	return s.runes[s.i+n]
+}
+
+// tryEnterDollarQuote tests whether the current "$" starts a $$ or
+// $tag$ dollar-quote block. If yes, emits the opening tag, advances
+// past it, and returns true. If no, returns false (and the caller's
+// default branch handles "$" as a regular character).
+func (s *splitState) tryEnterDollarQuote() bool {
+	j := s.i + 1
+	for j < len(s.runes) && (unicode.IsLetter(s.runes[j]) || unicode.IsDigit(s.runes[j]) || s.runes[j] == '_') {
+		j++
+	}
+	if j >= len(s.runes) || s.runes[j] != '$' {
+		return false
+	}
+	s.dollar = string(s.runes[s.i : j+1])
+	for k := s.i; k <= j; k++ {
+		s.buf.WriteRune(s.runes[k])
+	}
+	s.i = j + 1
+	return true
 }

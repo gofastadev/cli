@@ -139,92 +139,8 @@ func scanTasksFile(path string) ([]inspectTaskEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	// Pass 1: collect const Task<Name> = "..." declarations.
-	type taskInfo struct {
-		typeName  string // "TaskSendWelcomeEmail"
-		shortName string // "SendWelcomeEmail"
-		wireName  string // value of the const
-	}
-	tasksByShort := map[string]*taskInfo{}
-	for _, decl := range f.Decls {
-		gd, ok := decl.(*ast.GenDecl)
-		if !ok || gd.Tok.String() != "const" {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			for i, n := range vs.Names {
-				if !strings.HasPrefix(n.Name, "Task") || n.Name == "Task" {
-					continue
-				}
-				short := strings.TrimPrefix(n.Name, "Task")
-				ti := &taskInfo{typeName: n.Name, shortName: short}
-				if i < len(vs.Values) {
-					if bl, ok := vs.Values[i].(*ast.BasicLit); ok {
-						v := bl.Value
-						if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
-							ti.wireName = v[1 : len(v)-1]
-						}
-					}
-				}
-				tasksByShort[short] = ti
-			}
-		}
-	}
-
-	// Pass 2: find Payload struct, Handle func, Enqueue func per short-name.
-	payloadFields := map[string][]fieldEntry{}
-	hasHandler := map[string]bool{}
-	hasEnqueue := map[string]bool{}
-	for _, decl := range f.Decls {
-		switch d := decl.(type) {
-		case *ast.GenDecl:
-			for _, spec := range d.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				if !strings.HasSuffix(ts.Name.Name, "Payload") {
-					continue
-				}
-				short := strings.TrimSuffix(ts.Name.Name, "Payload")
-				if _, hit := tasksByShort[short]; !hit {
-					continue
-				}
-				if st, ok := ts.Type.(*ast.StructType); ok && st.Fields != nil {
-					for _, fld := range st.Fields.List {
-						typ := exprToString(fld.Type)
-						for _, fn := range fld.Names {
-							payloadFields[short] = append(payloadFields[short], fieldEntry{
-								Name: fn.Name,
-								Type: typ,
-							})
-						}
-					}
-				}
-			}
-		case *ast.FuncDecl:
-			if d.Recv != nil {
-				continue // skip methods
-			}
-			switch {
-			case strings.HasPrefix(d.Name.Name, "Handle"):
-				short := strings.TrimPrefix(d.Name.Name, "Handle")
-				if _, hit := tasksByShort[short]; hit {
-					hasHandler[short] = true
-				}
-			case strings.HasPrefix(d.Name.Name, "Enqueue"):
-				short := strings.TrimPrefix(d.Name.Name, "Enqueue")
-				if _, hit := tasksByShort[short]; hit {
-					hasEnqueue[short] = true
-				}
-			}
-		}
-	}
+	tasksByShort := collectTaskConsts(f)
+	payloadFields, hasHandler, hasEnqueue := collectTaskParts(f, tasksByShort)
 
 	var out []inspectTaskEntry
 	for short, info := range tasksByShort {
@@ -239,6 +155,136 @@ func scanTasksFile(path string) ([]inspectTaskEntry, error) {
 		})
 	}
 	return out, nil
+}
+
+// taskConst holds the metadata we extract from a `Task<Name>` constant
+// declaration: the Go identifier ("TaskSendWelcomeEmail"), the trimmed
+// short name ("SendWelcomeEmail"), and the wire-name string value.
+type taskConst struct {
+	typeName  string
+	shortName string
+	wireName  string
+}
+
+// collectTaskConsts walks every const block looking for identifiers
+// starting with "Task". Each found identifier becomes a taskConst keyed
+// by its short (post-"Task") form so subsequent passes can join on it.
+func collectTaskConsts(f *ast.File) map[string]*taskConst {
+	out := map[string]*taskConst{}
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok.String() != "const" {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			collectTaskConstSpec(vs, out)
+		}
+	}
+	return out
+}
+
+// collectTaskConstSpec handles one ValueSpec line (which may declare
+// multiple names) inside a const block.
+func collectTaskConstSpec(vs *ast.ValueSpec, out map[string]*taskConst) {
+	for i, n := range vs.Names {
+		if !strings.HasPrefix(n.Name, "Task") || n.Name == "Task" {
+			continue
+		}
+		short := strings.TrimPrefix(n.Name, "Task")
+		tc := &taskConst{typeName: n.Name, shortName: short}
+		if i < len(vs.Values) {
+			tc.wireName = stringLitValue(vs.Values[i])
+		}
+		out[short] = tc
+	}
+}
+
+// stringLitValue returns the unquoted string literal value of e, or ""
+// when e isn't a string-shaped *ast.BasicLit.
+func stringLitValue(e ast.Expr) string {
+	bl, ok := e.(*ast.BasicLit)
+	if !ok {
+		return ""
+	}
+	v := bl.Value
+	if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+		return v[1 : len(v)-1]
+	}
+	return ""
+}
+
+// collectTaskParts walks the file looking for the three other parts of
+// each task: the Payload struct, the Handle function, and the Enqueue
+// function. Returns three maps keyed by task short-name.
+func collectTaskParts(f *ast.File, tasks map[string]*taskConst) (
+	payloads map[string][]fieldEntry,
+	handlers map[string]bool,
+	enqueuers map[string]bool,
+) {
+	payloads = map[string][]fieldEntry{}
+	handlers = map[string]bool{}
+	enqueuers = map[string]bool{}
+	for _, decl := range f.Decls {
+		switch d := decl.(type) {
+		case *ast.GenDecl:
+			collectTaskPayloads(d, tasks, payloads)
+		case *ast.FuncDecl:
+			collectTaskFuncs(d, tasks, handlers, enqueuers)
+		}
+	}
+	return payloads, handlers, enqueuers
+}
+
+// collectTaskPayloads scans one GenDecl for `<Short>Payload` structs
+// whose short name matches a known task, recording each field.
+func collectTaskPayloads(d *ast.GenDecl, tasks map[string]*taskConst, payloads map[string][]fieldEntry) {
+	for _, spec := range d.Specs {
+		ts, ok := spec.(*ast.TypeSpec)
+		if !ok || !strings.HasSuffix(ts.Name.Name, "Payload") {
+			continue
+		}
+		short := strings.TrimSuffix(ts.Name.Name, "Payload")
+		if _, hit := tasks[short]; !hit {
+			continue
+		}
+		st, ok := ts.Type.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			continue
+		}
+		for _, fld := range st.Fields.List {
+			typ := exprToString(fld.Type)
+			for _, fn := range fld.Names {
+				payloads[short] = append(payloads[short], fieldEntry{
+					Name: fn.Name,
+					Type: typ,
+				})
+			}
+		}
+	}
+}
+
+// collectTaskFuncs records the presence of `Handle<Short>` and
+// `Enqueue<Short>` top-level functions per known task.
+func collectTaskFuncs(d *ast.FuncDecl, tasks map[string]*taskConst, handlers, enqueuers map[string]bool) {
+	if d.Recv != nil {
+		return // skip methods
+	}
+	switch {
+	case strings.HasPrefix(d.Name.Name, "Handle"):
+		short := strings.TrimPrefix(d.Name.Name, "Handle")
+		if _, hit := tasks[short]; hit {
+			handlers[short] = true
+		}
+	case strings.HasPrefix(d.Name.Name, "Enqueue"):
+		short := strings.TrimPrefix(d.Name.Name, "Enqueue")
+		if _, hit := tasks[short]; hit {
+			enqueuers[short] = true
+		}
+	}
 }
 
 func printInspectTasksText(w io.Writer, r inspectTasksResult) {

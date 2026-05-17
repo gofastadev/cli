@@ -193,37 +193,13 @@ func runVerify(opts verifyOptions) error {
 	result := verifyResult{Checks: make([]verifyCheck, 0, len(steps))}
 
 	for _, step := range steps {
-		t := time.Now()
-		message, output, err := step.fn()
-		check := verifyCheck{
-			Name:     step.name,
-			Message:  message,
-			Output:   output,
-			Duration: time.Since(t).Milliseconds(),
-		}
-		switch {
-		case err == nil && message == "skip":
-			check.Status = "skip"
-			result.Skipped++
-		case err == nil:
-			check.Status = "pass"
-			result.Passed++
-		default:
-			check.Status = "fail"
-			if check.Message == "" {
-				check.Message = err.Error()
-			}
-			result.Failed++
-		}
-		result.Checks = append(result.Checks, check)
-
+		check := runVerifyStep(step, &result)
 		// In text mode, print each step as it completes — agents parsing
 		// JSON see the aggregate payload at the end, but humans want a
 		// live progress indicator.
 		if !cliout.JSON() {
 			printVerifyStep(check)
 		}
-
 		if check.Status == "fail" && !opts.keepGoing {
 			break
 		}
@@ -259,6 +235,41 @@ func runVerify(opts verifyOptions) error {
 // printVerifyStep prints one check's outcome using the canonical
 // termcolor vocabulary (✓/✗/—). Pass/fail/skip line up with what other
 // commands emit so users see one visual style across the CLI.
+// runVerifyStep executes one verifyStepDef, times it, classifies the
+// result into pass/fail/skip, and appends to the running result. The
+// returned verifyCheck is the same value just pushed onto result.Checks
+// — callers use it to decide whether to break out of the step loop.
+//
+// Extracted from runVerify so the latter stays under gocyclo's
+// complexity threshold; the per-step bookkeeping had a fan-out of its
+// own that pushed runVerify over.
+func runVerifyStep(step verifyStepDef, result *verifyResult) verifyCheck {
+	t := time.Now()
+	message, output, err := step.fn()
+	check := verifyCheck{
+		Name:     step.name,
+		Message:  message,
+		Output:   output,
+		Duration: time.Since(t).Milliseconds(),
+	}
+	switch {
+	case err == nil && message == "skip":
+		check.Status = "skip"
+		result.Skipped++
+	case err == nil:
+		check.Status = "pass"
+		result.Passed++
+	default:
+		check.Status = "fail"
+		if check.Message == "" {
+			check.Message = err.Error()
+		}
+		result.Failed++
+	}
+	result.Checks = append(result.Checks, check)
+	return check
+}
+
 func printVerifyStep(c verifyCheck) {
 	switch c.Status {
 	case "pass":

@@ -49,15 +49,27 @@ func GenEndpoint(d EndpointData) error {
 	if err := ensureExists(d.RoutesFile); err != nil {
 		return err
 	}
+	if err := patchEndpointController(d); err != nil {
+		return err
+	}
+	if err := patchEndpointRoutes(d); err != nil {
+		return err
+	}
+	if d.WithService {
+		return patchEndpointService(d)
+	}
+	return nil
+}
 
-	// Step 1: append the handler to the controller.
+// patchEndpointController appends the handler method to the controller
+// struct's file. Idempotency check returns METHOD_ALREADY_EXISTS so
+// agents can branch on "already done" without re-parsing.
+func patchEndpointController(d EndpointData) error {
 	cf, err := astpatch.Parse(d.ControllerFile)
 	if err != nil {
 		return err
 	}
 	controllerType := d.Resource + "Controller"
-	receiver := strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Controller"
-	_ = receiver
 	if _, err := astpatch.FindStruct(cf, controllerType); err != nil {
 		return err
 	}
@@ -67,16 +79,17 @@ func GenEndpoint(d EndpointData) error {
 			controllerType, d.HandlerName)
 	}
 	astpatch.EnsureImport(cf, "net/http")
-	stub := buildEndpointHandlerStub(d, controllerType)
-	if err := astpatch.AppendFuncDecl(cf, stub); err != nil {
+	if err := astpatch.AppendFuncDecl(cf, buildEndpointHandlerStub(d, controllerType)); err != nil {
 		return err
 	}
-	if err := writeBackOrRecord(cf,
-		fmt.Sprintf("add %s handler to %s", d.HandlerName, controllerType)); err != nil {
-		return err
-	}
+	return writeBackOrRecord(cf,
+		fmt.Sprintf("add %s handler to %s", d.HandlerName, controllerType))
+}
 
-	// Step 2: insert the route registration line into the routes function.
+// patchEndpointRoutes inserts the chi route registration line into the
+// resource's routes function (string surgery — the file's regex-style
+// route syntax is easier to splice than to AST-rewrite).
+func patchEndpointRoutes(d EndpointData) error {
 	rfBody, err := readFile(d.RoutesFile)
 	if err != nil {
 		return err
@@ -94,34 +107,31 @@ func GenEndpoint(d EndpointData) error {
 			"could not locate %sRoutes() in %s — file may have been restructured",
 			d.Resource, d.RoutesFile)
 	}
-	if err := writeBytesOrRecord(d.RoutesFile, patched,
-		fmt.Sprintf("register %s %s in %sRoutes", d.HTTPMethod, d.Path, d.Resource)); err != nil {
+	return writeBytesOrRecord(d.RoutesFile, patched,
+		fmt.Sprintf("register %s %s in %sRoutes", d.HTTPMethod, d.Path, d.Resource))
+}
+
+// patchEndpointService extends the resource's service interface with a
+// matching method declaration. No-op if the method already exists.
+func patchEndpointService(d EndpointData) error {
+	sf, err := astpatch.Parse(d.ServiceFile)
+	if err != nil {
 		return err
 	}
-
-	// Step 3: optionally extend the service interface with a matching method.
-	if d.WithService {
-		sf, err := astpatch.Parse(d.ServiceFile)
-		if err != nil {
-			return err
-		}
-		iface, err := astpatch.FindInterface(sf, d.Resource+"ServiceInterface")
-		if err != nil {
-			return err
-		}
-		if !astpatch.InterfaceHasMethod(iface, d.HandlerName) {
-			astpatch.EnsureImport(sf, "context")
-			if err := astpatch.AppendInterfaceMethod(iface,
-				fmt.Sprintf("%s(ctx context.Context) error", d.HandlerName)); err != nil {
-				return err
-			}
-			if err := writeBackOrRecord(sf,
-				fmt.Sprintf("add %s to %sServiceInterface", d.HandlerName, d.Resource)); err != nil {
-				return err
-			}
-		}
+	iface, err := astpatch.FindInterface(sf, d.Resource+"ServiceInterface")
+	if err != nil {
+		return err
 	}
-	return nil
+	if astpatch.InterfaceHasMethod(iface, d.HandlerName) {
+		return nil
+	}
+	astpatch.EnsureImport(sf, "context")
+	if err := astpatch.AppendInterfaceMethod(iface,
+		fmt.Sprintf("%s(ctx context.Context) error", d.HandlerName)); err != nil {
+		return err
+	}
+	return writeBackOrRecord(sf,
+		fmt.Sprintf("add %s to %sServiceInterface", d.HandlerName, d.Resource))
 }
 
 func endpointDataDefaults(d EndpointData) EndpointData {
@@ -242,8 +252,11 @@ func endpointRouteRegistered(body []byte, httpMethod, path string) bool {
 	verb := toChiVerb(httpMethod)
 	// %q would inject Go-style escapes; the regex needs literal quotes
 	// around the regex-quoted path, so the explicit "%s" form is correct.
+	// The `(?:\.With\([^)]*\))?` group makes the optional `.With(...)`
+	// chain match — `g middleware` wraps existing routes that way, and
+	// the route should still be considered "registered" after wrapping.
 	//nolint:gocritic // sprintfQuotedString is a false positive here — the literal quotes are regex metacharacters, not Go string escapes.
-	pattern := fmt.Sprintf(`\br\.%s\("%s"`, verb, regexp.QuoteMeta(path))
+	pattern := fmt.Sprintf(`\br(?:\.With\([^)]*\))?\.%s\("%s"`, verb, regexp.QuoteMeta(path))
 	re := regexp.MustCompile(pattern)
 	return re.Match(body)
 }

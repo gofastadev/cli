@@ -69,7 +69,7 @@ func middlewareDataDefaults(d MiddlewareData) MiddlewareData {
 
 // findRouteFile walks routes/*.routes.go looking for the file that
 // registers <METHOD> <path>. Returns the matching path + hit flag.
-func findRouteFile(d MiddlewareData) (string, bool, error) {
+func findRouteFile(d MiddlewareData) (path string, hit bool, err error) {
 	if d.RoutesFile != "" {
 		body, err := os.ReadFile(d.RoutesFile)
 		if err != nil {

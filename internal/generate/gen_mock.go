@@ -210,19 +210,7 @@ func scanFileForInterfaces(path string) ([]interfaceTarget, error) {
 	if err != nil {
 		return nil, clierr.Wrapf(clierr.CodeASTParseFailed, err, "parsing %s", path)
 	}
-
-	// Collect every import declared in the file. The mock needs the same
-	// import set so its parameter / return type expressions resolve.
-	var fileImports []MockImport
-	for _, imp := range f.Imports {
-		alias := ""
-		if imp.Name != nil {
-			alias = imp.Name.Name
-		}
-		path := strings.Trim(imp.Path.Value, `"`)
-		fileImports = append(fileImports, MockImport{Alias: alias, Path: path})
-	}
-
+	fileImports := collectFileImports(f)
 	var out []interfaceTarget
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
@@ -238,54 +226,82 @@ func scanFileForInterfaces(path string) ([]interfaceTarget, error) {
 			if !ok {
 				continue
 			}
-			t := interfaceTarget{
-				Name:       ts.Name.Name,
-				SourcePath: path,
-				PkgName:    f.Name.Name,
-				Imports:    fileImports,
-			}
-			for _, fld := range it.Methods.List {
-				ft, ok := fld.Type.(*ast.FuncType)
-				if !ok || len(fld.Names) == 0 {
-					// Embedded interfaces: skip for now (initial release
-					// supports flat interfaces only — embedded would need
-					// transitive method-set resolution via go/types).
-					continue
-				}
-				method := MockMethod{Name: fld.Names[0].Name}
-				if ft.Params != nil {
-					for _, p := range ft.Params.List {
-						typ := exprString(p.Type)
-						if len(p.Names) == 0 {
-							method.Params = append(method.Params, MockParam{Type: typ})
-						} else {
-							for _, n := range p.Names {
-								method.Params = append(method.Params, MockParam{Name: n.Name, Type: typ})
-							}
-						}
-					}
-				}
-				if ft.Results != nil {
-					for _, r := range ft.Results.List {
-						typ := exprString(r.Type)
-						if len(r.Names) == 0 {
-							method.Returns = append(method.Returns, MockParam{Type: typ})
-						} else {
-							for _, n := range r.Names {
-								method.Returns = append(method.Returns, MockParam{Name: n.Name, Type: typ})
-							}
-						}
-					}
-				}
-				if len(method.Params) > 0 && strings.HasSuffix(method.Params[0].Type, "context.Context") {
-					method.HasContext = true
-				}
-				t.Methods = append(t.Methods, method)
-			}
-			out = append(out, t)
+			out = append(out, buildInterfaceTarget(ts.Name.Name, path, f.Name.Name, fileImports, it))
 		}
 	}
 	return out, nil
+}
+
+// collectFileImports flattens f.Imports into the MockImport shape the
+// mock template expects (alias + path).
+func collectFileImports(f *ast.File) []MockImport {
+	imports := make([]MockImport, 0, len(f.Imports))
+	for _, imp := range f.Imports {
+		alias := ""
+		if imp.Name != nil {
+			alias = imp.Name.Name
+		}
+		imports = append(imports, MockImport{
+			Alias: alias,
+			Path:  strings.Trim(imp.Path.Value, `"`),
+		})
+	}
+	return imports
+}
+
+// buildInterfaceTarget converts one parsed interface type into an
+// interfaceTarget, walking its method list and skipping embedded
+// interfaces (the initial release supports flat interfaces only).
+func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport, it *ast.InterfaceType) interfaceTarget {
+	t := interfaceTarget{
+		Name:       name,
+		SourcePath: sourcePath,
+		PkgName:    pkgName,
+		Imports:    imports,
+	}
+	for _, fld := range it.Methods.List {
+		ft, ok := fld.Type.(*ast.FuncType)
+		if !ok || len(fld.Names) == 0 {
+			// Embedded interfaces — skip for now.
+			continue
+		}
+		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft))
+	}
+	return t
+}
+
+// buildMockMethod produces one MockMethod from a method's FuncType,
+// flattening parameter lists (multi-name fields like `a, b int` become
+// two MockParam entries) and detecting whether ctx.Context is first.
+func buildMockMethod(name string, ft *ast.FuncType) MockMethod {
+	m := MockMethod{Name: name}
+	if ft.Params != nil {
+		m.Params = flattenFuncFieldList(ft.Params)
+	}
+	if ft.Results != nil {
+		m.Returns = flattenFuncFieldList(ft.Results)
+	}
+	if len(m.Params) > 0 && strings.HasSuffix(m.Params[0].Type, "context.Context") {
+		m.HasContext = true
+	}
+	return m
+}
+
+// flattenFuncFieldList turns Go's grouped-name field list (e.g. a, b int)
+// into a flat sequence of MockParam{Name, Type} entries.
+func flattenFuncFieldList(fl *ast.FieldList) []MockParam {
+	var out []MockParam
+	for _, fld := range fl.List {
+		typ := exprString(fld.Type)
+		if len(fld.Names) == 0 {
+			out = append(out, MockParam{Type: typ})
+			continue
+		}
+		for _, n := range fld.Names {
+			out = append(out, MockParam{Name: n.Name, Type: typ})
+		}
+	}
+	return out
 }
 
 // writeMockForTarget renders and writes the mock for one resolved
