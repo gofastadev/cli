@@ -102,15 +102,29 @@ func runDoctor() error {
 		// healthy. See migrate.go for the full rationale.
 		_, _ = loadDotEnv(".env")
 
-		dbURL := configutil.BuildMigrationURL()
-		if dbURL != "" {
-			cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "version")
-			entry := doctorEntry{Name: "database", Status: "ok", Message: "reachable"}
-			if err := cmd.Run(); err != nil {
-				entry.Status = "fail"
-				entry.Message = "not reachable"
+		driver := strings.ToLower(strings.TrimSpace(configutil.ReadDBDriver()))
+		switch driver {
+		case "sqlite", "sqlite3":
+			// SQLite is file-based — there's no network endpoint to
+			// ping. `migrate version` against a non-existent file
+			// would create it on first run; calling that during a
+			// diagnostic command would surprise the user. Skip the
+			// shell-out and emit an informational entry instead.
+			report.Project = append(report.Project, doctorEntry{
+				Name: "database", Status: "ok",
+				Message: "file-based (no ping needed)",
+			})
+		default:
+			dbURL := configutil.BuildMigrationURL()
+			if dbURL != "" {
+				cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "version")
+				entry := doctorEntry{Name: "database", Status: "ok", Message: "reachable"}
+				if err := cmd.Run(); err != nil {
+					entry.Status = "fail"
+					entry.Message = "not reachable"
+				}
+				report.Project = append(report.Project, entry)
 			}
-			report.Project = append(report.Project, entry)
 		}
 	}
 

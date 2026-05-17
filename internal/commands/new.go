@@ -8,6 +8,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/gofastadev/cli/internal/termcolor"
@@ -24,6 +25,7 @@ type newResult struct {
 	Directory  string `json:"directory"`
 	ModulePath string `json:"module_path"`
 	GraphQL    bool   `json:"graphql"`
+	DBDriver   string `json:"db_driver"`
 	Success    bool   `json:"success"`
 	Error      string `json:"error,omitempty"`
 }
@@ -35,6 +37,24 @@ type ProjectData struct {
 	ProjectNameUpper string // UPPERCASE: "MYAPP"
 	ModulePath       string // Go module path: "github.com/myorg/myapp"
 	GraphQL          bool   // true when --graphql flag is passed
+	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
+}
+
+// supportedDrivers is the canonical set of --driver values. The first
+// entry is the default. Wire-format string values match what
+// `database.driver` in config.yaml accepts and what
+// `internal/skeleton/migrations/<driver>/` directories are named.
+var supportedDrivers = []string{"postgres", "mysql", "sqlite", "sqlserver", "clickhouse"}
+
+// isSupportedDriver reports whether v is one of the canonical driver
+// strings. Used to validate the --driver flag before scaffolding.
+func isSupportedDriver(v string) bool {
+	for _, d := range supportedDrivers {
+		if d == v {
+			return true
+		}
+	}
+	return false
 }
 
 // graphqlOnlyPaths lists skeleton paths that should be skipped for REST-only projects.
@@ -84,7 +104,14 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gql, _ := cmd.Flags().GetBool("graphql")
 		gqlShort, _ := cmd.Flags().GetBool("gql")
-		return runNew(args[0], gql || gqlShort)
+		driver, _ := cmd.Flags().GetString("driver")
+		driver = strings.ToLower(strings.TrimSpace(driver))
+		if !isSupportedDriver(driver) {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"--driver %q is not supported — valid values: %s",
+				driver, strings.Join(supportedDrivers, ", "))
+		}
+		return runNew(args[0], gql || gqlShort, driver)
 	},
 }
 
@@ -92,6 +119,8 @@ func init() {
 	rootCmd.AddCommand(newCmd)
 	newCmd.Flags().Bool("graphql", false, "Include GraphQL support (gqlgen) alongside REST")
 	newCmd.Flags().Bool("gql", false, "Shorthand for --graphql")
+	newCmd.Flags().String("driver", "postgres",
+		"Database driver: "+strings.Join(supportedDrivers, "|"))
 }
 
 // dotfileRenames maps embedded names to actual dotfile names.
@@ -132,9 +161,16 @@ var projectFSOverride fs.FS
 // branch without racing the actual filesystem.
 var osChdir = os.Chdir
 
+// migrationsFSOverride is a package-level seam so tests can swap the
+// embedded per-driver migrations FS. Nil in production → real embed.
+var migrationsFSOverride fs.FS
+
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
-func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
+func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr error) {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
+	if driver == "" {
+		driver = "postgres"
+	}
 
 	// In --json mode, redirect stdout to stderr for the duration of
 	// the scaffold so the dozens of decorative `termcolor.Print*` and
@@ -156,6 +192,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 				Directory:  projectDir,
 				ModulePath: modulePath,
 				GraphQL:    includeGraphQL,
+				DBDriver:   driver,
 				Success:    resultErr == nil,
 				Error:      errString(resultErr),
 			}, nil)
@@ -178,6 +215,7 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
+		DBDriver:         driver,
 	}
 
 	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
@@ -289,6 +327,14 @@ func runNew(nameOrPath string, includeGraphQL bool) (resultErr error) {
 	})
 	if err != nil {
 		return fmt.Errorf("generating project files: %w", err)
+	}
+
+	// Copy the per-driver foundational migrations into db/migrations/.
+	// The project tree intentionally ships none of its own — see
+	// internal/skeleton/embed.go for why each driver lives in its
+	// own sibling directory under migrations/.
+	if err := copyMigrationsForDriver(driver, data); err != nil {
+		return fmt.Errorf("copying %s foundational migrations: %w", driver, err)
 	}
 
 	// Copy .env from .env.example
@@ -471,6 +517,53 @@ func printGetStarted(projectName string) {
 	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
 	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
 	cliout.Blank()
+}
+
+// copyMigrationsForDriver writes the per-driver foundational migration
+// set into the new project's db/migrations/ directory. Reads from the
+// embedded skeleton.MigrationsFS (or the migrationsFSOverride test
+// seam). Each .sql file is rendered as a Go text/template against
+// ProjectData so {{.ProjectNameLower}} etc. work in SQL — same
+// pipeline the project FS walk uses for .tmpl files. The .sql files
+// themselves don't carry a .tmpl suffix because most are pure DDL;
+// only the few that interpolate get a meaningful substitution.
+func copyMigrationsForDriver(driver string, data ProjectData) error {
+	migFS := migrationsFSOverride
+	if migFS == nil {
+		migFS = skeleton.MigrationsFS
+	}
+	root := "migrations/" + driver
+	entries, err := fs.ReadDir(migFS, root)
+	if err != nil {
+		return fmt.Errorf("no foundational migrations for driver %q: %w", driver, err)
+	}
+	if err := os.MkdirAll("db/migrations", 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		src := root + "/" + e.Name()
+		raw, err := fs.ReadFile(migFS, src)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", src, err)
+		}
+		tmpl, err := template.New(e.Name()).Parse(string(raw))
+		if err != nil {
+			return fmt.Errorf("parsing migration %s: %w", src, err)
+		}
+		var buf strings.Builder
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return fmt.Errorf("executing migration template %s: %w", src, err)
+		}
+		dst := filepath.Join("db", "migrations", e.Name())
+		if err := os.WriteFile(dst, []byte(buf.String()), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", dst, err)
+		}
+		cliout.Path(dst)
+	}
+	return nil
 }
 
 // envVarSafeUpper returns name uppercased with every non-[A-Z0-9_] character

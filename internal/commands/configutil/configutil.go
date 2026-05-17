@@ -12,6 +12,32 @@ import (
 	"github.com/knadh/koanf/v2"
 )
 
+// defaultDatabasePorts maps each supported driver to its conventional
+// default port. Consulted by BuildMigrationURL and BuildDatabaseEndpoint
+// when the user hasn't set `database.port` explicitly. SQLite is absent
+// (file-based driver — no port concept; callers route around it).
+var defaultDatabasePorts = map[string]string{
+	"postgres":   "5432",
+	"mysql":      "3306",
+	"sqlserver":  "1433",
+	"clickhouse": "9000",
+}
+
+// DefaultPortForDriver returns the conventional default port for the
+// given driver. Falls back to Postgres' 5432 for unknown drivers so the
+// callers' previous behavior is preserved when a typo'd driver value
+// lands. Returns "" for sqlite/sqlite3 (file-based — no port).
+func DefaultPortForDriver(driver string) string {
+	d := strings.ToLower(strings.TrimSpace(driver))
+	if d == "sqlite" || d == "sqlite3" {
+		return ""
+	}
+	if p, ok := defaultDatabasePorts[d]; ok {
+		return p
+	}
+	return "5432"
+}
+
 // BuildMigrationURL reads config.yaml and env vars to build a database migration URL.
 func BuildMigrationURL() string {
 	k := loadConfig()
@@ -27,7 +53,7 @@ func BuildMigrationURL() string {
 	}
 	port := k.String("database.port")
 	if port == "" {
-		port = "5432"
+		port = DefaultPortForDriver(driver)
 	}
 	name := k.String("database.name")
 	sslmode := k.String("database.sslmode")
@@ -80,7 +106,7 @@ func BuildDatabaseEndpoint() (endpoint string, enabled bool) {
 	}
 	port := k.String("database.port")
 	if port == "" {
-		port = "5432"
+		port = DefaultPortForDriver(driver)
 	}
 	return fmt.Sprintf("%s:%s", host, port), true
 }

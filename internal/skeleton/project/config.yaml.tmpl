@@ -12,17 +12,49 @@ server:
     - "*"
 
 database:
-  driver: postgres     # postgres, mysql, sqlite, sqlserver, clickhouse
+  driver: {{.DBDriver}}
+{{- if eq .DBDriver "sqlite" }}
+  # SQLite is a file-based driver — no host/port/credentials.
+  # The `name` value below is the on-disk path to the database file.
+  name: {{.ProjectNameLower}}.db
+{{- else if eq .DBDriver "mysql" }}
+  host: localhost
+  port: "3306"
+  name: {{.ProjectNameLower}}_dev
+  user: {{.ProjectNameLower}}
+  password: {{.ProjectNameLower}}
+  max_idle: 10
+  max_open: 100
+  max_life: 1h
+{{- else if eq .DBDriver "sqlserver" }}
+  host: localhost
+  port: "1433"
+  name: {{.ProjectNameLower}}_dev
+  user: sa
+  password: YourStrong@Passw0rd
+  max_idle: 10
+  max_open: 100
+  max_life: 1h
+{{- else if eq .DBDriver "clickhouse" }}
+  host: localhost
+  port: "9000"
+  name: {{.ProjectNameLower}}_dev
+  user: default
+  password: ""
+  max_idle: 10
+  max_open: 100
+  max_life: 1h
+{{- else }}
   host: localhost
   port: "5432"
+  name: {{.ProjectNameLower}}_dev
+  user: {{.ProjectNameLower}}
+  password: {{.ProjectNameLower}}
   sslmode: disable
   max_idle: 10
   max_open: 100
   max_life: 1h
-  # For sqlite: driver: postgres, name: {{.ProjectNameLower}}.db
-  # For mysql: driver: postgres, port: "3306"
-  # For sqlserver: driver: sqlserver, port: "1433"
-  # For clickhouse: driver: clickhouse, port: "9000"
+{{- end }}
 
 {{- if .GraphQL}}
 graphql:

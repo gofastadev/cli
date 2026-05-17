@@ -56,33 +56,22 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
 
-    # Real Postgres for the scaffold's repository-layer integration
-    # tests. The scaffold uses testcontainers-go for some suites but
-    # also reads ${PREFIX}_DATABASE_* env vars; exposing a service
-    # avoids the testcontainers DinD overhead and matches what the
-    # scaffold's own CI template (deployments/ci/github-actions-test.yml)
-    # provisions for downstream users.
-    services:
-      postgres:
-        image: postgres:18-alpine
-        env:
-          POSTGRES_USER: testproject
-          POSTGRES_PASSWORD: testproject
-          POSTGRES_DB: testproject_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U testproject"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
+    # Matrix-per-driver — every supported driver gets the full
+    # scaffold-and-exercise treatment so a regression in any per-driver
+    # template / foundational migration / generator output fails THIS
+    # workflow. fail-fast disabled so one driver's failure doesn't
+    # hide latent breakage in another.
+    strategy:
+      fail-fast: false
+      matrix:
+        driver: [postgres, mysql, sqlite, sqlserver, clickhouse]
 
+    # Env vars consumed by the scaffolded `testproject` (gofasta reads
+    # them via the {{.ProjectNameUpper}}_DATABASE_* prefix). Defaults
+    # below match what the DB-start step below provisions per driver;
+    # SQLite uses NAME only (file-based).
     env:
-      TESTPROJECT_DATABASE_HOST: localhost
-      TESTPROJECT_DATABASE_PORT: "5432"
-      TESTPROJECT_DATABASE_USER: testproject
-      TESTPROJECT_DATABASE_PASSWORD: testproject
-      TESTPROJECT_DATABASE_NAME: testproject_test
+      TESTPROJECT_DATABASE_DRIVER: ${{ matrix.driver }}
 
     steps:
       - name: Check out CLI repo
@@ -103,15 +92,109 @@ jobs:
       #
       # Pinned to v4.18.1 — same version the CLI's own dev-mode
       # bootstrap recommends to users (see internal/commands/dev.go's
-      # install hint). Pinning here matches what a freshly-onboarded
-      # developer ends up with and protects CI from surprise breakage
-      # when a new migrate release drops (e.g. one that requires a
-      # newer Go toolchain than ours). Bump in lockstep with the
-      # dev.go hint.
+      # install hint). Built with ALL driver tags so the same binary
+      # works across every matrix entry.
       - name: Install golang-migrate
         run: |
-          go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+          go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
           migrate -version
+
+      # Spin up the right database container for this matrix entry.
+      # SQLite is file-based and gets nothing here. Each driver's
+      # container is bound to its conventional host port + maps
+      # internal container port. Job-level env vars set above tell
+      # the scaffold which host:port to reach.
+      - name: Start database (${{ matrix.driver }})
+        if: matrix.driver != 'sqlite'
+        run: |
+          case "${{ matrix.driver }}" in
+            postgres)
+              docker run -d --name testproject_db \
+                -e POSTGRES_USER=testproject \
+                -e POSTGRES_PASSWORD=testproject \
+                -e POSTGRES_DB=testproject_test \
+                -p 5432:5432 \
+                postgres:18-alpine
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PORT=5432" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              for i in $(seq 1 30); do
+                docker exec testproject_db pg_isready -U testproject -d testproject_test && break
+                sleep 2
+              done
+              ;;
+            mysql)
+              docker run -d --name testproject_db \
+                -e MYSQL_ROOT_PASSWORD=testproject \
+                -e MYSQL_USER=testproject \
+                -e MYSQL_PASSWORD=testproject \
+                -e MYSQL_DATABASE=testproject_test \
+                -p 3306:3306 \
+                mysql:8.4
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PORT=3306" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              for i in $(seq 1 60); do
+                docker exec testproject_db mysqladmin ping -h localhost -u testproject -ptestproject 2>/dev/null | grep -q 'mysqld is alive' && break
+                sleep 2
+              done
+              ;;
+            sqlserver)
+              docker run -d --name testproject_db \
+                -e ACCEPT_EULA=Y \
+                -e MSSQL_SA_PASSWORD=YourStrong@Passw0rd \
+                -e MSSQL_PID=Developer \
+                --user root \
+                -p 1433:1433 \
+                mcr.microsoft.com/mssql/server:2022-latest
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PORT=1433" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_USER=sa" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PASSWORD=YourStrong@Passw0rd" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              # SQL Server takes ~30s to be queryable on cold start.
+              for i in $(seq 1 60); do
+                docker exec testproject_db /opt/mssql-tools18/bin/sqlcmd \
+                  -S localhost -U sa -P 'YourStrong@Passw0rd' -No \
+                  -Q "SELECT 1" >/dev/null 2>&1 && break
+                sleep 2
+              done
+              # Create the test database (sqlserver doesn't auto-create from an env var).
+              docker exec testproject_db /opt/mssql-tools18/bin/sqlcmd \
+                -S localhost -U sa -P 'YourStrong@Passw0rd' -No \
+                -Q "IF DB_ID('testproject_test') IS NULL CREATE DATABASE testproject_test"
+              ;;
+            clickhouse)
+              docker run -d --name testproject_db \
+                -e CLICKHOUSE_DB=testproject_test \
+                -e CLICKHOUSE_USER=default \
+                -e CLICKHOUSE_PASSWORD= \
+                -e CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1 \
+                --ulimit nofile=262144:262144 \
+                -p 9000:9000 -p 8123:8123 \
+                clickhouse/clickhouse-server:24.8-alpine
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PORT=9000" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_USER=default" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_PASSWORD=" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              for i in $(seq 1 30); do
+                curl -fsS http://localhost:8123/ping >/dev/null 2>&1 && break
+                sleep 2
+              done
+              ;;
+          esac
+
+      # SQLite is file-based — just point the scaffold at a writable
+      # path. No service start required.
+      - name: Configure SQLite database name
+        if: matrix.driver == 'sqlite'
+        run: |
+          echo "TESTPROJECT_DATABASE_NAME=/tmp/testproject_test.db" >> $GITHUB_ENV
 
       - name: Scaffold a new project
         # `gofasta new` runs `go get github.com/gofastadev/gofasta@latest`
@@ -119,7 +202,7 @@ jobs:
         # after a freshly-tagged framework release, sum.golang.org likely
         # hasn't indexed the tag yet (5–30 min lag is typical); re-run
         # the workflow once the sum DB catches up.
-        run: /tmp/gofasta new /tmp/testproject
+        run: /tmp/gofasta new --driver ${{ matrix.driver }} /tmp/testproject
 
       - name: Verify generated project compiles
         working-directory: /tmp/testproject

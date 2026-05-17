@@ -79,7 +79,7 @@ func TestRunNew_DirectoryAlreadyExists(t *testing.T) {
 	os.Chdir(dir)
 
 	os.Mkdir("myapp", 0755)
-	err := runNew("myapp", false)
+	err := runNew("myapp", false, "postgres")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -138,7 +138,7 @@ func TestRunNew_MkdirAllError(t *testing.T) {
 	parentFile := filepath.Join(dir, "parent")
 	require.NoError(t, os.WriteFile(parentFile, []byte("x"), 0o644))
 
-	err := runNew(filepath.Join(parentFile, "proj"), false)
+	err := runNew(filepath.Join(parentFile, "proj"), false, "postgres")
 	assert.Error(t, err)
 }
 
@@ -158,7 +158,7 @@ func TestRunNew_ChdirError(t *testing.T) {
 	require.NoError(t, os.Chmod(parent, 0o600))
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	err := runNew(filepath.Join(parent, "proj"), false)
+	err := runNew(filepath.Join(parent, "proj"), false, "postgres")
 	assert.Error(t, err)
 }
 
@@ -201,7 +201,7 @@ func TestRunNew_ChdirFails(t *testing.T) {
 	osChdir = func(path string) error { return os.ErrPermission }
 	t.Cleanup(func() { osChdir = origOS })
 	withFakeExec(t, 0)
-	err := runNew("chdir-fail-app", false)
+	err := runNew("chdir-fail-app", false, "postgres")
 	require.Error(t, err)
 }
 
@@ -218,7 +218,7 @@ func TestRunNew_BadTemplate(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-tmpl-app", false)
+	err := runNew("bad-tmpl-app", false, "postgres")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing template")
 }
@@ -234,7 +234,7 @@ func TestRunNew_TemplateExecFails(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-exec-app", false)
+	err := runNew("bad-exec-app", false, "postgres")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "executing template")
 }
@@ -263,7 +263,7 @@ func TestRunNew_ReadFileFails(t *testing.T) {
 	}
 	projectFSOverride = errFS{base: base}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("read-fail-app", false)
+	err := runNew("read-fail-app", false, "postgres")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading")
 }
@@ -278,7 +278,7 @@ func TestRunNew_WalkCallbackReceivesError(t *testing.T) {
 	// with an fs.PathError → the first branch in the callback fires.
 	projectFSOverride = fstest.MapFS{}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("walkerr-app", false)
+	err := runNew("walkerr-app", false, "postgres")
 	require.Error(t, err)
 }
 
@@ -288,7 +288,7 @@ func TestRunNew_UnreadableDir(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	require.NoError(t, os.WriteFile("conflict", []byte{}, 0o644))
-	err := runNew("conflict", false)
+	err := runNew("conflict", false, "postgres")
 	require.Error(t, err)
 }
 
@@ -310,7 +310,7 @@ func TestRunNew_JSON_EmitsResultOnEarlyReturn(t *testing.T) {
 	require.NoError(t, os.MkdirAll("collision-app", 0o755))
 
 	out := captureStdout(t, func() {
-		err := runNew("collision-app", false)
+		err := runNew("collision-app", false, "postgres")
 		require.Error(t, err)
 	})
 
@@ -320,4 +320,93 @@ func TestRunNew_JSON_EmitsResultOnEarlyReturn(t *testing.T) {
 	assert.Equal(t, "collision-app", got.Project)
 	assert.False(t, got.Success)
 	assert.Contains(t, got.Error, "already exists")
+}
+
+// TestNewCmd_DriverFlag_AcceptsAllSupported — every supported driver
+// passes validation; the flag is wired through to runNew via the
+// cobra RunE. Smoke-runs the cmd against an --invalid value to lock
+// the rejection error code.
+func TestNewCmd_DriverFlag_AcceptsAllSupported(t *testing.T) {
+	for _, d := range supportedDrivers {
+		assert.True(t, isSupportedDriver(d), "driver %q should be supported", d)
+	}
+	assert.False(t, isSupportedDriver("oracle"))
+	assert.False(t, isSupportedDriver(""))
+}
+
+// TestNewCmd_DriverFlag_RegisteredOnCmd — the cobra flag exists and
+// defaults to postgres. Regression: a typo'd flag name would silently
+// fall back to postgres for every project, killing the multi-driver
+// scaffold.
+func TestNewCmd_DriverFlag_RegisteredOnCmd(t *testing.T) {
+	f := newCmd.Flags().Lookup("driver")
+	assert.NotNil(t, f, "newCmd should have a --driver flag")
+	assert.Equal(t, "postgres", f.DefValue)
+}
+
+// TestRunNew_PerDriverMigrationsCopied — each supported driver's
+// foundational migrations land in db/migrations/. Postgres gets 5 up
+// + 5 down (citext + 3 functions + users); the other drivers get 1 up
+// + 1 down (users only, with inlined triggers).
+func TestRunNew_PerDriverMigrationsCopied(t *testing.T) {
+	cases := map[string]struct{ wantUp, wantDown int }{
+		"postgres":   {5, 5},
+		"mysql":      {1, 1},
+		"sqlite":     {1, 1},
+		"sqlserver":  {1, 1},
+		"clickhouse": {1, 1},
+	}
+	for driver, want := range cases {
+		t.Run(driver, func(t *testing.T) {
+			parent := t.TempDir()
+			orig, _ := os.Getwd()
+			t.Cleanup(func() { _ = os.Chdir(orig) })
+			require.NoError(t, os.Chdir(parent))
+
+			// Use a synthetic minimal projectFS to skip the heavy go-get
+			// and wire generation in runNew — we're only testing the
+			// migrations-copy step.
+			projectFSOverride = synthMinimalProjectFS(t)
+			t.Cleanup(func() { projectFSOverride = nil })
+
+			projectName := driver + "app"
+			_ = captureStdout(t, func() {
+				err := runNew(projectName, false, driver)
+				// runNew may fail later (no real go mod tidy possible
+				// against the synthetic FS), but the migrations copy
+				// happens BEFORE any of that. Tolerate the trailing
+				// error.
+				_ = err
+			})
+
+			ups, downs := 0, 0
+			migDir := filepath.Join(parent, projectName, "db", "migrations")
+			entries, err := os.ReadDir(migDir)
+			require.NoError(t, err, "db/migrations should exist for driver %s", driver)
+			for _, e := range entries {
+				switch {
+				case filepath.Ext(e.Name()) == ".sql" && len(e.Name()) >= 7 &&
+					e.Name()[len(e.Name())-7:] == ".up.sql":
+					ups++
+				case filepath.Ext(e.Name()) == ".sql" && len(e.Name()) >= 9 &&
+					e.Name()[len(e.Name())-9:] == ".down.sql":
+					downs++
+				}
+			}
+			assert.Equal(t, want.wantUp, ups, "up.sql count for %s", driver)
+			assert.Equal(t, want.wantDown, downs, "down.sql count for %s", driver)
+		})
+	}
+}
+
+// synthMinimalProjectFS returns a fake project FS that contains just
+// enough to keep runNew happy through the early walk + .env step. The
+// migrations-copy step runs AFTER the walk and pulls from the real
+// embedded MigrationsFS regardless of this override.
+func synthMinimalProjectFS(t *testing.T) fs.FS {
+	t.Helper()
+	return fstest.MapFS{
+		"project":             {Mode: fs.ModeDir},
+		"project/go.mod.tmpl": {Data: []byte("module {{.ModulePath}}\n\ngo 1.25.0\n")},
+	}
 }

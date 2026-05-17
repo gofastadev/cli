@@ -16,26 +16,52 @@ services:
       # to keep the macOS firewall quiet during local Air rebuilds; we
       # override it here so production containers actually serve traffic.
       - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
-      - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-postgres}
+      - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-{{.DBDriver}}}
+{{- if eq .DBDriver "sqlite" }}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}.db}
+{{- else if eq .DBDriver "mysql" }}
+      - {{.ProjectNameUpper}}_DATABASE_HOST=db
+      - {{.ProjectNameUpper}}_DATABASE_PORT=3306
+      - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
+      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+{{- else if eq .DBDriver "sqlserver" }}
+      - {{.ProjectNameUpper}}_DATABASE_HOST=db
+      - {{.ProjectNameUpper}}_DATABASE_PORT=1433
+      - {{.ProjectNameUpper}}_DATABASE_USER=sa
+      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+{{- else if eq .DBDriver "clickhouse" }}
+      - {{.ProjectNameUpper}}_DATABASE_HOST=db
+      - {{.ProjectNameUpper}}_DATABASE_PORT=9000
+      - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-default}
+      - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+{{- else }}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=5432
       - {{.ProjectNameUpper}}_DATABASE_USER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
       - {{.ProjectNameUpper}}_DATABASE_PASSWORD=${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
       - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
       - {{.ProjectNameUpper}}_DATABASE_SSLMODE=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}
+{{- end }}
       - {{.ProjectNameUpper}}_LOG_LEVEL=${{"{"}}{{.ProjectNameUpper}}_LOG_LEVEL:-info}
       - {{.ProjectNameUpper}}_LOG_FORMAT=${{"{"}}{{.ProjectNameUpper}}_LOG_FORMAT:-json}
       - {{.ProjectNameUpper}}_EMAIL_PROVIDER=${{"{"}}{{.ProjectNameUpper}}_EMAIL_PROVIDER:-smtp}
       - {{.ProjectNameUpper}}_EMAIL_FROM_NAME=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_NAME}
       - {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS}
+{{- if ne .DBDriver "sqlite" }}
     depends_on:
       db:
         condition: service_healthy
+{{- end }}
     restart: always
     deploy:
       resources:
         limits:
           memory: 512M
+
+{{- if eq .DBDriver "postgres" }}
 
   db:
     image: postgres:18-alpine
@@ -56,6 +82,79 @@ services:
       resources:
         limits:
           memory: 256M
+{{- else if eq .DBDriver "mysql" }}
+
+  db:
+    image: mysql:8.4
+    container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
+    environment:
+      MYSQL_ROOT_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      MYSQL_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}
+      MYSQL_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      MYSQL_DATABASE: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER} -p${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD} | grep -q 'mysqld is alive'"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+{{- else if eq .DBDriver "sqlserver" }}
+
+  db:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
+    user: root
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
+      MSSQL_PID: Developer
+    volumes:
+      - db_data:/var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD} -No -Q 'SELECT 1' || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+{{- else if eq .DBDriver "clickhouse" }}
+
+  db:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
+    environment:
+      CLICKHOUSE_DB: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}
+      CLICKHOUSE_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER:-default}
+      CLICKHOUSE_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD:-}
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - db_data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+{{- end }}
 
 volumes:
+{{- if ne .DBDriver "sqlite" }}
   db_data:
+{{- end }}

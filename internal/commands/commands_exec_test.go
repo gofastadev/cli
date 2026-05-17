@@ -493,7 +493,7 @@ func TestRunExecute_UnknownSubcommand(t *testing.T) {
 func TestRunNew_FakeSuccess(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
-	err := runNew("testapp", false)
+	err := runNew("testapp", false, "postgres")
 	assert.NoError(t, err)
 	// The project dir should have been created
 	_, err = os.Stat(filepath.Join("testapp", "config.yaml"))
@@ -504,14 +504,14 @@ func TestRunNew_FakeSuccess(t *testing.T) {
 func TestRunNew_FakeSuccess_GraphQL(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
-	err := runNew("gqlapp", true)
+	err := runNew("gqlapp", true, "postgres")
 	assert.NoError(t, err)
 }
 
 func TestRunNew_GoModInitFails(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 1)
-	err := runNew("failapp", false)
+	err := runNew("failapp", false, "postgres")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "go mod init")
 }
@@ -524,14 +524,14 @@ func TestRunNew_WarningBranches(t *testing.T) {
 	chdirTemp(t)
 	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
 	stagedFakeExec(t, 0, 0, 0, 1)
-	err := runNew("warnapp", false)
+	err := runNew("warnapp", false, "postgres")
 	assert.NoError(t, err)
 }
 
 func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 	chdirTemp(t)
 	stagedFakeExec(t, 0, 0, 0, 1)
-	err := runNew("warnapp", true)
+	err := runNew("warnapp", true, "postgres")
 	assert.NoError(t, err)
 }
 
@@ -543,7 +543,7 @@ func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 func TestRunNew_GofastaInstallFails(t *testing.T) {
 	chdirTemp(t)
 	stagedFakeExec(t, 0, 1) // go mod init ok, go get gofasta fails
-	err := runNew("failapp", false)
+	err := runNew("failapp", false, "postgres")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
 	assert.Contains(t, err.Error(), "failed to install")
