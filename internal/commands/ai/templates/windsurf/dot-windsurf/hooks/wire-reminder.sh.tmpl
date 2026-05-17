@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# Cascade post_write_code hook. Reads the hook payload from stdin and
+# prints a Wire-regeneration reminder if the edit touched a Wire
+# input file.
+#
+# Windsurf nests the edited path under .tool_info.file_path — that's
+# the only meaningful difference from the Claude/Codex versions.
+# stdout is only surfaced in Cascade's UI when show_output=true, so we
+# rely on exit code 0 + stdout being noticed via the hook's UI panel.
+
+path=$(jq -r '.tool_info.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/di/wire.go|*app/di/providers/*)
+    echo "Reminder: you edited a Wire input file. Run \`gofasta wire\` to regenerate app/di/wire_gen.go."
+    ;;
+esac

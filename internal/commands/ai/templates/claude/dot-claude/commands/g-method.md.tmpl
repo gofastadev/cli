@@ -1,0 +1,10 @@
+---
+description: Add a method to an existing service interface + implementation (modify-aware generator).
+allowed-tools: Bash(gofasta g*)
+argument-hint: <Resource> <MethodName> [param:type ...]
+---
+
+Run `gofasta g method $ARGUMENTS --dry-run --json` first to preview
+the planned edits. Show the user the planned files and patches, then
+re-run without `--dry-run` to apply if approved. Use `gofasta verify`
+after to confirm the project still compiles.

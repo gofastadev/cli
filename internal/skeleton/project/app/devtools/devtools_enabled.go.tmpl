@@ -10,6 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
 
 	// Importing net/http/pprof for its side-effect: init() registers
 	// the profiler endpoints on http.DefaultServeMux. We then forward
@@ -66,14 +68,28 @@ type requestRing struct {
 
 var requests = &requestRing{}
 
-func (r *requestRing) push(e RequestEntry) {
+// requestIDSeq is a monotonic counter feeding RequestEntry.ID. We use a
+// counter rather than a UUID because (a) the ID is short and easy to
+// copy/paste from the dashboard, and (b) it embeds creation order so
+// agents can identify the newest request without a date comparison.
+var requestIDSeq uint64
+
+// push stores the entry, assigning a fresh ID if one isn't already set,
+// and returns the (now-id-bearing) entry so callers can reference the
+// new row without re-snapshotting the ring.
+func (r *requestRing) push(e RequestEntry) RequestEntry {
 	r.mu.Lock()
+	if e.ID == "" {
+		requestIDSeq++
+		e.ID = fmt.Sprintf("req_%d", requestIDSeq)
+	}
 	r.entries[r.head] = e
 	r.head = (r.head + 1) % ringCapacity
 	if r.count < ringCapacity {
 		r.count++
 	}
 	r.mu.Unlock()
+	return e
 }
 
 // snapshot returns a slice of entries in newest-first order.
@@ -86,6 +102,20 @@ func (r *requestRing) snapshot() []RequestEntry {
 		out[i] = r.entries[idx]
 	}
 	return out
+}
+
+// findByID returns one captured request by its ID, or false when the ID
+// is no longer in the ring (evicted by capacity rollover).
+func (r *requestRing) findByID(id string) (RequestEntry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for i := 0; i < r.count; i++ {
+		idx := (r.head - 1 - i + ringCapacity) % ringCapacity
+		if r.entries[idx].ID == id {
+			return r.entries[idx], true
+		}
+	}
+	return RequestEntry{}, false
 }
 
 // ── Query ring ────────────────────────────────────────────────────────
@@ -219,6 +249,7 @@ func middlewareImpl(next http.Handler) http.Handler {
 			DurationMS:          time.Since(start).Milliseconds(),
 			RemoteAddr:          r.RemoteAddr,
 			TraceID:             traceID,
+			Headers:             captureHeaders(r.Header),
 			Body:                capturedBody,
 			ResponseBody:        string(rec.body),
 			ResponseContentType: rec.Header().Get("Content-Type"),
@@ -234,6 +265,34 @@ func handlerImpl() http.Handler {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(requests.snapshot())
 	})
+	// /debug/requests/{id} — single-entry lookup keyed by RequestEntry.ID.
+	// Used by `gofasta debug replay` to fetch the original request before
+	// constructing the replay payload. 404 with a JSON body when the ID
+	// is no longer in the ring (capacity rollover).
+	mux.HandleFunc("/debug/requests/", func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimPrefix(r.URL.Path, "/debug/requests/")
+		if id == "" {
+			http.NotFound(w, r)
+			return
+		}
+		entry, ok := requests.findByID(id)
+		if !ok {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code":    "DEBUG_REPLAY_NOT_FOUND",
+				"message": fmt.Sprintf("request id %q not in capture ring", id),
+			})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(entry)
+	})
+	// /debug/replay — SSRF-safe re-fire of a captured request. The
+	// upstream URL is pinned to the app's own listener so an attacker
+	// passing { "overrides": { "path": "//evil.example/x" } } can't
+	// pivot. See replayHandler for the policy + body shape.
+	mux.HandleFunc("/debug/replay", replayHandler)
 	mux.HandleFunc("/debug/sql", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(queries.snapshot())
@@ -1059,4 +1118,236 @@ func (h *devtoolsLogHandler) WithGroup(name string) slog.Handler {
 	next.inner = h.inner.WithGroup(name)
 	next.group = name
 	return &next
+}
+
+// ── Header capture for replay ─────────────────────────────────────────
+
+// captureHeaders copies the request header map into a shape suitable for
+// the request ring. Caps: at most maxCapturedHeaders distinct keys, and
+// each value is truncated at maxHeaderValueLen bytes. Authorization /
+// Cookie are kept verbatim because dev-time replay needs them — this
+// whole package is build-tag-gated out of production binaries.
+func captureHeaders(h http.Header) map[string][]string {
+	const (
+		maxCapturedHeaders = 32
+		maxHeaderValueLen  = 2048
+	)
+	if len(h) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(h))
+	n := 0
+	for k, vs := range h {
+		if n >= maxCapturedHeaders {
+			break
+		}
+		n++
+		capped := make([]string, 0, len(vs))
+		for _, v := range vs {
+			if len(v) > maxHeaderValueLen {
+				v = v[:maxHeaderValueLen] + "…"
+			}
+			capped = append(capped, v)
+		}
+		out[k] = capped
+	}
+	return out
+}
+
+// ── Replay handler ────────────────────────────────────────────────────
+
+// replayBody is the POST /debug/replay payload contract.
+type replayBody struct {
+	RequestID string         `json:"request_id"`
+	Overrides replayOverride `json:"overrides,omitempty"`
+}
+
+// replayOverride lets the caller swap the method, path, headers, or
+// body when re-firing. Scheme/host/port are NOT overridable — the
+// SSRF guard pins them to the configured app URL.
+type replayOverride struct {
+	Method    string              `json:"method,omitempty"`
+	Path      string              `json:"path,omitempty"`
+	Headers   map[string][]string `json:"headers,omitempty"`
+	Body      string              `json:"body,omitempty"`
+	StripAuth bool                `json:"strip_auth,omitempty"`
+}
+
+// replayResult is the POST /debug/replay response. status, duration, and
+// headers describe the replayed response; new_request_id is the ID of
+// the entry the replay added to the request ring.
+type replayResult struct {
+	NewRequestID    string              `json:"new_request_id"`
+	Status          int                 `json:"status"`
+	DurationMS      int64               `json:"duration_ms"`
+	ResponseHeaders map[string][]string `json:"response_headers,omitempty"`
+	ResponseBody    string              `json:"response_body,omitempty"`
+}
+
+// replayHandler is the dispatcher for POST /debug/replay. Steps:
+//
+//  1. Read the captured request by ID (404 with a clierr-shaped body
+//     when missing).
+//  2. Apply overrides + SSRF guards.
+//  3. Fire the request against the local listener (self-loopback via the
+//     same in-process mux when possible, else http.Client to localhost).
+//  4. Push a new RequestEntry with Replay=true and return the result.
+//
+// Production builds (no devtools build tag) compile the stub which
+// short-circuits with a 404 — so accidental exposure is impossible.
+func replayHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	defer func() { _ = r.Body.Close() }()
+	var body replayBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeReplayError(w, http.StatusBadRequest, "DEBUG_REPLAY_FAILED",
+			"could not decode request body: "+err.Error())
+		return
+	}
+	original, ok := requests.findByID(body.RequestID)
+	if !ok {
+		writeReplayError(w, http.StatusNotFound, "DEBUG_REPLAY_NOT_FOUND",
+			fmt.Sprintf("request id %q not in capture ring", body.RequestID))
+		return
+	}
+
+	// Merge overrides onto the original.
+	method := original.Method
+	path := original.Path
+	headers := cloneHeaders(original.Headers)
+	bodyText := original.Body
+	if body.Overrides.Method != "" {
+		method = strings.ToUpper(body.Overrides.Method)
+	}
+	if body.Overrides.Path != "" {
+		path = body.Overrides.Path
+	}
+	if body.Overrides.Headers != nil {
+		for k, v := range body.Overrides.Headers {
+			headers[k] = v
+		}
+	}
+	if body.Overrides.Body != "" {
+		bodyText = body.Overrides.Body
+	}
+	if body.Overrides.StripAuth {
+		delete(headers, "Authorization")
+		delete(headers, "Cookie")
+	}
+
+	// SSRF guard: reject methods that don't belong over loopback,
+	// reject paths that don't start with "/", and reject schemes/hosts
+	// (the path-only API forces relative URLs).
+	switch method {
+	case "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD":
+		// ok
+	default:
+		writeReplayError(w, http.StatusBadRequest, "DEBUG_REPLAY_UNSAFE",
+			"unsupported method "+method)
+		return
+	}
+	if !strings.HasPrefix(path, "/") {
+		writeReplayError(w, http.StatusBadRequest, "DEBUG_REPLAY_UNSAFE",
+			"path must start with `/`")
+		return
+	}
+
+	// Fire the request against the same listener that served us. We
+	// build the target URL by pinning scheme=http and host=localhost:PORT
+	// — the only attacker-controlled component is `path`, which is
+	// stitched in unchanged so chi's pattern matching enforces its own
+	// validation. PORT is read from the environment (set by the dev
+	// orchestrator) and falls back to the standard scaffolded default.
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	target := url.URL{Scheme: "http", Host: "localhost:" + port, Path: path}
+	replayReq, err := http.NewRequestWithContext(r.Context(),
+		method, target.String(), strings.NewReader(bodyText))
+	if err != nil {
+		writeReplayError(w, http.StatusBadRequest, "DEBUG_REPLAY_FAILED",
+			"could not build replay request: "+err.Error())
+		return
+	}
+	for k, vs := range headers {
+		// Skip Host — the http.Client will fill it from the URL.
+		if strings.EqualFold(k, "Host") {
+			continue
+		}
+		replayReq.Header[k] = vs
+	}
+
+	start := time.Now()
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(replayReq)
+	if err != nil {
+		writeReplayError(w, http.StatusBadGateway, "DEBUG_REPLAY_FAILED",
+			"replay request failed: "+err.Error())
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+	dur := time.Since(start).Milliseconds()
+
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, maxBodyCapture+1))
+	if len(respBody) > maxBodyCapture {
+		respBody = respBody[:maxBodyCapture]
+	}
+
+	// Push the replay entry into the request ring so subsequent debug
+	// commands can see it. The original middleware would have also
+	// captured this request (since we hit our own listener), so to avoid
+	// a double-count we leave that side alone — the loopback request
+	// shows up via the normal capture path with Replay=false, and the
+	// explicit Replay=true entry we push here is the agent-facing one.
+	entry := RequestEntry{
+		Time:                start,
+		Method:              method,
+		Path:                path,
+		Status:              resp.StatusCode,
+		DurationMS:          dur,
+		RemoteAddr:          "replay",
+		Headers:             headers,
+		Body:                bodyText,
+		ResponseBody:        string(respBody),
+		ResponseContentType: resp.Header.Get("Content-Type"),
+		Replay:              true,
+	}
+	entry = requests.push(entry)
+
+	result := replayResult{
+		NewRequestID:    entry.ID,
+		Status:          resp.StatusCode,
+		DurationMS:      dur,
+		ResponseHeaders: resp.Header,
+		ResponseBody:    string(respBody),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
+}
+
+// cloneHeaders is a defensive copy so mutating the merged map doesn't
+// leak back into the original request entry.
+func cloneHeaders(src map[string][]string) map[string][]string {
+	out := make(map[string][]string, len(src))
+	for k, v := range src {
+		cp := make([]string, len(v))
+		copy(cp, v)
+		out[k] = cp
+	}
+	return out
+}
+
+// writeReplayError emits the standard clierr-shaped JSON payload that
+// the CLI's debug_replay command knows how to parse.
+func writeReplayError(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"code":    code,
+		"message": message,
+	})
 }

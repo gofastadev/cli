@@ -41,28 +41,6 @@ func TestRunUninstall_RemovesCreatedFiles(t *testing.T) {
 	assert.False(t, present)
 }
 
-// TestRunUninstall_RestoresOriginalDocFile — install claude with a
-// pre-seeded AGENTS.md, uninstall, assert CLAUDE.md is renamed back to
-// AGENTS.md with original content preserved.
-func TestRunUninstall_RestoresOriginalDocFile(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	body := []byte("# original briefing\n")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), body, 0o644))
-
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("claude", false, false))
-	})
-	_ = captureStdout(t, func() {
-		require.NoError(t, runUninstall("claude", false))
-	})
-
-	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
-	require.NoError(t, err)
-	assert.Equal(t, body, got)
-	_, err = os.Stat(filepath.Join(dir, "CLAUDE.md"))
-	assert.True(t, os.IsNotExist(err))
-}
-
 // TestRunUninstall_PreservesUserModifiedFiles — user edits one of the
 // installed files; uninstall keeps it and reports it as preserved.
 func TestRunUninstall_PreservesUserModifiedFiles(t *testing.T) {
@@ -156,7 +134,6 @@ func TestUninstall_NotFoundFiles(t *testing.T) {
 func TestUninstallResult_PrintText_AllSections(t *testing.T) {
 	r := &UninstallResult{
 		Agent:     "claude",
-		Renamed:   []string{"CLAUDE.md → AGENTS.md"},
 		Removed:   []string{".claude/settings.json", ".claude/commands/verify.md"},
 		Preserved: []string{".claude/commands/scaffold.md"},
 		NotFound:  []string{".claude/hooks/pre-commit.sh"},
@@ -164,7 +141,6 @@ func TestUninstallResult_PrintText_AllSections(t *testing.T) {
 	var buf bytes.Buffer
 	r.PrintText(&buf)
 	out := buf.String()
-	assert.Contains(t, out, "renamed: CLAUDE.md → AGENTS.md")
 	assert.Contains(t, out, "removed: .claude/settings.json")
 	assert.Contains(t, out, "removed: .claude/commands/verify.md")
 	assert.Contains(t, out, "preserved (locally modified): .claude/commands/scaffold.md")
@@ -201,61 +177,6 @@ func TestRunUninstall_ManifestSaveError(t *testing.T) {
 		err := runUninstall("claude", false)
 		require.Error(t, err)
 	})
-}
-
-// TestReverseDocRename_DryRun — install claude with a pre-seeded
-// AGENTS.md, then run uninstall in dry-run. The Renamed entry should be
-// reported but the file should not actually be renamed back.
-func TestReverseDocRename_DryRun(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("claude", false, false))
-	})
-	out := captureStdout(t, func() {
-		require.NoError(t, runUninstall("claude", true))
-	})
-	assert.Contains(t, out, "CLAUDE.md → AGENTS.md")
-	_, err := os.Stat(filepath.Join(dir, "CLAUDE.md"))
-	assert.NoError(t, err, "CLAUDE.md should still exist after dry-run uninstall")
-}
-
-// TestReverseDocRename_RenameFails — force osRename to fail so the
-// reverse-rename error path is exercised.
-func TestReverseDocRename_RenameFails(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("claude", false, false))
-	})
-
-	orig := osRename
-	osRename = func(_, _ string) error { return assertError("rename boom") }
-	t.Cleanup(func() { osRename = orig })
-
-	_ = captureStdout(t, func() {
-		err := runUninstall("claude", false)
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "rename")
-	})
-	_ = dir
-}
-
-// TestReverseDocRename_NoOpWhenAgentReadsAgentsMD — codex has no
-// DocFilename, so reverseDocRename should be a no-op (no rename
-// recorded → early return).
-func TestReverseDocRename_NoOpWhenAgentReadsAgentsMD(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("codex", false, false))
-	})
-	_ = captureStdout(t, func() {
-		require.NoError(t, runUninstall("codex", false))
-	})
-	_ = dir
 }
 
 // TestRemoveOneFile_ReadError — chmod a recorded file to 000 so
@@ -346,25 +267,6 @@ func TestRunUninstall_BuildInstallDataError(t *testing.T) {
 
 	err := runUninstall("claude", false)
 	require.Error(t, err)
-}
-
-// TestReverseDocRename_DestMissing — install claude (which records a
-// rename), then delete CLAUDE.md so the dest doesn't exist. The early-
-// return `!fileExists(dstAbs)` branch fires and uninstall succeeds
-// without renaming.
-func TestReverseDocRename_DestMissing(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("claude", false, false))
-	})
-	// Remove CLAUDE.md so the rename target is gone.
-	require.NoError(t, os.Remove(filepath.Join(dir, "CLAUDE.md")))
-
-	_ = captureStdout(t, func() {
-		require.NoError(t, runUninstall("claude", false))
-	})
 }
 
 // TestRemoveEmptyParents_RemoveFails — empty directory inside a

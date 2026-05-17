@@ -1,0 +1,12 @@
+# Xrefs
+
+Type-aware reverse lookup of a Go symbol. Use before renaming a
+function or changing a signature.
+
+1. Ask the user for the symbol (bare name, `pkg.Func`, or
+   `pkg.Type.Method`).
+2. Run `gofasta xrefs <Symbol> --json`.
+3. Report the definition location and every reference site (file,
+   line, enclosing function).
+4. If the result is `AMBIGUOUS_SYMBOL`, ask the user which package
+   they meant and re-run with the fully-qualified form.

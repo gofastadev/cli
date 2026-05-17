@@ -19,9 +19,15 @@ const manifestPath = ".gofasta/ai.json"
 
 // manifestSchemaVersion is the on-disk schema version this CLI emits.
 // v1 had {Version, Installed{InstalledAt, CLIVersion}}.
-// v2 adds the active-agent invariant + per-record CreatedFiles + the
-// rename bookkeeping needed to reverse an install.
-const manifestSchemaVersion = 2
+// v2 added the active-agent invariant + per-record CreatedFiles + a
+// pair of rename-bookkeeping fields used by the now-removed
+// AGENTS.md → CLAUDE.md/CONVENTIONS.md rename flow.
+// v3 drops those rename fields entirely — every supported agent now
+// installs its own briefing file at its own path, so there is no
+// rename to reverse on uninstall. Old v2 manifests load cleanly: the
+// unknown `renamed_from` / `renamed_to` keys are ignored by
+// json.Unmarshal and migrated-out on the next Save.
+const manifestSchemaVersion = 3
 
 // Manifest tracks which agents have been installed in this project and
 // at what CLI version. Used by `gofasta ai status`, the conflict guard
@@ -55,12 +61,6 @@ type InstallRecord struct {
 	// without it we'd have to guess from template enumeration, which
 	// breaks if templates change between install and uninstall.
 	CreatedFiles []string `json:"created_files,omitempty"`
-
-	// RenamedFrom / RenamedTo capture a doc-file rename performed at
-	// install time (e.g. AGENTS.md → CLAUDE.md). Uninstall reverses
-	// the rename. Empty when the agent reads AGENTS.md natively.
-	RenamedFrom string `json:"renamed_from,omitempty"`
-	RenamedTo   string `json:"renamed_to,omitempty"`
 }
 
 // LoadManifest reads .gofasta/ai.json. Returns an empty Manifest if the
@@ -141,8 +141,7 @@ func (m *Manifest) Save(projectRoot string) error {
 // RecordInstall stamps an agent as installed in the manifest and marks
 // it as the active agent. createdFiles is the project-relative list of
 // every file the install wrote (used by uninstall to reverse cleanly).
-// renamedFrom/renamedTo capture a doc-file rename, both empty if none.
-func (m *Manifest) RecordInstall(agentKey, cliVersion string, createdFiles []string, renamedFrom, renamedTo string) {
+func (m *Manifest) RecordInstall(agentKey, cliVersion string, createdFiles []string) {
 	if m.Installed == nil {
 		m.Installed = map[string]InstallRecord{}
 	}
@@ -150,8 +149,6 @@ func (m *Manifest) RecordInstall(agentKey, cliVersion string, createdFiles []str
 		InstalledAt:  time.Now().UTC(),
 		CLIVersion:   cliVersion,
 		CreatedFiles: append([]string(nil), createdFiles...),
-		RenamedFrom:  renamedFrom,
-		RenamedTo:    renamedTo,
 	}
 	m.ActiveAgent = agentKey
 }

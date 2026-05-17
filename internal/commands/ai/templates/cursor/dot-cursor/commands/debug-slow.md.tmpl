@@ -1,0 +1,7 @@
+# Debug-slow — diagnose the latest slow request
+
+Run `gofasta debug last-slow-request --json`. The result includes
+`request`, `trace` (waterfall), `logs`, `sql`, and `n_plus_one`.
+
+Walk through each section and propose a fix. Requires `gofasta dev`
+to be running (devtools tag enabled).

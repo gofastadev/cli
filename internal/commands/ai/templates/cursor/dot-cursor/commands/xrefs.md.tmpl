@@ -1,0 +1,12 @@
+# Xrefs — reverse-lookup a Go symbol
+
+Run `gofasta xrefs <Symbol> --json`. Symbol can be a bare name
+(`UserController`), a package-qualified function
+(`app/services.UserService`), or a method
+(`app/services.UserService.Create`).
+
+Report the definition location and every reference site (file,
+line, enclosing function). If the result is `AMBIGUOUS_SYMBOL`,
+ask the user which package they meant.
+
+Use this before renaming a function or changing a signature.

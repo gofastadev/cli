@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# PostToolUse hook for gofasta projects. Reads the Claude Code / Codex
+# hook payload from stdin, extracts the edited file path, and prints a
+# Wire-regeneration reminder if the edit touched a Wire input file.
+#
+# Wire is compile-time DI. After editing wire.go or any provider file,
+# wire_gen.go must be regenerated or `go build` fails with "undefined:
+# someProvider". This hook surfaces that obligation without blocking.
+#
+# Exit code is always 0 — reminders never block tool use.
+
+path=$(jq -r '.tool_input.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/di/wire.go|*app/di/providers/*)
+    echo "Reminder: you edited a Wire input file. Run \`gofasta wire\` to regenerate app/di/wire_gen.go."
+    ;;
+esac

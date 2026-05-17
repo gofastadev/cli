@@ -1,0 +1,17 @@
+# Seed memory
+
+One-time setup of Cascade's project memory. Cascade has a built-in
+memory system that learns from interactions, but you can seed it
+explicitly with bedrock facts about this project.
+
+1. Tell Cascade to remember:
+   > "Remember that this project ({{.ProjectName}}, module
+   > `{{.ModulePath}}`) is built with gofasta. Always prefer
+   > `gofasta <command> --json` over reading source files. The
+   > verification command is `gofasta verify`. The architecture is
+   > Request → Controller → Service → Repository → Database — never
+   > skip a layer. Never edit `app/di/wire_gen.go` directly — edit
+   > `app/di/wire.go` and run `gofasta wire`."
+2. Confirm the memory was saved (Cascade will show a notification).
+3. Future sessions will surface this memory automatically when
+   relevant.

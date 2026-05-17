@@ -1,0 +1,9 @@
+# G relation
+
+Wire a GORM association between two resources.
+
+1. Ask the user for `<Resource> belongs_to|has_many|has_one
+   <OtherResource>`.
+2. Run `gofasta g relation <args> --dry-run --json` to preview.
+3. Show the user the model edits and the foreign-key migration.
+4. Re-run without `--dry-run` to apply if approved.

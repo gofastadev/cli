@@ -1,0 +1,61 @@
+---
+description: Seed Claude Code's project memory with bedrock facts about this gofasta project (one-time setup).
+allowed-tools: Bash(mkdir -p ~/.claude/projects/*), Bash(cat *)
+---
+
+This is a one-time setup command. It writes three starter memory
+entries into Claude Code's per-project memory directory so future
+sessions open with the bedrock context already loaded.
+
+Run these commands:
+
+```bash
+MEMDIR="$HOME/.claude/projects/{{.ProjectNameLower}}-data/memory"
+mkdir -p "$MEMDIR"
+
+cat > "$MEMDIR/gofasta-project.md" <<'EOF'
+---
+name: gofasta-project
+description: This project is built with gofasta — verification is one command, layered architecture is enforced
+metadata:
+  type: project
+---
+This project ({{.ProjectName}}, module `{{.ModulePath}}`) was scaffolded with [gofasta](https://gofasta.dev) — plain Go, no runtime framework. The CLI is the agent contract: every command honors `--json` with stable error codes.
+
+**Why:** gofasta projects let agents work via structured commands instead of log-grepping. The `--json` contract is versioned API.
+**How to apply:** When answering questions or planning changes, prefer `gofasta <command> --json` over reading source files. Use `gofasta inspect <Resource>` before editing a resource.
+EOF
+
+cat > "$MEMDIR/verification-command.md" <<'EOF'
+---
+name: verification-command
+description: One command verifies done in this project — gofasta verify
+metadata:
+  type: feedback
+---
+Before claiming any task done in this project, run `gofasta verify` (or `gofasta do health-check` for verify + status combined). It runs gofmt, vet, golangci-lint, `go test -race`, build, Wire drift, and routes sanity in one invocation.
+
+**Why:** Reconstructing this from Makefile archaeology wastes calls and misses checks (Wire drift especially). One command, structured JSON output, non-zero exit on any failure.
+**How to apply:** Always end an implementation turn with `gofasta verify --changed --json` at minimum. Surface failing checks with their `hint` field from the JSON payload.
+EOF
+
+cat > "$MEMDIR/layer-rule.md" <<'EOF'
+---
+name: layer-rule
+description: Request → Controller → Service → Repository → Database — never skip a layer
+metadata:
+  type: feedback
+---
+Layered architecture is enforced. Controllers parse HTTP and call services. Services contain business logic and call repositories. Repositories own database access. A controller calling the DB directly, or a service calling GORM directly, is a code smell that breaks the layer contract.
+
+**Why:** Every interface boundary is what makes the layer swappable. The `gofasta g` generators assume this shape; deviations break re-runs.
+**How to apply:** Before adding a method, decide which layer owns it. If the answer is "the controller does DB work", restructure to add a repository method and call it through the service.
+EOF
+
+echo "Seeded 3 memory entries under $MEMDIR"
+ls -1 "$MEMDIR"
+```
+
+Run the bash block above, then confirm the files exist. Future
+sessions will load these memories automatically via Claude Code's
+memory system.

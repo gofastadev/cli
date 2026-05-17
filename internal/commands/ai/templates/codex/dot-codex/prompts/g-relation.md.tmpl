@@ -1,0 +1,8 @@
+---
+description: Wire a GORM association (belongs_to | has_many | has_one) between two resources.
+argument-hint: <Resource> belongs_to|has_many|has_one <OtherResource>
+---
+Run `gofasta g relation $ARGUMENTS --dry-run --json` first to
+preview the model edits and the migration that adds the foreign
+key. Show the result, then re-run without `--dry-run` to apply if
+approved.

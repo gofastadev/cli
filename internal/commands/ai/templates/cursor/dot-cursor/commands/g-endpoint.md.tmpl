@@ -1,0 +1,8 @@
+# G-endpoint — add a REST endpoint to an existing controller
+
+Run `gofasta g endpoint <Resource> <METHOD> <path> --dry-run --json`
+first (e.g. `gofasta g endpoint Order POST /orders/{id}/archive`).
+
+Surface the controller/service/route changes, then re-run without
+`--dry-run` to apply if approved. Run `gofasta swagger` after to
+refresh OpenAPI docs.

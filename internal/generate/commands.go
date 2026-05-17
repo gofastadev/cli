@@ -2,7 +2,9 @@ package generate
 
 import (
 	"fmt"
+	"strings"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -74,6 +76,55 @@ func init() {
 	Cmd.AddCommand(emailTemplateCmd)
 	Cmd.AddCommand(jobCmd)
 	Cmd.AddCommand(taskCmd)
+	Cmd.AddCommand(mockCmd)
+	mockCmd.Flags().BoolVar(&mockAll, "all", false,
+		"Regenerate every mock under app/services/interfaces and app/repositories/interfaces")
+	mockCmd.Flags().BoolVar(&mockCheck, "check", false,
+		"Don't write — exit non-zero with MOCK_DRIFT if the on-disk mock differs from the interface")
+
+	// Modify-aware generators (g method, g field) — each appends to an
+	// existing resource using dst-based AST patching. The --dry-run flag
+	// reuses the same plan-recording machinery that powers `g scaffold
+	// --dry-run`.
+	Cmd.AddCommand(methodCmd)
+	methodCmd.Flags().BoolVar(&methodDryRun, "dry-run", false,
+		"Preview the patches without writing")
+
+	Cmd.AddCommand(fieldCmd)
+	fieldCmd.Flags().BoolVar(&fieldDryRun, "dry-run", false,
+		"Preview the patches + migration without writing")
+	fieldCmd.Flags().BoolVar(&fieldNoDTO, "no-dto", false,
+		"Skip DTO patches (only model + migration are updated)")
+	fieldCmd.Flags().BoolVar(&fieldNoCreate, "no-create", false,
+		"Skip the CreateRequest DTO when --no-dto is not set")
+	fieldCmd.Flags().BoolVar(&fieldNoUpdate, "no-update", false,
+		"Skip the UpdateRequest DTO when --no-dto is not set")
+	fieldCmd.Flags().BoolVar(&fieldNoResponse, "no-response", false,
+		"Skip the Response DTO when --no-dto is not set")
+
+	Cmd.AddCommand(endpointCmd)
+	endpointCmd.Flags().BoolVar(&endpointDryRun, "dry-run", false,
+		"Preview the controller + routes + service patches without writing")
+	endpointCmd.Flags().StringVar(&endpointHandlerName, "handler", "",
+		"Override the auto-derived handler name (e.g. --handler=ArchiveOrder)")
+	endpointCmd.Flags().BoolVar(&endpointNoService, "no-service", false,
+		"Skip the service-interface patch (controller + routes only)")
+
+	Cmd.AddCommand(repoMethodCmd)
+	repoMethodCmd.Flags().BoolVar(&repoMethodDryRun, "dry-run", false,
+		"Preview the patches without writing")
+
+	Cmd.AddCommand(middlewareCmd)
+	middlewareCmd.Flags().BoolVar(&middlewareDryRun, "dry-run", false,
+		"Preview the route file patch without writing")
+
+	Cmd.AddCommand(relationCmd)
+	relationCmd.Flags().BoolVar(&relationDryRun, "dry-run", false,
+		"Preview the model patch + migration without writing")
+
+	Cmd.AddCommand(renameCmd)
+	renameCmd.Flags().BoolVar(&renameApply, "apply", false,
+		"Actually write the rename (default: preview only — show every changed file)")
 
 	// Register --graphql flag on commands that support it
 	for _, cmd := range []*cobra.Command{scaffoldCmd, serviceCmd, controllerCmd} {
@@ -631,5 +682,389 @@ written services that were not created through ` + "`gofasta g service`" + `.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return RunSteps(buildFromArgs(args), providerSteps())
+	},
+}
+
+// mockAll / mockCheck are the cobra-bound flag receivers. mockAll
+// regenerates every mock under the standard interface dirs; mockCheck
+// is the CI gate — exits non-zero with MOCK_DRIFT if the on-disk mock
+// differs from what the interface would currently produce.
+var (
+	mockAll   bool
+	mockCheck bool
+)
+
+// Modify-aware generator flag receivers. Each generator binds its
+// --dry-run + opt-out flags onto these top-level vars so the Cobra
+// command stays declarative and the RunE closures stay small.
+var (
+	methodDryRun        bool
+	fieldDryRun         bool
+	fieldNoDTO          bool
+	fieldNoCreate       bool
+	fieldNoUpdate       bool
+	fieldNoResponse     bool
+	endpointDryRun      bool
+	endpointHandlerName string
+	endpointNoService   bool
+	repoMethodDryRun    bool
+	middlewareDryRun    bool
+	relationDryRun      bool
+	renameApply         bool
+)
+
+// methodCmd is `gofasta g method <Resource> <Method> [param:type ...]`.
+// Appends a method to an existing service interface + impl using dst-
+// based AST patching (no marker comments, comments preserved).
+var methodCmd = &cobra.Command{
+	Use:   "method <Resource> <Method> [param:type ...]",
+	Short: "Add a method to an existing service interface + impl",
+	Long: `Append a new method to an already-scaffolded service. The
+interface in app/services/interfaces/<snake>_service.go gains the
+signature; app/services/<snake>.service.go gains a stub implementation
+that returns a "not implemented" error.
+
+ctx context.Context is always prepended as the first parameter — the
+gofasta convention — so callers stay context-aware without having to
+spell it out.
+
+Use --dry-run to preview the patches (same {create, patch} JSON shape
+as g scaffold --dry-run).
+
+Examples:
+  gofasta g method Order Archive
+  gofasta g method Order ChangeStatus status:string reason:string`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resource := args[0]
+		method := args[1]
+		fields := ParseFields(args[2:])
+		d := MethodData{
+			Resource:   toPascalCase(resource),
+			MethodName: toPascalCase(method),
+			Args:       fields,
+		}
+		if methodDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenMethod(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenMethod(d)
+	},
+}
+
+// fieldCmd is `gofasta g field <Resource> <name>:<type>`. Adds the field
+// to the model + DTOs + a paired migration in one shot.
+var fieldCmd = &cobra.Command{
+	Use:   "field <Resource> <name>:<type>",
+	Short: "Add a field to an existing model, its DTOs, and emit a migration pair",
+	Long: `Append a column to an already-scaffolded resource. Patches:
+
+  • app/models/<snake>.model.go               (struct field + GORM tag)
+  • app/dtos/<snake>.dtos.go                  (Create / Update / Response DTOs)
+  • db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
+
+Supported types: string, text, int, float, bool, uuid, time.
+
+DTO patches are opt-out:
+  --no-dto       Skip every DTO patch (model + migration only)
+  --no-create    Skip the CreateRequest DTO
+  --no-update    Skip the UpdateRequest DTO
+  --no-response  Skip the Response DTO
+
+Use --dry-run to preview the patches and the migration that would be
+written (same {create, patch} JSON shape as g scaffold --dry-run).
+
+Examples:
+  gofasta g field Order archive_reason:string
+  gofasta g field Order deleted_at:time --no-create --no-update`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		resource := args[0]
+		fieldArg := args[1]
+		fields := ParseFields([]string{fieldArg})
+		if len(fields) == 0 {
+			return clierr.New(clierr.CodeInvalidName,
+				"field argument must be name:type (e.g. archive_reason:string)")
+		}
+		d := FieldData{
+			Resource:     toPascalCase(resource),
+			Field:        fields[0],
+			WithDTO:      !fieldNoDTO,
+			WithCreate:   !fieldNoCreate,
+			WithUpdate:   !fieldNoUpdate,
+			WithResponse: !fieldNoResponse,
+		}
+		if fieldDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenField(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenField(d)
+	},
+}
+
+// endpointCmd is `gofasta g endpoint <Resource> <METHOD> <path>`. Adds a
+// single REST endpoint to an existing resource: controller method,
+// route registration, optional service method.
+var endpointCmd = &cobra.Command{
+	Use:   "endpoint <Resource> <METHOD> <path>",
+	Short: "Add an endpoint to an existing controller + register the route",
+	Long: `Append a new REST endpoint to an already-scaffolded resource. Patches:
+
+  • app/rest/controllers/<snake>.controller.go — handler method
+  • app/rest/routes/<snake>.routes.go          — route registration line
+  • app/services/interfaces/<snake>_service.go — service method (skipped with --no-service)
+
+The handler name is auto-derived from "<METHOD> /path" unless --handler
+is passed. Examples:
+
+  gofasta g endpoint Order POST /orders/{id}/archive   # → ArchiveOrder
+  gofasta g endpoint Order GET  /orders/exports        # → ExportsOrder
+  gofasta g endpoint Order POST /orders/{id}/refund --handler=RefundOrder
+
+Use --dry-run to preview every patch (same {create, patch} JSON shape
+as g scaffold --dry-run).`,
+	Args: cobra.ExactArgs(3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		d := EndpointData{
+			Resource:    toPascalCase(args[0]),
+			HTTPMethod:  args[1],
+			Path:        args[2],
+			HandlerName: endpointHandlerName,
+			WithService: !endpointNoService,
+		}
+		if endpointDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenEndpoint(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenEndpoint(d)
+	},
+}
+
+// repoMethodCmd is `gofasta g repo-method <Resource> <Method>`. The
+// repository-layer twin of `g method` — identical semantics, different
+// default file paths.
+var repoMethodCmd = &cobra.Command{
+	Use:   "repo-method <Resource> <Method> [param:type ...]",
+	Short: "Add a method to an existing repository interface + impl",
+	Long: `Append a method to an already-scaffolded repository. Patches the
+interface in app/repositories/interfaces/<snake>_repository.go and the
+impl in app/repositories/<snake>.repository.go. Same AST-based patching
+that g method uses, with repo-specific defaults:
+
+  - InterfaceName defaults to <Resource>RepositoryInterface
+  - ImplStructName defaults to <lowerResource>Repository
+
+Examples:
+  gofasta g repo-method Order FindByCustomer customerID:string
+  gofasta g repo-method Order ArchiveByID --dry-run`,
+	Args: cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		d := MethodData{
+			Resource:   toPascalCase(args[0]),
+			MethodName: toPascalCase(args[1]),
+			Args:       ParseFields(args[2:]),
+		}
+		if repoMethodDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenRepoMethod(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenRepoMethod(d)
+	},
+}
+
+// middlewareCmd is `gofasta g middleware <METHOD> <path> <middleware-ref>`.
+// Wraps an existing route's handler with a chi middleware. The
+// middleware reference is the literal Go expression we splice into the
+// route's `.With(...)` call — e.g. `auth.RequireRole("admin")` or
+// `middleware.Logger`.
+var middlewareCmd = &cobra.Command{
+	Use:   "middleware <METHOD> <path> <middleware-ref>",
+	Short: "Wrap an existing route's handler with a chi middleware",
+	Long: `Find the route file that registers <METHOD> <path> and rewrite the
+chi handler chain to wrap it with the given middleware:
+
+    r.Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+      →
+    r.With(auth.RequireRole("admin")).Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+
+If the route already has a .With(...) chain, the new middleware is
+appended to the existing list (idempotent — re-running with a middleware
+already in the chain is a no-op).
+
+Examples:
+  gofasta g middleware POST /orders/{id}/archive auth.RequireRole("admin")
+  gofasta g middleware GET  /orders                middleware.Throttle(20)
+  gofasta g middleware POST /orders --dry-run      middleware.Logger`,
+	Args: cobra.ExactArgs(3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		d := MiddlewareData{
+			HTTPMethod: args[0],
+			Path:       args[1],
+			Middleware: args[2],
+		}
+		if middlewareDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenMiddleware(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenMiddleware(d)
+	},
+}
+
+// relationCmd is `gofasta g relation <Resource> <kind> <Other>`. Wires
+// up a GORM association on the parent model and (for belongs_to) emits
+// the FK migration.
+var relationCmd = &cobra.Command{
+	Use:   "relation <Resource> <kind> <Other>",
+	Short: "Add a GORM association (belongs_to | has_many | has_one) between two resources",
+	Long: `Patch the parent model with the appropriate association fields and
+(for belongs_to) emit a paired migration that adds the FK column and
+constraint on the parent table.
+
+  belongs_to <Other>  → <Other>ID uuid.UUID + *<Other>; FK on this table.
+  has_many   <Other>  → []<Other>; FK lives on the OTHER table.
+  has_one    <Other>  → *<Other>; FK lives on the OTHER table.
+
+Bidirectional navigation requires running g relation twice (once per
+side). The generator intentionally never assumes both sides need
+patching — that's a product decision.
+
+Examples:
+  gofasta g relation Order belongs_to Customer
+  gofasta g relation Customer has_many Order
+  gofasta g relation User has_one Profile --dry-run`,
+	Args: cobra.ExactArgs(3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		d := RelationData{
+			Resource: toPascalCase(args[0]),
+			Kind:     RelationKind(args[1]),
+			Other:    toPascalCase(args[2]),
+		}
+		if relationDryRun {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenRelation(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenRelation(d)
+	},
+}
+
+// renameCmd is `gofasta g rename <Resource>.<Old> <New> [--apply]`. The
+// rename is cross-file (model + DTOs + service + tests + migration) and
+// runs in preview mode by default — the user has to pass --apply to
+// actually write.
+var renameCmd = &cobra.Command{
+	Use:   "rename <Resource>.<OldField> <NewField>",
+	Short: "Rename a field across model, DTOs, service, tests, and emit a rename migration",
+	Long: `Cross-file rename of a single field on a resource. Patches:
+
+  • app/models/<snake>.model.go           (struct field + GORM column tag)
+  • app/dtos/<snake>.dtos.go              (every DTO using the field)
+  • app/services/<snake>.service.go       (receiver-method field references)
+  • app/services/<snake>.service_test.go  (same)
+  • app/repositories/<snake>.repository.go (same)
+  • db/migrations/NNNNNN_rename_<old>_to_<new>_on_<plural>.{up,down}.sql
+
+Runs in PREVIEW MODE by default — every changed file is recorded as a
+planned patch and nothing is written to disk. Pass --apply to commit
+the rename. The substitution is token-aware (\bOldField\b regex) so
+"Total" inside "TotalCount" won't be accidentally rewritten.
+
+Examples:
+  gofasta g rename Order.Total AmountCents
+  gofasta g rename Order.Total AmountCents --apply
+  gofasta g rename Order.Total AmountCents --json   # plan as JSON for agents`,
+	Args: cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// First arg has the form "Resource.OldField".
+		parts := strings.SplitN(args[0], ".", 2)
+		if len(parts) != 2 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"first argument must be Resource.OldField (got %q)", args[0])
+		}
+		d := RenameData{
+			Resource: parts[0],
+			OldField: parts[1],
+			NewField: args[1],
+			Apply:    renameApply,
+		}
+		// Preview-mode is the default: turn dry-run on regardless of
+		// --json so the planner accumulates patches we can render.
+		if !d.Apply {
+			SetDryRun(true)
+			defer SetDryRun(false)
+			if err := GenRename(d); err != nil {
+				return err
+			}
+			printPlanResult(cmd)
+			return nil
+		}
+		return GenRename(d)
+	},
+}
+
+// mockCmd is `gofasta g mock <Interface> [--all] [--check]`. Generates a
+// testify/mock implementation that satisfies the named interface and
+// writes it under testutil/mocks/. The generated mock includes a
+// compile-time assertion so a future interface change breaks the build
+// rather than silently producing a mock that no longer satisfies its
+// target.
+var mockCmd = &cobra.Command{
+	Use:   "mock [InterfaceName]",
+	Short: "Generate (or refresh) a testify/mock for one interface, or --all to refresh every mock",
+	Long: `Walk the project's interface declarations and emit a testify/mock
+implementation under testutil/mocks/<snake>_mock.go.
+
+Two modes:
+
+  gofasta g mock OrderService     — generate one mock by exact interface name
+  gofasta g mock --all            — refresh every mock under
+                                    app/services/interfaces and
+                                    app/repositories/interfaces
+
+Use --check to detect drift without rewriting (suitable for CI). Exits
+non-zero with MOCK_DRIFT if the on-disk mock doesn't match the current
+interface signature.
+
+The generated mock embeds testify's mock.Mock, includes a compile-time
+assertion that the mock satisfies the interface, and chooses the right
+testify accessor per return type (Error / String / Int / Bool / typed
+Get with nil-safe assertion). Pointer / slice / map / qualified-type
+returns are guarded so a nil return value doesn't panic the test.`,
+	Args: cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		}
+		return GenMock(name, GenMockOpts{All: mockAll, Check: mockCheck})
 	},
 }

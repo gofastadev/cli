@@ -1,0 +1,41 @@
+# Seed-memory — one-time setup of Cursor's project memory
+
+Cursor has its own memory system. This is a one-time setup command
+that writes three starter memory entries describing this gofasta
+project, the verification command, and the layer rule.
+
+Note: Cursor's memory directory varies by version. If your version
+stores memories under `.cursor/memories/`, the equivalent files for
+this project are:
+
+```bash
+MEMDIR=".cursor/memories"
+mkdir -p "$MEMDIR"
+
+cat > "$MEMDIR/gofasta-project.md" <<'EOF'
+# Project: {{.ProjectName}} (gofasta)
+This project (module `{{.ModulePath}}`) was scaffolded with gofasta.
+Prefer `gofasta <command> --json` over reading source files.
+Use `gofasta inspect <Resource>` before editing a resource.
+EOF
+
+cat > "$MEMDIR/verification-command.md" <<'EOF'
+# Verification: gofasta verify
+Before claiming any task done, run `gofasta verify` (or
+`gofasta do health-check`). One command, structured JSON output,
+non-zero exit on any failure. Surface failing checks with their
+`hint` field.
+EOF
+
+cat > "$MEMDIR/layer-rule.md" <<'EOF'
+# Layer rule: Request → Controller → Service → Repository → Database
+Never skip a layer. Controllers parse HTTP. Services contain
+business logic. Repositories own database access.
+EOF
+
+echo "Seeded 3 memory entries under $MEMDIR"
+```
+
+If your Cursor version uses a different memory location (e.g.
+project rules with `alwaysApply: true`), these contents should be
+adapted accordingly.

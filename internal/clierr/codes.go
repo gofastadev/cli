@@ -110,6 +110,64 @@ const (
 	// to call interactive commands programmatically rather than getting
 	// a hung process or garbled output.
 	CodeInteractiveOnly Code = "INTERACTIVE_ONLY"
+
+	// --- Cross-resource impact analysis (gofasta xrefs / impact) ---
+	//
+	// Type-aware symbol lookup uses golang.org/x/tools/go/packages, so
+	// failures split between "module won't load" (PACKAGE_LOAD_FAILED) and
+	// "symbol not present after load" (SYMBOL_NOT_FOUND).
+	CodeSymbolNotFound     Code = "SYMBOL_NOT_FOUND"
+	CodeTypeAnalysisFailed Code = "TYPE_ANALYSIS_FAILED"
+	CodePackageLoadFailed  Code = "PACKAGE_LOAD_FAILED"
+	CodeAmbiguousSymbol    Code = "AMBIGUOUS_SYMBOL"
+
+	// --- Change-scoped verify (--since / --changed) ---
+	//
+	// Three failure modes: not a git repo at all, the diff command failed
+	// (permissions, malformed ref syntax), or the ref does not resolve.
+	CodeGitNotAvailable Code = "GIT_NOT_AVAILABLE"
+	CodeGitDiffFailed   Code = "GIT_DIFF_FAILED"
+	CodeGitRefNotFound  Code = "GIT_REF_NOT_FOUND"
+
+	// --- Modify-aware generators (g method / g field / g endpoint / ...) ---
+	//
+	// AST-based generators that edit existing resources. Idempotency checks
+	// surface RESOURCE_NOT_FOUND / *_ALREADY_EXISTS so agents can branch on
+	// "is this a fresh add or a no-op?" without re-parsing the source tree.
+	CodeResourceNotFound    Code = "RESOURCE_NOT_FOUND"
+	CodeMethodAlreadyExists Code = "METHOD_ALREADY_EXISTS"
+	CodeFieldAlreadyExists  Code = "FIELD_ALREADY_EXISTS"
+	CodeRouteAlreadyExists  Code = "ROUTE_ALREADY_EXISTS"
+	CodeASTParseFailed      Code = "AST_PARSE_FAILED"
+	CodeASTPatchFailed      Code = "AST_PATCH_FAILED"
+
+	// --- Migration safety preview (gofasta migrate up --explain) ---
+	CodeMigrationLintFailed  Code = "MIGRATION_LINT_FAILED"
+	CodeMigrationParseFailed Code = "MIGRATION_PARSE_FAILED"
+
+	// --- Mock regeneration (gofasta g mock) ---
+	//
+	// MOCK_DRIFT is the --check exit code: the on-disk mock does not match
+	// the generated output. Use in CI to gate "mocks are stale" PRs.
+	CodeInterfaceNotFound Code = "INTERFACE_NOT_FOUND"
+	CodeMockGenFailed     Code = "MOCK_GEN_FAILED"
+	CodeMockDrift         Code = "MOCK_DRIFT"
+
+	// --- Job / task introspection (gofasta inspect-jobs / inspect-tasks) ---
+	CodeJobsDirMissing  Code = "JOBS_DIR_MISSING"
+	CodeTasksDirMissing Code = "TASKS_DIR_MISSING"
+
+	// --- Debug replay (gofasta debug replay) ---
+	//
+	// SSRF-guarded re-fire of a captured request. UNSAFE fires when the
+	// override would target a host other than the configured app URL.
+	CodeDebugReplayNotFound Code = "DEBUG_REPLAY_NOT_FOUND"
+	CodeDebugReplayFailed   Code = "DEBUG_REPLAY_FAILED"
+	CodeDebugReplayUnsafe   Code = "DEBUG_REPLAY_UNSAFE"
+
+	// --- Debug stack resolver (gofasta debug stack) ---
+	CodeDebugStackParseFailed  Code = "DEBUG_STACK_PARSE_FAILED"
+	CodeDebugSourceUnavailable Code = "DEBUG_SOURCE_UNAVAILABLE"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -353,6 +411,114 @@ var registry = map[Code]meta{
 	CodeDebugExplainFailed: {
 		Hint: "EXPLAIN is SELECT-only and requires the app to have registered its *gorm.DB via devtools.RegisterDB — verify the app was built with the devtools tag",
 		Docs: "https://gofasta.dev/docs/guides/debugging",
+	},
+
+	CodeSymbolNotFound: {
+		Hint: "the symbol was not found in the current module — check the spelling and package qualifier (e.g. `pkg.Func` or `pkg.Type.Method`)",
+		Docs: "https://gofasta.dev/docs/cli-reference/xrefs",
+	},
+	CodeTypeAnalysisFailed: {
+		Hint: "go/packages could not type-check the module; run `go build ./...` to surface the underlying compile error",
+		Docs: "https://gofasta.dev/docs/cli-reference/xrefs",
+	},
+	CodePackageLoadFailed: {
+		Hint: "one or more packages failed to load — fix the build error above before running impact analysis",
+		Docs: "https://gofasta.dev/docs/cli-reference/impact",
+	},
+	CodeAmbiguousSymbol: {
+		Hint: "the unqualified symbol matches definitions in multiple packages; pass the fully qualified name (e.g. `irodata/app/services.OrderService.Archive`)",
+		Docs: "https://gofasta.dev/docs/cli-reference/xrefs",
+	},
+
+	CodeGitNotAvailable: {
+		Hint: "this directory is not a git repository — run `git init` or drop the --since/--changed flag",
+		Docs: "https://gofasta.dev/docs/cli-reference/verify",
+	},
+	CodeGitDiffFailed: {
+		Hint: "`git diff` returned an error; check that the ref exists locally (`git fetch` may be needed) and that you have read access to the repo",
+		Docs: "https://gofasta.dev/docs/cli-reference/verify",
+	},
+	CodeGitRefNotFound: {
+		Hint: "the supplied git ref does not resolve — try `git fetch origin` or pass a known commit / branch / tag",
+		Docs: "https://gofasta.dev/docs/cli-reference/verify",
+	},
+
+	CodeResourceNotFound: {
+		Hint: "no files match the given resource name — check spelling (PascalCase, singular) or run `gofasta g scaffold <Name>` to create it first",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/method",
+	},
+	CodeMethodAlreadyExists: {
+		Hint: "a method with that name already exists on the target interface — pick a different name or skip this generator",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/method",
+	},
+	CodeFieldAlreadyExists: {
+		Hint: "the model already has a field with that name — pick a different name or remove the existing field first",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/field",
+	},
+	CodeRouteAlreadyExists: {
+		Hint: "that METHOD + path combination is already registered — pick a different path or use `gofasta g middleware` to attach behavior",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/endpoint",
+	},
+	CodeASTParseFailed: {
+		Hint: "the target Go file has a syntax error and cannot be parsed — fix the error above and re-run",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/method",
+	},
+	CodeASTPatchFailed: {
+		Hint: "could not locate the AST insertion target (e.g. interface or struct named for the resource) — the file may have been heavily restructured; inspect manually",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/method",
+	},
+
+	CodeMigrationLintFailed: {
+		Hint: "static SQL analysis errored on a pending migration — inspect the file for malformed SQL or unsupported syntax",
+		Docs: "https://gofasta.dev/docs/cli-reference/migrate",
+	},
+	CodeMigrationParseFailed: {
+		Hint: "could not split the migration into statements — check for unmatched `$$` dollar-quote blocks or stray string literals",
+		Docs: "https://gofasta.dev/docs/cli-reference/migrate",
+	},
+
+	CodeInterfaceNotFound: {
+		Hint: "no interface with that name was found under app/services/interfaces/ or app/repositories/interfaces/ — check spelling or pass --all to refresh every mock",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/mock",
+	},
+	CodeMockGenFailed: {
+		Hint: "the mock template failed to render — inspect the error above; often caused by an interface that uses unsupported features (generics, embedded external interfaces)",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/mock",
+	},
+	CodeMockDrift: {
+		Hint: "the on-disk mock no longer matches the interface — run `gofasta g mock --all` to regenerate, then commit the result",
+		Docs: "https://gofasta.dev/docs/cli-reference/generate/mock",
+	},
+
+	CodeJobsDirMissing: {
+		Hint: "app/jobs/ was not found — generate a job with `gofasta g job <name> \"<cron>\"` first, or run this command from the project root",
+		Docs: "https://gofasta.dev/docs/cli-reference/inspect-jobs",
+	},
+	CodeTasksDirMissing: {
+		Hint: "app/tasks/ was not found — generate a task with `gofasta g task <name>` first, or run this command from the project root",
+		Docs: "https://gofasta.dev/docs/cli-reference/inspect-tasks",
+	},
+
+	CodeDebugReplayNotFound: {
+		Hint: "the request id is not in the capture ring — it may have been evicted (rings hold at most 200 requests); re-issue the request you want to replay",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugReplayFailed: {
+		Hint: "the replayed request failed at the target app — inspect the response payload above or check the app logs",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugReplayUnsafe: {
+		Hint: "the replay override was rejected by the SSRF guard — overrides may change path / headers / body but cannot change scheme, host, or port",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+
+	CodeDebugStackParseFailed: {
+		Hint: "the stack frame does not match the expected `file:line function` format — verify the source is a gofasta-captured stack (TraceSpan.Stack or ExceptionEntry.Stack)",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
+	},
+	CodeDebugSourceUnavailable: {
+		Hint: "the source file referenced in the stack frame is not present on disk (deleted, vendored, or outside the current module) — the frame is still resolvable but without source context",
+		Docs: "https://gofasta.dev/docs/cli-reference/debug",
 	},
 }
 

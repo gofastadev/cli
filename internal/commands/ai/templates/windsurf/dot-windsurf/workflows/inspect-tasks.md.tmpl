@@ -1,0 +1,8 @@
+# Inspect tasks
+
+List every registered async task (static AST scan of `app/tasks/`).
+
+1. Run `gofasta inspect-tasks --json` (or pass a task name to filter).
+2. For each task, report wire name, payload struct, and whether
+   handler + enqueue functions are present.
+3. Use before adding a new task to avoid name collisions.

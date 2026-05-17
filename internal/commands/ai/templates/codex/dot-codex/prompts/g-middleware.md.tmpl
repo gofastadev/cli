@@ -1,0 +1,8 @@
+---
+description: Wrap an existing route's handler with a chi middleware (modify-aware generator, idempotent).
+argument-hint: <METHOD> <path> <middleware-ref>
+---
+Run `gofasta g middleware $ARGUMENTS --dry-run --json` first. If
+the generator reports `ROUTE_ALREADY_WRAPPED`, the middleware is
+already applied — confirm with the user before re-running.
+Otherwise apply the planned patch.

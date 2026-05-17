@@ -1,7 +1,6 @@
 package ai
 
 import (
-	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
@@ -22,6 +21,183 @@ func sampleData() InstallData {
 		ProjectNameUpper: "MYAPP",
 		ModulePath:       "github.com/acme/myapp",
 		CLIVersion:       "v0.0.0-test",
+	}
+}
+
+// claudeExpectedFiles is the canonical list of project-relative paths
+// `gofasta ai claude` writes. Centralized so both
+// TestInstall_Claude_CreatesExpectedFiles and the claude row of
+// TestInstall_PerAgentTreeShape stay in sync — adding a new template
+// file under templates/claude/ requires a single edit here.
+func claudeExpectedFiles() []string {
+	return []string{
+		"CLAUDE.md",
+		".claude/settings.json",
+		".claude/hooks/pre-commit.sh",
+		".claude/hooks/wire-reminder.sh",
+		".claude/hooks/migration-reminder.sh",
+		".claude/hooks/swagger-reminder.sh",
+		".claude/hooks/session-start.sh",
+		".claude/commands/verify.md",
+		".claude/commands/scaffold.md",
+		".claude/commands/inspect.md",
+		".claude/commands/status.md",
+		".claude/commands/health-check.md",
+		".claude/commands/routes.md",
+		".claude/commands/rebuild.md",
+		".claude/commands/migrate-explain.md",
+		".claude/commands/inspect-jobs.md",
+		".claude/commands/inspect-tasks.md",
+		".claude/commands/xrefs.md",
+		".claude/commands/impact.md",
+		".claude/commands/debug-slow.md",
+		".claude/commands/debug-error.md",
+		".claude/commands/n-plus-one.md",
+		".claude/commands/g-method.md",
+		".claude/commands/g-field.md",
+		".claude/commands/g-endpoint.md",
+		".claude/commands/g-middleware.md",
+		".claude/commands/g-repo-method.md",
+		".claude/commands/g-relation.md",
+		".claude/commands/g-rename.md",
+		".claude/commands/g-mock.md",
+		".claude/commands/seed-memory.md",
+		".claude/rules/conventions.md",
+		".claude/rules/overview.md",
+		".claude/rules/workflow.md",
+		".claude/rules/commands.md",
+		".claude/rules/debugging.md",
+		".claude/rules/docs-index.md",
+	}
+}
+
+// cursorExpectedFiles — see claudeExpectedFiles for the rationale.
+func cursorExpectedFiles() []string {
+	return []string{
+		".cursor/rules/conventions.mdc",
+		".cursor/rules/overview.mdc",
+		".cursor/rules/workflow.mdc",
+		".cursor/rules/commands.mdc",
+		".cursor/rules/debugging.mdc",
+		".cursor/rules/docs-index.mdc",
+		".cursor/commands/status.md",
+		".cursor/commands/health-check.md",
+		".cursor/commands/routes.md",
+		".cursor/commands/rebuild.md",
+		".cursor/commands/migrate-explain.md",
+		".cursor/commands/inspect-jobs.md",
+		".cursor/commands/inspect-tasks.md",
+		".cursor/commands/xrefs.md",
+		".cursor/commands/impact.md",
+		".cursor/commands/debug-slow.md",
+		".cursor/commands/debug-error.md",
+		".cursor/commands/n-plus-one.md",
+		".cursor/commands/g-method.md",
+		".cursor/commands/g-field.md",
+		".cursor/commands/g-endpoint.md",
+		".cursor/commands/g-middleware.md",
+		".cursor/commands/g-repo-method.md",
+		".cursor/commands/g-relation.md",
+		".cursor/commands/g-rename.md",
+		".cursor/commands/g-mock.md",
+		".cursor/commands/seed-memory.md",
+		".cursor/hooks.json",
+		".cursor/hooks/wire-reminder.sh",
+		".cursor/hooks/migration-reminder.sh",
+		".cursor/hooks/swagger-reminder.sh",
+		".cursor/hooks/session-start.sh",
+	}
+}
+
+// codexExpectedFiles — see claudeExpectedFiles for the rationale.
+func codexExpectedFiles() []string {
+	return []string{
+		"AGENTS.md",
+		".codex/config.toml",
+		".codex/hooks/wire-reminder.sh",
+		".codex/hooks/migration-reminder.sh",
+		".codex/hooks/swagger-reminder.sh",
+		".codex/hooks/session-start.sh",
+		".codex/docs/conventions.md",
+		".codex/docs/overview.md",
+		".codex/docs/workflow.md",
+		".codex/docs/commands.md",
+		".codex/docs/debugging.md",
+		".codex/docs/docs-index.md",
+		".codex/prompts/status.md",
+		".codex/prompts/health-check.md",
+		".codex/prompts/routes.md",
+		".codex/prompts/rebuild.md",
+		".codex/prompts/migrate-explain.md",
+		".codex/prompts/inspect-jobs.md",
+		".codex/prompts/inspect-tasks.md",
+		".codex/prompts/xrefs.md",
+		".codex/prompts/impact.md",
+		".codex/prompts/debug-slow.md",
+		".codex/prompts/debug-error.md",
+		".codex/prompts/n-plus-one.md",
+		".codex/prompts/g-method.md",
+		".codex/prompts/g-field.md",
+		".codex/prompts/g-endpoint.md",
+		".codex/prompts/g-middleware.md",
+		".codex/prompts/g-repo-method.md",
+		".codex/prompts/g-relation.md",
+		".codex/prompts/g-rename.md",
+		".codex/prompts/g-mock.md",
+		".codex/prompts/seed-memory.md",
+	}
+}
+
+// aiderExpectedFiles — no new files vs prior CLI versions (Aider
+// doesn't support custom slash commands or hooks; only content edits
+// applied). Listed here for symmetry.
+func aiderExpectedFiles() []string {
+	return []string{
+		"CONVENTIONS.md",
+		".aider.conf.yml",
+		".aider/docs/conventions.md",
+		".aider/docs/overview.md",
+		".aider/docs/workflow.md",
+		".aider/docs/commands.md",
+		".aider/docs/debugging.md",
+		".aider/docs/docs-index.md",
+	}
+}
+
+// windsurfExpectedFiles — see claudeExpectedFiles for the rationale.
+func windsurfExpectedFiles() []string {
+	return []string{
+		".windsurf/rules/conventions.md",
+		".windsurf/rules/overview.md",
+		".windsurf/rules/workflow.md",
+		".windsurf/rules/commands.md",
+		".windsurf/rules/debugging.md",
+		".windsurf/rules/docs-index.md",
+		".windsurf/workflows/status.md",
+		".windsurf/workflows/health-check.md",
+		".windsurf/workflows/routes.md",
+		".windsurf/workflows/rebuild.md",
+		".windsurf/workflows/migrate-explain.md",
+		".windsurf/workflows/inspect-jobs.md",
+		".windsurf/workflows/inspect-tasks.md",
+		".windsurf/workflows/xrefs.md",
+		".windsurf/workflows/impact.md",
+		".windsurf/workflows/debug-slow.md",
+		".windsurf/workflows/debug-error.md",
+		".windsurf/workflows/n-plus-one.md",
+		".windsurf/workflows/g-method.md",
+		".windsurf/workflows/g-field.md",
+		".windsurf/workflows/g-endpoint.md",
+		".windsurf/workflows/g-middleware.md",
+		".windsurf/workflows/g-repo-method.md",
+		".windsurf/workflows/g-relation.md",
+		".windsurf/workflows/g-rename.md",
+		".windsurf/workflows/g-mock.md",
+		".windsurf/workflows/seed-memory.md",
+		".windsurf/hooks.json",
+		".windsurf/hooks/wire-reminder.sh",
+		".windsurf/hooks/migration-reminder.sh",
+		".windsurf/hooks/swagger-reminder.sh",
 	}
 }
 
@@ -54,16 +230,13 @@ func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// At minimum, claude installs settings.json + the pre-commit hook +
-	// the three slash commands, all under .claude/. Verify each one
-	// ended up on disk.
-	expected := []string{
-		".claude/settings.json",
-		".claude/hooks/pre-commit.sh",
-		".claude/commands/verify.md",
-		".claude/commands/scaffold.md",
-		".claude/commands/inspect.md",
-	}
+	// Claude installs:
+	//   - CLAUDE.md root briefing
+	//   - .claude/settings.json + 5 hook scripts
+	//   - 24 slash commands (3 originals + 21 new diagnostic/analysis/
+	//     debug/generator/memory commands)
+	//   - six topic rules under .claude/rules/
+	expected := claudeExpectedFiles()
 	for _, rel := range expected {
 		path := filepath.Join(dir, rel)
 		info, err := os.Stat(path)
@@ -81,6 +254,56 @@ func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
 	assert.Len(t, result.Created, len(expected))
 	assert.Empty(t, result.Skipped)
 	assert.Empty(t, result.Replaced)
+}
+
+// TestInstall_PerAgentTreeShape is a table-driven check that every
+// agent's template tree lands at the right paths and that each
+// install is fully isolated (no shared chunk directory, no rename of
+// pre-existing files). One row per supported agent; if a future agent
+// is added to the registry, add a row here.
+func TestInstall_PerAgentTreeShape(t *testing.T) {
+	cases := []struct {
+		key  string
+		want []string
+	}{
+		{key: "claude", want: claudeExpectedFiles()},
+		{key: "cursor", want: cursorExpectedFiles()},
+		{key: "codex", want: codexExpectedFiles()},
+		{key: "aider", want: aiderExpectedFiles()},
+		{key: "windsurf", want: windsurfExpectedFiles()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.key, func(t *testing.T) {
+			dir := t.TempDir()
+			agent := AgentByKey(tc.key)
+			require.NotNil(t, agent, "registry must include %s", tc.key)
+			result, err := Install(agent, dir, sampleData(), InstallOptions{})
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			for _, rel := range tc.want {
+				info, err := os.Stat(filepath.Join(dir, rel))
+				require.NoError(t, err, "%s install must produce %s", tc.key, rel)
+				assert.False(t, info.IsDir(), "%s should be a file, not a directory", rel)
+			}
+			assert.Len(t, result.Created, len(tc.want),
+				"every template file should land on disk on a fresh install")
+			// Windsurf has a hard 12 KB per-rule cap.
+			if tc.key == "windsurf" {
+				entries, _ := filepath.Glob(filepath.Join(dir, ".windsurf", "rules", "*.md"))
+				for _, f := range entries {
+					info, _ := os.Stat(f)
+					assert.LessOrEqual(t, info.Size(), int64(12000),
+						"windsurf rule %s must stay under 12 KB", filepath.Base(f))
+				}
+			}
+			// Codex has a 32 KiB hard cap on AGENTS.md.
+			if tc.key == "codex" {
+				info, _ := os.Stat(filepath.Join(dir, "AGENTS.md"))
+				assert.LessOrEqual(t, info.Size(), int64(32*1024),
+					"codex AGENTS.md must stay under 32 KiB")
+			}
+		})
+	}
 }
 
 // TestInstall_Idempotent — running the installer twice should mark every
@@ -158,7 +381,7 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 }
 
 // TestManifest_LoadSaveRoundtrip — manifest round-trips cleanly through
-// disk and InstallRecord data (including v2 fields) survives intact.
+// disk and InstallRecord data survives intact.
 func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	m, err := LoadManifest(dir)
@@ -167,8 +390,7 @@ func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	assert.Equal(t, manifestSchemaVersion, m.Version)
 
 	m.RecordInstall("claude", "v0.5.0-test",
-		[]string{".claude/settings.json", ".claude/commands/verify.md"},
-		"AGENTS.md", "CLAUDE.md")
+		[]string{".claude/settings.json", ".claude/commands/verify.md"})
 	require.NoError(t, m.Save(dir))
 
 	m2, err := LoadManifest(dir)
@@ -178,8 +400,15 @@ func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
 	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
-	assert.Equal(t, "AGENTS.md", rec.RenamedFrom)
-	assert.Equal(t, "CLAUDE.md", rec.RenamedTo)
+}
+
+// TestJoinShort covers both inline and "(+N more)" overflow branches.
+func TestJoinShort(t *testing.T) {
+	assert.Equal(t, "", joinShort(nil))
+	assert.Equal(t, "a", joinShort([]string{"a"}))
+	assert.Equal(t, "a, b, c, d", joinShort([]string{"a", "b", "c", "d"}))
+	assert.Equal(t, "a, b, c, d (+2 more)",
+		joinShort([]string{"a", "b", "c", "d", "e", "f"}))
 }
 
 // TestExtractModulePath — parses `module ...` lines out of go.mod text.
@@ -245,42 +474,23 @@ func TestStatusCmdRunE(t *testing.T) {
 // agentConflictError — every diff branch
 // ─────────────────────────────────────────────────────────────────────
 
-// TestAgentConflictError_PrevRenamedTargetHasDoc — prev agent renamed
-// AGENTS.md (aider→CONVENTIONS.md), target also has a DocFilename
-// (claude→CLAUDE.md). The diff should describe "rename CONVENTIONS.md → CLAUDE.md".
-func TestAgentConflictError_PrevRenamedTargetHasDoc(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("aider", false, false))
-	})
-	t.Cleanup(func() { installSwitch = false })
-
-	err := runInstall("claude", false, false)
-	require.Error(t, err)
-	b, _ := json.Marshal(err)
-	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
-	assert.Contains(t, err.Error(), "rename CONVENTIONS.md → CLAUDE.md")
-}
-
-// TestAgentConflictError_PrevRenamedTargetNoDoc — prev agent renamed
-// AGENTS.md (claude→CLAUDE.md), target has NO DocFilename (cursor).
-// The diff should reverse the rename: "CLAUDE.md → AGENTS.md".
-func TestAgentConflictError_PrevRenamedTargetNoDoc(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
-
+// TestAgentConflictError_DiffListsRemoveAndAdd — install a previous
+// agent, attempt to install another without --switch. The conflict
+// error must list the files the previous agent will remove and the
+// files the new agent will add.
+func TestAgentConflictError_DiffListsRemoveAndAdd(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 	t.Cleanup(func() { installSwitch = false })
 
-	err := runInstall("cursor", false, false)
+	err := runInstall("codex", false, false)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "rename CLAUDE.md → AGENTS.md")
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
+	assert.Contains(t, err.Error(), "remove")
+	assert.Contains(t, err.Error(), "add")
 }
 
 // TestAgentConflictError_PrevUnknownAgent — manifest references an
@@ -299,20 +509,17 @@ func TestAgentConflictError_PrevUnknownAgent(t *testing.T) {
 	assert.Contains(t, err.Error(), "legacyx is currently installed")
 }
 
-// TestAgentConflictError_NoDiff — prev is an unknown agent (no rename
-// diff, no remove diff), target also has no templates and no DocFilename
-// (cursor). Diff stays empty and we hit the fallback message.
+// TestAgentConflictError_NoDiff — prev is an unknown agent (no remove
+// diff), target has no templates (synthetic Agent pointing at a
+// nonexistent template dir). Diff stays empty and we hit the fallback
+// message that includes the `--switch` hint.
 func TestAgentConflictError_NoDiff(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	m, err := LoadManifest(dir)
-	require.NoError(t, err)
-	m.ActiveAgent = "legacyx"
-	require.NoError(t, m.Save(dir))
-	t.Cleanup(func() { installSwitch = false })
-
-	err = runInstall("cursor", false, false)
+	m := &Manifest{ActiveAgent: "legacyx", Installed: map[string]InstallRecord{}}
+	target := &Agent{Key: "synthetic", Name: "Synthetic", TemplateDir: "templates/nonexistent"}
+	err := agentConflictError(m, target, "/nowhere", InstallData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Re-run with `--switch`")
+	assert.Contains(t, err.Error(), "Synthetic")
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -402,48 +609,52 @@ func TestSwitchUninstall_BuildInstallDataError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestSwitchUninstall_UninstallError — fail osRename inside Uninstall
-// to hit the Uninstall-error branch of switchUninstall.
+// TestSwitchUninstall_UninstallError — make Uninstall fail inside
+// switchUninstall by chmod'ing a parent dir of a recorded file so
+// os.Remove returns EACCES. Hits the `err != nil` branch of the
+// Uninstall call.
 func TestSwitchUninstall_UninstallError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
 	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 
-	orig := osRename
-	osRename = func(_, _ string) error { return assertError("rename boom") }
-	t.Cleanup(func() { osRename = orig })
+	// Make .claude/commands read-only so os.Remove on a file in it fails.
+	cmds := filepath.Join(dir, ".claude", "commands")
+	require.NoError(t, os.Chmod(cmds, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(cmds, 0o755) })
 
 	err = switchUninstall(m, dir, false)
 	require.Error(t, err)
 }
 
 // TestRunInstall_SwitchUninstallError — runInstall with --switch
-// where switchUninstall fails (osRename stubbed to fail inside the
-// Uninstall path). Surfaces the line `if err := switchUninstall(...)
+// where switchUninstall fails: chmod a parent dir read-only so the
+// inner Uninstall errors. Surfaces the line `if err := switchUninstall(...)
 // ... return err` branch inside runInstall.
 func TestRunInstall_SwitchUninstallError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
 	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("claude", false, false))
 	})
 
-	orig := osRename
-	osRename = func(_, _ string) error { return assertError("rename boom") }
-	t.Cleanup(func() { osRename = orig })
+	cmds := filepath.Join(dir, ".claude", "commands")
+	require.NoError(t, os.Chmod(cmds, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(cmds, 0o755) })
 
 	installSwitch = true
 	t.Cleanup(func() { installSwitch = false })
 
 	err := runInstall("aider", false, false)
 	require.Error(t, err)
-	_ = dir
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -460,12 +671,13 @@ func TestAgentOwnedFiles_HappyPath(t *testing.T) {
 	assert.NotEmpty(t, files)
 }
 
-// TestAgentOwnedFiles_EmptyForAgentWithoutTemplates — cursor has no
-// embedded template dir; agentOwnedFiles returns an empty slice and
-// no error (the "agent installs nothing on disk" representation).
+// TestAgentOwnedFiles_EmptyForAgentWithoutTemplates — a synthetic
+// agent pointing at a nonexistent template dir returns an empty slice
+// and no error. Every shipping agent now has templates; this branch
+// stays exercised for safety because future agents may register before
+// their template tree is authored.
 func TestAgentOwnedFiles_EmptyForAgentWithoutTemplates(t *testing.T) {
-	agent := AgentByKey("cursor")
-	require.NotNil(t, agent)
+	agent := &Agent{Key: "synthetic", TemplateDir: "templates/nonexistent"}
 	files, err := agentOwnedFiles(agent)
 	require.NoError(t, err)
 	assert.Empty(t, files)
@@ -567,20 +779,4 @@ func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
 
 	got := expectedRenderings(AgentByKey("claude"), sampleData())
 	assert.Empty(t, got)
-}
-
-// TestInstallResult_PrintText_RenameSections — covers the Renamed
-// and WouldRename branches that the aggregate sections test in
-// runners_test.go doesn't exercise.
-func TestInstallResult_PrintText_RenameSections(t *testing.T) {
-	r := &InstallResult{
-		Agent:       "claude",
-		Renamed:     []string{"AGENTS.md → CLAUDE.md"},
-		WouldRename: []string{"AGENTS.md → CLAUDE.md"},
-	}
-	var buf bytes.Buffer
-	r.PrintText(&buf)
-	out := buf.String()
-	assert.Contains(t, out, "renamed: AGENTS.md → CLAUDE.md")
-	assert.Contains(t, out, "would rename (dry-run): AGENTS.md → CLAUDE.md")
 }

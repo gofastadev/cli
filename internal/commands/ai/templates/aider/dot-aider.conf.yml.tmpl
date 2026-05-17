@@ -1,5 +1,6 @@
 # Aider project configuration for a gofasta project. Aider reads this
-# file at startup and uses CONVENTIONS.md for per-project style rules.
+# file at startup; the `read:` array preloads the root briefing and
+# every topic chunk under .aider/docs/ as cached read-only context.
 #
 # Docs: https://aider.chat/docs/config.html
 
@@ -9,9 +10,16 @@
 auto-test: true
 test-cmd: gofasta verify --json
 
-# Project conventions file. `gofasta ai aider` renames the scaffold's
-# AGENTS.md to CONVENTIONS.md at the project root.
-read: CONVENTIONS.md
+# Project conventions file + topic chunks. Listed individually so Aider
+# loads each as read-only with prompt caching enabled.
+read:
+  - CONVENTIONS.md
+  - .aider/docs/conventions.md
+  - .aider/docs/overview.md
+  - .aider/docs/workflow.md
+  - .aider/docs/commands.md
+  - .aider/docs/debugging.md
+  - .aider/docs/docs-index.md
 
 # Force lint-on-edit using the same linter CI uses.
 auto-lint: true

@@ -1,0 +1,114 @@
+---
+description: Pointers to gofasta.dev docs (`llms.txt`, `llms-full.txt`) and per-page URL fallbacks
+---
+# Where to read more — gofasta.dev docs index
+
+Small pointer file; the actual docs live at gofasta.dev.
+
+## Preferred entry points
+
+Two LLM-optimized files expose the entire gofasta documentation in the
+format agents consume most efficiently. Prefer these over scraping
+individual pages, and use them **instead of** training-data recall
+(which may be stale — features change between releases).
+
+- **https://gofasta.dev/llms.txt** — structured markdown index of every
+  docs page with a one-line description and URL, following the
+  [llmstxt.org](https://llmstxt.org) spec. ~11 KB. Use this to discover
+  which page answers a specific question, then fetch just that page.
+- **https://gofasta.dev/llms-full.txt** — the entire docs site
+  concatenated into a single markdown file (~440 KB / ~110k tokens).
+  Use this when you want all gofasta context loaded at once and can
+  afford the token cost — every API signature, every CLI flag, every
+  design rationale in one fetch.
+
+Rule of thumb: if you're answering a specific question about gofasta,
+fetch `llms.txt`, pick the right page URL from the index, then fetch
+that single page. If you're about to make a substantial change that
+touches multiple subsystems, preload `llms-full.txt` so the relevant
+conventions are in your context from the start.
+
+## Per-page links (fallback when aggregate files are unreachable)
+
+### Getting Started
+- https://gofasta.dev/docs/getting-started/introduction
+- https://gofasta.dev/docs/getting-started/installation
+- https://gofasta.dev/docs/getting-started/quick-start
+- https://gofasta.dev/docs/getting-started/project-structure
+
+### Guides
+- https://gofasta.dev/docs/guides/rest-api
+- https://gofasta.dev/docs/guides/graphql
+- https://gofasta.dev/docs/guides/database-and-migrations
+- https://gofasta.dev/docs/guides/authentication
+- https://gofasta.dev/docs/guides/code-generation
+- https://gofasta.dev/docs/guides/background-jobs
+- https://gofasta.dev/docs/guides/email-and-notifications
+- https://gofasta.dev/docs/guides/testing
+- https://gofasta.dev/docs/guides/debugging
+- https://gofasta.dev/docs/guides/deployment
+- https://gofasta.dev/docs/guides/configuration
+
+### CLI Reference
+- https://gofasta.dev/docs/cli-reference/new
+- https://gofasta.dev/docs/cli-reference/init
+- https://gofasta.dev/docs/cli-reference/dev
+- https://gofasta.dev/docs/cli-reference/debug
+- https://gofasta.dev/docs/cli-reference/serve
+- https://gofasta.dev/docs/cli-reference/migrate
+- https://gofasta.dev/docs/cli-reference/seed
+- https://gofasta.dev/docs/cli-reference/db
+- https://gofasta.dev/docs/cli-reference/deploy
+- https://gofasta.dev/docs/cli-reference/wire
+- https://gofasta.dev/docs/cli-reference/swagger
+- https://gofasta.dev/docs/cli-reference/routes
+- https://gofasta.dev/docs/cli-reference/console
+- https://gofasta.dev/docs/cli-reference/doctor
+- https://gofasta.dev/docs/cli-reference/upgrade
+- https://gofasta.dev/docs/cli-reference/version
+
+### Code generators (`gofasta g <...>`)
+- https://gofasta.dev/docs/cli-reference/generate/scaffold
+- https://gofasta.dev/docs/cli-reference/generate/model
+- https://gofasta.dev/docs/cli-reference/generate/repository
+- https://gofasta.dev/docs/cli-reference/generate/service
+- https://gofasta.dev/docs/cli-reference/generate/controller
+- https://gofasta.dev/docs/cli-reference/generate/dto
+- https://gofasta.dev/docs/cli-reference/generate/route
+- https://gofasta.dev/docs/cli-reference/generate/provider
+- https://gofasta.dev/docs/cli-reference/generate/resolver
+- https://gofasta.dev/docs/cli-reference/generate/migration
+- https://gofasta.dev/docs/cli-reference/generate/job
+- https://gofasta.dev/docs/cli-reference/generate/task
+- https://gofasta.dev/docs/cli-reference/generate/email-template
+
+### Package Library (`pkg/*` API reference)
+- https://gofasta.dev/docs/api-reference/config
+- https://gofasta.dev/docs/api-reference/logger
+- https://gofasta.dev/docs/api-reference/errors
+- https://gofasta.dev/docs/api-reference/models
+- https://gofasta.dev/docs/api-reference/http-utilities
+- https://gofasta.dev/docs/api-reference/middleware
+- https://gofasta.dev/docs/api-reference/auth
+- https://gofasta.dev/docs/api-reference/cache
+- https://gofasta.dev/docs/api-reference/storage
+- https://gofasta.dev/docs/api-reference/mailer
+- https://gofasta.dev/docs/api-reference/notifications
+- https://gofasta.dev/docs/api-reference/websocket
+- https://gofasta.dev/docs/api-reference/scheduler
+- https://gofasta.dev/docs/api-reference/queue
+- https://gofasta.dev/docs/api-reference/resilience
+- https://gofasta.dev/docs/api-reference/validators
+- https://gofasta.dev/docs/api-reference/i18n
+- https://gofasta.dev/docs/api-reference/observability
+- https://gofasta.dev/docs/api-reference/feature-flags
+- https://gofasta.dev/docs/api-reference/sessions
+- https://gofasta.dev/docs/api-reference/encryption
+- https://gofasta.dev/docs/api-reference/seeds
+- https://gofasta.dev/docs/api-reference/types
+- https://gofasta.dev/docs/api-reference/utils
+- https://gofasta.dev/docs/api-reference/health
+- https://gofasta.dev/docs/api-reference/test-utilities
+
+### Architecture + design philosophy
+- https://gofasta.dev/docs/white-paper

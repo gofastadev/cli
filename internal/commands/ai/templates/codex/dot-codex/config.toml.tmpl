@@ -1,6 +1,6 @@
 # OpenAI Codex project configuration for a gofasta project. Codex reads
-# AGENTS.md at the project root for primary guidance; this file adds
-# gofasta-specific workspace paths and trusted command allowlists.
+# AGENTS.md at the project root for primary guidance. AGENTS.md links
+# into `.codex/docs/` chunks for topic-scoped detail.
 #
 # Docs: https://developers.openai.com/codex/guides/agents-md
 
@@ -19,4 +19,35 @@ allow = [
   "go mod tidy",
   "go mod download",
   "gofmt *",
+  "jq *",
 ]
+
+# ─────────────────────────────────────────────────────────────────────────
+# Hooks — Codex executes these scripts at lifecycle events. Reminders
+# only; never block tool use. Run `/hooks` inside Codex to trust them
+# on first encounter.
+#
+# Docs: https://developers.openai.com/codex/hooks
+# ─────────────────────────────────────────────────────────────────────────
+
+[[hooks.PostToolUse]]
+matcher = "^(apply_patch|str_replace_editor|Edit|Write)$"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = ".codex/hooks/wire-reminder.sh"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = ".codex/hooks/migration-reminder.sh"
+
+[[hooks.PostToolUse.hooks]]
+type = "command"
+command = ".codex/hooks/swagger-reminder.sh"
+
+[[hooks.SessionStart]]
+matcher = "*"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = ".codex/hooks/session-start.sh"

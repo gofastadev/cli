@@ -1,0 +1,10 @@
+---
+description: Generate or refresh a testify mock for one interface; --all walks every interface; --check is a CI drift gate.
+allowed-tools: Bash(gofasta g*)
+argument-hint: <InterfaceName> | --all | --check
+---
+
+Run `gofasta g mock $ARGUMENTS --json`. If `--check` reports
+`MOCK_DRIFT`, the user has updated an interface but not regenerated
+the mock — re-run without `--check` to refresh. If `--all`, report
+the number of mocks refreshed.

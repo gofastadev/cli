@@ -1,0 +1,11 @@
+# Status
+
+Offline drift report for this gofasta project.
+
+1. Run `gofasta status --json`.
+2. Parse the `checks` array.
+3. For every check where `status` is `drift` or `pending`, report the
+   check name and its `detail`/`hint` field.
+4. If anything is out of sync, ask the user whether to run
+   `gofasta do rebuild` (Wire + Swagger) or `gofasta migrate up`
+   (pending migrations) before continuing.

@@ -147,7 +147,7 @@ func TestRunStatus_WithInstalledManifest(t *testing.T) {
 	dir := scaffoldFakeProject(t, "example.com/app")
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
-	m.RecordInstall("claude", "v1.0.0", []string{".claude/settings.json"}, "AGENTS.md", "CLAUDE.md")
+	m.RecordInstall("claude", "v1.0.0", []string{".claude/settings.json"})
 	require.NoError(t, m.Save(dir))
 
 	out := captureStdout(t, func() {
@@ -415,22 +415,16 @@ func TestRunInstall_BlocksWhenOtherAgentActive(t *testing.T) {
 }
 
 // TestRunInstall_SwitchReplacesActiveAgent — install aider, then
-// install claude with --switch. Verify the swap: AGENTS.md ↔
-// CONVENTIONS.md ↔ CLAUDE.md, .aider.conf.yml gone, .claude/* present,
-// manifest.ActiveAgent == "claude".
+// install claude with --switch. Verify the swap: aider files all gone,
+// claude files present, manifest.ActiveAgent == "claude".
 func TestRunInstall_SwitchReplacesActiveAgent(t *testing.T) {
 	dir := scaffoldFakeProject(t, "example.com/app")
-	// Pre-seed AGENTS.md so aider's rename has something to act on.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
-		[]byte("# briefing\n"), 0o644))
 
 	_ = captureStdout(t, func() {
 		require.NoError(t, runInstall("aider", false, false))
 	})
-	// Aider installed: CONVENTIONS.md exists, .aider.conf.yml exists.
-	_, err := os.Stat(filepath.Join(dir, "CONVENTIONS.md"))
-	require.NoError(t, err)
-	_, err = os.Stat(filepath.Join(dir, ".aider.conf.yml"))
+	// Aider installed: .aider.conf.yml exists.
+	_, err := os.Stat(filepath.Join(dir, ".aider.conf.yml"))
 	require.NoError(t, err)
 
 	// Now switch to claude.
@@ -441,12 +435,8 @@ func TestRunInstall_SwitchReplacesActiveAgent(t *testing.T) {
 	})
 
 	// Aider files removed; claude files installed.
-	_, err = os.Stat(filepath.Join(dir, "CONVENTIONS.md"))
-	assert.True(t, os.IsNotExist(err), "CONVENTIONS.md should be renamed back / replaced")
 	_, err = os.Stat(filepath.Join(dir, ".aider.conf.yml"))
 	assert.True(t, os.IsNotExist(err), ".aider.conf.yml should be removed")
-	_, err = os.Stat(filepath.Join(dir, "CLAUDE.md"))
-	require.NoError(t, err, "CLAUDE.md should exist after switch")
 	_, err = os.Stat(filepath.Join(dir, ".claude", "settings.json"))
 	require.NoError(t, err)
 

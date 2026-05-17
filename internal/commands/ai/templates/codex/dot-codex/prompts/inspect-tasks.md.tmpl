@@ -1,0 +1,8 @@
+---
+description: List every registered async task with its payload shape (static AST scan of app/tasks/).
+argument-hint: [<task-name>]
+---
+Run `gofasta inspect-tasks $ARGUMENTS --json`. Report each task's
+wire name, payload struct, and whether handler + enqueue functions
+are present. Use this before adding a new task to avoid name
+collisions.

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# afterFileEdit hook for Cursor. Reminds the agent to regenerate
+# Swagger after editing a REST controller.
+
+path=$(jq -r '.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/rest/controllers/*.go)
+    cat <<'JSON'
+{"additional_context": "Reminder: you edited a controller. Run `gofasta swagger` to regenerate OpenAPI docs."}
+JSON
+    ;;
+esac

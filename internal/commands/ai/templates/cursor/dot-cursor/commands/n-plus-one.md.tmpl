@@ -1,0 +1,7 @@
+# N+1 — detect N+1 query patterns
+
+Run `gofasta debug n-plus-one --json`. For every detected pattern,
+report the trace ID, the SQL template, and the hit count.
+
+Propose the fix — usually a `Preload` on the GORM query or a batch
+fetch via the repository.

@@ -1,0 +1,81 @@
+---
+description: Project overview, tech stack, and the layered directory tree
+---
+# Project overview, tech stack, and layout
+
+Orientation for the agent — what the project is built from and where
+code lives.
+
+## Project overview
+
+- **Name:** {{.ProjectName}}
+- **Go module:** `{{.ModulePath}}`
+- **Scaffolded from:** [gofasta](https://gofasta.dev) — a Go backend
+  toolkit that generates standard Go code (no runtime framework, no
+  custom compiler, no reflection-based DI).
+
+A gofasta-scaffolded project is **plain Go**. Every file here is code the
+developer owns. The gofasta library (`github.com/gofastadev/gofasta`) is
+imported as an opt-out default; individual `pkg/*` packages can be
+replaced or deleted without touching the rest of the project.
+
+## Tech stack
+
+| Concern | Library | Notes |
+|---|---|---|
+| Go version | 1.25.0 (see `.go-version`) | Toolchain auto-downloads if needed |
+| HTTP router | `github.com/go-chi/chi/v5` | Swap-friendly; see docs below |
+| ORM | `gorm.io/gorm` | PostgreSQL by default; 5 drivers supported |
+| Dependency injection | `github.com/google/wire` | Compile-time, no reflection |
+| Config | `github.com/knadh/koanf` | YAML + env var overrides |
+| Logging | `log/slog` (stdlib) | Structured JSON or text |
+| Migrations | `golang-migrate/migrate/v4` | SQL files in `db/migrations/` |
+| Validation | `go-playground/validator/v10` | Struct-tag driven |
+| Tests | `stretchr/testify` + `testcontainers-go` | Real Postgres in containers |
+| Feature flags | OpenFeature Go SDK (via `pkg/featureflag`) | Any OpenFeature provider |
+
+If the project has `app/graphql/` on disk, GraphQL is enabled via
+`github.com/99designs/gqlgen` (the codegen tool).
+
+## Directory structure (layered architecture)
+
+```
+{{.ProjectNameLower}}/
+├── app/                       # Application code
+│   ├── main/main.go          # Entry point
+│   ├── models/                # GORM models (one file per resource)
+│   ├── dtos/                  # Request/response types (API shape)
+│   ├── repositories/          # Data access layer
+│   │   └── interfaces/        # Repository contracts
+│   ├── services/              # Business logic
+│   │   └── interfaces/        # Service contracts
+│   ├── rest/
+│   │   ├── controllers/       # HTTP handlers (one file per resource)
+│   │   └── routes/            # chi.Router registration (one file per resource)
+│   ├── validators/            # Custom validation rules
+│   ├── di/                    # Google Wire dependency injection
+│   │   ├── container.go       # Service container struct
+│   │   ├── wire.go            # Wire build config (edit this)
+│   │   ├── wire_gen.go        # GENERATED — do not edit
+│   │   └── providers/         # Wire provider sets
+│   ├── jobs/                  # Cron jobs
+│   └── tasks/                 # Async task handlers (asynq)
+├── cmd/                       # Cobra CLI commands (serve, migrate, seed)
+├── db/
+│   ├── migrations/            # SQL migration pairs (up + down)
+│   └── seeds/                 # Database seed functions
+├── configs/                   # RBAC policies, feature-flag config
+├── deployments/               # Docker, CI/CD workflows, nginx, systemd
+├── templates/emails/          # HTML email templates
+├── locales/                   # i18n translation YAML
+├── testutil/mocks/            # Test mocks
+├── config.yaml                # Application config (env-overridable)
+├── compose.yaml               # Local dev Docker Compose
+├── Dockerfile                 # Production container image
+└── Makefile                   # Common tasks
+```
+
+**Layer rule:** Request → Controller → Service → Repository → Database.
+Controllers never touch the DB directly. Services never parse HTTP.
+Repositories never contain business logic. The conventions rule
+(`conventions.md`) lists the must-NOT-do consequences of violating this.

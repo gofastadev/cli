@@ -1,0 +1,117 @@
+# AGENTS.md — Guidance for OpenAI Codex
+
+Codex reads this file at the project root. Detailed guidance lives in
+`.codex/docs/` — read the chunk most relevant to the task before
+starting.
+
+This setup was installed by `gofasta ai codex`. Run
+`gofasta ai uninstall codex` to remove every file it added.
+
+## First 60 seconds in this project
+
+When opening this project cold, do these in order:
+
+1. **Check drift:** run `gofasta status --json`. If any check reports
+   `drift` or `pending`, fix it before editing. (The SessionStart
+   hook surfaces this automatically when devtools are present.)
+2. **Read conventions:** `.codex/docs/conventions.md` is the
+   highest-leverage doc — start here.
+3. **Before editing a resource:** `gofasta inspect <Resource> --json`
+   — gives you the model, DTOs, service methods, controller methods,
+   routes in one shot.
+4. **Before changing a signature:** `gofasta xrefs <Symbol> --json`.
+5. **Before applying a migration:** `gofasta migrate up --explain
+   --strict`.
+6. **Before claiming done:** `gofasta verify --changed --json` (or
+   `gofasta do health-check`).
+
+## Hooks wired in `.codex/config.toml`
+
+PostToolUse (Edit/Write/apply_patch) and SessionStart hooks under
+`.codex/hooks/` surface reminders without ever blocking:
+
+- Edit `app/di/wire.go` or `app/di/providers/*` → reminder to run
+  `gofasta wire`
+- Edit `app/models/*` → reminder to write a migration
+- Edit `app/rest/controllers/*` → reminder to run `gofasta swagger`
+- Session start → runs `gofasta status` and surfaces drift
+
+Run `/hooks` in Codex on first session to trust them. Hook scripts
+require `jq` (`brew install jq` on macOS).
+
+## Pre-authored slash commands under `.codex/prompts/`
+
+This project ships 21 ready-to-use Codex prompts (status, health-check,
+routes, rebuild, migrate-explain, inspect-jobs, inspect-tasks, xrefs,
+impact, debug-slow, debug-error, n-plus-one, g-method, g-field,
+g-endpoint, g-middleware, g-repo-method, g-relation, g-rename,
+g-mock, seed-memory).
+
+**Codex reads custom prompts only from `~/.codex/prompts/`** (user
+home, not project tree). To activate this project's prompts, run
+once from the project root:
+
+```bash
+mkdir -p ~/.codex/prompts && for f in .codex/prompts/*.md; do \
+  ln -sf "$PWD/$f" "$HOME/.codex/prompts/gofasta-$(basename "$f")"; \
+done
+```
+
+The `gofasta-` filename prefix prevents collisions when multiple
+gofasta projects are symlinked. Restart Codex (or open a new chat)
+so it picks them up, then invoke any prompt with
+`/prompts:gofasta-<name>` (e.g. `/prompts:gofasta-xrefs UserService`).
+
+To remove the symlinks later: `rm ~/.codex/prompts/gofasta-*.md`.
+
+## Project at a glance
+
+- **Name:** {{.ProjectName}}
+- **Go module:** `{{.ModulePath}}`
+- **Toolkit:** [gofasta](https://gofasta.dev) — plain Go, no runtime framework
+- **Layer rule:** Request → Controller → Service → Repository → Database
+- **Self-check before claiming done:** `gofasta verify` then `gofasta status`
+  (or `gofasta do health-check`)
+
+## Topic chunks under `.codex/docs/`
+
+| File | What it covers |
+|---|---|
+| [.codex/docs/conventions.md](.codex/docs/conventions.md) | Must-follow rules + must-NOT-do list + Wire gotcha + feature flags |
+| [.codex/docs/overview.md](.codex/docs/overview.md) | Tech stack + directory tree |
+| [.codex/docs/workflow.md](.codex/docs/workflow.md) | `--json`, `inspect`, `status`, workflows, `verify` |
+| [.codex/docs/commands.md](.codex/docs/commands.md) | Dev, test, code generation, migrate, deploy |
+| [.codex/docs/debugging.md](.codex/docs/debugging.md) | The `gofasta debug` command family |
+| [.codex/docs/docs-index.md](.codex/docs/docs-index.md) | Pointers to gofasta.dev docs (`llms.txt`) |
+
+If you only read one chunk before starting work, read
+`.codex/docs/conventions.md`.
+
+## Pre-authorized commands
+
+Configured in `.codex/config.toml`:
+
+`gofasta *`, `make *`, `go build/test/vet`, `go mod tidy/download`,
+`gofmt *`.
+
+## Things you must NOT do
+
+(Full list with rationale in `.codex/docs/conventions.md`. The top 3:)
+
+1. **Do not edit `app/di/wire_gen.go`** — it's generated. Edit
+   `app/di/wire.go`, then run `gofasta wire`.
+2. **Do not skip migrations.** If you add a field to a model, write a
+   migration pair in `db/migrations/`.
+3. **Do not call the database from a service.** Call the repository
+   interface — `Service → Repository → Database`.
+
+## Self-check before finishing a task
+
+```bash
+gofasta verify --json    # full quality-gate gauntlet
+gofasta status --json    # drift detection
+```
+
+Or in one call: `gofasta do health-check --json`. If anything fails,
+the JSON output names the failing check and lists the remediation in
+its `hint` field.

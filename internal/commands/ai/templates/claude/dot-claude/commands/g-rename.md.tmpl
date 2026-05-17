@@ -1,0 +1,9 @@
+---
+description: Rename a field across model, DTOs, service, tests; emit a rename migration. Preview by default; pass --apply to write.
+allowed-tools: Bash(gofasta g*)
+argument-hint: <Resource>.<OldField> <NewField>
+---
+
+Run `gofasta g rename $ARGUMENTS --json` (preview mode) first. Show
+every file the generator would patch and the migration pair it would
+emit. Only re-run with `--apply` after the user confirms.

@@ -14,16 +14,15 @@ import (
 )
 
 // uninstallCmd is `gofasta ai uninstall <agent>`. Removes everything an
-// install added (per the manifest's CreatedFiles + RenamedFrom/To)
-// while preserving files the user has modified since install.
+// install added (per the manifest's CreatedFiles) while preserving
+// files the user has modified since install.
 var uninstallCmd = &cobra.Command{
 	Use:   "uninstall <agent>",
 	Short: "Remove an installed AI agent's configuration from this project",
 	Long: `Remove the files an earlier ` + "`gofasta ai <agent>`" + ` installed.
 
-Reverses the doc-file rename (e.g. CLAUDE.md → AGENTS.md) and removes
-every file recorded in the manifest. Files you've modified since install
-are preserved and reported — never silently overwritten.`,
+Removes every file recorded in the manifest. Files you've modified
+since install are preserved and reported — never silently overwritten.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runUninstall(args[0], uninstallDryRun)
@@ -44,16 +43,12 @@ type UninstallResult struct {
 	Agent     string   `json:"agent"`
 	Removed   []string `json:"removed"`
 	Preserved []string `json:"preserved"`           // locally-modified, kept on disk
-	Renamed   []string `json:"renamed,omitempty"`   // e.g. ["CLAUDE.md → AGENTS.md"]
 	NotFound  []string `json:"not_found,omitempty"` // recorded in manifest but already gone
 }
 
 // PrintText renders an UninstallResult as a human-friendly summary,
 // using the canonical termcolor vocabulary.
 func (r *UninstallResult) PrintText(w io.Writer) {
-	for _, f := range r.Renamed {
-		fprintln(w, "  "+termcolor.Success("renamed: %s", f))
-	}
 	for _, f := range r.Removed {
 		fprintln(w, "  "+termcolor.Success("removed: %s", f))
 	}
@@ -66,8 +61,8 @@ func (r *UninstallResult) PrintText(w io.Writer) {
 }
 
 // runUninstall is the entry point for `gofasta ai uninstall <agent>`.
-// Looks up the manifest entry, removes the files, reverses the rename,
-// and saves an updated manifest.
+// Looks up the manifest entry, removes the recorded files, and saves
+// an updated manifest.
 func runUninstall(key string, dryRun bool) error {
 	agent := AgentByKey(key)
 	if agent == nil {
@@ -128,16 +123,12 @@ type UninstallOptions struct {
 
 // Uninstall removes the files recorded in rec from projectRoot. It
 // preserves any file whose contents differ from what the install would
-// re-render today (i.e. the user edited it). Reverses the doc-file
-// rename if rec.RenamedTo exists at the project root.
+// re-render today (i.e. the user edited it).
 func Uninstall(agent *Agent, projectRoot string, rec InstallRecord, data InstallData, opts UninstallOptions) (*UninstallResult, error) {
 	result := &UninstallResult{Agent: agent.Key}
 	expected := expectedRenderings(agent, data)
 
 	if err := removeRecordedFiles(projectRoot, rec.CreatedFiles, expected, opts, result); err != nil {
-		return nil, err
-	}
-	if err := reverseDocRename(projectRoot, rec, opts, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -207,32 +198,6 @@ func removeOneFile(projectRoot, rel string, expected map[string][]byte, opts Uni
 	}
 	result.Removed = append(result.Removed, rel)
 	removeEmptyParents(projectRoot, filepath.Dir(abs))
-	return nil
-}
-
-// reverseDocRename undoes the AGENTS.md → DocFilename rename performed
-// at install time, if any. No-op when the agent reads AGENTS.md
-// natively (no rename was recorded) or when the destination has been
-// removed/replaced since install.
-func reverseDocRename(projectRoot string, rec InstallRecord, opts UninstallOptions, result *UninstallResult) error {
-	if rec.RenamedTo == "" || rec.RenamedFrom == "" {
-		return nil
-	}
-	dstAbs := filepath.Join(projectRoot, rec.RenamedTo)
-	srcAbs := filepath.Join(projectRoot, rec.RenamedFrom)
-	if !fileExists(dstAbs) || fileExists(srcAbs) {
-		return nil
-	}
-	entry := rec.RenamedTo + " → " + rec.RenamedFrom
-	if opts.DryRun {
-		result.Renamed = append(result.Renamed, entry)
-		return nil
-	}
-	if err := osRename(dstAbs, srcAbs); err != nil {
-		return clierr.Wrapf(clierr.CodeAIInstallFailed, err,
-			"rename %s → %s", rec.RenamedTo, rec.RenamedFrom)
-	}
-	result.Renamed = append(result.Renamed, entry)
 	return nil
 }
 

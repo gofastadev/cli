@@ -1,0 +1,8 @@
+# Status — drift report for this gofasta project
+
+Run `gofasta status --json` and report each check's status. The
+checks: Wire drift, Swagger drift, pending migrations, uncommitted
+generated files, go.sum freshness.
+
+If any check reports `drift` or `pending`, surface the remediation
+hint from its JSON payload and ask whether to fix before continuing.

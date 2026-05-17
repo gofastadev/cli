@@ -1,0 +1,9 @@
+---
+description: One-call diagnostic for the latest slow request — bundles request + trace waterfall + logs + SQL + N+1 detection.
+allowed-tools: Bash(gofasta debug*)
+---
+
+Run `gofasta debug last-slow-request --json`. The result includes
+`request`, `trace`, `logs`, `sql`, and `n_plus_one`. Walk through
+each section and propose a fix. Requires `gofasta dev` to be running
+(devtools tag enabled).

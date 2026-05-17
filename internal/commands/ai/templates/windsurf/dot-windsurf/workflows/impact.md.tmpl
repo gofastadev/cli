@@ -1,0 +1,11 @@
+# Impact
+
+Reverse-dependency analysis. Use before changing a file or package
+to see what else depends on it.
+
+1. Ask the user for the file path or import path.
+2. Run `gofasta impact <target> --json`.
+3. Report `direct_importers`, `transitive_importers`, and
+   `impacted_files`.
+4. Use the impacted-file count to decide test scope; use the
+   importer list to decide review scope.

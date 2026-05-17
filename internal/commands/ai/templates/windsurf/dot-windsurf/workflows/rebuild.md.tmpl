@@ -1,0 +1,8 @@
+# Rebuild
+
+Regenerate every derived artifact (Wire + Swagger). Use after
+`git pull` or when `status` reports drift.
+
+1. Run `gofasta do rebuild --json`.
+2. Report the result of each step.
+3. Re-run `gofasta status` after to confirm drift is gone.

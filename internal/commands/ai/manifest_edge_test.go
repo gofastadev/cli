@@ -48,7 +48,7 @@ func TestLoadManifest_NilInstalledDefaulted(t *testing.T) {
 func TestManifest_Save_AtomicRename(t *testing.T) {
 	dir := t.TempDir()
 	m := &Manifest{Version: manifestSchemaVersion, Installed: map[string]InstallRecord{}}
-	m.RecordInstall("claude", "v1.0.0", nil, "", "")
+	m.RecordInstall("claude", "v1.0.0", nil)
 	require.NoError(t, m.Save(dir))
 
 	// Main file exists.
@@ -75,7 +75,7 @@ func TestManifest_Save_CantCreateDir(t *testing.T) {
 // is set as a side-effect.
 func TestManifest_RecordInstall_InitializesMap(t *testing.T) {
 	m := &Manifest{Installed: nil}
-	m.RecordInstall("cursor", "v2.0.0", nil, "", "")
+	m.RecordInstall("cursor", "v2.0.0", nil)
 	assert.Len(t, m.Installed, 1)
 	assert.Equal(t, "v2.0.0", m.Installed["cursor"].CLIVersion)
 	assert.Equal(t, "cursor", m.ActiveAgent)

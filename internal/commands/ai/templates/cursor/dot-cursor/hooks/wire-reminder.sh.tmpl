@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# afterFileEdit hook for Cursor. Reads the Cursor hook payload from
+# stdin and prints a Wire-regeneration reminder if the edit touched a
+# Wire input file.
+#
+# Cursor's afterFileEdit payload puts the edited path at .file_path
+# (top-level), not nested under tool_input — that's the only
+# meaningful difference from the Claude/Codex versions of this script.
+
+path=$(jq -r '.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/di/wire.go|*app/di/providers/*)
+    cat <<'JSON'
+{"additional_context": "Reminder: you edited a Wire input file. Run `gofasta wire` to regenerate app/di/wire_gen.go."}
+JSON
+    ;;
+esac
