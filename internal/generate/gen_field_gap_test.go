@@ -103,8 +103,8 @@ type OrderResponse struct{ ExistingField string }
 		WithUpdate:   true,
 		WithResponse: true,
 	}))
-	dtos_body, _ := os.ReadFile(filepath.Join(dtos, "order.dtos.go"))
-	require.Contains(t, string(dtos_body), "Reason")
+	dtosBody, _ := os.ReadFile(filepath.Join(dtos, "order.dtos.go"))
+	require.Contains(t, string(dtosBody), "Reason")
 }
 
 // TestPatchDTOFile_ParseError — DTO file has syntax error.

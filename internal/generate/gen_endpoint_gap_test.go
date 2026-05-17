@@ -117,13 +117,13 @@ func TestDeriveHandlerName_EdgeCases(t *testing.T) {
 		method, path, want string
 	}{
 		{"POST", "/orders", "OrdersOrder"},  // single-segment POST → action = "orders"
-		{"GET", "/orders", "ListOrder"},      // collection GET
-		{"GET", "/orders/{id}", "GetOrder"},  // item GET
+		{"GET", "/orders", "ListOrder"},     // collection GET
+		{"GET", "/orders/{id}", "GetOrder"}, // item GET
 		{"PUT", "/orders/{id}", "UpdateOrder"},
 		{"PATCH", "/orders/{id}", "UpdateOrder"},
 		{"DELETE", "/orders/{id}", "DeleteOrder"},
 		{"OPTIONS", "/orders/{id}", "OptionsOrder"}, // fallback to method
-		{"POST", "/{id}", "CreateOrder"},     // all-placeholder
+		{"POST", "/{id}", "CreateOrder"},            // all-placeholder
 		{"GET", "/orders/{id}/items", "ItemsOrder"},
 	}
 	for _, c := range cases {

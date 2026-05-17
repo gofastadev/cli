@@ -90,18 +90,18 @@ func TestSplitStatements_DollarTagged(t *testing.T) {
 // TestClassify_AllBranches — exercise every branch of classify.
 func TestClassify_AllBranches(t *testing.T) {
 	cases := map[string]string{
-		"ALTER TABLE users ADD c int":             "alter_table",
-		"CREATE TABLE x (id int)":                 "create_table",
-		"CREATE INDEX idx ON t(c)":                "create_index",
-		"CREATE UNIQUE INDEX idx ON t(c)":         "create_index",
-		"DROP TABLE x":                            "drop_table",
-		"DROP INDEX idx":                          "drop_index",
-		"TRUNCATE TABLE x":                        "truncate",
-		"RENAME TABLE old TO new":                 "rename_table",
-		"INSERT INTO t VALUES (1)":                "insert",
-		"UPDATE t SET c = 1":                      "update",
-		"DELETE FROM t":                           "delete",
-		"-- comment only\nSELECT 1":               "other",
+		"ALTER TABLE users ADD c int":     "alter_table",
+		"CREATE TABLE x (id int)":         "create_table",
+		"CREATE INDEX idx ON t(c)":        "create_index",
+		"CREATE UNIQUE INDEX idx ON t(c)": "create_index",
+		"DROP TABLE x":                    "drop_table",
+		"DROP INDEX idx":                  "drop_index",
+		"TRUNCATE TABLE x":                "truncate",
+		"RENAME TABLE old TO new":         "rename_table",
+		"INSERT INTO t VALUES (1)":        "insert",
+		"UPDATE t SET c = 1":              "update",
+		"DELETE FROM t":                   "delete",
+		"-- comment only\nSELECT 1":       "other",
 	}
 	for in, want := range cases {
 		require.Equal(t, want, classify(in), "classify(%q)", in)
@@ -129,8 +129,8 @@ func TestRuleCreateIndexBlocking_OnlineKeyword(t *testing.T) {
 // SeverityLow accumulator branch.
 type lowRule struct{}
 
-func (lowRule) Name() string                       { return "TestLow" }
-func (lowRule) AppliesTo(_ string) bool            { return true }
+func (lowRule) Name() string            { return "TestLow" }
+func (lowRule) AppliesTo(_ string) bool { return true }
 func (lowRule) Match(stmtType, _ string) []Warning {
 	if stmtType != "create_table" {
 		return nil

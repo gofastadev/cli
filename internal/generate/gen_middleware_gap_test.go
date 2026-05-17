@@ -85,3 +85,24 @@ func TestRegexpMatchEquals_LengthMismatch(t *testing.T) {
 func TestRegexpMatchEquals_ContentMismatch(t *testing.T) {
 	require.False(t, regexpMatchEquals([]byte("abc"), []byte("abd")))
 }
+
+// TestGenMiddleware_ReadFileErrorAfterFind — inject a read failure via
+// the osReadFileFn seam so the post-find os.ReadFile branch fires
+// (line 49-51). findRouteFile uses os.ReadFile directly, so only the
+// post-find re-read goes through the seam.
+func TestGenMiddleware_ReadFileErrorAfterFind(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "app", "rest", "routes", "order.routes.go"),
+		`package routes
+func OrderRoutes(r interface{}) { r.Get("/orders", nil) }`)
+	chdirTest(t, tmp)
+
+	saved := osReadFileFn
+	osReadFileFn = func(_ string) ([]byte, error) { return nil, os.ErrPermission }
+	t.Cleanup(func() { osReadFileFn = saved })
+
+	err := GenMiddleware(MiddlewareData{
+		HTTPMethod: "GET", Path: "/orders", Middleware: "auth",
+	})
+	require.Error(t, err)
+}

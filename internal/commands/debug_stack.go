@@ -287,6 +287,11 @@ func renderResolvedFrames(w io.Writer, frames []stackresolve.ResolvedFrame) {
 	}
 }
 
+// padLine is parameterized on width even though every caller passes 4;
+// the test suite exercises other widths and keeping the param leaves room
+// for renderers that want different gutter widths.
+//
+//nolint:unparam // width is intentionally configurable; see comment above.
 func padLine(n, width int) string {
 	s := fmt.Sprintf("%d", n)
 	for len(s) < width {

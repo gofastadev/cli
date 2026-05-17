@@ -1166,11 +1166,11 @@ type replayBody struct {
 // body when re-firing. Scheme/host/port are NOT overridable — the
 // SSRF guard pins them to the configured app URL.
 type replayOverride struct {
-	Method     string              `json:"method,omitempty"`
-	Path       string              `json:"path,omitempty"`
-	Headers    map[string][]string `json:"headers,omitempty"`
-	Body       string              `json:"body,omitempty"`
-	StripAuth  bool                `json:"strip_auth,omitempty"`
+	Method    string              `json:"method,omitempty"`
+	Path      string              `json:"path,omitempty"`
+	Headers   map[string][]string `json:"headers,omitempty"`
+	Body      string              `json:"body,omitempty"`
+	StripAuth bool                `json:"strip_auth,omitempty"`
 }
 
 // replayResult is the POST /debug/replay response. status, duration, and
@@ -1351,4 +1351,3 @@ func writeReplayError(w http.ResponseWriter, status int, code, message string) {
 		"message": message,
 	})
 }
-

@@ -636,3 +636,17 @@ func TestRunRoutes_SkipsNonRouteFiles(t *testing.T) {
 	require.NoError(t, os.WriteFile(routesDir+"/notaroute.go", []byte("package routes"), 0644))
 	assert.NoError(t, runRoutes())
 }
+
+// TestMigrateUpCmd_RunE_ExplainBranch — set --explain so the
+// migrateExplainFlags.enabled branch fires (line 58-60 of migrate.go).
+func TestMigrateUpCmd_RunE_ExplainBranch(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	migrateExplainFlags.enabled = true
+	migrateExplainFlags.strict = false
+	t.Cleanup(func() { migrateExplainFlags.enabled = false })
+	// No db/migrations dir → runMigrateExplain returns CodeMigrationMissing,
+	// which exercises the explain branch's error path.
+	err := migrateUpCmd.RunE(migrateUpCmd, nil)
+	assert.Error(t, err)
+}

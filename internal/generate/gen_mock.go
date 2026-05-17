@@ -478,11 +478,15 @@ func mockReturnAccessor(i int, t string) string {
 
 // ----- helpers -----------------------------------------------------------
 
+// formatNodeFn is a package-level seam over format.Node so tests can
+// drive exprString's defensive error branch.
+var formatNodeFn = format.Node
+
 // exprString printed-renders an ast.Expr back to source. Used so the
 // mock's type expressions match what the interface declared verbatim.
 func exprString(e ast.Expr) string {
 	var b bytes.Buffer
-	if err := format.Node(&b, token.NewFileSet(), e); err != nil {
+	if err := formatNodeFn(&b, token.NewFileSet(), e); err != nil {
 		return fmt.Sprintf("%v", e)
 	}
 	return b.String()

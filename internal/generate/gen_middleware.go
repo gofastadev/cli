@@ -26,6 +26,11 @@ type MiddlewareData struct {
 	RoutesDir  string // default app/rest/routes
 }
 
+// osReadFileFn is a package-level seam over os.ReadFile so tests can
+// drive defensive read-error branches without needing to chmod files
+// after they've already been read once.
+var osReadFileFn = os.ReadFile
+
 // GenMiddleware is the entry point invoked by the Cobra command.
 func GenMiddleware(d MiddlewareData) error {
 	d = middlewareDataDefaults(d)
@@ -45,7 +50,7 @@ func GenMiddleware(d MiddlewareData) error {
 			d.HTTPMethod, d.Path, d.RoutesDir)
 	}
 
-	body, err := os.ReadFile(target)
+	body, err := osReadFileFn(target)
 	if err != nil {
 		return clierr.Wrap(clierr.CodeFileIO, err, "reading "+target)
 	}

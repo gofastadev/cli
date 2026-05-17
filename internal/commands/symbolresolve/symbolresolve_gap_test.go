@@ -15,9 +15,9 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// goparser_ParseFile is a thin alias around go/parser.ParseFile so the
+// goparserParseFile is a thin alias around go/parser.ParseFile so the
 // test file's imports stay tidy.
-func goparser_ParseFile(fset *token.FileSet, name, src string) (*ast.File, error) {
+func goparserParseFile(fset *token.FileSet, name, src string) (*ast.File, error) {
 	return parser.ParseFile(fset, name, src, parser.AllErrors)
 }
 
@@ -192,14 +192,14 @@ func TestResolveInPackage_TypeNotNamed(t *testing.T) {
 
 type fakeObject struct{ types.Object }
 
-func (fakeObject) Name() string                  { return "fake" }
-func (fakeObject) Pos() token.Pos                { return token.NoPos }
-func (fakeObject) Pkg() *types.Package           { return nil }
-func (fakeObject) Type() types.Type              { return nil }
-func (fakeObject) Exported() bool                { return false }
-func (fakeObject) Id() string                    { return "fake" }
-func (fakeObject) Parent() *types.Scope          { return nil }
-func (fakeObject) String() string                { return "fake" }
+func (fakeObject) Name() string         { return "fake" }
+func (fakeObject) Pos() token.Pos       { return token.NoPos }
+func (fakeObject) Pkg() *types.Package  { return nil }
+func (fakeObject) Type() types.Type     { return nil }
+func (fakeObject) Exported() bool       { return false }
+func (fakeObject) Id() string           { return "fake" } //nolint:revive // implements types.Object interface (stdlib name)
+func (fakeObject) Parent() *types.Scope { return nil }
+func (fakeObject) String() string       { return "fake" }
 
 func TestObjectKind_UnknownFallthrough(t *testing.T) {
 	require.Equal(t, "unknown", objectKind(fakeObject{}))
@@ -443,7 +443,7 @@ import _ "unsafe"
 func stub()
 `
 	fset := token.NewFileSet()
-	f, err := goparser_ParseFile(fset, "x.go", src)
+	f, err := goparserParseFile(fset, "x.go", src)
 	require.NoError(t, err)
 	pkg := &packages.Package{Syntax: []*ast.File{f}}
 	require.Equal(t, "", enclosingFunc(pkg, &ast.Ident{Name: "X"}))
@@ -456,13 +456,14 @@ func TestImpactGraph_VisitedPathMissingFromPkgs(t *testing.T) {
 	//   pkgA imports the target. pkgA's *importer* is pkgB, but pkgB is
 	//   *not* in the loaded set — visited will include pkgB but
 	//   pkgByPath won't have it, hitting the `if !ok { continue }` branch.
-	pkgs := []*packages.Package{
-		{
+	pkgs := make([]*packages.Package, 0, 3)
+	pkgs = append(pkgs,
+		&packages.Package{
 			PkgPath: "example.com/target",
 			Name:    "target",
 			GoFiles: []string{"/tmp/target/t.go"},
 		},
-		{
+		&packages.Package{
 			PkgPath: "example.com/a",
 			Name:    "a",
 			GoFiles: []string{"/tmp/a/a.go"},
@@ -470,7 +471,7 @@ func TestImpactGraph_VisitedPathMissingFromPkgs(t *testing.T) {
 				"example.com/target": {PkgPath: "example.com/target"},
 			},
 		},
-	}
+	)
 	// We need an entry in rev for "example.com/a" pointing at "example.com/b"
 	// (so the BFS reaches "example.com/b") — that requires a package in
 	// the input that imports "example.com/a". But then we'd add that

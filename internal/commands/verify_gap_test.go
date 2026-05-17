@@ -24,7 +24,7 @@ func TestStepGoVet_SkipsWhenScopeHasNoPackages(t *testing.T) {
 	require.Equal(t, "skip", msg)
 }
 
-// TestStepGoTest_SkipsWhenScopeHasNoTestSet — analogue for stepGoTest.
+// TestStepGoTest_SkipsWhenScopeHasNoTestSet — analog for stepGoTest.
 func TestStepGoTest_SkipsWhenScopeHasNoTestSet(t *testing.T) {
 	saved := currentVerifyScope
 	currentVerifyScope = &verifyScopeData{TestSet: nil}
@@ -35,7 +35,7 @@ func TestStepGoTest_SkipsWhenScopeHasNoTestSet(t *testing.T) {
 	require.Equal(t, "skip", msg)
 }
 
-// TestStepGoBuild_SkipsWhenScopeHasNoPackages — analogue for stepGoBuild.
+// TestStepGoBuild_SkipsWhenScopeHasNoPackages — analog for stepGoBuild.
 func TestStepGoBuild_SkipsWhenScopeHasNoPackages(t *testing.T) {
 	saved := currentVerifyScope
 	currentVerifyScope = &verifyScopeData{Packages: nil}

@@ -31,8 +31,10 @@ func stagedExecCommand(t *testing.T, plans []func() *exec.Cmd) func(ctx context.
 	}
 }
 
-func okCmd(out string) func() *exec.Cmd { return func() *exec.Cmd { return exec.Command("printf", out) } }
-func failCmd() func() *exec.Cmd        { return func() *exec.Cmd { return exec.Command("false") } }
+func okCmd(out string) func() *exec.Cmd {
+	return func() *exec.Cmd { return exec.Command("printf", out) }
+}
+func failCmd() func() *exec.Cmd { return func() *exec.Cmd { return exec.Command("false") } }
 
 func TestChangedFiles_GitNotOnPath(t *testing.T) {
 	saved := execLookPath
