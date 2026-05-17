@@ -198,35 +198,14 @@ func AppendInterfaceMethod(it *dst.InterfaceType, methodSrc string) error {
 		it.Methods = &dst.FieldList{}
 	}
 	wrapped := "package x\ntype _t interface { " + methodSrc + " }\n"
-	dec := decorator.NewDecorator(nil)
-	df, err := dec.Parse([]byte(wrapped))
+	found, err := extractFirstSpec[*dst.InterfaceType](wrapped, methodSrc, "method signature")
 	if err != nil {
-		return clierr.Wrapf(clierr.CodeASTPatchFailed, err,
-			"parsing method signature %q", strings.TrimSpace(methodSrc))
+		return err
 	}
-	// Walk the wrapped file and pull the single method out.
-	for _, decl := range df.Decls {
-		gd, ok := decl.(*dst.GenDecl)
-		if !ok {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			ts, ok := spec.(*dst.TypeSpec)
-			if !ok {
-				continue
-			}
-			tmp, ok := ts.Type.(*dst.InterfaceType)
-			if !ok || tmp.Methods == nil {
-				continue
-			}
-			for _, m := range tmp.Methods.List {
-				it.Methods.List = append(it.Methods.List, m)
-			}
-			return nil
-		}
+	if found.Methods != nil {
+		it.Methods.List = append(it.Methods.List, found.Methods.List...)
 	}
-	return clierr.Newf(clierr.CodeASTPatchFailed,
-		"could not extract method from %q", methodSrc)
+	return nil
 }
 
 // AppendStructField parses fieldSrc and appends it to the struct. Field
@@ -240,11 +219,31 @@ func AppendStructField(st *dst.StructType, fieldSrc string) error {
 		st.Fields = &dst.FieldList{}
 	}
 	wrapped := "package x\ntype _t struct { " + fieldSrc + " }\n"
+	found, err := extractFirstSpec[*dst.StructType](wrapped, fieldSrc, "field declaration")
+	if err != nil {
+		return err
+	}
+	if found.Fields != nil {
+		st.Fields.List = append(st.Fields.List, found.Fields.List...)
+	}
+	return nil
+}
+
+// extractFirstSpec parses wrapped (a synthetic single-decl Go file) and
+// returns the first TypeSpec.Type matching T. kind is a human label
+// ("method signature", "field declaration") used in the error message
+// so callers don't all duplicate the same parse-failure boilerplate.
+//
+// Deduplicates the two near-identical helpers AppendInterfaceMethod and
+// AppendStructField used (separate functions remain because exposing
+// generic helpers in a public API is uglier than wrapping them).
+func extractFirstSpec[T dst.Expr](wrapped, source, kind string) (T, error) {
+	var zero T
 	dec := decorator.NewDecorator(nil)
 	df, err := dec.Parse([]byte(wrapped))
 	if err != nil {
-		return clierr.Wrapf(clierr.CodeASTPatchFailed, err,
-			"parsing field declaration %q", strings.TrimSpace(fieldSrc))
+		return zero, clierr.Wrapf(clierr.CodeASTPatchFailed, err,
+			"parsing %s %q", kind, strings.TrimSpace(source))
 	}
 	for _, decl := range df.Decls {
 		gd, ok := decl.(*dst.GenDecl)
@@ -256,18 +255,13 @@ func AppendStructField(st *dst.StructType, fieldSrc string) error {
 			if !ok {
 				continue
 			}
-			tmp, ok := ts.Type.(*dst.StructType)
-			if !ok || tmp.Fields == nil {
-				continue
+			if got, ok := ts.Type.(T); ok {
+				return got, nil
 			}
-			for _, fld := range tmp.Fields.List {
-				st.Fields.List = append(st.Fields.List, fld)
-			}
-			return nil
 		}
 	}
-	return clierr.Newf(clierr.CodeASTPatchFailed,
-		"could not extract field from %q", fieldSrc)
+	return zero, clierr.Newf(clierr.CodeASTPatchFailed,
+		"could not extract %s from %q", kind, source)
 }
 
 // AppendFuncDecl parses declSrc (a complete top-level function with body)
@@ -337,4 +331,3 @@ func receiverTypeName(expr dst.Expr) string {
 	}
 	return ""
 }
-

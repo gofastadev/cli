@@ -3,9 +3,9 @@
 // Adds a single field across the four places that always need to move
 // together for a "just one more column" change:
 //
-//   1. db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
-//   2. app/models/<snake>.model.go    (field on the model struct + GORM tag)
-//   3. (optional) app/dtos/<snake>.dtos.go   (Request + Update + Response)
+//  1. db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
+//  2. app/models/<snake>.model.go    (field on the model struct + GORM tag)
+//  3. (optional) app/dtos/<snake>.dtos.go   (Request + Update + Response)
 //
 // Each downstream surface is opt-out via flags so the user can add a
 // model-only column (--no-dto), a response-only field (--no-update
@@ -71,7 +71,7 @@ func GenField(d FieldData) error {
 	if d.Field.GoType == "uuid.UUID" {
 		astpatch.EnsureImport(mf, "github.com/google/uuid")
 	}
-	if _, err := writeBackOrRecord(mf,
+	if err := writeBackOrRecord(mf,
 		fmt.Sprintf("add %s field to model %s", d.Field.Name, d.Resource)); err != nil {
 		return err
 	}
@@ -84,10 +84,7 @@ func GenField(d FieldData) error {
 	}
 
 	// Step 3: write the migration pair.
-	if err := writeFieldMigrations(d); err != nil {
-		return err
-	}
-	return nil
+	return writeFieldMigrations(d)
 }
 
 func fieldDataDefaults(d FieldData) FieldData {
@@ -147,7 +144,7 @@ func patchDTOFile(d FieldData) error {
 		if hasTimeType(d.Field) {
 			astpatch.EnsureImport(df, "time")
 		}
-		if _, err := writeBackOrRecord(df,
+		if err := writeBackOrRecord(df,
 			fmt.Sprintf("add %s field to DTOs of %s", d.Field.Name, d.Resource)); err != nil {
 			return err
 		}
@@ -191,10 +188,7 @@ func writeFieldMigrations(d FieldData) error {
 	if err := writeOrRecordCreate(filepath.Join(d.MigrationDir, upName), []byte(upBody)); err != nil {
 		return err
 	}
-	if err := writeOrRecordCreate(filepath.Join(d.MigrationDir, downName), []byte(downBody)); err != nil {
-		return err
-	}
-	return nil
+	return writeOrRecordCreate(filepath.Join(d.MigrationDir, downName), []byte(downBody))
 }
 
 // buildModelFieldDecl renders one model struct field line including

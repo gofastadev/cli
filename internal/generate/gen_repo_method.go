@@ -2,8 +2,8 @@
 //
 // The repository-layer twin of `g method`. Same astpatch pattern,
 // different default paths: targets
-//   • app/repositories/interfaces/<snake>_repository.go
-//   • app/repositories/<snake>.repository.go
+//   - app/repositories/interfaces/<snake>_repository.go
+//   - app/repositories/<snake>.repository.go
 //
 // gofasta's scaffold names repository interfaces "<Name>RepositoryInterface"
 // (see internal/generate/templates/repo_interface.go) — we match that

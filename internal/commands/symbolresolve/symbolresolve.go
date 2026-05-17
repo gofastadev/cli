@@ -3,10 +3,10 @@
 //
 // Two surfaces:
 //
-//   • LookupReferences(pkgPath, symbol) — find every file:line:col
+//   - LookupReferences(pkgPath, symbol) — find every file:line:col
 //     reference to a symbol across the loaded module.
 //
-//   • ImpactGraph(target)               — given a file or import path,
+//   - ImpactGraph(target)               — given a file or import path,
 //     return the transitive closure of packages that depend on it.
 //
 // Both load the module with full type info (NeedTypes | NeedTypesInfo)
@@ -32,7 +32,7 @@ import (
 
 // Reference is one resolved use-site of a symbol.
 type Reference struct {
-	File   string `json:"file"`   // repo-relative when possible
+	File   string `json:"file"` // repo-relative when possible
 	Line   int    `json:"line"`
 	Column int    `json:"column"`
 	InFunc string `json:"in_func,omitempty"` // enclosing function name (if any)
@@ -41,21 +41,21 @@ type Reference struct {
 
 // SymbolReport is the JSON envelope returned by LookupReferences.
 type SymbolReport struct {
-	Symbol     string     `json:"symbol"`
-	Package    string     `json:"package,omitempty"`
-	Kind       string     `json:"kind,omitempty"` // "func" | "type" | "method" | "var" | "const"
-	Definition *Reference `json:"definition,omitempty"`
+	Symbol     string      `json:"symbol"`
+	Package    string      `json:"package,omitempty"`
+	Kind       string      `json:"kind,omitempty"` // "func" | "type" | "method" | "var" | "const"
+	Definition *Reference  `json:"definition,omitempty"`
 	References []Reference `json:"references"`
-	Count      int        `json:"count"`
+	Count      int         `json:"count"`
 }
 
 // ImpactReport is the JSON envelope returned by ImpactGraph.
 type ImpactReport struct {
-	Target            string   `json:"target"`
-	Package           string   `json:"package,omitempty"`
-	DirectImporters   []string `json:"direct_importers"`
+	Target              string   `json:"target"`
+	Package             string   `json:"package,omitempty"`
+	DirectImporters     []string `json:"direct_importers"`
 	TransitiveImporters []string `json:"transitive_importers"`
-	ImpactedFiles     []string `json:"impacted_files"`
+	ImpactedFiles       []string `json:"impacted_files"`
 }
 
 // loadModule loads every package in the current module with full type
@@ -95,24 +95,19 @@ func loadModule() ([]*packages.Package, error) {
 		return nil, clierr.New(clierr.CodePackageLoadFailed,
 			"no packages found — run from a Go module root")
 	}
-	// Surface package-level build errors via TypeAnalysisFailed so the
-	// user gets a hint to fix the build first. Don't fail outright —
-	// some commands (impact) can still produce useful output from a
-	// partially-loaded module.
-	for _, p := range pkgs {
-		if len(p.Errors) > 0 {
-			// Just record; don't return — the caller decides.
-		}
-	}
+	// Package-level build errors are not fatal here — some commands
+	// (notably `impact`) still produce useful output from a partially-
+	// loaded module. Callers that care about strict load can iterate
+	// pkg.Errors themselves; the empty loop here would only be noise.
 	return pkgs, nil
 }
 
 // LookupReferences finds every reference to symbol across the loaded
 // module. The symbol can be:
 //
-//   • Pkg.Func        — package-level func / var / const
-//   • Pkg.Type        — package-level type
-//   • Pkg.Type.Method — method on a type
+//   - Pkg.Func        — package-level func / var / const
+//   - Pkg.Type        — package-level type
+//   - Pkg.Type.Method — method on a type
 //
 // or an unqualified name (Func / Type / Type.Method) which is resolved
 // by searching every package for a match. Ambiguous unqualified names

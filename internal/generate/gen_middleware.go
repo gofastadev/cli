@@ -19,11 +19,11 @@ import (
 
 // MiddlewareData is the resolved input.
 type MiddlewareData struct {
-	HTTPMethod   string // "GET" | "POST" | ...
-	Path         string // chi-style path
-	Middleware   string // expression: "auth.RequireRole(\"admin\")" or "middleware.Logger"
-	RoutesFile   string // optional override; default scans every *.routes.go
-	RoutesDir    string // default app/rest/routes
+	HTTPMethod string // "GET" | "POST" | ...
+	Path       string // chi-style path
+	Middleware string // expression: "auth.RequireRole(\"admin\")" or "middleware.Logger"
+	RoutesFile string // optional override; default scans every *.routes.go
+	RoutesDir  string // default app/rest/routes
 }
 
 // GenMiddleware is the entry point invoked by the Cobra command.
@@ -112,16 +112,21 @@ func findRouteFile(d MiddlewareData) (string, bool, error) {
 //
 // Returns the rewritten body plus a flag indicating whether anything was
 // actually changed (idempotency).
-func wrapRouteWithMiddleware(body []byte, httpMethod, path, middleware string) ([]byte, bool) {
+func wrapRouteWithMiddleware(body []byte, httpMethod, path, middleware string) (patched []byte, applied bool) {
 	verb := toChiVerb(httpMethod)
+	// gocritic's sprintfQuotedString would propose %q, but the literal
+	// quotes here are regex metacharacters around a regex-quoted path —
+	// %q would inject Go escapes and break the regex.
+	//nolint:gocritic // false positive — see comment above.
 	bareRe := regexp.MustCompile(
 		fmt.Sprintf(`(\br)(\.%s\("%s",)`, verb, regexp.QuoteMeta(path)))
+	//nolint:gocritic // same as above.
 	withRe := regexp.MustCompile(
 		fmt.Sprintf(`(\br\.With\()([^)]+)(\)\.%s\("%s",)`, verb, regexp.QuoteMeta(path)))
 
 	// First try: a `.With(...)` chain already exists.
 	if withRe.Match(body) {
-		patched := withRe.ReplaceAllFunc(body, func(match []byte) []byte {
+		patched = withRe.ReplaceAllFunc(body, func(match []byte) []byte {
 			parts := withRe.FindSubmatch(match)
 			existing := strings.TrimSpace(string(parts[2]))
 			if containsMiddleware(existing, middleware) {
@@ -133,7 +138,7 @@ func wrapRouteWithMiddleware(body []byte, httpMethod, path, middleware string) (
 	}
 
 	// Otherwise wrap the bare `r.Method(...)` call.
-	patched := bareRe.ReplaceAll(body,
+	patched = bareRe.ReplaceAll(body,
 		[]byte(fmt.Sprintf(`${1}.With(%s)${2}`, regexpReplaceEscape(middleware))))
 	return patched, !regexpMatchEquals(body, patched)
 }

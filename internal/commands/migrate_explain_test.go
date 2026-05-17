@@ -106,7 +106,7 @@ func TestRiskRankOrdering(t *testing.T) {
 		sqllint.RiskDataLoss,
 	}
 	for i := 1; i < len(order); i++ {
-		if !(riskRank(order[i]) > riskRank(order[i-1])) {
+		if riskRank(order[i]) <= riskRank(order[i-1]) {
 			t.Errorf("riskRank(%q)=%d must be > riskRank(%q)=%d",
 				order[i], riskRank(order[i]), order[i-1], riskRank(order[i-1]))
 		}

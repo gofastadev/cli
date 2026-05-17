@@ -2,8 +2,8 @@
 //
 // Adds a method to an existing service:
 //
-//   • appends the signature to app/services/interfaces/<snake>_service.go
-//   • appends an impl stub to app/services/<snake>.service.go
+//   - appends the signature to app/services/interfaces/<snake>_service.go
+//   - appends an impl stub to app/services/<snake>.service.go
 //
 // Uses astpatch (dst-based) so the existing file's formatting + comments
 // are preserved through the modify → write-back round trip — no marker
@@ -70,12 +70,10 @@ func GenMethod(d MethodData) error {
 	// context is the conventional first argument — make sure the import
 	// is present even if the file didn't have it before.
 	astpatch.EnsureImport(ifaceFile, "context")
-	ifaceBody, err := writeBackOrRecord(ifaceFile,
-		fmt.Sprintf("add %s to %s", d.MethodName, d.InterfaceName))
-	if err != nil {
+	if err := writeBackOrRecord(ifaceFile,
+		fmt.Sprintf("add %s to %s", d.MethodName, d.InterfaceName)); err != nil {
 		return err
 	}
-	_ = ifaceBody // size is captured by the planner
 
 	// Step 2: append an impl stub to the service file.
 	implFile, err := astpatch.Parse(d.ImplFile)
@@ -87,11 +85,8 @@ func GenMethod(d MethodData) error {
 	if err := astpatch.AppendFuncDecl(implFile, stub); err != nil {
 		return err
 	}
-	if _, err := writeBackOrRecord(implFile,
-		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName)); err != nil {
-		return err
-	}
-	return nil
+	return writeBackOrRecord(implFile,
+		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName))
 }
 
 // methodDataDefaults fills in the conventional names + paths so callers
@@ -137,7 +132,8 @@ func ensureExists(path string) error {
 //
 // context.Context is always first; user-supplied args follow.
 func buildMethodSignature(d MethodData) string {
-	params := []string{"ctx context.Context"}
+	params := make([]string, 0, 1+len(d.Args))
+	params = append(params, "ctx context.Context")
 	for _, a := range d.Args {
 		params = append(params, fmt.Sprintf("%s %s", toCamelCase(a.Name), a.GoType))
 	}
@@ -148,7 +144,8 @@ func buildMethodSignature(d MethodData) string {
 // error. Stubbing rather than panicking keeps `go test` green out of the
 // box; the user can hollow it out as they fill the method in.
 func buildMethodImplStub(d MethodData) string {
-	params := []string{"ctx context.Context"}
+	params := make([]string, 0, 1+len(d.Args))
+	params = append(params, "ctx context.Context")
 	for _, a := range d.Args {
 		params = append(params, fmt.Sprintf("%s %s", toCamelCase(a.Name), a.GoType))
 	}
@@ -163,17 +160,17 @@ func (s *%s) %s(%s) error {
 // to honor dry-run mode. We can't reuse writeOrRecordPatch directly here
 // because astpatch already produced the body — we need to record a
 // patch action with that body's size.
-func writeBackOrRecord(f *astpatch.File, detail string) ([]byte, error) {
+func writeBackOrRecord(f *astpatch.File, detail string) error {
 	body, err := astpatch.Render(f)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if GetDryRun() {
 		recordPatch(f.Path, detail, len(body))
-		return body, nil
+		return nil
 	}
 	if err := os.WriteFile(f.Path, body, 0o644); err != nil {
-		return nil, clierr.Wrap(clierr.CodeFileIO, err, "writing "+f.Path)
+		return clierr.Wrap(clierr.CodeFileIO, err, "writing "+f.Path)
 	}
-	return body, nil
+	return nil
 }

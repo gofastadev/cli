@@ -149,7 +149,7 @@ func readSourceWindow(path string, line, ctx int) (SourceWindow, error) {
 	if err != nil {
 		return SourceWindow{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	target := line
 	start := line - ctx

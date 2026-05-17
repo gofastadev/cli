@@ -329,9 +329,7 @@ func stepGoVet() (message, output string, err error) {
 		if len(s.Packages) == 0 {
 			return "skip", "", nil
 		}
-		for _, p := range s.Packages {
-			args = append(args, p)
-		}
+		args = append(args, s.Packages...)
 	} else {
 		args = append(args, "./...")
 	}

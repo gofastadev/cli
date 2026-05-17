@@ -3,10 +3,10 @@
 // Renames a single field across every place gofasta's layered scaffold
 // touches it:
 //
-//   • app/models/<snake>.model.go      — struct field + GORM column tag
-//   • app/dtos/<snake>.dtos.go         — every DTO that uses the field
-//   • app/services/<snake>.service.go  — receiver-method field references
-//   • db/migrations/NNNNNN_rename_<old>_to_<new>_on_<plural>.up.sql/.down.sql
+//   - app/models/<snake>.model.go      — struct field + GORM column tag
+//   - app/dtos/<snake>.dtos.go         — every DTO that uses the field
+//   - app/services/<snake>.service.go  — receiver-method field references
+//   - db/migrations/NNNNNN_rename_<old>_to_<new>_on_<plural>.up.sql/.down.sql
 //
 // Conservative by design — runs in *preview* mode by default so the user
 // can confirm the diff before any disk write. Pass --apply to commit the
@@ -20,6 +20,7 @@
 package generate
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ func GenRename(d RenameData) error {
 			continue // missing layer is fine — model-only resources are valid
 		}
 		patched := applyRenameRules(body, subs)
-		if string(patched) == string(body) {
+		if bytes.Equal(patched, body) {
 			continue
 		}
 		detail := fmt.Sprintf("rename %s.%s → %s", d.Resource, d.OldField, d.NewField)

@@ -2,13 +2,13 @@
 //
 // Adds an association between two resources:
 //
-//   • belongs_to <Other>  → model gains <Other>ID + *<Other>; FK column added
-//                           to <Resource>'s table via migration.
-//   • has_many  <Other>   → model gains []<Other>; no schema change on
-//                           <Resource> itself — the FK lives on <Other>'s
-//                           table (a sibling g relation belongs_to call
-//                           on <Other> handles that side).
-//   • has_one   <Other>   → model gains *<Other>; FK lives on <Other>.
+//   - belongs_to <Other>  → model gains <Other>ID + *<Other>; FK column added
+//     to <Resource>'s table via migration.
+//   - has_many  <Other>   → model gains []<Other>; no schema change on
+//     <Resource> itself — the FK lives on <Other>'s
+//     table (a sibling g relation belongs_to call
+//     on <Other> handles that side).
+//   - has_one   <Other>   → model gains *<Other>; FK lives on <Other>.
 //
 // We never assume both sides of the relation need patching — that's a
 // product decision (the user may have a one-way navigation property).
@@ -28,6 +28,9 @@ import (
 // RelationKind enumerates the supported gorm/sql relationship shapes.
 type RelationKind string
 
+// Relation kinds the generator accepts as the second positional argument.
+// Each maps to a distinct GORM tag layout + (for `belongs_to`) a paired
+// FK migration on the parent table.
 const (
 	RelationBelongsTo RelationKind = "belongs_to"
 	RelationHasMany   RelationKind = "has_many"
@@ -77,7 +80,7 @@ func GenRelation(d RelationData) error {
 	if d.Kind == RelationBelongsTo {
 		astpatch.EnsureImport(mf, "github.com/google/uuid")
 	}
-	if _, err := writeBackOrRecord(mf,
+	if err := writeBackOrRecord(mf,
 		fmt.Sprintf("add %s %s on %s", d.Kind, d.Other, d.Resource)); err != nil {
 		return err
 	}

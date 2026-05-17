@@ -57,11 +57,15 @@ func anyOf(driver string, drivers ...string) bool {
 // recovery once the migration runs.
 type ruleDropColumn struct{}
 
-func (ruleDropColumn) Name() string                 { return "DropColumn" }
+// Name implements [Rule].
+func (ruleDropColumn) Name() string { return "DropColumn" }
+
+// AppliesTo implements [Rule].
 func (ruleDropColumn) AppliesTo(driver string) bool { return true }
 
 var reDropColumn = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bDROP\s+COLUMN\b`)
 
+// Match implements [Rule].
 func (ruleDropColumn) Match(stmtType, sql string) []Warning {
 	if stmtType != "alter_table" {
 		return nil
@@ -82,11 +86,15 @@ func (ruleDropColumn) Match(stmtType, sql string) []Warning {
 // (even one computed by the engine) usually avoids both.
 type ruleAddColumnNotNullNoDefault struct{}
 
-func (ruleAddColumnNotNullNoDefault) Name() string                 { return "AddColumnNotNullNoDefault" }
+// Name implements [Rule].
+func (ruleAddColumnNotNullNoDefault) Name() string { return "AddColumnNotNullNoDefault" }
+
+// AppliesTo implements [Rule].
 func (ruleAddColumnNotNullNoDefault) AppliesTo(driver string) bool { return true }
 
 var reAddColumn = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bADD\s+(COLUMN\s+)?(\w+)\b`)
 
+// Match implements [Rule].
 func (ruleAddColumnNotNullNoDefault) Match(stmtType, sql string) []Warning {
 	if stmtType != "alter_table" {
 		return nil
@@ -114,13 +122,17 @@ func (ruleAddColumnNotNullNoDefault) Match(stmtType, sql string) []Warning {
 // large tables this is minutes to hours.
 type ruleCreateIndexBlocking struct{}
 
+// Name implements [Rule].
 func (ruleCreateIndexBlocking) Name() string { return "CreateIndexBlocking" }
+
+// AppliesTo implements [Rule].
 func (ruleCreateIndexBlocking) AppliesTo(driver string) bool {
 	return anyOf(driver, "postgres", "mysql", "sqlserver")
 }
 
 var reCreateIndex = regexp.MustCompile(`\bCREATE\s+(UNIQUE\s+)?INDEX\b`)
 
+// Match implements [Rule].
 func (r ruleCreateIndexBlocking) Match(stmtType, sql string) []Warning {
 	if stmtType != "create_index" {
 		return nil
@@ -147,9 +159,13 @@ func (r ruleCreateIndexBlocking) Match(stmtType, sql string) []Warning {
 // DROP TABLE is data-loss.
 type ruleDropTable struct{}
 
-func (ruleDropTable) Name() string                 { return "DropTable" }
+// Name implements [Rule].
+func (ruleDropTable) Name() string { return "DropTable" }
+
+// AppliesTo implements [Rule].
 func (ruleDropTable) AppliesTo(driver string) bool { return true }
 
+// Match implements [Rule].
 func (ruleDropTable) Match(stmtType, sql string) []Warning {
 	if stmtType != "drop_table" {
 		return nil
@@ -165,9 +181,13 @@ func (ruleDropTable) Match(stmtType, sql string) []Warning {
 // TRUNCATE is also data-loss, but separate so the message can be specific.
 type ruleTruncate struct{}
 
-func (ruleTruncate) Name() string                 { return "Truncate" }
+// Name implements [Rule].
+func (ruleTruncate) Name() string { return "Truncate" }
+
+// AppliesTo implements [Rule].
 func (ruleTruncate) AppliesTo(driver string) bool { return true }
 
+// Match implements [Rule].
 func (ruleTruncate) Match(stmtType, sql string) []Warning {
 	if stmtType != "truncate" {
 		return nil
@@ -184,11 +204,15 @@ func (ruleTruncate) Match(stmtType, sql string) []Warning {
 // column name. Two-phase the rename (add new, dual-write, deploy, drop old).
 type ruleRenameColumn struct{}
 
-func (ruleRenameColumn) Name() string                 { return "RenameColumn" }
+// Name implements [Rule].
+func (ruleRenameColumn) Name() string { return "RenameColumn" }
+
+// AppliesTo implements [Rule].
 func (ruleRenameColumn) AppliesTo(driver string) bool { return true }
 
 var reRenameColumn = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bRENAME\s+COLUMN\b`)
 
+// Match implements [Rule].
 func (ruleRenameColumn) Match(stmtType, sql string) []Warning {
 	if stmtType != "alter_table" {
 		return nil
@@ -208,11 +232,15 @@ func (ruleRenameColumn) Match(stmtType, sql string) []Warning {
 // every driver. Covers both `ALTER TABLE x RENAME TO y` and `RENAME TABLE`.
 type ruleRenameTable struct{}
 
-func (ruleRenameTable) Name() string                 { return "RenameTable" }
+// Name implements [Rule].
+func (ruleRenameTable) Name() string { return "RenameTable" }
+
+// AppliesTo implements [Rule].
 func (ruleRenameTable) AppliesTo(driver string) bool { return true }
 
 var reRenameTable = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bRENAME\s+TO\b|^RENAME\s+TABLE\b`)
 
+// Match implements [Rule].
 func (ruleRenameTable) Match(stmtType, sql string) []Warning {
 	n := normalize(sql)
 	if !reRenameTable.MatchString(n) {
@@ -230,11 +258,15 @@ func (ruleRenameTable) Match(stmtType, sql string) []Warning {
 // table-level lock.
 type ruleAlterColumnType struct{}
 
-func (ruleAlterColumnType) Name() string                 { return "AlterColumnType" }
+// Name implements [Rule].
+func (ruleAlterColumnType) Name() string { return "AlterColumnType" }
+
+// AppliesTo implements [Rule].
 func (ruleAlterColumnType) AppliesTo(driver string) bool { return true }
 
 var reAlterType = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bALTER\s+COLUMN\b.*\bTYPE\b|\bMODIFY\s+(COLUMN\s+)?\w+\s+\w+`)
 
+// Match implements [Rule].
 func (ruleAlterColumnType) Match(stmtType, sql string) []Warning {
 	if stmtType != "alter_table" {
 		return nil
@@ -254,11 +286,15 @@ func (ruleAlterColumnType) Match(stmtType, sql string) []Warning {
 // on most engines.
 type ruleAddPrimaryKey struct{}
 
-func (ruleAddPrimaryKey) Name() string                 { return "AddPrimaryKey" }
+// Name implements [Rule].
+func (ruleAddPrimaryKey) Name() string { return "AddPrimaryKey" }
+
+// AppliesTo implements [Rule].
 func (ruleAddPrimaryKey) AppliesTo(driver string) bool { return true }
 
 var reAddPK = regexp.MustCompile(`\bALTER\s+TABLE\b.*\bADD\s+(CONSTRAINT\s+\w+\s+)?PRIMARY\s+KEY\b`)
 
+// Match implements [Rule].
 func (ruleAddPrimaryKey) Match(stmtType, sql string) []Warning {
 	if stmtType != "alter_table" {
 		return nil

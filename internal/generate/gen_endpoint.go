@@ -2,9 +2,9 @@
 //
 // Adds a single REST endpoint to an existing resource. Patches:
 //
-//   • app/rest/controllers/<snake>.controller.go — handler method on the controller
-//   • app/rest/routes/<snake>.routes.go          — route registration line
-//   • app/services/interfaces/<snake>_service.go — service method (unless --no-service)
+//   - app/rest/controllers/<snake>.controller.go — handler method on the controller
+//   - app/rest/routes/<snake>.routes.go          — route registration line
+//   - app/services/interfaces/<snake>_service.go — service method (unless --no-service)
 //
 // The handler is wired through gofasta's httputil.Handle adapter so the
 // generated method has the same shape as scaffold-produced handlers.
@@ -71,7 +71,7 @@ func GenEndpoint(d EndpointData) error {
 	if err := astpatch.AppendFuncDecl(cf, stub); err != nil {
 		return err
 	}
-	if _, err := writeBackOrRecord(cf,
+	if err := writeBackOrRecord(cf,
 		fmt.Sprintf("add %s handler to %s", d.HandlerName, controllerType)); err != nil {
 		return err
 	}
@@ -86,7 +86,7 @@ func GenEndpoint(d EndpointData) error {
 			"%s %s is already registered in %s",
 			d.HTTPMethod, d.Path, d.RoutesFile)
 	}
-	newRoute := fmt.Sprintf("\tr.%s(\"%s\", httputil.Handle(c.%s))",
+	newRoute := fmt.Sprintf("\tr.%s(%q, httputil.Handle(c.%s))",
 		toChiVerb(d.HTTPMethod), d.Path, d.HandlerName)
 	patched, ok := injectIntoRoutesFunc(rfBody, d.Resource, newRoute)
 	if !ok {
@@ -115,7 +115,7 @@ func GenEndpoint(d EndpointData) error {
 				fmt.Sprintf("%s(ctx context.Context) error", d.HandlerName)); err != nil {
 				return err
 			}
-			if _, err := writeBackOrRecord(sf,
+			if err := writeBackOrRecord(sf,
 				fmt.Sprintf("add %s to %sServiceInterface", d.HandlerName, d.Resource)); err != nil {
 				return err
 			}
@@ -169,10 +169,10 @@ func validateEndpoint(d EndpointData) error {
 //
 // Rules:
 //
-//   • Use the last non-placeholder path segment as the action verb.
-//   • Prefix verbs that match standard chi verbs (Create / Update / Delete /
+//   - Use the last non-placeholder path segment as the action verb.
+//   - Prefix verbs that match standard chi verbs (Create / Update / Delete /
 //     List / Get) with no modification — that produces e.g. "CreateOrder".
-//   • Method-only signal as a fallback ("POST /orders" with no action
+//   - Method-only signal as a fallback ("POST /orders" with no action
 //     segment → "CreateOrder").
 func deriveHandlerName(httpMethod, path, resource string) string {
 	segs := strings.Split(strings.Trim(path, "/"), "/")
@@ -240,6 +240,9 @@ func (%s *%s) %s(w http.ResponseWriter, r *http.Request) error {
 // against the chi `r.<Verb>(...)` lines).
 func endpointRouteRegistered(body []byte, httpMethod, path string) bool {
 	verb := toChiVerb(httpMethod)
+	// %q would inject Go-style escapes; the regex needs literal quotes
+	// around the regex-quoted path, so the explicit "%s" form is correct.
+	//nolint:gocritic // sprintfQuotedString is a false positive here — the literal quotes are regex metacharacters, not Go string escapes.
 	pattern := fmt.Sprintf(`\br\.%s\("%s"`, verb, regexp.QuoteMeta(path))
 	re := regexp.MustCompile(pattern)
 	return re.Match(body)

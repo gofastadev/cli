@@ -27,6 +27,8 @@ import (
 // Severity is the ordering used by max_risk aggregation.
 type Risk string
 
+// Risk levels for migration statements, ordered safest → most dangerous.
+// Used by max_risk aggregation and surfaced verbatim in `--explain --json`.
 const (
 	RiskSafe           Risk = "safe"
 	RiskAppIncompat    Risk = "app-incompatibility"
@@ -58,6 +60,9 @@ func (r Risk) rank() int {
 // Severity is the per-warning level. Used by --strict to gate CI exit codes.
 type Severity string
 
+// Severity levels per warning. `--strict` exits non-zero when any
+// `SeverityHigh` warning fires (CI gate); `SeverityMedium` / `SeverityLow`
+// are informational only.
 const (
 	SeverityHigh   Severity = "high"
 	SeverityMedium Severity = "medium"

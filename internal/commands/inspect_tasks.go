@@ -19,10 +19,10 @@ import (
 //
 // Task files follow `gofasta g task` conventions:
 //
-//   const Task<Name> = "<snake.task.name>"
-//   type <Name>Payload struct { ... }
-//   func Handle<Name>(ctx context.Context, t *asynq.Task) error { ... }
-//   func Enqueue<Name>(ctx context.Context, q *asynq.Client, p <Name>Payload) (...) { ... }
+//	const Task<Name> = "<snake.task.name>"
+//	type <Name>Payload struct { ... }
+//	func Handle<Name>(ctx context.Context, t *asynq.Task) error { ... }
+//	func Enqueue<Name>(ctx context.Context, q *asynq.Client, p <Name>Payload) (...) { ... }
 //
 // We discover tasks by walking const declarations whose identifier starts
 // with "Task" and pairing them with the matching Payload/Handle/Enqueue
@@ -142,9 +142,9 @@ func scanTasksFile(path string) ([]inspectTaskEntry, error) {
 
 	// Pass 1: collect const Task<Name> = "..." declarations.
 	type taskInfo struct {
-		typeName string // "TaskSendWelcomeEmail"
+		typeName  string // "TaskSendWelcomeEmail"
 		shortName string // "SendWelcomeEmail"
-		wireName string // value of the const
+		wireName  string // value of the const
 	}
 	tasksByShort := map[string]*taskInfo{}
 	for _, decl := range f.Decls {
