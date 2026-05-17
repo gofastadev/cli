@@ -131,6 +131,15 @@ func Install(agent *Agent, projectRoot string, data InstallData, opts InstallOpt
 // rename failure (e.g. simulate cross-device or permission errors).
 var osRename = os.Rename
 
+// adaptDocFn / restoreDocFn are package-level seams for the docadapt
+// content transforms so tests can inject a failure into the
+// install / uninstall flows that wrap them. Production callers see
+// AdaptDocFileContent / RestoreDocFileContent's normal behavior.
+var (
+	adaptDocFn   = AdaptDocFileContent
+	restoreDocFn = RestoreDocFileContent
+)
+
 // renameDocFile handles the AGENTS.md → agent.DocFilename rename for
 // agents that don't read AGENTS.md natively. It records the outcome on
 // the result so the caller (and the manifest) can reverse it later.
@@ -176,7 +185,8 @@ func renameDocFile(agent *Agent, projectRoot string, opts InstallOptions, result
 		// is incongruent with the new filename and the agent the user
 		// chose. AdaptDocFileContent is exact-string-match-based, so
 		// hand-edited files round-trip cleanly through uninstall.
-		if err := AdaptDocFileContent(dstAbs, agent); err != nil {
+		// Routed through adaptDocFn so tests can inject a failure.
+		if err := adaptDocFn(dstAbs, agent); err != nil {
 			return err
 		}
 		result.Renamed = append(result.Renamed, entry)

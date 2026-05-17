@@ -215,3 +215,91 @@ func TestPrintReplayText_RenderableShapes(t *testing.T) {
 	require.Contains(t, out, "strip-auth")
 	require.Contains(t, out, "method")
 }
+
+// TestDebugReplayCmd_RunE — invoke the cobra RunE wrapper to cover the
+// closure that delegates to runDebugReplay. Point at an unreachable
+// URL so the call returns quickly without standing up a fixture.
+func TestDebugReplayCmd_RunE(t *testing.T) {
+	withDebugAppURL(t, "http://127.0.0.1:1")
+	resetDebugReplayFlags()
+	t.Cleanup(resetDebugReplayFlags)
+	err := debugReplayCmd.RunE(debugReplayCmd, []string{"req_x"})
+	require.Error(t, err)
+}
+
+// TestRunDebugReplay_BadHeaderFlag_ReachesParser — original existed
+// but was returning before reaching parseHeaderFlags (404 on
+// /debug/requests/req_1). Wire the fixture so getJSON succeeds, then
+// parseHeaderFlags fires on the malformed header.
+func TestRunDebugReplay_BadHeaderFlag_ReachesParser(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests/req_1": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, debugRequestEntry{ID: "req_1"})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetDebugReplayFlags()
+	debugReplayHeaders = []string{"no-colon"}
+	t.Cleanup(resetDebugReplayFlags)
+	err := runDebugReplay("req_1")
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodeDebugBadFilter), ce.Code)
+}
+
+// TestRunDebugReplay_BadBodyFlagFails — --body=@/missing/file makes
+// readBodyFlag error inside runDebugReplay (line 137-139). Wire the
+// fixture so the original-fetch succeeds first.
+func TestRunDebugReplay_BadBodyFlagFails(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests/req_1": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, debugRequestEntry{ID: "req_1"})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetDebugReplayFlags()
+	debugReplayBody = "@/absolutely/nowhere/missing.json"
+	t.Cleanup(resetDebugReplayFlags)
+	err := runDebugReplay("req_1")
+	require.Error(t, err)
+}
+
+// TestRunDebugReplay_PostJSONFails — /debug/replay returns 500 so
+// postJSON errors inside runDebugReplay (line 153-155).
+func TestRunDebugReplay_PostJSONFails(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests/req_1": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, debugRequestEntry{ID: "req_1"})
+		},
+		"/debug/replay": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+	})
+	withDebugAppURL(t, url)
+	resetDebugReplayFlags()
+	t.Cleanup(resetDebugReplayFlags)
+	err := runDebugReplay("req_1")
+	require.Error(t, err)
+}
+
+// TestReadBodyFlag_StdinReadError — close the read end of the pipe
+// before reading so io.ReadAll returns a non-nil error. Covers line
+// 194-196 in readBodyFlag.
+func TestReadBodyFlag_StdinReadError(t *testing.T) {
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	// Close both ends — reads will return an error.
+	require.NoError(t, r.Close())
+	require.NoError(t, w.Close())
+
+	origStdin := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = origStdin })
+
+	_, gotErr := readBodyFlag("-")
+	require.Error(t, gotErr)
+	var ce *clierr.Error
+	require.True(t, errors.As(gotErr, &ce))
+	require.Equal(t, string(clierr.CodeFileIO), ce.Code)
+}

@@ -278,3 +278,19 @@ func TestInstall_StatReadFails_NonIsNotExist(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "stat")
 }
+
+// TestInstall_AdaptDocFileContentError — force the adaptDocFn seam to
+// fail so Install's "renamed but adapt failed" branch fires. The
+// renameDocFile method must surface the error unchanged.
+func TestInstall_AdaptDocFileContentError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("x"), 0o644))
+	orig := adaptDocFn
+	adaptDocFn = func(_ string, _ *Agent) error { return assertError("adapt boom") }
+	t.Cleanup(func() { adaptDocFn = orig })
+
+	agent := AgentByKey("claude")
+	_, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "adapt")
+}

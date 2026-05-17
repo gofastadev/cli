@@ -177,11 +177,9 @@ func collectTaskConsts(f *ast.File) map[string]*taskConst {
 			continue
 		}
 		for _, spec := range gd.Specs {
-			vs, ok := spec.(*ast.ValueSpec)
-			if !ok {
-				continue
-			}
-			collectTaskConstSpec(vs, out)
+			// Inside a const block every Spec is a *ast.ValueSpec by the
+			// Go spec, so the type assertion is total.
+			collectTaskConstSpec(spec.(*ast.ValueSpec), out)
 		}
 	}
 	return out

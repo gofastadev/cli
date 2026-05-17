@@ -67,12 +67,19 @@ func WriteBack(f *File) ([]byte, error) {
 	return body, nil
 }
 
+// restorerFprintFn is a package-level seam over decorator.NewRestorer().Fprint
+// so tests can inject a failure into the otherwise-unreachable
+// "restoring dst file" error branch.
+var restorerFprintFn = func(w *bytes.Buffer, df *dst.File) error {
+	return decorator.NewRestorer().Fprint(w, df)
+}
+
 // Render restores the dst.File to bytes and runs gofmt. Returns the
 // rendered body without writing anywhere — useful for plan-mode previews
 // and tests.
 func Render(f *File) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := decorator.NewRestorer().Fprint(&buf, f.Dst); err != nil {
+	if err := restorerFprintFn(&buf, f.Dst); err != nil {
 		return nil, clierr.Wrap(clierr.CodeASTPatchFailed, err, "restoring dst file")
 	}
 	formatted, err := format.Source(buf.Bytes())

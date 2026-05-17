@@ -128,11 +128,7 @@ func FilterGoFiles(paths []string) []string {
 func UniqueDirs(paths []string) []string {
 	seen := make(map[string]struct{}, len(paths))
 	for _, p := range paths {
-		dir := filepath.Dir(p)
-		if dir == "" {
-			dir = "."
-		}
-		seen[dir] = struct{}{}
+		seen[filepath.Dir(p)] = struct{}{}
 	}
 	out := make([]string, 0, len(seen))
 	for d := range seen {

@@ -39,7 +39,7 @@ Examples:
   gofasta impact app/dtos/order.dtos.go`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		report, err := symbolresolve.ImpactGraph(args[0])
+		report, err := impactGraphFn(args[0])
 		if err != nil {
 			return err
 		}
@@ -47,6 +47,11 @@ Examples:
 		return nil
 	},
 }
+
+// impactGraphFn is a package-level seam over symbolresolve.ImpactGraph
+// so tests can return a canned ImpactReport without standing up a
+// loadable Go module.
+var impactGraphFn = symbolresolve.ImpactGraph
 
 func init() {
 	rootCmd.AddCommand(impactCmd)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -182,4 +183,72 @@ func firstLine(s string) string {
 		return s[:i]
 	}
 	return s
+}
+
+// TestAdaptDocFileContent_ReadFileError — non-existent file path makes
+// os.ReadFile return an error; AdaptDocFileContent surfaces it wrapped
+// as CodeFileIO.
+func TestAdaptDocFileContent_ReadFileError(t *testing.T) {
+	err := AdaptDocFileContent("/nonexistent/path/agents.md", AgentByKey("claude"))
+	require.Error(t, err)
+}
+
+// TestAdaptDocFileContent_WriteFileError — chmod the FILE read-only
+// so os.WriteFile fails after the in-memory transform succeeds.
+// (Chmod on the parent dir doesn't help on macOS — existing files
+// can still be overwritten if their own perms allow.)
+func TestAdaptDocFileContent_WriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "CLAUDE.md")
+	require.NoError(t, os.WriteFile(p, []byte(docOriginalTitle+"\n\n"+docOriginalIntro+"\n"), 0o644))
+	require.NoError(t, os.Chmod(p, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+
+	err := AdaptDocFileContent(p, AgentByKey("claude"))
+	require.Error(t, err)
+}
+
+// TestRestoreDocFileContent_ReadFileError — same defensive path on
+// the restore side.
+func TestRestoreDocFileContent_ReadFileError(t *testing.T) {
+	err := RestoreDocFileContent("/nonexistent/path/claude.md", AgentByKey("claude"))
+	require.Error(t, err)
+}
+
+// TestRestoreDocFileContent_WriteFileError — chmod the file
+// read-only after seeding it with adapted content; the in-memory
+// restore transform produces a different body but os.WriteFile then
+// fails.
+func TestRestoreDocFileContent_WriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	dir := t.TempDir()
+	p := filepath.Join(dir, "CLAUDE.md")
+	agent := AgentByKey("claude")
+	adapted := adaptedTitle(agent) + "\n\n" + adaptedIntro(agent) + "\n"
+	require.NoError(t, os.WriteFile(p, []byte(adapted), 0o644))
+	require.NoError(t, os.Chmod(p, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(p, 0o644) })
+
+	err := RestoreDocFileContent(p, agent)
+	require.Error(t, err)
+}
+
+// TestApplyTitle_NoNewline — single-line input with no trailing
+// newline: applyTitle's `idx == -1` branch sets idx = len(body) so
+// the entire input is treated as the first line.
+func TestApplyTitle_NoNewline(t *testing.T) {
+	out := applyTitle([]byte(docOriginalTitle), docOriginalTitle, "# Replaced")
+	assert.Equal(t, "# Replaced", string(out))
+}
+
+// TestApplyTitle_NoNewlineMismatch — single-line input that doesn't
+// match `from`: returned unchanged.
+func TestApplyTitle_NoNewlineMismatch(t *testing.T) {
+	out := applyTitle([]byte("# Something Else"), docOriginalTitle, "# Replaced")
+	assert.Equal(t, "# Something Else", string(out))
 }

@@ -387,3 +387,25 @@ func TestRemoveEmptyParents_RemoveFails(t *testing.T) {
 	_, err := os.Stat(empty)
 	assert.NoError(t, err)
 }
+
+// TestReverseDocRename_RestoreDocFileContentError — force the
+// restoreDocFn seam to fail so reverseDocRename's restore-error
+// branch fires. The error must propagate unchanged.
+func TestReverseDocRename_RestoreDocFileContentError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	orig := restoreDocFn
+	restoreDocFn = func(_ string, _ *Agent) error { return assertError("restore boom") }
+	t.Cleanup(func() { restoreDocFn = orig })
+
+	_ = captureStdout(t, func() {
+		err := runUninstall("claude", false)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "restore")
+	})
+}

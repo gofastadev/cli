@@ -189,21 +189,30 @@ func readSourceWindow(path string, line, ctx int) (SourceWindow, error) {
 	return win, nil
 }
 
+// Package-level seams over os.Getwd / filepath.Abs / filepath.Rel so
+// tests can inject failures into the defensive branches of underCwd
+// and relToCwd. Production code uses the stdlib versions unchanged.
+var (
+	getwdFn       = os.Getwd
+	filepathAbsFn = filepath.Abs
+	filepathRelFn = filepath.Rel
+)
+
 // underCwd returns true if path is a descendant of the current working dir.
 // Used to flag "external" frames (GOROOT, vendored, deps).
 func underCwd(path string) bool {
 	if !filepath.IsAbs(path) {
 		return true
 	}
-	cwd, err := os.Getwd()
+	cwd, err := getwdFn()
 	if err != nil {
 		return false
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := filepathAbsFn(path)
 	if err != nil {
 		return false
 	}
-	rel, err := filepath.Rel(cwd, abs)
+	rel, err := filepathRelFn(cwd, abs)
 	if err != nil {
 		return false
 	}
@@ -216,15 +225,15 @@ func relToCwd(path string) string {
 	if !filepath.IsAbs(path) {
 		return path
 	}
-	cwd, err := os.Getwd()
+	cwd, err := getwdFn()
 	if err != nil {
 		return ""
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := filepathAbsFn(path)
 	if err != nil {
 		return ""
 	}
-	rel, err := filepath.Rel(cwd, abs)
+	rel, err := filepathRelFn(cwd, abs)
 	if err != nil || strings.HasPrefix(rel, "..") {
 		return ""
 	}

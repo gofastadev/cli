@@ -488,6 +488,14 @@ func resolveVerifyScope(opts verifyOptions) (*verifyScopeData, error) {
 	return resolveVerifyScopeFn(opts)
 }
 
+// Package-level seams over the gitdiff helpers so tests can drive the
+// PackagesForDirs / ReverseDeps error branches without needing a
+// pathologically-broken git+module state on disk.
+var (
+	gitdiffPackagesForDirsFn = gitdiff.PackagesForDirs
+	gitdiffReverseDepsFn     = gitdiff.ReverseDeps
+)
+
 // resolveVerifyScopeImpl computes the changed-file + package set for a
 // scoped verify run. Returns a clierr (CodeGit* or CodeGoBuildFailed) on
 // failure so the caller can short-circuit without producing a partial
@@ -514,7 +522,7 @@ func resolveVerifyScopeImpl(opts verifyOptions) (*verifyScopeData, error) {
 	}
 
 	scope.Dirs = gitdiff.UniqueDirs(goFiles)
-	pkgs, err := gitdiff.PackagesForDirs(ctx, scope.Dirs)
+	pkgs, err := gitdiffPackagesForDirsFn(ctx, scope.Dirs)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +530,7 @@ func resolveVerifyScopeImpl(opts verifyOptions) (*verifyScopeData, error) {
 
 	// Reverse-dep walk for the test set; fall back to scoped packages
 	// when the walk errors so we still produce useful output.
-	if rev, err := gitdiff.ReverseDeps(ctx, pkgs); err == nil {
+	if rev, err := gitdiffReverseDepsFn(ctx, pkgs); err == nil {
 		scope.TestSet = rev
 	} else {
 		scope.TestSet = pkgs

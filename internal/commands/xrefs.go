@@ -48,7 +48,7 @@ JSON output:
   }`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(_ *cobra.Command, args []string) error {
-		report, err := symbolresolve.LookupReferences(args[0])
+		report, err := lookupReferencesFn(args[0])
 		if err != nil {
 			return err
 		}
@@ -56,6 +56,11 @@ JSON output:
 		return nil
 	},
 }
+
+// lookupReferencesFn is a package-level seam over
+// symbolresolve.LookupReferences so tests can return a canned
+// SymbolReport without standing up a loadable Go module.
+var lookupReferencesFn = symbolresolve.LookupReferences
 
 func init() {
 	rootCmd.AddCommand(xrefsCmd)

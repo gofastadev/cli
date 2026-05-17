@@ -64,6 +64,13 @@ type ImpactReport struct {
 // loader.
 var loadModuleFn = loadModule
 
+// Seams over go/packages.Load and filepath.Abs so tests can force
+// defensive error branches without manipulating the filesystem.
+var (
+	packagesLoadFn = packages.Load
+	filepathAbsFn  = filepath.Abs
+)
+
 func loadModule() ([]*packages.Package, error) {
 	// Pin GOARCH/GOOS into the loader's environment so go/packages's
 	// internal call to types.SizesFor returns a non-nil sizer. Without
@@ -87,7 +94,7 @@ func loadModule() ([]*packages.Package, error) {
 		Tests: false,
 		Env:   env,
 	}
-	pkgs, err := packages.Load(cfg, "./...")
+	pkgs, err := packagesLoadFn(cfg, "./...")
 	if err != nil {
 		return nil, clierr.Wrap(clierr.CodePackageLoadFailed, err, "loading module")
 	}
@@ -236,11 +243,9 @@ func ImpactGraph(target string) (ImpactReport, error) {
 		if path == pkgPath {
 			continue
 		}
-		p, ok := pkgByPath[path]
-		if !ok {
-			continue
-		}
-		for _, f := range p.GoFiles {
+		// pkgByPath is built from the same `pkgs` slice that fed `rev`;
+		// every PkgPath BFS can reach is keyed by construction.
+		for _, f := range pkgByPath[path].GoFiles {
 			report.ImpactedFiles = append(report.ImpactedFiles, relToCwd(f))
 		}
 	}
@@ -478,11 +483,11 @@ func resolveTargetToPackage(target string, pkgs []*packages.Package) string {
 // relToCwd renders an absolute path relative to cwd when possible.
 // Falls back to the absolute path on any error.
 func relToCwd(path string) string {
-	cwd, err := filepath.Abs(".")
+	cwd, err := filepathAbsFn(".")
 	if err != nil {
 		return path
 	}
-	abs, err := filepath.Abs(path)
+	abs, err := filepathAbsFn(path)
 	if err != nil {
 		return path
 	}

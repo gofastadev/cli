@@ -233,7 +233,8 @@ func reverseDocRename(agent *Agent, projectRoot string, rec InstallRecord, opts 
 	// scaffold output. Exact-string match keeps user edits to other
 	// sections intact; if the user has hand-edited the title/intro
 	// themselves, the no-op branch leaves the file alone.
-	if err := RestoreDocFileContent(dstAbs, agent); err != nil {
+	// Routed through restoreDocFn so tests can inject a failure.
+	if err := restoreDocFn(dstAbs, agent); err != nil {
 		return err
 	}
 	if err := osRename(dstAbs, srcAbs); err != nil {
