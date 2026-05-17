@@ -126,13 +126,22 @@ jobs:
               done
               ;;
             mysql)
+              # log_bin_trust_function_creators=ON: needed so a
+              # non-SUPER user can CREATE TRIGGER. Default MySQL 8
+              # behavior with binary logging enabled is to reject
+              # trigger creation from anyone without SUPER, even on
+              # their own schema; this flag relaxes that. The CI
+              # `testproject` user only has schema-level privileges,
+              # so without this flag every per-resource scaffold +
+              # the foundational users migration fail with
+              # "ERROR 1419: You do not have the SUPER privilege".
               docker run -d --name testproject_db \
                 -e MYSQL_ROOT_PASSWORD=testproject \
                 -e MYSQL_USER=testproject \
                 -e MYSQL_PASSWORD=testproject \
                 -e MYSQL_DATABASE=testproject_test \
                 -p 3306:3306 \
-                mysql:8.4
+                mysql:8.4 --log_bin_trust_function_creators=ON
               echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
               echo "TESTPROJECT_DATABASE_PORT=3306" >> $GITHUB_ENV
               echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV

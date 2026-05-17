@@ -9,6 +9,15 @@
 --   - updated_at  → native column attribute `ON UPDATE CURRENT_TIMESTAMP`
 --   - record_version → BEFORE UPDATE trigger sets NEW := OLD + 1
 --   - is_deletable   → BEFORE DELETE trigger SIGNALs SQLSTATE '45000'
+--
+-- IMPORTANT — no `DELIMITER //` directives.
+-- DELIMITER is a mysql-CLI directive that golang-migrate's driver does
+-- NOT recognize (the server-side protocol doesn't understand it either).
+-- golang-migrate auto-enables MultiStatements on the connection (see
+-- v4.18.1/database/mysql/mysql.go:208), so multiple `;`-terminated
+-- statements in one file work natively. BEGIN/END compound trigger
+-- bodies are recognized as a single statement by the MySQL parser
+-- regardless of inner `;`, so they don't need DELIMITER either.
 CREATE TABLE `users` (
     `id` CHAR(36) PRIMARY KEY,
     `first_name` VARCHAR(255) NOT NULL,
@@ -24,14 +33,10 @@ CREATE TABLE `users` (
     `record_version` BIGINT NOT NULL DEFAULT 1
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-DELIMITER //
-
 CREATE TRIGGER increment_users_record_version_trigger
     BEFORE UPDATE ON `users`
     FOR EACH ROW
-BEGIN
     SET NEW.record_version = OLD.record_version + 1;
-END//
 
 CREATE TRIGGER avoid_deleting_not_deletable_users_trigger
     BEFORE DELETE ON `users`
@@ -40,6 +45,4 @@ BEGIN
     IF OLD.is_deletable = 0 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'This record is not deletable';
     END IF;
-END//
-
-DELIMITER ;
+END;

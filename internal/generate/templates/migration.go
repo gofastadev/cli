@@ -64,6 +64,15 @@ DROP TABLE IF EXISTS {{.PluralSnake}};
 // rejection when attempting to DELETE a row with `is_deletable = 0`.
 // `updated_at` is handled natively by the column attribute
 // `ON UPDATE CURRENT_TIMESTAMP`, no trigger needed.
+//
+// IMPORTANT — no `DELIMITER //` directives.
+// DELIMITER is a mysql-CLI directive that golang-migrate's driver
+// doesn't recognize (the server-side protocol doesn't either).
+// golang-migrate auto-enables MultiStatements on the connection (see
+// v4.18.1/database/mysql/mysql.go:208), so multiple `;`-terminated
+// statements in one file work natively. MySQL's parser recognizes
+// BEGIN/END as a compound statement and reads through inner `;` to
+// the matching END regardless of delimiter.
 var MigUpMySQL = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     id CHAR(36) PRIMARY KEY,
 {{- range .Fields}}
@@ -77,13 +86,10 @@ var MigUpMySQL = `CREATE TABLE IF NOT EXISTS {{.PluralSnake}} (
     deleted_at DATETIME NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-DELIMITER //
 CREATE TRIGGER increment_{{.PluralSnake}}_record_version_trigger
     BEFORE UPDATE ON {{.PluralSnake}}
     FOR EACH ROW
-BEGIN
     SET NEW.record_version = OLD.record_version + 1;
-END//
 
 CREATE TRIGGER avoid_deleting_not_deletable_{{.PluralSnake}}_trigger
     BEFORE DELETE ON {{.PluralSnake}}
@@ -92,8 +98,7 @@ BEGIN
     IF OLD.is_deletable = 0 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'This record is not deletable';
     END IF;
-END//
-DELIMITER ;
+END;
 `
 
 // MigDownMySQL is the down-migration template for MySQL / MariaDB.
@@ -161,12 +166,20 @@ DROP TABLE IF EXISTS {{.PluralSnake}};
 // MigUpSQLServer is the up-migration template for Microsoft SQL Server.
 //
 // One AFTER UPDATE trigger handles both `updated_at` bump and
-// `record_version` increment in a single pass — keeps trigger count
-// per table low (SQL Server fires triggers in unspecified order when
-// multiple exist for the same event). The not-deletable guard uses
-// `INSTEAD OF DELETE` so the actual DELETE only executes when no
-// blocked rows are present; otherwise `THROW` rejects the statement
-// for every client (sqlcmd, SSMS, application).
+// `record_version` increment in a single pass; one INSTEAD OF DELETE
+// trigger enforces the is_deletable invariant. Triggers fire for any
+// client — sqlcmd, SSMS, application, intruder.
+//
+// IMPORTANT — no `GO` batch separators.
+// golang-migrate's sqlserver driver has NO multi-statement / batch-
+// splitter support — it sends the whole file as one TDS batch via
+// Exec(). T-SQL forbids CREATE TRIGGER (or CREATE PROCEDURE / VIEW /
+// FUNCTION) anywhere except the FIRST statement of a batch, so a
+// naïve "CREATE TABLE; CREATE TRIGGER;" file would error out.
+// Workaround: wrap each CREATE TRIGGER in `EXEC sp_executesql N'...'`
+// so the trigger creation runs in its own internal batch (the
+// standard pattern in FluentMigrator / EF Core for the same reason).
+// Single quotes inside the trigger body escape as `”` per T-SQL.
 var MigUpSQLServer = `IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='{{.PluralSnake}}' AND xtype='U')
 CREATE TABLE {{.PluralSnake}} (
     id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
@@ -180,8 +193,8 @@ CREATE TABLE {{.PluralSnake}} (
     updated_at DATETIME2 NOT NULL DEFAULT GETDATE(),
     deleted_at DATETIME2 NULL
 );
-GO
 
+EXEC sp_executesql N'
 CREATE OR ALTER TRIGGER trg_{{.PluralSnake}}_before_update
 ON {{.PluralSnake}}
 AFTER UPDATE
@@ -193,9 +206,9 @@ BEGIN
         record_version = {{.PluralSnake}}.record_version + 1
     FROM {{.PluralSnake}}
     INNER JOIN inserted ON {{.PluralSnake}}.id = inserted.id;
-END;
-GO
+END';
 
+EXEC sp_executesql N'
 CREATE OR ALTER TRIGGER trg_{{.PluralSnake}}_avoid_not_deletable
 ON {{.PluralSnake}}
 INSTEAD OF DELETE
@@ -203,17 +216,18 @@ AS
 BEGIN
     SET NOCOUNT ON;
     IF EXISTS (SELECT 1 FROM deleted WHERE is_deletable = 0)
-        THROW 51000, 'This record is not deletable', 1;
+        THROW 51000, ''This record is not deletable'', 1;
     DELETE FROM {{.PluralSnake}}
     WHERE id IN (SELECT id FROM deleted);
-END;
-GO
+END';
 `
 
 // MigDownSQLServer is the down-migration template for Microsoft SQL Server.
 // Drops every trigger added by MigUpSQLServer before dropping the table.
-var MigDownSQLServer = `DROP TRIGGER IF EXISTS trg_{{.PluralSnake}}_avoid_not_deletable;
-DROP TRIGGER IF EXISTS trg_{{.PluralSnake}}_before_update;
+// Wrapped in sp_executesql for the same batch-isolation reason
+// (DROP TRIGGER also requires "first in batch").
+var MigDownSQLServer = `EXEC sp_executesql N'DROP TRIGGER IF EXISTS trg_{{.PluralSnake}}_avoid_not_deletable';
+EXEC sp_executesql N'DROP TRIGGER IF EXISTS trg_{{.PluralSnake}}_before_update';
 DROP TABLE IF EXISTS {{.PluralSnake}};
 `
 

@@ -87,6 +87,10 @@ services:
   db:
     image: mysql:8.4
     container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_db
+    # log_bin_trust_function_creators=ON: required so the scaffold's
+    # non-SUPER schema user can install BEFORE UPDATE / BEFORE DELETE
+    # triggers via the per-resource migrations.
+    command: ["--log_bin_trust_function_creators=ON"]
     environment:
       MYSQL_ROOT_PASSWORD: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}
       MYSQL_USER: ${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}

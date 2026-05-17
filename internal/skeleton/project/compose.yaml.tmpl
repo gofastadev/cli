@@ -94,6 +94,12 @@ services:
   db:
     image: mysql:8.4
     container_name: {{.ProjectNameLower}}_db
+    # log_bin_trust_function_creators=ON lets non-SUPER schema users
+    # CREATE TRIGGER on their own database — required because the
+    # scaffold's per-resource migrations install BEFORE UPDATE +
+    # BEFORE DELETE triggers via the application's DB user, which
+    # only holds schema-level privileges.
+    command: ["--log_bin_trust_function_creators=ON"]
     ports:
       - "${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT:-3307}:3306"
     environment:
