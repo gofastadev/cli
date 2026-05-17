@@ -100,8 +100,26 @@ func TestGenMethod_ImplParseError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// TestGenMethod_AppendFuncDeclError — set ImplStructName to a
+// non-identifier so the iface side passes (it uses InterfaceName) but
+// the impl-side AppendFuncDecl fails when wrapping receiver `(s *bad{)`.
+func TestGenMethod_AppendFuncDeclError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	err := GenMethod(MethodData{
+		Resource:       "Order",
+		MethodName:     "Valid",
+		InterfaceName:  "OrderServiceInterface",
+		ImplStructName: "bad{",
+		InterfaceFile:  filepath.Join("app", "services", "interfaces", "order_service.go"),
+		ImplFile:       filepath.Join("app", "services", "order.service.go"),
+	})
+	require.Error(t, err)
+}
+
 // TestWriteBackOrRecord_RenderError — inject a Render failure via the
-// astpatch restorerFprintFn seam.
+// astpatchRenderFn seam.
 func TestWriteBackOrRecord_RenderError(t *testing.T) {
 	tmp := t.TempDir()
 	srcPath := filepath.Join(tmp, "x.go")
@@ -109,6 +127,17 @@ func TestWriteBackOrRecord_RenderError(t *testing.T) {
 	f, err := astpatch.Parse(srcPath)
 	require.NoError(t, err)
 
-	// Hard to make Render fail without seam — exercise the happy path here.
-	require.NoError(t, writeBackOrRecord(f, "noop"))
+	saved := astpatchRenderFn
+	astpatchRenderFn = func(_ *astpatch.File) ([]byte, error) {
+		return nil, errStubGenerate
+	}
+	t.Cleanup(func() { astpatchRenderFn = saved })
+
+	require.Error(t, writeBackOrRecord(f, "noop"))
 }
+
+var errStubGenerate = stubGenErr("stub")
+
+type stubGenErr string
+
+func (s stubGenErr) Error() string { return string(s) }

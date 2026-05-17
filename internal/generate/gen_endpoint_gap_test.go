@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/generate/astpatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -172,6 +173,86 @@ func TestEndpointRouteRegistered_WithMiddleware(t *testing.T) {
 	require.True(t, endpointRouteRegistered(body, "POST", "/orders"))
 }
 
+// — validateEndpoint Resource == "" branch ─────────────────────────────
+
+func TestValidateEndpoint_EmptyResource(t *testing.T) {
+	err := validateEndpoint(EndpointData{HTTPMethod: "POST", Path: "/x"})
+	require.Error(t, err)
+}
+
+// — GenEndpoint propagates patchEndpointRoutes errors ────────────────
+
+func TestGenEndpoint_RoutesPatchErrorPropagates(t *testing.T) {
+	// Set up controller + routes such that controller patch succeeds
+	// but routes patch fails (routes file has no <Resource>Routes func).
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	mustWriteFile(t, filepath.Join(tmp, "app", "rest", "controllers", "order.controller.go"),
+		`package controllers
+import "net/http"
+type OrderController struct{}
+var _ = http.MethodGet
+`)
+	mustWriteFile(t, filepath.Join(tmp, "app", "rest", "routes", "order.routes.go"),
+		"package routes\n// no OrderRoutes\n")
+	chdirTest(t, tmp)
+	err := GenEndpoint(EndpointData{
+		Resource: "Order", HTTPMethod: "POST", Path: "/orders/{id}/archive",
+	})
+	require.Error(t, err)
+}
+
+// — patchEndpointController AppendFuncDecl error path via seam ──────────
+
+func TestPatchEndpointController_AppendFuncDeclError(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "ctrl.go"),
+		"package controllers\ntype OrderController struct{}\n")
+	chdirTest(t, tmp)
+
+	saved := astpatchAppendFuncDeclFn
+	astpatchAppendFuncDeclFn = func(_ *astpatch.File, _ string) error {
+		return errStubGenerate
+	}
+	t.Cleanup(func() { astpatchAppendFuncDeclFn = saved })
+
+	err := patchEndpointController(EndpointData{
+		Resource: "Order", HandlerName: "X", ControllerFile: "ctrl.go",
+	})
+	require.Error(t, err)
+}
+
+// — patchEndpointRoutes duplicate route detected ───────────────────────
+
+func TestPatchEndpointRoutes_DuplicateRouteRejected(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "routes.go"), `package routes
+func OrderRoutes() { r.Post("/orders/{id}/archive", h) }
+`)
+	chdirTest(t, tmp)
+	err := patchEndpointRoutes(EndpointData{
+		Resource: "Order", HTTPMethod: "POST", Path: "/orders/{id}/archive",
+		HandlerName: "Archive", RoutesFile: "routes.go",
+	})
+	require.Error(t, err)
+}
+
+// — patchEndpointService AppendInterfaceMethod error — bad HandlerName ──
+
+func TestPatchEndpointService_AppendInterfaceMethodError(t *testing.T) {
+	tmp := t.TempDir()
+	mustWriteFile(t, filepath.Join(tmp, "svc.go"), `package interfaces
+import "context"
+type OrderServiceInterface interface { F(ctx context.Context) error }
+`)
+	chdirTest(t, tmp)
+	err := patchEndpointService(EndpointData{
+		Resource: "Order", HandlerName: "Bad{", ServiceFile: "svc.go",
+	})
+	require.Error(t, err)
+}
+
 // — injectIntoRoutesFunc bracket counting edge cases ──────────────────
 
 func TestInjectIntoRoutesFunc_NoOpenBrace(t *testing.T) {
@@ -184,4 +265,30 @@ func TestInjectIntoRoutesFunc_UnbalancedBraces(t *testing.T) {
 	body := []byte("func OrderRoutes(r chi.Router) {")
 	_, ok := injectIntoRoutesFunc(body, "Order", "x")
 	require.False(t, ok)
+}
+
+// TestInjectIntoRoutesFunc_NestedBraces — nested braces inside the
+// function body exercise the `case '{': depth++` increment branch.
+func TestInjectIntoRoutesFunc_NestedBraces(t *testing.T) {
+	body := []byte(`package routes
+
+func OrderRoutes(r chi.Router) {
+	if x := 1; x > 0 {
+		r.Get("/orders", nil)
+	}
+}
+`)
+	patched, ok := injectIntoRoutesFunc(body, "Order", "\tr.Post(\"/x\", nil)")
+	require.True(t, ok)
+	require.Contains(t, string(patched), `r.Post("/x", nil)`)
+}
+
+// TestInjectIntoRoutesFunc_InsertAtStartOfFile — patched file's closing
+// brace is on the first character (insertAt walks back to 0). Trigger
+// by constructing a one-line file with no preceding newline.
+func TestInjectIntoRoutesFunc_InsertAtStartOfFile(t *testing.T) {
+	body := []byte("func OrderRoutes(){}")
+	patched, ok := injectIntoRoutesFunc(body, "Order", "X")
+	require.True(t, ok)
+	require.Contains(t, string(patched), "X")
 }

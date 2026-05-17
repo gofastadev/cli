@@ -156,12 +156,20 @@ func (s *%s) %s(%s) error {
 		d.InterfaceName, d.MethodName)
 }
 
+// astpatchRenderFn / astpatchAppendFuncDeclFn are package-level seams
+// over astpatch.Render and astpatch.AppendFuncDecl so tests can drive
+// the defensive error branches that wrap them.
+var (
+	astpatchRenderFn         = astpatch.Render
+	astpatchAppendFuncDeclFn = astpatch.AppendFuncDecl
+)
+
 // writeBackOrRecord is the same chokepoint the rest of this package uses
 // to honor dry-run mode. We can't reuse writeOrRecordPatch directly here
 // because astpatch already produced the body — we need to record a
 // patch action with that body's size.
 func writeBackOrRecord(f *astpatch.File, detail string) error {
-	body, err := astpatch.Render(f)
+	body, err := astpatchRenderFn(f)
 	if err != nil {
 		return err
 	}

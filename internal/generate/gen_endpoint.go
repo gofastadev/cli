@@ -79,7 +79,7 @@ func patchEndpointController(d EndpointData) error {
 			controllerType, d.HandlerName)
 	}
 	astpatch.EnsureImport(cf, "net/http")
-	if err := astpatch.AppendFuncDecl(cf, buildEndpointHandlerStub(d, controllerType)); err != nil {
+	if err := astpatchAppendFuncDeclFn(cf, buildEndpointHandlerStub(d, controllerType)); err != nil {
 		return err
 	}
 	return writeBackOrRecord(cf,
