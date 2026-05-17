@@ -170,6 +170,15 @@ func renameDocFile(agent *Agent, projectRoot string, opts InstallOptions, result
 			return clierr.Wrapf(clierr.CodeAIInstallFailed, err,
 				"rename AGENTS.md → %s", agent.DocFilename)
 		}
+		// Adapt the renamed file's title + intro paragraph to the
+		// installed agent. A plain os.Rename leaves the H1 still
+		// titled "# AGENTS.md — Guidance for AI coding agents", which
+		// is incongruent with the new filename and the agent the user
+		// chose. AdaptDocFileContent is exact-string-match-based, so
+		// hand-edited files round-trip cleanly through uninstall.
+		if err := AdaptDocFileContent(dstAbs, agent); err != nil {
+			return err
+		}
 		result.Renamed = append(result.Renamed, entry)
 	case !srcExists && dstExists:
 		// Already-renamed (likely an idempotent re-install). Record so

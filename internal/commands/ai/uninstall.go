@@ -137,7 +137,7 @@ func Uninstall(agent *Agent, projectRoot string, rec InstallRecord, data Install
 	if err := removeRecordedFiles(projectRoot, rec.CreatedFiles, expected, opts, result); err != nil {
 		return nil, err
 	}
-	if err := reverseDocRename(projectRoot, rec, opts, result); err != nil {
+	if err := reverseDocRename(agent, projectRoot, rec, opts, result); err != nil {
 		return nil, err
 	}
 	return result, nil
@@ -214,7 +214,7 @@ func removeOneFile(projectRoot, rel string, expected map[string][]byte, opts Uni
 // at install time, if any. No-op when the agent reads AGENTS.md
 // natively (no rename was recorded) or when the destination has been
 // removed/replaced since install.
-func reverseDocRename(projectRoot string, rec InstallRecord, opts UninstallOptions, result *UninstallResult) error {
+func reverseDocRename(agent *Agent, projectRoot string, rec InstallRecord, opts UninstallOptions, result *UninstallResult) error {
 	if rec.RenamedTo == "" || rec.RenamedFrom == "" {
 		return nil
 	}
@@ -227,6 +227,14 @@ func reverseDocRename(projectRoot string, rec InstallRecord, opts UninstallOptio
 	if opts.DryRun {
 		result.Renamed = append(result.Renamed, entry)
 		return nil
+	}
+	// Restore the original title + intro paragraph BEFORE the rename,
+	// so the file that lands at AGENTS.md is shaped like the original
+	// scaffold output. Exact-string match keeps user edits to other
+	// sections intact; if the user has hand-edited the title/intro
+	// themselves, the no-op branch leaves the file alone.
+	if err := RestoreDocFileContent(dstAbs, agent); err != nil {
+		return err
 	}
 	if err := osRename(dstAbs, srcAbs); err != nil {
 		return clierr.Wrapf(clierr.CodeAIInstallFailed, err,
