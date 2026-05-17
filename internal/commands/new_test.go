@@ -410,3 +410,222 @@ func synthMinimalProjectFS(t *testing.T) fs.FS {
 		"project/go.mod.tmpl": {Data: []byte("module {{.ModulePath}}\n\ngo 1.25.0\n")},
 	}
 }
+
+// TestNewCmd_DriverFlag_RejectsUnknown — the cobra RunE wrapper
+// validates --driver before reaching runNew. Covers the
+// `if !isSupportedDriver(driver) { return clierr.Newf(...) }` body
+// that the direct runNew tests bypass.
+func TestNewCmd_DriverFlag_RejectsUnknown(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, newCmd.Flags().Set("driver", "oracle"))
+	t.Cleanup(func() { _ = newCmd.Flags().Set("driver", "postgres") })
+	err := newCmd.RunE(newCmd, []string{"badapp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not supported")
+	assert.Contains(t, err.Error(), "oracle")
+}
+
+// TestRunNew_DriverEmptyDefaultsToPostgres — defensive: a caller that
+// passes driver="" gets postgres semantics, not a crash or a lookup
+// failure later. Covers the `if driver == "" { driver = "postgres" }`
+// branch in runNew.
+func TestRunNew_DriverEmptyDefaultsToPostgres(t *testing.T) {
+	chdirTemp(t)
+	projectFSOverride = synthMinimalProjectFS(t)
+	t.Cleanup(func() { projectFSOverride = nil })
+	withFakeExec(t, 0)
+
+	_ = captureStdout(t, func() {
+		// Best-effort: runNew may fail later because the synthetic FS
+		// doesn't carry a full project tree, but the empty-driver
+		// branch executes BEFORE any of that.
+		_ = runNew("emptydrivertest", false, "")
+	})
+
+	// db/migrations should contain the postgres set (5 up + 5 down)
+	// because the empty driver defaulted to "postgres".
+	entries, err := os.ReadDir(filepath.Join("emptydrivertest", "db", "migrations"))
+	require.NoError(t, err)
+	assert.Len(t, entries, 10, "postgres has 5 up + 5 down foundational migrations")
+}
+
+// TestRunNew_CopyMigrationsErrorPropagates — runNew wraps any
+// copyMigrationsForDriver failure with the "copying %s foundational
+// migrations" prefix. Forced via the migrationsFSOverride seam:
+// inject an empty FS so the per-driver subdirectory doesn't exist
+// and ReadDir errors.
+func TestRunNew_CopyMigrationsErrorPropagates(t *testing.T) {
+	chdirTemp(t)
+	projectFSOverride = synthMinimalProjectFS(t)
+	migrationsFSOverride = fstest.MapFS{} // no migrations/ at all
+	t.Cleanup(func() {
+		projectFSOverride = nil
+		migrationsFSOverride = nil
+	})
+	withFakeExec(t, 0)
+
+	_ = captureStdout(t, func() {
+		err := runNew("copyfailapp", false, "postgres")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "copying postgres foundational migrations")
+	})
+}
+
+// TestCopyMigrationsForDriver_UnknownDriver — ReadDir returns
+// fs.ErrNotExist for an unsupported driver name. The function must
+// surface that as a "no foundational migrations for driver" error.
+func TestCopyMigrationsForDriver_UnknownDriver(t *testing.T) {
+	chdirTemp(t)
+	err := copyMigrationsForDriver("nosuchdriver", ProjectData{
+		ProjectName:      "X",
+		ProjectNameLower: "x",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no foundational migrations for driver")
+	assert.Contains(t, err.Error(), "nosuchdriver")
+}
+
+// TestCopyMigrationsForDriver_SkipsDirectoryEntries — a directory
+// entry inside migrations/<driver>/ must be skipped (the loop's
+// `if e.IsDir() { continue }` branch). Inject a synthetic FS that
+// contains a subdirectory alongside the .sql files.
+func TestCopyMigrationsForDriver_SkipsDirectoryEntries(t *testing.T) {
+	chdirTemp(t)
+	migrationsFSOverride = fstest.MapFS{
+		"migrations":                                {Mode: fs.ModeDir},
+		"migrations/postgres":                       {Mode: fs.ModeDir},
+		"migrations/postgres/subdir":                {Mode: fs.ModeDir}, // should be skipped
+		"migrations/postgres/000001_users.up.sql":   {Data: []byte("-- {{.ProjectNameLower}}\n")},
+		"migrations/postgres/000001_users.down.sql": {Data: []byte("DROP TABLE users;\n")},
+	}
+	t.Cleanup(func() { migrationsFSOverride = nil })
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, copyMigrationsForDriver("postgres", ProjectData{
+			ProjectName:      "MyApp",
+			ProjectNameLower: "myapp",
+		}))
+	})
+
+	// Two files written, no directory propagated.
+	got, err := os.ReadDir("db/migrations")
+	require.NoError(t, err)
+	assert.Len(t, got, 2)
+	for _, e := range got {
+		assert.False(t, e.IsDir(), "should not have copied a directory")
+	}
+}
+
+// TestCopyMigrationsForDriver_BadTemplate — malformed template
+// content surfaces a "parsing migration" error.
+func TestCopyMigrationsForDriver_BadTemplate(t *testing.T) {
+	chdirTemp(t)
+	migrationsFSOverride = fstest.MapFS{
+		"migrations":          {Mode: fs.ModeDir},
+		"migrations/postgres": {Mode: fs.ModeDir},
+		"migrations/postgres/000001_broken.up.sql": {Data: []byte("{{.UnclosedAction")},
+	}
+	t.Cleanup(func() { migrationsFSOverride = nil })
+
+	err := copyMigrationsForDriver("postgres", ProjectData{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parsing migration")
+}
+
+// TestCopyMigrationsForDriver_TemplateExecuteFails — template parses
+// but Execute fails because the body references a missing field.
+func TestCopyMigrationsForDriver_TemplateExecuteFails(t *testing.T) {
+	chdirTemp(t)
+	migrationsFSOverride = fstest.MapFS{
+		"migrations":          {Mode: fs.ModeDir},
+		"migrations/postgres": {Mode: fs.ModeDir},
+		"migrations/postgres/000001_bad_exec.up.sql": {Data: []byte("{{.DoesNotExist.Nested}}")},
+	}
+	t.Cleanup(func() { migrationsFSOverride = nil })
+
+	err := copyMigrationsForDriver("postgres", ProjectData{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "executing migration template")
+}
+
+// TestCopyMigrationsForDriver_MkdirAllError — if MkdirAll fails on
+// db/migrations the error surfaces unwrapped (defensive branch).
+// Force the failure by making `db` a regular file in the cwd before
+// calling — MkdirAll then can't create db/migrations under it.
+func TestCopyMigrationsForDriver_MkdirAllError(t *testing.T) {
+	chdirTemp(t)
+	// Create a regular file at the "db" path. MkdirAll("db/migrations")
+	// will fail with ENOTDIR because "db" is not a directory.
+	require.NoError(t, os.WriteFile("db", []byte("x"), 0o644))
+
+	err := copyMigrationsForDriver("postgres", ProjectData{
+		ProjectName:      "X",
+		ProjectNameLower: "x",
+	})
+	require.Error(t, err)
+}
+
+// TestCopyMigrationsForDriver_WriteFileError — chmod the
+// db/migrations dir read-only so os.WriteFile inside fails with
+// EACCES. Triggers the "writing %s" defensive branch.
+func TestCopyMigrationsForDriver_WriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	chdirTemp(t)
+	require.NoError(t, os.MkdirAll("db/migrations", 0o755))
+	require.NoError(t, os.Chmod("db/migrations", 0o555))
+	t.Cleanup(func() { _ = os.Chmod("db/migrations", 0o755) })
+
+	migrationsFSOverride = fstest.MapFS{
+		"migrations":          {Mode: fs.ModeDir},
+		"migrations/postgres": {Mode: fs.ModeDir},
+		"migrations/postgres/000001_users.up.sql": {Data: []byte("CREATE TABLE u();\n")},
+	}
+	t.Cleanup(func() { migrationsFSOverride = nil })
+
+	err := copyMigrationsForDriver("postgres", ProjectData{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing")
+}
+
+// errReadFS wraps an fs.FS and returns an error on ReadFile for a
+// specific path. Used by TestCopyMigrationsForDriver_ReadFileError to
+// hit the defensive "reading %s" branch which a normal embed.FS
+// cannot trigger.
+type errReadFS struct {
+	base       fs.FS
+	failOnPath string
+}
+
+func (e errReadFS) Open(name string) (fs.File, error) { return e.base.Open(name) }
+func (e errReadFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if rd, ok := e.base.(fs.ReadDirFS); ok {
+		return rd.ReadDir(name)
+	}
+	return fs.ReadDir(e.base, name)
+}
+func (e errReadFS) ReadFile(name string) ([]byte, error) {
+	if name == e.failOnPath {
+		return nil, fs.ErrPermission
+	}
+	return fs.ReadFile(e.base, name)
+}
+
+// TestCopyMigrationsForDriver_ReadFileError — inject a synthetic FS
+// whose ReadFile returns an error for a specific file. Covers the
+// `if err != nil { return fmt.Errorf("reading %s: %w") }` branch.
+func TestCopyMigrationsForDriver_ReadFileError(t *testing.T) {
+	chdirTemp(t)
+	base := fstest.MapFS{
+		"migrations":          {Mode: fs.ModeDir},
+		"migrations/postgres": {Mode: fs.ModeDir},
+		"migrations/postgres/000001_users.up.sql": {Data: []byte("CREATE TABLE u();\n")},
+	}
+	migrationsFSOverride = errReadFS{base: base, failOnPath: "migrations/postgres/000001_users.up.sql"}
+	t.Cleanup(func() { migrationsFSOverride = nil })
+
+	err := copyMigrationsForDriver("postgres", ProjectData{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "reading")
+}
