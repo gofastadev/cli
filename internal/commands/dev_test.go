@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -769,4 +770,622 @@ func TestParseServicesInList(t *testing.T) {
 	}
 	// Silence unused imports if nothing else pulls strconv.
 	_ = strconv.Itoa(len(got))
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// runDevPipeline coverage — exercises the in-docker, menu-driven, and
+// teardown-variant branches of the pipeline. The host-mode happy path
+// is already covered by the tests above; these target the branches
+// that only fire when --services contains "app", when the preflight
+// menu runs, when --fresh is set with orchestrate=true, etc.
+// ─────────────────────────────────────────────────────────────────────
+
+// runInDockerForeground — Start() fails when execCommand returns a Cmd
+// whose Path points at a non-existent binary.
+func TestRunInDockerForeground_StartFails(t *testing.T) {
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("/no/such/binary/", args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	keyCh := make(chan keyboardSignal, 1)
+	restart, err := runInDockerForeground(func(string) {}, keyCh)
+	assert.False(t, restart)
+	require.Error(t, err)
+}
+
+// runInDockerForeground — fake docker child exits 0; supervisor sees
+// `exited` first and returns (false, nil) with teardown reason
+// "app-exited".
+func TestRunInDockerForeground_HappyPath_ChildExits(t *testing.T) {
+	withFakeExec(t, 0)
+	keyCh := make(chan keyboardSignal, 1)
+	called := ""
+	restart, err := runInDockerForeground(func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.NoError(t, err)
+	assert.Equal(t, "app-exited", called)
+}
+
+// runInDockerSupervisor — SIGINT branch. Send os.Interrupt to ourselves
+// AFTER the supervisor has registered signal.Notify; signal.Notify
+// delivers via the supervisor's internal sigChan. cmd=nil means
+// interruptCompose is a no-op (it null-checks cmd.Process). exited is
+// delivered by a delayed goroutine so the supervisor's `<-exited`
+// inside the SIGINT branch unblocks.
+func TestRunInDockerSupervisor_SIGINTBranch(t *testing.T) {
+	exited := make(chan error, 1)
+	keyCh := make(chan keyboardSignal, 1)
+
+	go func() {
+		time.Sleep(75 * time.Millisecond)
+		proc, err := os.FindProcess(os.Getpid())
+		if err == nil {
+			_ = proc.Signal(os.Interrupt)
+		}
+		time.Sleep(50 * time.Millisecond)
+		exited <- nil
+	}()
+
+	called := ""
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.Equal(t, "interrupted", called)
+}
+
+// runInDockerSupervisor — interruptCompose body (the `if cmd != nil &&
+// cmd.Process != nil` branch). All existing supervisor tests pass
+// cmd=nil; this test supplies a real `sleep 60` cmd so the SIGINT is
+// forwarded into a live Process.
+func TestRunInDockerSupervisor_InterruptComposeWithRealCmd(t *testing.T) {
+	cmd := exec.Command("sleep", "60")
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { _ = cmd.Wait() })
+
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+
+	keyCh := make(chan keyboardSignal, 1)
+	keyCh <- sigKeyboardQuit
+	called := ""
+	restart := runInDockerSupervisor(cmd, exited, func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.Equal(t, "quit", called)
+}
+
+// airSignalHandler — Air exits on its own (done channel closed first).
+// Handler must return without signaling airCmd or calling teardown.
+func TestAirSignalHandler_DoneBranch(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	done := make(chan struct{})
+	close(done)
+
+	called := ""
+	flag := &atomicBool{}
+	airSignalHandler(sigChan, keyCh, done, nil, func(r string) { called = r }, flag)
+	assert.Empty(t, called, "done branch must not call teardown")
+	assert.False(t, flag.Load(), "restart flag must remain false")
+}
+
+// airSignalHandler — keyboardRestart with a real running cmd. Exercises
+// the SIGINT-the-airCmd body inside the restart branch.
+func TestAirSignalHandler_KeyboardRestartWithRunningCmd(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("sleep", "60")
+	require.NoError(t, airCmd.Start())
+	t.Cleanup(func() { _ = airCmd.Wait() })
+
+	flag := &atomicBool{}
+	called := ""
+	keyCh <- sigKeyboardRestart
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd,
+		func(r string) { called = r }, flag)
+	assert.Equal(t, "restart", called)
+	assert.True(t, flag.Load())
+}
+
+// airSignalHandler — keyboardQuit with a real running cmd. Covers the
+// SIGINT-the-airCmd body inside the quit branch.
+func TestAirSignalHandler_KeyboardQuitWithRunningCmd(t *testing.T) {
+	sigChan := make(chan os.Signal, 1)
+	keyCh := make(chan keyboardSignal, 1)
+	airCmd := exec.Command("sleep", "60")
+	require.NoError(t, airCmd.Start())
+	t.Cleanup(func() { _ = airCmd.Wait() })
+
+	flag := &atomicBool{}
+	called := ""
+	keyCh <- sigKeyboardQuit
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd,
+		func(r string) { called = r }, flag)
+	assert.Equal(t, "quit", called)
+	assert.False(t, flag.Load())
+}
+
+// resolveDevPlan — in-docker mode (app in selected) plus a local
+// filesystem replace in go.mod is a configuration error.
+func TestResolveDevPlan_InDockerRejectsLocalReplaces(t *testing.T) {
+	setupDevTempdir(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  app: {}\n"), 0o644))
+
+	origReplaces := findLocalReplacesFn
+	findLocalReplacesFn = func(string) ([]localReplace, error) {
+		return []localReplace{{Module: "example.com/foo", Path: "../foo"}}, nil
+	}
+	t.Cleanup(func() { findLocalReplacesFn = origReplaces })
+
+	fakeExecOutput(t, `{"services":{"app":{}}}`, 0)
+
+	_, err := resolveDevPlan(devFlags{servicesList: []string{"app"}, servicesRaw: "app"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "replace")
+}
+
+// resolveDevPlan — detectComposeProfilesFn returns a profile that isn't
+// in the initially-resolved set; the slices.Contains check + append
+// branch runs.
+func TestResolveDevPlan_DiscoveredProfilesAppended(t *testing.T) {
+	setupDevTempdir(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+
+	origProfiles := detectComposeProfilesFn
+	detectComposeProfilesFn = func() ([]string, error) {
+		return []string{"newone", ""}, nil
+	}
+	t.Cleanup(func() { detectComposeProfilesFn = origProfiles })
+
+	origReplaces := findLocalReplacesFn
+	findLocalReplacesFn = func(string) ([]localReplace, error) { return nil, nil }
+	t.Cleanup(func() { findLocalReplacesFn = origReplaces })
+
+	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, plan.profiles, "newone")
+}
+
+// runDevPipeline — in-docker mode. With "app" in --services, the
+// pipeline brings up supporting services detached and runs the app
+// container in foreground.
+func TestRunDevPipeline_InDockerMode(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  app: {}\n  db: {}\n"), 0o644))
+
+	origReplaces := findLocalReplacesFn
+	findLocalReplacesFn = func(string) ([]localReplace, error) { return nil, nil }
+	t.Cleanup(func() { findLocalReplacesFn = origReplaces })
+
+	composeConfig := `{"services":{"app":{},"db":{"healthcheck":{"test":["CMD","x"]}}}}`
+	composePS := `[{"Service":"db","State":"running","Health":"healthy"}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		switch {
+		case hasComposeSub(args, "config"):
+			stdout = composeConfig
+		case hasComposeSub(args, "ps"):
+			stdout = composePS
+		case len(args) >= 2 && args[0] == "version":
+			stdout = "28.0\n"
+		case hasComposeSub(args, "version"):
+			stdout = "v2.26\n"
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "app,db",
+		servicesList: []string{"app", "db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — in-docker mode + --attach-logs. Covers the warn
+// branch ("attach-logs is implicit ...") AND the supporting-services
+// log streamer branch.
+func TestRunDevPipeline_InDockerWithAttachLogs(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  app: {}\n  db: {}\n"), 0o644))
+
+	origReplaces := findLocalReplacesFn
+	findLocalReplacesFn = func(string) ([]localReplace, error) { return nil, nil }
+	t.Cleanup(func() { findLocalReplacesFn = origReplaces })
+
+	composeConfig := `{"services":{"app":{},"db":{"healthcheck":{"test":["CMD","x"]}}}}`
+	composePS := `[{"Service":"db","State":"running","Health":"healthy"}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if hasComposeSub(args, "config") {
+			stdout = composeConfig
+		} else if hasComposeSub(args, "ps") {
+			stdout = composePS
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "app,db",
+		servicesList: []string{"app", "db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+		attachLogs:   true,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — host mode + --attach-logs. Covers the host-mode log
+// streamer branch (orchestrate=true && !inDocker && services > 0).
+func TestRunDevPipeline_AttachLogsHostMode(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+
+	composeConfig := `{"services":{"db":{"healthcheck":{"test":["CMD","x"]}}}}`
+	composePS := `[{"Service":"db","State":"running","Health":"healthy"}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if hasComposeSub(args, "config") {
+			stdout = composeConfig
+		} else if hasComposeSub(args, "ps") {
+			stdout = composePS
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "db",
+		servicesList: []string{"db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+		attachLogs:   true,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — hasUnreachable=true and the menu (non-TTY)
+// short-circuits to menuCancel. Pipeline returns clierr indicating
+// preflight unresolved.
+func TestRunDevPipeline_MenuCancelExits(t *testing.T) {
+	setupDevTempdir(t)
+	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeUnreachable, Reason: "boom"}
+	}
+	probeCacheFn = func() probeResult { return probeResult{Dep: "cache", Status: probeNotConfigured} }
+	probeQueueFn = func() probeResult { return probeResult{Dep: "queue", Status: probeNotConfigured} }
+	t.Cleanup(func() {
+		probeDatabaseFn = origDB
+		probeCacheFn = origCache
+		probeQueueFn = origQueue
+	})
+	origTTY := menuIsTTYFn
+	menuIsTTYFn = func() bool { return false }
+	t.Cleanup(func() { menuIsTTYFn = origTTY })
+	captureMenuOutput(t)
+
+	withFakeExec(t, 0)
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeUnreachable, Reason: "boom"}
+	}
+
+	err := runDev(devFlags{envFile: ".env"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "preflight")
+}
+
+// runDevPipeline — menuRunWithoutDB outcome. User picks option [3];
+// flags.noDB becomes true, migrate is skipped, the no-DB warn banner
+// fires.
+func TestRunDevPipeline_NoDBMode(t *testing.T) {
+	setupDevTempdir(t)
+	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeUnreachable}
+	}
+	probeCacheFn = func() probeResult { return probeResult{Dep: "cache", Status: probeNotConfigured} }
+	probeQueueFn = func() probeResult { return probeResult{Dep: "queue", Status: probeNotConfigured} }
+	t.Cleanup(func() {
+		probeDatabaseFn = origDB
+		probeCacheFn = origCache
+		probeQueueFn = origQueue
+	})
+	forceTTY(t, true)
+	pipeStdin(t, "3")
+	captureMenuOutput(t)
+
+	withFakeExec(t, 0)
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeUnreachable}
+	}
+
+	err := runDev(devFlags{envFile: ".env"})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — menu option [2] starts services and the
+// `mergeServices(menuStarted)` branch fires. Probes return unreachable
+// once, then OK after the menu finishes "starting" the service.
+func TestRunDevPipeline_MenuStartedServicesMerged(t *testing.T) {
+	setupDevTempdir(t)
+	probeCalls := 0
+	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
+	probeDatabaseFn = func() probeResult {
+		probeCalls++
+		if probeCalls == 1 {
+			return probeResult{Dep: "database", Status: probeUnreachable}
+		}
+		return probeResult{Dep: "database", Status: probeOK, Endpoint: "localhost:5432"}
+	}
+	probeCacheFn = func() probeResult { return probeResult{Dep: "cache", Status: probeNotConfigured} }
+	probeQueueFn = func() probeResult { return probeResult{Dep: "queue", Status: probeNotConfigured} }
+	t.Cleanup(func() {
+		probeDatabaseFn = origDB
+		probeCacheFn = origCache
+		probeQueueFn = origQueue
+	})
+
+	forceTTY(t, true)
+	pipeStdin(t, "2")
+	captureMenuOutput(t)
+
+	origStart := menuStartServicesFn
+	menuStartServicesFn = func([]string) error { return nil }
+	t.Cleanup(func() { menuStartServicesFn = origStart })
+	origWait := menuWaitHealthyFn
+	menuWaitHealthyFn = func([]string) error { return nil }
+	t.Cleanup(func() { menuWaitHealthyFn = origWait })
+
+	withFakeExec(t, 0)
+	probeDatabaseFn = func() probeResult {
+		probeCalls++
+		if probeCalls == 1 {
+			return probeResult{Dep: "database", Status: probeUnreachable}
+		}
+		return probeResult{Dep: "database", Status: probeOK}
+	}
+
+	err := runDev(devFlags{envFile: ".env"})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — teardown closure resetVolumes branch (keepVolumes
+// is false AND services are present).
+func TestRunDevPipeline_TeardownResetVolumes(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+	composeConfig := `{"services":{"db":{"healthcheck":{"test":["CMD","x"]}}}}`
+	composePS := `[{"Service":"db","State":"running","Health":"healthy"}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if hasComposeSub(args, "config") {
+			stdout = composeConfig
+		} else if hasComposeSub(args, "ps") {
+			stdout = composePS
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "db",
+		servicesList: []string{"db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  false,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — teardown closure stopServices error branch.
+// `compose stop` exits non-zero, which emits "stopped-failed".
+func TestRunDevPipeline_TeardownStopFails(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+	composeConfig := `{"services":{"db":{"healthcheck":{"test":["CMD","x"]}}}}`
+	composePS := `[{"Service":"db","State":"running","Health":"healthy"}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		exitCode := 0
+		switch {
+		case hasComposeSub(args, "config"):
+			stdout = composeConfig
+		case hasComposeSub(args, "ps"):
+			stdout = composePS
+		case hasComposeSub(args, "stop"):
+			exitCode = 1
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"="+strconv.Itoa(exitCode),
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "db",
+		servicesList: []string{"db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — --fresh with orchestrate=true triggers the
+// resetVolumes call (Stage 3). Existing fresh tests don't pass
+// services so plan.orchestrate is false; this one does.
+func TestRunDevPipeline_FreshWithOrchestrate(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+	composeConfig := `{"services":{"db":{}}}`
+	composePS := `[{"Service":"db","State":"running","Health":""}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		if hasComposeSub(args, "config") {
+			stdout = composeConfig
+		} else if hasComposeSub(args, "ps") {
+			stdout = composePS
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"=0",
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "db",
+		servicesList: []string{"db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+		fresh:        true,
+	})
+	assert.NoError(t, err)
+}
+
+// runDevPipeline — Stage 3 resetVolumes errors but pipeline continues
+// (the error is logged as a warning, not fatal).
+func TestRunDevPipeline_FreshResetVolumesFailsWithOrchestrate(t *testing.T) {
+	setupDevTempdir(t)
+	stubProbesOK(t)
+	require.NoError(t, os.WriteFile("compose.yaml",
+		[]byte("services:\n  db: {}\n"), 0o644))
+	composeConfig := `{"services":{"db":{}}}`
+	composePS := `[{"Service":"db","State":"running","Health":""}]`
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		stdout := ""
+		exitCode := 0
+		switch {
+		case hasComposeSub(args, "config"):
+			stdout = composeConfig
+		case hasComposeSub(args, "ps"):
+			stdout = composePS
+		case hasComposeSub(args, "down"):
+			exitCode = 1
+		}
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			fakeEnvExitCode+"="+strconv.Itoa(exitCode),
+			"GOFASTA_FAKE_STDOUT="+stdout,
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := runDev(devFlags{
+		envFile:      ".env",
+		servicesRaw:  "db",
+		servicesList: []string{"db"},
+		waitTimeout:  5 * time.Second,
+		keepVolumes:  true,
+		fresh:        true,
+	})
+	assert.NoError(t, err)
+}
+
+// devCmd RunE — the deprecated --all-in-docker alias rewrites to
+// --services all when servicesRaw is empty.
+func TestDevCmd_RunE_AllInDockerDeprecatedAlias(t *testing.T) {
+	withFakeExec(t, 0)
+	origFlags := devFlagValues
+	t.Cleanup(func() { devFlagValues = origFlags })
+	devFlagValues = devFlags{allInDocker: true, envFile: ".env"}
+
+	origPipeline := runDevPipelineFn
+	runDevPipelineFn = func(_ devFlags, _ devEmitter) (bool, error) { return false, nil }
+	t.Cleanup(func() { runDevPipelineFn = origPipeline })
+
+	require.NoError(t, devCmd.RunE(devCmd, nil))
+	assert.Equal(t, "all", devFlagValues.servicesRaw)
+}
+
+// runDev restart loop — runDevPipelineFn returns (true, nil) twice
+// then (false, nil); the outer loop iterates three times.
+func TestRunDev_RestartLoopIterates(t *testing.T) {
+	calls := 0
+	orig := runDevPipelineFn
+	runDevPipelineFn = func(_ devFlags, _ devEmitter) (bool, error) {
+		calls++
+		if calls < 3 {
+			return true, nil
+		}
+		return false, nil
+	}
+	t.Cleanup(func() { runDevPipelineFn = orig })
+
+	err := runDev(devFlags{})
+	assert.NoError(t, err)
+	assert.Equal(t, 3, calls, "pipeline should run 3 times (2 restarts + clean exit)")
 }

@@ -131,3 +131,150 @@ func TestRenderTemplate_BadTemplate(t *testing.T) {
 	// generator test suite asserts every shipped template parses).
 	t.Skip("renderTemplate parse-error branch requires custom embed FS")
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Doc-file rename coverage — the AGENTS.md → CLAUDE.md / CONVENTIONS.md
+// step that runs at the top of Install for non-native readers.
+// ─────────────────────────────────────────────────────────────────────
+
+// TestInstall_RenamesAgentsmd_Claude — pre-seed AGENTS.md, run the
+// claude install, assert AGENTS.md is gone and CLAUDE.md has identical
+// content.
+func TestInstall_RenamesAgentsmd_Claude(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("# Project briefing\nUse `gofasta verify`.\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), body, 0o644))
+
+	agent := AgentByKey("claude")
+	require.NotNil(t, agent)
+	result, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.NoError(t, err)
+	require.NotEmpty(t, result.Renamed, "expected the rename to be reported")
+	assert.Equal(t, []string{"AGENTS.md → CLAUDE.md"}, result.Renamed)
+
+	_, err = os.Stat(filepath.Join(dir, "AGENTS.md"))
+	assert.True(t, os.IsNotExist(err), "AGENTS.md should be gone after rename")
+	got, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	require.NoError(t, err)
+	assert.Equal(t, body, got, "CLAUDE.md should preserve AGENTS.md content")
+}
+
+// TestInstall_RenamesAgentsmd_Aider — same as above for aider, which
+// renames to CONVENTIONS.md.
+func TestInstall_RenamesAgentsmd_Aider(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("# Aider conventions\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), body, 0o644))
+
+	agent := AgentByKey("aider")
+	require.NotNil(t, agent)
+	_, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(dir, "AGENTS.md"))
+	assert.True(t, os.IsNotExist(err))
+	got, err := os.ReadFile(filepath.Join(dir, "CONVENTIONS.md"))
+	require.NoError(t, err)
+	assert.Equal(t, body, got)
+}
+
+// TestInstall_NativeReader_LeavesAgentsmd — codex reads AGENTS.md
+// natively, so the install must NOT rename it.
+func TestInstall_NativeReader_LeavesAgentsmd(t *testing.T) {
+	dir := t.TempDir()
+	body := []byte("# Briefing\n")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), body, 0o644))
+
+	agent := AgentByKey("codex")
+	require.NotNil(t, agent)
+	result, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, result.Renamed, "codex should not rename AGENTS.md")
+
+	got, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	require.NoError(t, err)
+	assert.Equal(t, body, got)
+}
+
+// TestInstall_AmbiguousDocFiles — pre-seed BOTH AGENTS.md and
+// CLAUDE.md; the install must refuse with a clear error so the user
+// resolves the ambiguity rather than silently picking one.
+func TestInstall_AmbiguousDocFiles(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("a"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("c"), 0o644))
+
+	agent := AgentByKey("claude")
+	_, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "AGENTS.md", "error should mention the conflict")
+	assert.Contains(t, err.Error(), "CLAUDE.md")
+}
+
+// TestInstall_DryRunDoesNotRename — dry-run records the would-be
+// rename in WouldRename without moving the file.
+func TestInstall_DryRunDoesNotRename(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("x"), 0o644))
+
+	agent := AgentByKey("claude")
+	result, err := Install(agent, dir, sampleData(), InstallOptions{DryRun: true})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"AGENTS.md → CLAUDE.md"}, result.WouldRename)
+	assert.Empty(t, result.Renamed)
+	// AGENTS.md still on disk.
+	_, err = os.Stat(filepath.Join(dir, "AGENTS.md"))
+	require.NoError(t, err)
+	_, err = os.Stat(filepath.Join(dir, "CLAUDE.md"))
+	assert.True(t, os.IsNotExist(err))
+}
+
+// TestInstall_AlreadyRenamed_RecordsForUninstall — only CLAUDE.md
+// exists (no AGENTS.md). The install treats it as already-renamed and
+// records the rename pair on the result so the manifest can reverse it.
+func TestInstall_AlreadyRenamed_RecordsForUninstall(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "CLAUDE.md"), []byte("body"), 0o644))
+
+	agent := AgentByKey("claude")
+	result, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.NoError(t, err)
+	assert.Empty(t, result.Renamed, "no rename actually happened")
+	assert.Equal(t, "AGENTS.md", result.renameFrom)
+	assert.Equal(t, "CLAUDE.md", result.renameTo)
+}
+
+// TestInstall_RenameFails_PropagatesError — force an osRename failure
+// via the seam to confirm the rename error path is wrapped properly.
+func TestInstall_RenameFails_PropagatesError(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"), []byte("x"), 0o644))
+	orig := osRename
+	osRename = func(_, _ string) error { return assertError("rename boom") }
+	t.Cleanup(func() { osRename = orig })
+
+	agent := AgentByKey("claude")
+	_, err := Install(agent, dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rename")
+}
+
+// TestInstall_StatReadFails_NonIsNotExist — destAbs is a DIRECTORY,
+// so os.ReadFile returns "is a directory" — not IsNotExist. This
+// covers the `default` arm of the switch in Install that wraps the
+// stat error.
+func TestInstall_StatReadFails_NonIsNotExist(t *testing.T) {
+	dir := t.TempDir()
+	agent := AgentByKey("claude")
+	files, err := TemplateFiles(agent)
+	require.NoError(t, err)
+	require.NotEmpty(t, files)
+	// Replace the first template's destination path with a directory
+	// so the os.ReadFile call returns EISDIR rather than IsNotExist.
+	dst := filepath.Join(dir, files[0].DestPath)
+	require.NoError(t, os.MkdirAll(dst, 0o755))
+
+	_, err = Install(agent, dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "stat")
+}

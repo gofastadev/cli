@@ -1,83 +1,94 @@
 package controllers
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
 	"github.com/gofastadev/gofasta/pkg/httputil"
 	"github.com/gofastadev/gofasta/pkg/utils"
-	"github.com/gorilla/schema"
+	"gorm.io/gorm"
 
 	"{{.ModulePath}}/app/dtos"
+	"{{.ModulePath}}/app/services"
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 )
 
-var decoder = schema.NewDecoder()
-
-func init() {
-	decoder.IgnoreUnknownKeys(true)
+// recordVersionETag formats a record version as an ETag value the
+// controller responses set on Get / Create / Update / Archive. The
+// quoting matches what httputil.ParseIfMatch unquotes, so a client
+// round-trip (GET → If-Match → PUT) is symmetric.
+func recordVersionETag(v int) string {
+	return httputil.ETagOf(strconv.Itoa(v))
 }
 
-// UserController handles RESTful requests for users.
+// UserController is the REST surface for the user resource.
+//
+// Layering: this is the only place HTTP semantics live for this
+// resource. Body decoding, query-param parsing, input validation,
+// and the model→DTO mapping for responses all happen here. The
+// service has zero HTTP awareness — it deals in domain types and
+// sentinel errors, which this controller maps to status codes.
 type UserController struct {
-	UserService svcInterfaces.UserServiceInterface
+	svc       svcInterfaces.UserServiceInterface
+	validator Validator
 }
 
-// NewUserControllerInstance creates a new UserController.
-func NewUserControllerInstance(userService svcInterfaces.UserServiceInterface) *UserController {
-	return &UserController{UserService: userService}
+// NewUserControllerInstance constructs a UserController. Wire calls
+// this at app startup, satisfying the dependencies from the project's
+// wire set. Validator is the controllers.Validator interface; the
+// project's *validators.AppValidator is bound to it in CoreSet.
+func NewUserControllerInstance(svc svcInterfaces.UserServiceInterface, v Validator) *UserController {
+	return &UserController{svc: svc, validator: v}
 }
 
-// ListUsers handles GET /users requests.
+// ListUsers handles GET /users.
 //
 //	@Summary		List users
 //	@Description	Get all users with optional filtering, pagination, and sorting
 //	@Tags			users
 //	@Produce		json
-//	@Param			sortByField	query		string	true	"Field to sort by"
-//	@Success		200			{object}	dtos.TUsersResponseDto
-//	@Failure		400			{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500			{object}	dtos.TCommonAPIErrorDto
+//	@Param			sortByField		query		string	false	"Field to sort by (default: createdAt)"
+//	@Param			sortOrientation	query		string	false	"asc | desc (default: desc)"
+//	@Success		200				{object}	dtos.TUsersResponseDto
+//	@Failure		422				{object}	apperrors.AppError
+//	@Failure		500				{object}	apperrors.AppError
 //	@Router			/users [get]
-func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
-	if err := r.ParseForm(); err != nil {
-		return apperrors.NewBadRequest("failed to parse query parameters", nil)
-	}
-	var filters dtos.TUserFiltersQueryParamsDto
-	if err := decoder.Decode(&filters, r.URL.Query()); err != nil {
+func (c *UserController) ListUsers(w http.ResponseWriter, r *http.Request) error {
+	q, err := httputil.DecodeQuery[dtos.TUserFiltersQueryParamsDto](r)
+	if err != nil {
 		return apperrors.NewBadRequest("invalid query parameters", nil)
 	}
-
-	var userFilters dtos.UserFiltersDto
-	userFilters.Fields = &dtos.UserFieldsForFiltersDto{
-		FirstName:   filters.FirstName,
-		OtherNames:  filters.OtherNames,
-		Email:       filters.Email,
-		PhoneNumber: filters.PhoneNumber,
-	}
-	userFilters.Pagination = &dtos.TPaginationInputDto{
-		Limit: filters.Limit,
-		Page:  filters.Page,
-	}
-	sortField := filters.SortByField
-	if sortField == "" {
-		sortField = "id"
-	}
-	userFilters.Sorting = &dtos.TSortingInputDto{
-		SortByField:     sortField,
-		SortOrientation: filters.SortOrientation,
+	if errs := c.validator.ValidateStruct(q); len(errs) > 0 {
+		return apperrors.NewValidation("invalid query parameters", errs)
 	}
 
-	usersRes, err := uc.UserService.FindUsersWithFilters(r.Context(), userFilters)
+	users, total, err := c.svc.List(r.Context(), q.ToFilter())
 	if err != nil {
-		return apperrors.NewInternal("failed to fetch users", err)
+		return apperrors.NewInternal("failed to list users", err)
 	}
-	return httputil.OK(w, usersRes)
+
+	totalRecords := int(total)
+	page := q.ToFilter().Page
+	limit := q.ToFilter().Limit
+	totalPages := 0
+	if limit > 0 {
+		totalPages = (totalRecords + limit - 1) / limit
+	}
+	return httputil.OK(w, dtos.TUsersResponseDto{
+		Data: dtos.UsersFromModels(users),
+		Pagination: &dtos.TPaginationObjectDto{
+			TotalRecords:   &totalRecords,
+			CurrentPage:    &page,
+			RecordsPerPage: &limit,
+			TotalPages:     &totalPages,
+		},
+	})
 }
 
-// CreateUser handles POST /users requests.
+// CreateUser handles POST /users.
 //
 //	@Summary		Create a user
 //	@Description	Create a new user account
@@ -86,55 +97,30 @@ func (uc *UserController) ListUsers(w http.ResponseWriter, r *http.Request) erro
 //	@Produce		json
 //	@Param			user	body		dtos.TCreateUserDto	true	"User data"
 //	@Success		201		{object}	dtos.TUserResponseDto
-//	@Failure		400		{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500		{object}	dtos.TCommonAPIErrorDto
+//	@Failure		422		{object}	apperrors.AppError
+//	@Failure		500		{object}	apperrors.AppError
 //	@Router			/users [post]
-func (uc *UserController) CreateUser(w http.ResponseWriter, r *http.Request) error {
-	var user dtos.TCreateUserDto
-	if err := json.NewDecoder(r.Body).Decode(&user); err != nil {
-		return apperrors.NewBadRequest("invalid request payload", nil)
+func (c *UserController) CreateUser(w http.ResponseWriter, r *http.Request) error {
+	in, err := httputil.DecodeJSON[dtos.TCreateUserDto](r)
+	if err != nil {
+		return apperrors.NewBadRequest("invalid request body", nil)
+	}
+	if errs := c.validator.ValidateStruct(in); len(errs) > 0 {
+		return apperrors.NewValidation("invalid input", errs)
 	}
 
-	createdUser, err := uc.UserService.CreateUser(r.Context(), user)
+	user, err := c.svc.Create(r.Context(), in.ToCreateInput())
 	if err != nil {
 		return apperrors.NewInternal("failed to create user", err)
 	}
-	return httputil.Created(w, createdUser)
+	// ETag header carries the current RecordVersion so the client can
+	// supply it back as If-Match on a follow-up PUT without an extra
+	// GET round-trip.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
+	return httputil.Created(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }
 
-// UpdateUser handles PUT /users/{id} requests.
-//
-//	@Summary		Update a user
-//	@Description	Update user fields by ID
-//	@Tags			users
-//	@Accept			json
-//	@Produce		json
-//	@Param			id		path		string						true	"User ID"
-//	@Param			user	body		dtos.TUserFieldsForUpdateDto	true	"Fields to update"
-//	@Success		200		{object}	dtos.TUserResponseDto
-//	@Failure		400		{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500		{object}	dtos.TCommonAPIErrorDto
-//	@Router			/users/{id} [put]
-func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
-	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
-	if err != nil {
-		return apperrors.NewBadRequest("id should be a valid UUID", nil)
-	}
-
-	var dataForUpdate dtos.TUserFieldsForUpdateDto
-	if err := json.NewDecoder(r.Body).Decode(&dataForUpdate); err != nil {
-		return apperrors.NewBadRequest("invalid request payload", nil)
-	}
-	dataForUpdate.ID = userID
-
-	updatedUser, err := uc.UserService.UpdateUser(r.Context(), dataForUpdate)
-	if err != nil {
-		return apperrors.NewInternal("failed to update user", err)
-	}
-	return httputil.OK(w, updatedUser)
-}
-
-// GetUser handles GET /users/{id} requests.
+// GetUser handles GET /users/{id}.
 //
 //	@Summary		Get a user
 //	@Description	Get a single user by ID
@@ -142,44 +128,134 @@ func (uc *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) err
 //	@Produce		json
 //	@Param			id	path		string	true	"User ID"
 //	@Success		200	{object}	dtos.TUserResponseDto
-//	@Failure		400	{object}	dtos.TCommonAPIErrorDto
-//	@Failure		404	{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500	{object}	dtos.TCommonAPIErrorDto
+//	@Failure		400	{object}	apperrors.AppError
+//	@Failure		404	{object}	apperrors.AppError
+//	@Failure		500	{object}	apperrors.AppError
 //	@Router			/users/{id} [get]
-func (uc *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
-	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+func (c *UserController) GetUser(w http.ResponseWriter, r *http.Request) error {
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
 
-	user, err := uc.UserService.FindUserByID(r.Context(), dtos.TFindUserByIDDto{UserID: userID})
-	if err != nil {
+	user, err := c.svc.Get(r.Context(), id)
+	switch {
+	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+		return apperrors.NewNotFound("user not found", nil)
+	case err != nil:
 		return apperrors.NewInternal("failed to find user", err)
 	}
-	return httputil.OK(w, user)
+	// ETag carries the current RecordVersion so the client can supply
+	// it on a follow-up PUT via If-Match.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
+	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }
 
-// ArchiveUser handles DELETE /users/{id} requests.
+// UpdateUser handles PUT /users/{id}.
+//
+// Optimistic concurrency control uses the HTTP-native If-Match /
+// ETag mechanism (RFC 7232):
+//   - Caller GETs the resource; the response carries ETag: "<version>".
+//   - Caller PUTs the update with If-Match: "<version>".
+//   - Server returns 412 Precondition Failed if the version mismatches,
+//     428 Precondition Required if the header is missing.
+//
+// Putting the version in a header (not the body) keeps the body
+// strictly the fields being updated — see TUpdateUserDto's doc for
+// the full rationale.
+//
+//	@Summary		Update a user
+//	@Description	Update user fields by ID. Send the current RecordVersion as `If-Match: "<n>"`.
+//	@Tags			users
+//	@Accept			json
+//	@Produce		json
+//	@Param			id			path		string				true	"User ID"
+//	@Param			If-Match	header		string				true	"Current RecordVersion, RFC 7232 strong validator (e.g. &quot;3&quot;)"
+//	@Param			user		body		dtos.TUpdateUserDto	true	"Fields to update"
+//	@Success		200			{object}	dtos.TUserResponseDto
+//	@Failure		400			{object}	apperrors.AppError
+//	@Failure		404			{object}	apperrors.AppError
+//	@Failure		412			{object}	apperrors.AppError	"If-Match doesn't match current version"
+//	@Failure		422			{object}	apperrors.AppError
+//	@Failure		428			{object}	apperrors.AppError	"If-Match header is required"
+//	@Failure		500			{object}	apperrors.AppError
+//	@Router			/users/{id} [put]
+func (c *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) error {
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+	if err != nil {
+		return apperrors.NewBadRequest("id should be a valid UUID", nil)
+	}
+	// If-Match comes before the body parse so a missing header fails
+	// fast with 428 — the body decode would have succeeded but the
+	// version is mandatory for safe updates.
+	ifMatch, err := httputil.ParseIfMatch(r)
+	if err != nil {
+		// ParseIfMatch already returns the right *apperrors.AppError
+		// (PreconditionRequired) — bubble it up unchanged.
+		return err
+	}
+	expectedVersion, err := strconv.Atoi(ifMatch)
+	if err != nil {
+		return apperrors.NewBadRequest(`If-Match must be a positive integer wrapped in quotes (e.g. "3")`, nil)
+	}
+	in, err := httputil.DecodeJSON[dtos.TUpdateUserDto](r)
+	if err != nil {
+		return apperrors.NewBadRequest("invalid request body", nil)
+	}
+	if errs := c.validator.ValidateStruct(in); len(errs) > 0 {
+		return apperrors.NewValidation("invalid input", errs)
+	}
+
+	user, err := c.svc.Update(r.Context(), id, expectedVersion, in.ToPatch())
+	switch {
+	case errors.Is(err, services.ErrUserVersionConflict):
+		return apperrors.NewPreconditionFailed(
+			"If-Match doesn't match current record version — GET to fetch the latest ETag and retry", nil)
+	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+		return apperrors.NewNotFound("user not found", nil)
+	case err != nil:
+		return apperrors.NewInternal("failed to update user", err)
+	}
+	// Response ETag advances to the new version so the client can
+	// chain immediate subsequent updates without re-GETing.
+	w.Header().Set("ETag", recordVersionETag(user.RecordVersion))
+	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
+}
+
+// ArchiveUser handles DELETE /users/{id}. Soft-delete with idempotent
+// HTTP semantics: first call returns 200 with the soft-deleted record
+// (Stripe pattern — body carries the WHICH + WHEN, not a content-less
+// 204); a second call on the same id returns 404 (no longer
+// addressable via the public API — matches GitHub / Kubernetes
+// idempotency); a call against a row with IsDeletable=false returns
+// 409 (legitimate policy refusal — the row exists but the API
+// forbids archiving it).
 //
 //	@Summary		Archive a user
-//	@Description	Soft-delete a user by ID
+//	@Description	Soft-delete a user by ID. Idempotent: a second call returns 404.
 //	@Tags			users
 //	@Produce		json
-//	@Param			id	path		string	true	"User ID"
-//	@Success		200	{object}	dtos.TCommonResponseDto
-//	@Failure		400	{object}	dtos.TCommonAPIErrorDto
-//	@Failure		404	{object}	dtos.TCommonAPIErrorDto
-//	@Failure		500	{object}	dtos.TCommonAPIErrorDto
+//	@Param			id	path	string	true	"User ID"
+//	@Success		200	{object}	dtos.TUserResponseDto	"the soft-deleted record"
+//	@Failure		400	{object}	apperrors.AppError
+//	@Failure		404	{object}	apperrors.AppError	"row missing OR already deleted"
+//	@Failure		409	{object}	apperrors.AppError	"user is not deletable"
+//	@Failure		500	{object}	apperrors.AppError
 //	@Router			/users/{id} [delete]
-func (uc *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
-	userID, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
+func (c *UserController) ArchiveUser(w http.ResponseWriter, r *http.Request) error {
+	id, err := utils.ParseIDStringIsValidUUID(chi.URLParam(r, "id"))
 	if err != nil {
 		return apperrors.NewBadRequest("id should be a valid UUID", nil)
 	}
 
-	res, err := uc.UserService.ArchiveUser(r.Context(), dtos.TArchiveUserDto{UserID: userID})
-	if err != nil {
+	user, err := c.svc.Archive(r.Context(), id)
+	switch {
+	case errors.Is(err, services.ErrUserNotFound), errors.Is(err, gorm.ErrRecordNotFound):
+		return apperrors.NewNotFound("user not found", nil)
+	case errors.Is(err, services.ErrUserNotDeletable):
+		return apperrors.NewConflict("user is not deletable", nil)
+	case err != nil:
 		return apperrors.NewInternal("failed to archive user", err)
 	}
-	return httputil.OK(w, res)
+	return httputil.OK(w, dtos.TUserResponseDto{Data: dtos.UserFromModel(user)})
 }

@@ -10,9 +10,33 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
+
+// upgradeResult is the JSON contract for `gofasta upgrade --json`. The
+// shape distinguishes the two install methods (go-install vs binary)
+// via Method and reports both versions so an agent can decide whether
+// to follow up with hash -r / a shell restart.
+type upgradeResult struct {
+	Action     string `json:"action"`
+	Method     string `json:"method"` // go-install | binary | none
+	OldVersion string `json:"old_version"`
+	NewVersion string `json:"new_version,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Upgraded   bool   `json:"upgraded"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
+
+// emitUpgradeResult is the JSON-mode emitter. Text mode keeps the
+// existing termcolor printers so the human progress UX is unchanged.
+func emitUpgradeResult(r upgradeResult) {
+	if !cliout.JSON() {
+		return
+	}
+	cliout.Print(r, nil)
+}
 
 // Package-level seams so tests can redirect network + URLs without hitting GitHub.
 var (
@@ -80,26 +104,42 @@ func runUpgrade() error {
 
 	latest, err := fetchLatestVersion()
 	if err != nil {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "none", OldVersion: current,
+			Success: false, Error: err.Error(),
+		})
 		return fmt.Errorf("failed to check for updates: %w", err)
 	}
 	latestClean := normalizeVersion(latest)
 
 	if current == latestClean {
-		termcolor.PrintSuccess("gofasta is already up to date (v%s)", current)
+		if !cliout.JSON() {
+			cliout.Success("gofasta is already up to date (v%s)", current)
+		}
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "none", OldVersion: current,
+			NewVersion: current, Upgraded: false, Success: true,
+		})
 		return nil
 	}
 
-	termcolor.PrintHeader("Upgrading gofasta: v%s → v%s", current, latestClean)
+	if !cliout.JSON() {
+		cliout.Header("Upgrading gofasta: v%s → v%s", current, latestClean)
+	}
 
 	execPath, err := osExecutable()
 	if err != nil {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "none", OldVersion: current,
+			Success: false, Error: err.Error(),
+		})
 		return fmt.Errorf("cannot determine executable path: %w", err)
 	}
 
 	if isGoInstall(execPath) {
-		return upgradeViaGoInstall(latest, latestClean)
+		return upgradeViaGoInstall(latest, latestClean, current)
 	}
-	return upgradeViaBinary(execPath, latest)
+	return upgradeViaBinary(execPath, latest, current)
 }
 
 func fetchLatestVersion() (string, error) {
@@ -180,43 +220,80 @@ func readBinaryVersion(binPath string) (string, error) {
 // rawTag is the version string as it appears on the release (with the "v"
 // prefix, e.g. "v0.1.5"). expectedVersion is the normalized form (no "v",
 // e.g. "0.1.5") used for the post-install version-match assertion.
-func upgradeViaGoInstall(rawTag, expectedVersion string) error {
+func upgradeViaGoInstall(rawTag, expectedVersion, oldVersion string) error {
 	modulePath := "github.com/gofastadev/cli/cmd/gofasta@" + rawTag
-	termcolor.PrintStep("Detected `go install`. Running: go install %s", modulePath)
+	if !cliout.JSON() {
+		cliout.Step("Detected `go install`. Running: go install %s", modulePath)
+	}
 	cmd := execCommand("go", "install", modulePath)
-	cmd.Stdout = os.Stdout
+	if cliout.JSON() {
+		// Route the child's stdout to stderr so the structured result we
+		// emit at the end is the only thing on stdout.
+		cmd.Stdout = os.Stderr
+	} else {
+		cmd.Stdout = os.Stdout
+	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "go-install", OldVersion: oldVersion,
+			NewVersion: expectedVersion, Success: false,
+			Error: fmt.Sprintf("go install failed: %v", err),
+		})
 		return fmt.Errorf("go install failed: %w", err)
 	}
 
 	// Verify the install actually placed a new binary at the expected version.
 	target, err := goInstallTargetPath()
 	if err != nil {
-		termcolor.PrintWarn("Upgrade complete (could not determine install path for verification).")
-		printShellHashHint()
+		if !cliout.JSON() {
+			cliout.Warn("Upgrade complete (could not determine install path for verification).")
+			printShellHashHint()
+		}
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "go-install", OldVersion: oldVersion,
+			NewVersion: expectedVersion, Upgraded: true, Success: true,
+		})
 		return nil
 	}
 
 	installed, err := readBinaryVersion(target)
 	if err != nil {
-		termcolor.PrintSuccess("Upgrade complete. Installed to %s", target)
-		termcolor.PrintWarn("Could not verify the version of the new binary — it may still be correct.")
-		printShellHashHint()
+		if !cliout.JSON() {
+			cliout.Success("Upgrade complete. Installed to %s", target)
+			cliout.Warn("Could not verify the version of the new binary — it may still be correct.")
+			printShellHashHint()
+		}
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "go-install", OldVersion: oldVersion,
+			NewVersion: expectedVersion, Path: target, Upgraded: true, Success: true,
+		})
 		return nil
 	}
 
 	if normalizeVersion(installed) != expectedVersion {
-		return fmt.Errorf(
+		mismatchErr := fmt.Errorf(
 			"go install reported success but %s reports version %s, expected v%s — "+
 				"this usually means $GOBIN or $GOPATH is set differently than expected. "+
 				"Try running `go install %s` manually and check `which gofasta`",
 			target, installed, expectedVersion, modulePath,
 		)
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "go-install", OldVersion: oldVersion,
+			NewVersion: installed, Path: target, Success: false,
+			Error: mismatchErr.Error(),
+		})
+		return mismatchErr
 	}
 
-	termcolor.PrintSuccess("Upgraded to %s at %s", installed, target)
-	printShellHashHint()
+	if !cliout.JSON() {
+		cliout.Success("Upgraded to %s at %s", installed, target)
+		printShellHashHint()
+	}
+	emitUpgradeResult(upgradeResult{
+		Action: "upgrade", Method: "go-install", OldVersion: oldVersion,
+		NewVersion: installed, Path: target, Upgraded: true, Success: true,
+	})
 	return nil
 }
 
@@ -224,7 +301,7 @@ func upgradeViaGoInstall(rawTag, expectedVersion string) error {
 // windows-suffix branch on any host.
 var runtimeGOOS = func() string { return runtime.GOOS }
 
-func upgradeViaBinary(execPath, version string) error {
+func upgradeViaBinary(execPath, version, oldVersion string) error {
 	goos := runtimeGOOS()
 	goarch := runtime.GOARCH
 
@@ -234,71 +311,107 @@ func upgradeViaBinary(execPath, version string) error {
 	}
 
 	url := fmt.Sprintf(githubDownloadURLFmt, version, binary)
-	termcolor.PrintStep("Downloading %s...", url)
+	if !cliout.JSON() {
+		cliout.Step("Downloading %s...", url)
+	}
+
+	emitFail := func(err error) error {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "binary", OldVersion: oldVersion,
+			NewVersion: normalizeVersion(version), Path: execPath,
+			Success: false, Error: err.Error(),
+		})
+		return err
+	}
 
 	resp, err := httpGet(url)
 	if err != nil {
-		return fmt.Errorf("download failed: %w", err)
+		return emitFail(fmt.Errorf("download failed: %w", err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("download failed: HTTP %d", resp.StatusCode)
+		return emitFail(fmt.Errorf("download failed: HTTP %d", resp.StatusCode))
 	}
 
 	// Write to a temp file first
 	tmpFile, err := os.CreateTemp("", "gofasta-upgrade-*")
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
+		return emitFail(fmt.Errorf("failed to create temp file: %w", err))
 	}
 	tmpPath := tmpFile.Name()
 	defer func() { _ = os.Remove(tmpPath) }()
 
 	if _, err := io.Copy(tmpFile, resp.Body); err != nil {
 		_ = tmpFile.Close()
-		return fmt.Errorf("download failed: %w", err)
+		return emitFail(fmt.Errorf("download failed: %w", err))
 	}
 	_ = tmpFile.Close()
 
 	if err := osChmodFn(tmpPath, 0o755); err != nil {
-		return fmt.Errorf("failed to set permissions: %w", err)
+		return emitFail(fmt.Errorf("failed to set permissions: %w", err))
 	}
 
 	// Replace the current binary
 	if err := os.Rename(tmpPath, execPath); err != nil {
 		// Rename may fail across filesystems, fall back to copy
-		return replaceViaCopy(tmpPath, execPath)
+		return replaceViaCopy(tmpPath, execPath, oldVersion, version)
 	}
 
-	termcolor.PrintSuccess("Installed %s to %s", version, execPath)
-	printShellHashHint()
+	if !cliout.JSON() {
+		cliout.Success("Installed %s to %s", version, execPath)
+		printShellHashHint()
+	}
+	emitUpgradeResult(upgradeResult{
+		Action: "upgrade", Method: "binary", OldVersion: oldVersion,
+		NewVersion: normalizeVersion(version), Path: execPath,
+		Upgraded: true, Success: true,
+	})
 	return nil
 }
 
-func replaceViaCopy(src, dst string) error {
+func replaceViaCopy(src, dst, oldVersion, version string) error {
 	input, err := os.ReadFile(src)
 	if err != nil {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "binary", OldVersion: oldVersion,
+			NewVersion: normalizeVersion(version), Path: dst,
+			Success: false, Error: err.Error(),
+		})
 		return fmt.Errorf("failed to read downloaded binary: %w", err)
 	}
 
 	if err := os.WriteFile(dst, input, 0o755); err != nil {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "binary", OldVersion: oldVersion,
+			NewVersion: normalizeVersion(version), Path: dst,
+			Success: false, Error: err.Error(),
+		})
 		return fmt.Errorf("failed to write binary (you may need sudo): %w", err)
 	}
 
-	termcolor.PrintSuccess("Installed to %s", dst)
-	printShellHashHint()
+	if !cliout.JSON() {
+		cliout.Success("Installed to %s", dst)
+		printShellHashHint()
+	}
+	emitUpgradeResult(upgradeResult{
+		Action: "upgrade", Method: "binary", OldVersion: oldVersion,
+		NewVersion: normalizeVersion(version), Path: dst,
+		Upgraded: true, Success: true,
+	})
 	return nil
 }
 
 // printShellHashHint reminds the user that their current shell session may
-// still resolve `gofasta` to the old binary's cached inode.
+// still resolve `gofasta` to the old binary's cached inode. Text-mode only;
+// the JSON consumer doesn't need shell-cache advice.
 func printShellHashHint() {
-	fmt.Println()
-	fmt.Println("If `gofasta --version` still reports the old version in this shell,")
-	fmt.Println("your shell has cached the old executable. Refresh it with:")
-	fmt.Println()
-	fmt.Println("    hash -r        # bash / zsh")
-	fmt.Println("    rehash         # zsh (alternative)")
-	fmt.Println()
-	fmt.Println("…or just open a new terminal.")
+	cliout.Blank()
+	cliout.Plainln("If `gofasta --version` still reports the old version in this shell,")
+	cliout.Plainln("your shell has cached the old executable. Refresh it with:")
+	cliout.Blank()
+	cliout.Plainln("    hash -r        # bash / zsh")
+	cliout.Plainln("    rehash         # zsh (alternative)")
+	cliout.Blank()
+	cliout.Plainln("…or just open a new terminal.")
 }

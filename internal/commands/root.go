@@ -103,6 +103,11 @@ hosts, and self-updates.
 The CLI is a standalone binary that does not import the Gofasta library —
 it only manipulates files on disk.`,
 	SilenceUsage: true,
+	// SilenceErrors lets cliout.PrintError be the single error renderer,
+	// so --json mode emits a clean structured error and text mode emits
+	// the err.Error() line — without cobra layering its own "Error: …"
+	// prefix on top, which doubled the message in --json mode.
+	SilenceErrors: true,
 	// PersistentPreRun fires before every Run / RunE, for the root command
 	// AND every subcommand in the tree — the exact hook we want for
 	// mirroring the --json flag into cliout and printing the banner.

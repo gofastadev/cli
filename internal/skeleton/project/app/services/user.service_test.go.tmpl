@@ -1,0 +1,181 @@
+package services_test
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/models"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+	"{{.ModulePath}}/app/services"
+	"{{.ModulePath}}/testutil/mocks"
+)
+
+// stubPasswordGenerator is a deterministic PasswordGenerator for tests.
+type stubPasswordGenerator struct{ pw string }
+
+func (s stubPasswordGenerator) Generate(_ int) (string, error) { return s.pw, nil }
+
+// TestUserService_Get covers the three branches of the Get method:
+// happy path, ErrUserNotFound (gorm.ErrRecordNotFound translation),
+// and infrastructure error wrapping.
+func TestUserService_Get(t *testing.T) {
+	id := uuid.New()
+	t.Run("happy path returns the model", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		expected := &models.User{}
+		expected.ID = id
+		repo.On("FindByID", mock.Anything, id).Return(expected, nil)
+		got, err := svc.Get(context.Background(), id)
+		require.NoError(t, err)
+		assert.Same(t, expected, got)
+	})
+
+	t.Run("gorm.ErrRecordNotFound becomes ErrUserNotFound", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("FindByID", mock.Anything, id).Return(nil, gorm.ErrRecordNotFound)
+		_, err := svc.Get(context.Background(), id)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.ErrUserNotFound),
+			"DB no-row should translate to the domain sentinel, not leak gorm.ErrRecordNotFound")
+	})
+
+	t.Run("infrastructure error is wrapped", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("FindByID", mock.Anything, id).Return(nil, errors.New("connection refused"))
+		_, err := svc.Get(context.Background(), id)
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, services.ErrUserNotFound),
+			"infra errors must NOT be reported as ErrUserNotFound")
+		assert.Contains(t, err.Error(), "UserService.Get",
+			"error should be wrapped with the service method name for traceability")
+	})
+}
+
+// TestUserService_Update covers the version-conflict translation. The
+// repo returns (nil, 0, nil) when RowsAffected==0 (atomic version
+// check failed); the service must surface that as ErrUserVersionConflict.
+func TestUserService_Update(t *testing.T) {
+	id := uuid.New()
+	patch := services.UpdateUserPatch{}
+
+	t.Run("happy path returns the refetched model", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		expected := &models.User{}
+		expected.ID = id
+		repo.On("UpdateIfVersionMatches", mock.Anything, id, 3, mock.Anything).
+			Return(expected, int64(1), nil)
+		got, err := svc.Update(context.Background(), id, 3, patch)
+		require.NoError(t, err)
+		assert.Same(t, expected, got)
+	})
+
+	t.Run("RowsAffected==0 becomes ErrUserVersionConflict", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("UpdateIfVersionMatches", mock.Anything, id, 3, mock.Anything).
+			Return(nil, int64(0), nil)
+		_, err := svc.Update(context.Background(), id, 3, patch)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.ErrUserVersionConflict),
+			"a version-mismatch UPDATE must surface as the domain sentinel")
+	})
+
+	t.Run("infrastructure error is wrapped", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("UpdateIfVersionMatches", mock.Anything, id, 3, mock.Anything).
+			Return(nil, int64(0), errors.New("deadlock"))
+		_, err := svc.Update(context.Background(), id, 3, patch)
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, services.ErrUserVersionConflict))
+	})
+}
+
+// TestUserService_Archive covers the three-way classification the repo
+// surfaces and the service translates to domain sentinels.
+func TestUserService_Archive(t *testing.T) {
+	id := uuid.New()
+
+	t.Run("happy path returns the soft-deleted record", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		deleted := &models.User{}
+		deleted.ID = id
+		deleted.DeletedAt = gorm.DeletedAt{Time: time.Now(), Valid: true}
+		deleted.IsActive = false
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(deleted, nil)
+
+		got, err := svc.Archive(context.Background(), id)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.DeletedAt.Valid, "service must surface the freshly-stamped DeletedAt")
+		assert.False(t, got.IsActive, "service must surface the cleared IsActive")
+	})
+
+	t.Run("gorm.ErrRecordNotFound becomes ErrUserNotFound", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, gorm.ErrRecordNotFound)
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.ErrUserNotFound),
+			"row missing OR already deleted must translate to ErrUserNotFound (404), not 409")
+	})
+
+	t.Run("repoInterfaces.ErrUserNotDeletable becomes ErrUserNotDeletable", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, repoInterfaces.ErrUserNotDeletable)
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.ErrUserNotDeletable),
+			"policy-refusal must translate to ErrUserNotDeletable (409)")
+	})
+
+	t.Run("infrastructure error is wrapped", func(t *testing.T) {
+		repo := &mocks.MockUserRepository{}
+		svc := services.NewUserService(repo, stubPasswordGenerator{})
+		repo.On("SoftDeleteIfDeletable", mock.Anything, id).Return(nil, errors.New("db down"))
+
+		_, err := svc.Archive(context.Background(), id)
+		require.Error(t, err)
+		assert.False(t, errors.Is(err, services.ErrUserNotFound))
+		assert.False(t, errors.Is(err, services.ErrUserNotDeletable))
+	})
+}
+
+// TestUserService_Create covers the password-generation injection
+// point — the service uses the supplied PasswordGenerator instead of
+// reaching for a global, which is what makes this layer testable.
+func TestUserService_Create(t *testing.T) {
+	repo := &mocks.MockUserRepository{}
+	pwGen := stubPasswordGenerator{pw: "deterministic-test-password"}
+	svc := services.NewUserService(repo, pwGen)
+
+	repo.On("Create", mock.Anything, mock.MatchedBy(func(u *models.User) bool {
+		return u != nil && u.Password == "deterministic-test-password" && u.Email == "alice@example.com"
+	})).Return(nil)
+
+	user, err := svc.Create(context.Background(), services.CreateUserInput{
+		FirstName: "Alice", OtherNames: "X", Email: "alice@example.com", PhoneNumber: "1234567",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, user)
+	assert.Equal(t, "deterministic-test-password", user.Password,
+		"the service should use the injected PasswordGenerator, not a global")
+	repo.AssertExpectations(t)
+}

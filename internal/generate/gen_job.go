@@ -5,26 +5,89 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 )
 
-// GenJob generates a cron job file in app/jobs/.
+// GenJob generates a cron job file in app/jobs/ AND a sibling
+// _test.go with executable behavior tests (Name(), Run happy path,
+// Run respects ctx cancellation).
 func GenJob(d ScaffoldData) error {
-	path := fmt.Sprintf("app/jobs/%s.go", d.SnakeName)
-	if _, err := os.Stat(path); err == nil {
-		termcolor.PrintSkip(path, "exists")
-		return nil
+	subs := []tokenPair{
+		{"__NAME__", d.Name},
+		{"__LOWER_NAME__", d.LowerName},
+		{"__SNAKE_NAME__", d.SnakeName},
+		{"__MODULE_PATH__", d.ModulePath},
 	}
-
-	content := jobTemplate
-	content = strings.ReplaceAll(content, "__NAME__", d.Name)
-	content = strings.ReplaceAll(content, "__LOWER_NAME__", d.LowerName)
-	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
-
-	// writeOrRecordCreate handles MkdirAll + format.Source for .go files,
-	// so the emitted job file is preflight-clean by construction.
-	return writeOrRecordCreate(path, []byte(content))
+	if err := renderAndEmit(fmt.Sprintf("app/jobs/%s.go", d.SnakeName), jobTemplate, subs); err != nil {
+		return err
+	}
+	return renderAndEmit(fmt.Sprintf("app/jobs/%s_test.go", d.SnakeName), jobTestTemplate, subs)
 }
+
+// jobTestTemplate is the executable test file emitted alongside every
+// generated job. No t.Skip — every test exercises real code paths
+// (Name() value, Run happy path, Run respects ctx cancellation).
+const jobTestTemplate = `package jobs_test
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/driver/sqlite"
+	"gorm.io/gorm"
+
+	"__MODULE_PATH__/app/jobs"
+)
+
+func test__NAME__JobDeps(t *testing.T) (*gorm.DB, *slog.Logger) {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	return db, slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// Test__NAME__Job_Name pins the registered name. Renaming this
+// without also updating jobs config in config.yaml would silently
+// disable the job in production.
+func Test__NAME__Job_Name(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	j := jobs.New__NAME__Job(db, logger)
+	assert.Equal(t, "__SNAKE_NAME__", j.Name())
+}
+
+// Test__NAME__Job_Run_Success — happy path: Run returns nil.
+func Test__NAME__Job_Run_Success(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	j := jobs.New__NAME__Job(db, logger)
+	require.NoError(t, j.Run(context.Background()))
+}
+
+// Test__NAME__Job_Run_RespectsContext — well-behaved jobs return
+// promptly when ctx is canceled. The starter body is short and
+// doesn't block on a non-ctx-aware sleep, so even a pre-canceled ctx
+// should let Run finish.
+func Test__NAME__Job_Run_RespectsContext(t *testing.T) {
+	db, logger := test__NAME__JobDeps(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	j := jobs.New__NAME__Job(db, logger)
+	done := make(chan error, 1)
+	go func() { done <- j.Run(ctx) }()
+
+	select {
+	case err := <-done:
+		assert.NoError(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return promptly when ctx was already canceled")
+	}
+}
+`
 
 // PatchJobRegistry adds the new job to the registry in cmd/serve.go.
 func PatchJobRegistry(d ScaffoldData) error {
@@ -38,7 +101,7 @@ func PatchJobRegistry(d ScaffoldData) error {
 	// Check for uncommented registry line (tab-indented, not //-prefixed)
 	uncommentedRegistry := fmt.Sprintf("\t\t%q: jobs.New%sJob(", d.SnakeName, d.Name)
 	if strings.Contains(s, uncommentedRegistry) {
-		termcolor.PrintSkip(path, "already registered")
+		cliout.Skip(path, "already registered")
 		return nil
 	}
 
@@ -74,7 +137,7 @@ func PatchJobConfig(d ScaffoldData) error {
 	// Check for an active (uncommented) entry with this job name
 	activeEntry := fmt.Sprintf("  - name: %s\n", d.SnakeName)
 	if strings.Contains(s, activeEntry) {
-		termcolor.PrintSkip(path, "already in config")
+		cliout.Skip(path, "already in config")
 		return nil
 	}
 
@@ -99,34 +162,53 @@ func PatchJobConfig(d ScaffoldData) error {
 const jobTemplate = `package jobs
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/gofastadev/gofasta/pkg/scheduler"
+	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
 )
 
+const __LOWER_NAME__JobTracerName = "app/jobs/__SNAKE_NAME__"
+
 var _ scheduler.Job = (*__NAME__Job)(nil)
 
-// __NAME__Job runs the __SNAKE_NAME__ cron job.
-// Customize the Run() method with your business logic.
+// __NAME__Job runs the __SNAKE_NAME__ cron job. Replace the body of
+// Run with the business logic.
+//
+// Fields are unexported — Wire (or your own caller) injects them via
+// the constructor. Public fields would invite callers to mutate
+// dependencies after construction.
 type __NAME__Job struct {
-	DB     *gorm.DB
-	Logger *slog.Logger
+	db     *gorm.DB
+	logger *slog.Logger
 }
 
 // New__NAME__Job constructs the job.
 func New__NAME__Job(db *gorm.DB, logger *slog.Logger) *__NAME__Job {
-	return &__NAME__Job{DB: db, Logger: logger}
+	return &__NAME__Job{db: db, logger: logger}
 }
 
-// Name returns the scheduler-visible job name.
-func (j *__NAME__Job) Name() string {
-	return "__SNAKE_NAME__"
-}
+// Name returns the scheduler-visible job name. The framework matches
+// this to a ` + "`name`" + ` entry in the project's jobs config to look up
+// the cron schedule.
+func (j *__NAME__Job) Name() string { return "__SNAKE_NAME__" }
 
-// Run executes the job.
-func (j *__NAME__Job) Run() {
-	// TODO: Implement your job logic here
-	j.Logger.Info("__SNAKE_NAME__ job executed")
+// Run executes the job once. The accepted ctx is canceled when the
+// scheduler is stopped (via app shutdown). Long-running jobs should
+// periodically check ctx.Done() so a graceful shutdown doesn't have
+// to wait for them.
+//
+// Returning an error doesn't stop the scheduler — the next tick still
+// fires — but the framework logs the error at ERROR level with the
+// job name attached. Idempotency is the job's responsibility.
+func (j *__NAME__Job) Run(ctx context.Context) error {
+	ctx, span := otel.Tracer(__LOWER_NAME__JobTracerName).Start(ctx, "__NAME__Job.Run")
+	defer span.End()
+
+	// TODO: Implement your job logic here.
+	j.logger.InfoContext(ctx, "__SNAKE_NAME__ job executed")
+	return nil
 }
 `

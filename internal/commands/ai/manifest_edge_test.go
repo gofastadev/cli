@@ -47,8 +47,8 @@ func TestLoadManifest_NilInstalledDefaulted(t *testing.T) {
 // file, not a leftover .tmp.
 func TestManifest_Save_AtomicRename(t *testing.T) {
 	dir := t.TempDir()
-	m := &Manifest{Version: 1, Installed: map[string]InstallRecord{}}
-	m.RecordInstall("claude", "v1.0.0")
+	m := &Manifest{Version: manifestSchemaVersion, Installed: map[string]InstallRecord{}}
+	m.RecordInstall("claude", "v1.0.0", nil, "", "")
 	require.NoError(t, m.Save(dir))
 
 	// Main file exists.
@@ -71,12 +71,14 @@ func TestManifest_Save_CantCreateDir(t *testing.T) {
 }
 
 // TestManifest_RecordInstall_InitializesMap — calling RecordInstall
-// on a Manifest with a nil Installed map still works.
+// on a Manifest with a nil Installed map still works, and ActiveAgent
+// is set as a side-effect.
 func TestManifest_RecordInstall_InitializesMap(t *testing.T) {
 	m := &Manifest{Installed: nil}
-	m.RecordInstall("cursor", "v2.0.0")
+	m.RecordInstall("cursor", "v2.0.0", nil, "", "")
 	assert.Len(t, m.Installed, 1)
 	assert.Equal(t, "v2.0.0", m.Installed["cursor"].CLIVersion)
+	assert.Equal(t, "cursor", m.ActiveAgent)
 }
 
 // TestLoadManifest_ReadFileError — file exists but can't be read.
@@ -114,7 +116,7 @@ func TestManifest_Save_MarshalError(t *testing.T) {
 	}
 	t.Cleanup(func() { manifestMarshal = orig })
 	dir := t.TempDir()
-	m := &Manifest{Version: 1}
+	m := &Manifest{Version: manifestSchemaVersion}
 	err := m.Save(dir)
 	require.Error(t, err)
 }

@@ -3,14 +3,31 @@ package interfaces
 import (
 	"context"
 
-	"{{.ModulePath}}/app/dtos"
+	"github.com/google/uuid"
+
+	"{{.ModulePath}}/app/models"
+	"{{.ModulePath}}/app/services"
 )
 
-// UserServiceInterface defines the contract for user business logic.
+// UserServiceInterface is the business-logic contract for users. The
+// signatures take typed domain inputs (services.CreateUserInput,
+// UpdateUserPatch, ListUsersFilter) and return *models.User + Go
+// errors. Validation is the controller's responsibility — by the time
+// a method here is called, the input is already valid.
+//
+// Errors are domain sentinels (services.ErrUserNotFound,
+// ErrUserVersionConflict, ErrUserNotDeletable) for known conditions
+// and wrapped infrastructure errors otherwise. Callers branch with
+// `errors.Is`.
 type UserServiceInterface interface {
-	FindUsersWithFilters(ctx context.Context, filters dtos.UserFiltersDto) (*dtos.TUsersResponseDto, error)
-	CreateUser(ctx context.Context, input dtos.TCreateUserDto) (*dtos.TUserResponseDto, error)
-	UpdateUser(ctx context.Context, input dtos.TUserFieldsForUpdateDto) (*dtos.TUserResponseDto, error)
-	FindUserByID(ctx context.Context, filters dtos.TFindUserByIDDto) (*dtos.TUserResponseDto, error)
-	ArchiveUser(ctx context.Context, input dtos.TArchiveUserDto) (*dtos.TCommonResponseDto, error)
+	List(ctx context.Context, filter services.ListUsersFilter) ([]*models.User, int64, error)
+	Get(ctx context.Context, id uuid.UUID) (*models.User, error)
+	Create(ctx context.Context, in services.CreateUserInput) (*models.User, error)
+	Update(ctx context.Context, id uuid.UUID, expectedVersion int, patch services.UpdateUserPatch) (*models.User, error)
+	// Archive soft-deletes the user and returns the deleted record.
+	// The payload carries the freshly-stamped DeletedAt / IsActive
+	// fields so REST controllers can respond 200 with `{data: …}`
+	// (Stripe pattern) instead of 204 No Content — the client gets
+	// proof of which row was deleted and when.
+	Archive(ctx context.Context, id uuid.UUID) (*models.User, error)
 }

@@ -392,3 +392,54 @@ func writeGoMod(t *testing.T, modulePath string) {
 	content := "module " + modulePath + "\n\ngo 1.25.0\n"
 	require.NoError(t, os.WriteFile("go.mod", []byte(content), 0o644))
 }
+
+// TestDefaultPortForDriver — verifies the per-driver default-port map
+// returns the conventional port for each supported driver, the
+// fall-through default for unknown drivers, and the empty-string
+// signal for SQLite (file-based, no port concept).
+func TestDefaultPortForDriver(t *testing.T) {
+	cases := map[string]string{
+		"postgres":   "5432",
+		"POSTGRES":   "5432", // case-insensitive
+		"mysql":      "3306",
+		"sqlserver":  "1433",
+		"clickhouse": "9000",
+		"":           "5432", // empty falls through to postgres default
+		"weird":      "5432", // unknown driver — safety-net default
+		"sqlite":     "",     // file-based
+		"sqlite3":    "",     // file-based (alternate spelling)
+		"  mysql  ":  "3306", // whitespace stripped
+	}
+	for driver, want := range cases {
+		t.Run(driver, func(t *testing.T) {
+			assert.Equal(t, want, DefaultPortForDriver(driver))
+		})
+	}
+}
+
+// TestBuildMigrationURL_DefaultPortPerDriver — when database.port is
+// not set in config, BuildMigrationURL must fall back to the driver's
+// own default port (not always 5432). Regression: prior to the
+// DefaultPortForDriver refactor, mysql/sqlserver/clickhouse all got
+// 5432 as their default port, which silently produced URLs that
+// targeted the wrong port on the host.
+func TestBuildMigrationURL_DefaultPortPerDriver(t *testing.T) {
+	cases := map[string]struct {
+		driver        string
+		wantPortInURL string
+		urlContains   string
+	}{
+		"mysql":      {"mysql", "3306", "@tcp(localhost:3306)/"},
+		"sqlserver":  {"sqlserver", "1433", "@localhost:1433?"},
+		"clickhouse": {"clickhouse", "9000", "@localhost:9000/"},
+		"postgres":   {"postgres", "5432", "@localhost:5432/"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setupConfigDir(t, "database:\n  driver: "+tc.driver+"\n")
+			got := BuildMigrationURL()
+			assert.Contains(t, got, tc.urlContains,
+				"expected URL to include %q, got: %s", tc.urlContains, got)
+		})
+	}
+}

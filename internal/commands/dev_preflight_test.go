@@ -409,3 +409,64 @@ func TestBuildQueueEndpoint_EnabledDefaults(t *testing.T) {
 	assert.True(t, enabled)
 	assert.Equal(t, "localhost:6379", endpoint)
 }
+
+// probeDatabase — endpoint-empty defensive branch. configutil's real
+// implementation always returns a non-empty endpoint when enabled=true,
+// so we drive the defensive ("incomplete config") branch via the
+// configBuildDatabaseEndpointFn seam.
+func TestProbeDatabase_EmptyEndpointDefensive(t *testing.T) {
+	orig := configBuildDatabaseEndpointFn
+	configBuildDatabaseEndpointFn = func() (string, bool) { return "", true }
+	t.Cleanup(func() { configBuildDatabaseEndpointFn = orig })
+
+	got := probeDatabase()
+	assert.Equal(t, probeUnreachable, got.Status)
+	assert.Contains(t, got.Reason, "incomplete")
+}
+
+// probeDatabase — when BuildMigrationURL returns "", display falls back
+// to the raw endpoint string.
+func TestProbeDatabase_DisplayFallbackToEndpoint(t *testing.T) {
+	origURL := configBuildMigrationURLFn
+	configBuildMigrationURLFn = func() string { return "" }
+	t.Cleanup(func() { configBuildMigrationURLFn = origURL })
+
+	origDial := tcpDialFn
+	tcpDialFn = func(_, _ string, _ time.Duration) (net.Conn, error) {
+		c1, c2 := net.Pipe()
+		go func() { _ = c2.Close() }()
+		return c1, nil
+	}
+	t.Cleanup(func() { tcpDialFn = origDial })
+
+	origEndpoint := configBuildDatabaseEndpointFn
+	configBuildDatabaseEndpointFn = func() (string, bool) { return "localhost:5432", true }
+	t.Cleanup(func() { configBuildDatabaseEndpointFn = origEndpoint })
+
+	got := probeDatabase()
+	assert.Equal(t, probeOK, got.Status)
+	assert.Equal(t, "localhost:5432", got.Endpoint, "display falls back to endpoint when migration URL is empty")
+}
+
+// probeCache — endpoint-empty defensive branch, same shape as
+// probeDatabase. Driven via the configBuildCacheEndpointFn seam.
+func TestProbeCache_EmptyEndpointDefensive(t *testing.T) {
+	orig := configBuildCacheEndpointFn
+	configBuildCacheEndpointFn = func() (string, bool) { return "", true }
+	t.Cleanup(func() { configBuildCacheEndpointFn = orig })
+
+	got := probeCache()
+	assert.Equal(t, probeUnreachable, got.Status)
+	assert.Contains(t, got.Reason, "incomplete")
+}
+
+// probeQueue — endpoint-empty defensive branch.
+func TestProbeQueue_EmptyEndpointDefensive(t *testing.T) {
+	orig := configBuildQueueEndpointFn
+	configBuildQueueEndpointFn = func() (string, bool) { return "", true }
+	t.Cleanup(func() { configBuildQueueEndpointFn = orig })
+
+	got := probeQueue()
+	assert.Equal(t, probeUnreachable, got.Status)
+	assert.Contains(t, got.Reason, "incomplete")
+}

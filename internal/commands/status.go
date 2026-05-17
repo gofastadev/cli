@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -74,6 +75,12 @@ type statusResult struct {
 // apply to this project (e.g., no Wire, no Swagger, no git), it skips
 // rather than failing.
 func runStatus() error {
+	// Load .env so checkPendingMigrations can build a DSN that actually
+	// reaches the project's database. Without this, the migrations
+	// check falls back to "DB unreachable" even when the DB is healthy
+	// — see migrate.go for the full why.
+	_, _ = loadDotEnv(".env")
+
 	steps := []struct {
 		name string
 		fn   func() statusCheck
@@ -136,7 +143,7 @@ func statusMark(s string) string {
 	case "drift":
 		return termcolor.CRed("✗")
 	case "warn":
-		return termcolor.CBrand("!")
+		return termcolor.CYellow("⚠")
 	case "skip":
 		return termcolor.CDim("-")
 	default:
@@ -206,36 +213,144 @@ func checkSwaggerDrift() statusCheck {
 	return statusCheck{Status: "ok", Message: "in sync"}
 }
 
-// checkPendingMigrations counts unique migration numbers with an up.sql.
-// Offline only — we can't know which migrations are applied without a DB
-// connection. Treat a positive count as a warning, not drift, because
-// having migrations present is normal — they just may or may not be run.
+// checkPendingMigrations compares the highest .up.sql version on disk
+// to the schema_migrations version reported by the migrate tool. Three
+// outcomes:
+//
+//   - all defined migrations applied → "ok"
+//   - some defined migrations have a version > current applied → "drift"
+//   - schema_migrations is dirty (a previous migrate failed mid-step) → "warn"
+//
+// If the DB can't be reached or the version can't be parsed, falls back
+// to a "skip" with a clear message — it's better to abstain than to
+// claim "N pending" when we don't actually know.
 func checkPendingMigrations() statusCheck {
 	dir := filepath.Join("db", "migrations")
 	if _, err := os.Stat(dir); err != nil {
 		return statusCheck{Status: "skip", Message: "no db/migrations directory"}
 	}
-	entries, err := os.ReadDir(dir)
+	defined, err := readDefinedMigrations(dir)
 	if err != nil {
 		return statusCheck{Status: "skip", Message: "could not read db/migrations"}
 	}
-	migrationIDs := map[string]bool{}
-	for _, e := range entries {
-		name := e.Name()
-		if strings.HasSuffix(name, ".up.sql") {
-			// migration ID is the prefix before the first underscore.
-			if idx := strings.Index(name, "_"); idx > 0 {
-				migrationIDs[name[:idx]] = true
-			}
-		}
-	}
-	if len(migrationIDs) == 0 {
+	if len(defined) == 0 {
 		return statusCheck{Status: "ok", Message: "no migrations defined"}
 	}
-	return statusCheck{
-		Status:  "warn",
-		Message: fmt.Sprintf("%d migration(s) present — run `gofasta migrate up` to apply (offline check)", len(migrationIDs)),
+
+	dbURL := buildMigrationURL()
+	if dbURL == "" {
+		return statusCheck{
+			Status:  "skip",
+			Message: fmt.Sprintf("%d migration(s) defined; could not load config to check applied state", len(defined)),
+		}
 	}
+
+	current, dirty, err := readAppliedMigrationVersion(dir, dbURL)
+	if err != nil {
+		return statusCheck{
+			Status:  "skip",
+			Message: fmt.Sprintf("%d migration(s) defined; could not check applied state (DB unreachable or migrate not installed)", len(defined)),
+		}
+	}
+
+	pending := 0
+	for _, id := range defined {
+		if id > current {
+			pending++
+		}
+	}
+
+	switch {
+	case dirty:
+		return statusCheck{
+			Status:  "warn",
+			Message: fmt.Sprintf("schema is dirty at version %d — fix the failing migration and run `migrate force <version>`", current),
+		}
+	case pending == 0:
+		return statusCheck{
+			Status:  "ok",
+			Message: fmt.Sprintf("%d migration(s) applied (current version: %d)", len(defined), current),
+		}
+	default:
+		return statusCheck{
+			Status:  "drift",
+			Message: fmt.Sprintf("%d migration(s) pending — run `gofasta migrate up` (current: %d, latest defined: %d)", pending, current, defined[len(defined)-1]),
+		}
+	}
+}
+
+// readDefinedMigrations returns the sorted list of migration version
+// numbers found as <number>_*.up.sql files in dir.
+func readDefinedMigrations(dir string) ([]int, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[int]bool{}
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".up.sql") {
+			continue
+		}
+		idx := strings.Index(name, "_")
+		if idx <= 0 {
+			continue
+		}
+		id, err := strconv.Atoi(name[:idx])
+		if err != nil {
+			continue
+		}
+		seen[id] = true
+	}
+	out := make([]int, 0, len(seen))
+	for id := range seen {
+		out = append(out, id)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// readAppliedMigrationVersion shells out to `migrate version` to get
+// the current applied version from the schema_migrations table. The
+// migrate tool prints the version to stderr (despite being called
+// "version" — that's just how it works) in one of three formats:
+//
+//	"5"            → applied through version 5
+//	"5 (dirty)"    → version 5 mid-application; manual repair needed
+//	"no migration" → schema_migrations exists but is empty
+//	error/empty    → DB unreachable, schema_migrations missing, etc.
+//
+// Returns (current, dirty, err). When err is nil and current is 0,
+// nothing has been applied yet.
+func readAppliedMigrationVersion(dir, dbURL string) (current int, dirty bool, err error) {
+	cmd := execCommand("migrate", "-path", dir, "-database", dbURL, "version")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	if runErr := cmd.Run(); runErr != nil {
+		// migrate exits non-zero when schema_migrations doesn't exist
+		// AND when the DB is unreachable. Distinguish via output:
+		// "no migration" means reachable-but-empty (treat as 0/clean);
+		// anything else is a real failure.
+		if strings.Contains(out.String(), "no migration") {
+			return 0, false, nil
+		}
+		return 0, false, runErr
+	}
+	text := strings.TrimSpace(out.String())
+	if text == "" || strings.Contains(text, "no migration") {
+		return 0, false, nil
+	}
+	// Format: "<number>" or "<number> (dirty)". text is non-empty here
+	// (the early-return above caught that), so strings.Fields guarantees
+	// at least one element — no need for a len(parts)==0 check.
+	parts := strings.Fields(text)
+	v, perr := strconv.Atoi(parts[0])
+	if perr != nil {
+		return 0, false, fmt.Errorf("could not parse migrate version output %q: %w", text, perr)
+	}
+	dirty = strings.Contains(text, "dirty")
+	return v, dirty, nil
 }
 
 // checkUncommittedGenerated reports whether git sees modifications to

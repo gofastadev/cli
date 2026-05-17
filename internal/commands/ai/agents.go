@@ -13,6 +13,7 @@ package ai
 
 import (
 	"embed"
+	"errors"
 	"io/fs"
 	"sort"
 )
@@ -29,6 +30,11 @@ var templatesFS embed.FS
 // in `gofasta ai claude`), Name is the human-readable label, and
 // TemplateDir is the path inside templatesFS rooted at templates/.
 //
+// DocFilename is the agent-specific name the install renames AGENTS.md
+// to (e.g. "CLAUDE.md", "CONVENTIONS.md"). Empty for agents that read
+// AGENTS.md natively (Codex, Cursor, Windsurf as of mid-2026) — those
+// installs leave the doc file alone.
+//
 // The JSON tags matter — `gofasta --json ai list` emits this struct
 // directly, and downstream tooling reads lowercase keys.
 type Agent struct {
@@ -36,6 +42,7 @@ type Agent struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	TemplateDir string `json:"-"` // implementation detail, not part of the public shape
+	DocFilename string `json:"doc_filename,omitempty"`
 }
 
 // Agents is the stable registry. Adding a new agent:
@@ -51,30 +58,35 @@ var Agents = []Agent{
 		Name:        "Claude Code",
 		Description: "Anthropic's official CLI coding agent",
 		TemplateDir: "templates/claude",
+		DocFilename: "CLAUDE.md", // Claude Code does not read AGENTS.md (anthropics/claude-code#6235)
 	},
 	{
 		Key:         "cursor",
 		Name:        "Cursor",
 		Description: "AI-first IDE with project-level rules and MCP support",
 		TemplateDir: "templates/cursor",
+		// Cursor reads AGENTS.md natively in project root + subdirs.
 	},
 	{
 		Key:         "codex",
 		Name:        "OpenAI Codex",
 		Description: "OpenAI's coding agent — reads AGENTS.md by default",
 		TemplateDir: "templates/codex",
+		// Codex reads AGENTS.md natively (its primary format).
 	},
 	{
 		Key:         "aider",
 		Name:        "Aider",
 		Description: "Open-source pair-programming CLI agent",
 		TemplateDir: "templates/aider",
+		DocFilename: "CONVENTIONS.md", // Aider's traditional convention name; .aider.conf.yml `read:` points here.
 	},
 	{
 		Key:         "windsurf",
 		Name:        "Windsurf",
 		Description: "Codeium's AI-native IDE",
 		TemplateDir: "templates/windsurf",
+		// Cascade reads AGENTS.md natively (per Windsurf docs).
 	},
 }
 
@@ -99,9 +111,20 @@ func ListKeys() []string {
 	return keys
 }
 
+// fsWalkDir is a package-level seam over fs.WalkDir so tests can
+// inject a synthetic walk error (other than fs.ErrNotExist) to exercise
+// TemplateFiles's wrap-and-return branch. Production callers see
+// fs.WalkDir's behavior unchanged.
+var fsWalkDir = fs.WalkDir
+
 // TemplateFiles walks the agent's template directory and returns every
 // .tmpl file it contains, each mapped to the destination path it should
 // be written to (relative to the project root).
+//
+// Returns an empty slice (no error) when the agent has no templates at
+// all — agents like cursor and windsurf install nothing on disk because
+// they read AGENTS.md natively, so their template directory is omitted
+// from the embed FS entirely.
 //
 // Two path transforms are applied to every entry:
 //
@@ -114,7 +137,7 @@ func ListKeys() []string {
 //     producing the right dotfile tree in the project.
 func TemplateFiles(a *Agent) ([]TemplateFile, error) {
 	var out []TemplateFile
-	err := fs.WalkDir(templatesFS, a.TemplateDir, func(path string, d fs.DirEntry, err error) error {
+	err := fsWalkDir(templatesFS, a.TemplateDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -134,6 +157,12 @@ func TemplateFiles(a *Agent) ([]TemplateFile, error) {
 		return nil
 	})
 	if err != nil {
+		// Agents with no template files (cursor, windsurf) point at a
+		// dir that doesn't exist in the embed FS. That's not an error —
+		// it's how we represent "agent installs nothing on disk".
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
 		return nil, err
 	}
 	return out, nil

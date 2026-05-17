@@ -1,35 +1,57 @@
 package jobs
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/gofastadev/gofasta/pkg/scheduler"
+	"go.opentelemetry.io/otel"
 )
+
+// jobsTracerName is the OpenTelemetry tracer scope shared by every
+// job in this package. Each Run opens a span under it so the dev
+// dashboard waterfall shows scheduled work alongside HTTP-driven work.
+const jobsTracerName = "{{.ModulePath}}/app/jobs"
 
 // Compile-time check that ExampleJob implements scheduler.Job.
 var _ scheduler.Job = (*ExampleJob)(nil)
 
-// ExampleJob is a sample cron job. Replace or remove this for your project.
-// Generate new jobs with: gofasta g job <name> <schedule>
+// ExampleJob is a sample cron job. Replace or remove this for your
+// project. Generate new jobs with: gofasta g job <name> <schedule>
+//
+// Fields are unexported — Wire (or your own constructor caller)
+// injects them via the constructor. Public fields would invite
+// callers to mutate dependencies after construction, which is exactly
+// the kind of accidental coupling DI is meant to prevent.
 type ExampleJob struct {
-	Logger *slog.Logger
+	logger *slog.Logger
 }
 
-// NewExampleJob constructs the sample cron job used as a starting point.
-// Replace its body with real work or delete the type entirely.
+// NewExampleJob constructs the sample job. Replace its body with real
+// work or delete the type entirely.
 func NewExampleJob(logger *slog.Logger) *ExampleJob {
-	return &ExampleJob{Logger: logger}
+	return &ExampleJob{logger: logger}
 }
 
-// Name returns the scheduler key under which this job is registered.
-// The framework's scheduler matches this to a `name` entry in the
-// project's jobs config to look up the cron schedule.
-func (j *ExampleJob) Name() string {
-	return "example"
-}
+// Name returns the scheduler-visible job name. The framework's
+// scheduler matches this to a `name` entry in the project's jobs
+// config to look up the cron schedule.
+func (j *ExampleJob) Name() string { return "example" }
 
 // Run executes the job once. The scheduler invokes this on every tick
 // allowed by the cron expression configured in jobs config.
-func (j *ExampleJob) Run() {
-	j.Logger.Info("example job executed — replace this with real work")
+//
+// The accepted ctx is canceled when the scheduler is stopped (via
+// app shutdown). Long-running jobs should periodically check
+// ctx.Done() so a graceful shutdown doesn't have to wait for them.
+//
+// Returning an error doesn't stop the scheduler — the next tick still
+// fires — but the framework logs the error at ERROR level with the
+// job name attached. Idempotency is the job's responsibility.
+func (j *ExampleJob) Run(ctx context.Context) error {
+	ctx, span := otel.Tracer(jobsTracerName).Start(ctx, "ExampleJob.Run")
+	defer span.End()
+
+	j.logger.InfoContext(ctx, "example job executed — replace this with real work")
+	return nil
 }

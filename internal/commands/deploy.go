@@ -3,9 +3,25 @@ package commands
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/deploy"
 	"github.com/spf13/cobra"
 )
+
+// deployResult is the JSON contract for `gofasta deploy --json`. The
+// shape covers both the top-level deploy and its read-only siblings
+// (status, setup, rollback) — discriminated by Action so a single
+// parser handles all of them. Logs is a streaming command and refuses
+// in JSON mode.
+type deployResult struct {
+	Action  string `json:"action"`
+	Method  string `json:"method,omitempty"`
+	Host    string `json:"host,omitempty"`
+	App     string `json:"app,omitempty"`
+	Success bool   `json:"success"`
+	Error   string `json:"error,omitempty"`
+}
 
 var deployCmd = &cobra.Command{
 	Use:   "deploy",
@@ -152,16 +168,22 @@ func runDeploy(cmd *cobra.Command) error {
 		cfg.Method = deployMethodOverride
 	}
 
-	fmt.Printf("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)
+	if !cliout.JSON() {
+		cliout.Plain("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)
+	}
 
+	var deployErr error
 	switch cfg.Method {
 	case "docker":
-		return deploy.DeployDocker(cfg)
+		deployErr = deploy.DeployDocker(cfg)
 	case "binary":
-		return deploy.DeployBinary(cfg)
+		deployErr = deploy.DeployBinary(cfg)
 	default:
-		return fmt.Errorf("unknown deploy method: %s", cfg.Method)
+		deployErr = fmt.Errorf("unknown deploy method: %s", cfg.Method)
 	}
+
+	emitDeployResult("deploy", cfg, deployErr)
+	return deployErr
 }
 
 func runDeploySetup(cmd *cobra.Command) error {
@@ -169,7 +191,9 @@ func runDeploySetup(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return deploy.SetupServer(cfg)
+	setupErr := deploy.SetupServer(cfg)
+	emitDeployResult("deploy.setup", cfg, setupErr)
+	return setupErr
 }
 
 func runDeployStatus(cmd *cobra.Command) error {
@@ -178,31 +202,79 @@ func runDeployStatus(cmd *cobra.Command) error {
 		return err
 	}
 
-	fmt.Printf("Checking status of %s on %s...\n\n", cfg.AppName, cfg.Host)
+	if !cliout.JSON() {
+		cliout.Plain("Checking status of %s on %s...\n\n", cfg.AppName, cfg.Host)
+	}
 
 	// Show current release
 	current, err := deploy.RunRemoteCapture(cfg, fmt.Sprintf("readlink %s 2>/dev/null || echo 'no current release'", cfg.CurrentPath()))
-	if err == nil {
+	if err == nil && !cliout.JSON() {
 		deploy.PrintInfo("Current release: " + current)
 	}
 
-	fmt.Println()
-
-	// Show service status
-	if cfg.Method == "docker" {
-		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())
-		return deploy.RunRemote(cfg, fmt.Sprintf("cd %s && docker compose -f %s ps 2>/dev/null || echo 'No containers running'", cfg.CurrentPath(), composePath))
+	if !cliout.JSON() {
+		cliout.Blank()
 	}
-	return deploy.RunRemote(cfg, fmt.Sprintf("sudo systemctl status %s --no-pager 2>/dev/null || echo 'Service not found'", cfg.AppName))
+
+	// Show service status — service stdout (docker compose ps / systemctl
+	// status) is captured via RunRemoteCapture in JSON mode so it lands
+	// in the structured result rather than mixing with the JSON document.
+	var serviceStatus string
+	var statusErr error
+	switch cfg.Method {
+	case "docker":
+		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())
+		query := fmt.Sprintf("cd %s && docker compose -f %s ps 2>/dev/null || echo 'No containers running'", cfg.CurrentPath(), composePath)
+		if cliout.JSON() {
+			serviceStatus, statusErr = deploy.RunRemoteCapture(cfg, query)
+		} else {
+			statusErr = deploy.RunRemote(cfg, query)
+		}
+	default:
+		query := fmt.Sprintf("sudo systemctl status %s --no-pager 2>/dev/null || echo 'Service not found'", cfg.AppName)
+		if cliout.JSON() {
+			serviceStatus, statusErr = deploy.RunRemoteCapture(cfg, query)
+		} else {
+			statusErr = deploy.RunRemote(cfg, query)
+		}
+	}
+
+	if cliout.JSON() {
+		cliout.Print(struct {
+			deployResult
+			CurrentRelease string `json:"current_release,omitempty"`
+			ServiceStatus  string `json:"service_status,omitempty"`
+		}{
+			deployResult: deployResult{
+				Action:  "deploy.status",
+				Method:  cfg.Method,
+				Host:    cfg.Host,
+				App:     cfg.AppName,
+				Success: statusErr == nil,
+				Error:   errString(statusErr),
+			},
+			CurrentRelease: current,
+			ServiceStatus:  serviceStatus,
+		}, nil)
+	}
+	return statusErr
 }
 
 func runDeployLogs(cmd *cobra.Command) error {
+	// Tailing remote logs is an interactive stream — Ctrl+C to stop —
+	// so refuse in JSON mode rather than dumping unstructured text into
+	// what the agent expects to be a JSON document. For programmatic
+	// log access, agents should ssh directly with `journalctl --output=json`.
+	if cliout.JSON() {
+		return clierr.Newf(clierr.CodeInteractiveOnly,
+			"`deploy logs` is an interactive log tail and cannot run in --json mode")
+	}
 	cfg, err := deploy.LoadDeployConfig(cmd)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("Tailing logs for %s on %s (Ctrl+C to stop)...\n\n", cfg.AppName, cfg.Host)
+	cliout.Plain("Tailing logs for %s on %s (Ctrl+C to stop)...\n\n", cfg.AppName, cfg.Host)
 
 	if cfg.Method == "docker" {
 		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())
@@ -216,5 +288,32 @@ func runDeployRollback(cmd *cobra.Command) error {
 	if err != nil {
 		return err
 	}
-	return deploy.Rollback(cfg)
+	rbErr := deploy.Rollback(cfg)
+	emitDeployResult("deploy.rollback", cfg, rbErr)
+	return rbErr
+}
+
+// emitDeployResult prints a structured result in JSON mode. Text mode
+// is silent here because the deploy package's own printer is already
+// streaming progress messages; the operation's outcome is conveyed by
+// the exit code (returned err).
+func emitDeployResult(action string, cfg *deploy.DeployConfig, err error) {
+	if !cliout.JSON() {
+		return
+	}
+	cliout.Print(deployResult{
+		Action:  action,
+		Method:  cfg.Method,
+		Host:    cfg.Host,
+		App:     cfg.AppName,
+		Success: err == nil,
+		Error:   errString(err),
+	}, nil)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

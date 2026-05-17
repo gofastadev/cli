@@ -1,10 +1,13 @@
 package commands
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -616,3 +619,178 @@ func TestMapFailingDepsToServices(t *testing.T) {
 // calls in this file.
 func osGetenv(k string) string { return os.Getenv(k) }
 func unsetenv(k string) error  { return os.Unsetenv(k) }
+
+// Package-init snapshot of the menu seam defaults. Captured at package
+// load time so a test can invoke the *original* closures even after
+// other tests stub the vars away. (The coverage profile tracks the
+// lexical line/column of each closure body, so calling a fresh
+// stand-in with identical text does NOT cover the originals.)
+var (
+	initialMenuInputFn         = menuInputFn
+	initialMenuOutputFn        = menuOutputFn
+	initialMenuStartServicesFn = menuStartServicesFn
+)
+
+// mergeServices — `for _, s := range base { seen[s] = true }` body
+// requires a non-empty base slice to run; pass one along with an add
+// list that includes a duplicate plus a new entry.
+func TestMergeServices_DropsDuplicates(t *testing.T) {
+	out := mergeServices([]string{"db"}, []string{"db", "cache"})
+	assert.Equal(t, []string{"db", "cache"}, out)
+}
+
+// mapFailingDepsToServices — `case "queue":` only fires when
+// Dep=="queue" AND Status==probeUnreachable. The non-unreachable and
+// unknown-Dep entries verify the skip branches.
+func TestMapFailingDepsToServices_QueueBranch(t *testing.T) {
+	results := []probeResult{
+		{Dep: "queue", Status: probeUnreachable},
+		{Dep: "database", Status: probeOK},
+		{Dep: "unknown", Status: probeUnreachable},
+	}
+	got := mapFailingDepsToServices(results)
+	assert.Equal(t, []string{"queue"}, got)
+}
+
+// isStdinTTY — wraps the termIsTerminalFn seam; verify both polarities.
+func TestIsStdinTTY_RespectsTermIsTerminalSeam(t *testing.T) {
+	origIs := termIsTerminalFn
+	t.Cleanup(func() { termIsTerminalFn = origIs })
+
+	termIsTerminalFn = func(_ int) bool { return true }
+	assert.True(t, isStdinTTY())
+
+	termIsTerminalFn = func(_ int) bool { return false }
+	assert.False(t, isStdinTTY())
+}
+
+// defaultMenuWaitHealthy — the inner detectComposeServices call fails
+// because the second fake exec exits non-zero, which surfaces as a
+// "compose config: ..." wrap.
+func TestDefaultMenuWaitHealthy_ConfigError(t *testing.T) {
+	stagedFakeExec(t, 0, 1) // profiles OK, then config json fails
+	err := defaultMenuWaitHealthy([]string{"db"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "compose config")
+}
+
+// defaultMenuWaitHealthy — happy path. Profiles, config, and ps fakes
+// are all wired to return docker output that yields a healthy state.
+func TestDefaultMenuWaitHealthy_FiltersUnknownAndCallsWaitHealthy(t *testing.T) {
+	captureMenuOutput(t)
+
+	calls := 0
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		calls++
+		switch {
+		case len(args) >= 3 && args[0] == "compose" && args[1] == "config" && args[2] == "--profiles":
+			return menuFakeCmdWithOutput(t, "", 0)
+		case len(args) >= 4 && args[0] == "compose" && args[1] == "config" && args[2] == "--format":
+			return menuFakeCmdWithOutput(t, `{"services":{"db":{"healthcheck":{"test":["CMD","x"]}}}}`, 0)
+		case len(args) >= 3 && args[0] == "compose" && args[1] == "ps":
+			return menuFakeCmdWithOutput(t, `[{"Service":"db","State":"running","Health":"healthy"}]`, 0)
+		default:
+			return menuFakeCmdWithOutput(t, "", 0)
+		}
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	err := defaultMenuWaitHealthy([]string{"db"})
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, calls, 2)
+}
+
+// menuActionEnterConnString — bufio.ReadString error path.
+func TestMenuActionEnterConnString_ReadError(t *testing.T) {
+	captureMenuOutput(t)
+	reader := bufio.NewReader(&menuErrReader{err: errors.New("eof boom")})
+	_, err := menuActionEnterConnString(reader, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "read stdin")
+}
+
+// menuActionEnterConnString — url.Parse accepts "abc" (Scheme="",
+// Host="") so the missing-scheme/host guard fires.
+func TestMenuActionEnterConnString_MissingSchemeOrHost(t *testing.T) {
+	captureMenuOutput(t)
+	reader := bufio.NewReader(strings.NewReader("abc\n"))
+	_, err := menuActionEnterConnString(reader, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "scheme and host")
+}
+
+// menuActionEnterConnString — bad percent-encoding ("%zz") makes
+// url.Parse error directly.
+func TestMenuActionEnterConnString_InvalidURLParseError(t *testing.T) {
+	captureMenuOutput(t)
+	reader := bufio.NewReader(strings.NewReader("http://%zz/\n"))
+	_, err := menuActionEnterConnString(reader, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid URL")
+}
+
+// promptPersistConnString — empty kvs short-circuits to nil.
+func TestPromptPersistConnString_EmptyKVsIsNoOp(t *testing.T) {
+	reader := bufio.NewReader(strings.NewReader(""))
+	err := promptPersistConnString(reader, nil)
+	assert.NoError(t, err)
+}
+
+// promptPersistConnString — mergeIntoDotEnv fails; the error is wrapped
+// with "write .env" prefix and bubbled.
+func TestPromptPersistConnString_MergeError(t *testing.T) {
+	captureMenuOutput(t)
+	orig := osRenameFn
+	osRenameFn = func(string, string) error { return errors.New("synthetic merge failure") }
+	t.Cleanup(func() { osRenameFn = orig })
+
+	dir := t.TempDir()
+	origCwd, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origCwd) })
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module github.com/test/myapp\n"), 0o644))
+	require.NoError(t, os.Chdir(dir))
+
+	reader := bufio.NewReader(strings.NewReader("y\n"))
+	err := promptPersistConnString(reader, map[string]string{"DATABASE_HOST": "x"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "write .env")
+}
+
+// menuInputFn / menuOutputFn / menuStartServicesFn default closures
+// — existing tests always stub these via the seams, so the default
+// implementations report uncovered. Invoke each through the
+// package-init snapshot above to exercise the original closure bodies.
+func TestMenuSeamDefaults(t *testing.T) {
+	assert.Equal(t, os.Stdin, initialMenuInputFn())
+	assert.Equal(t, os.Stdout, initialMenuOutputFn())
+
+	withFakeExec(t, 0)
+	require.NoError(t, initialMenuStartServicesFn([]string{"db"}))
+}
+
+// menuErrReader implements io.Reader and returns its configured error
+// on every call. Used to drive the read-error branch of menu actions.
+type menuErrReader struct{ err error }
+
+func (e *menuErrReader) Read([]byte) (int, error) { return 0, e.err }
+
+// menuFakeCmdWithOutput builds a *exec.Cmd that re-execs the test
+// binary's TestHelperProcess with a scripted stdout payload. Used by
+// tests that need MULTIPLE distinct stubs in a single test (the
+// package-wide fakeExecOutput overrides the seam globally with one
+// canned response, which doesn't fit switch-on-args needs).
+//
+//nolint:unparam // exit-code parameter is reserved for future non-zero tests
+func menuFakeCmdWithOutput(t *testing.T, stdout string, code int) *exec.Cmd {
+	t.Helper()
+	cs := []string{"-test.run=TestHelperProcess", "--", "fake"}
+	c := exec.Command(os.Args[0], cs...)
+	c.Env = append(os.Environ(),
+		"GOFASTA_WANT_HELPER_PROCESS=1",
+		fakeEnvExitCode+"="+strconvItoa(code),
+		"GOFASTA_FAKE_STDOUT="+stdout,
+	)
+	return c
+}

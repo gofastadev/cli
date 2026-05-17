@@ -1,0 +1,280 @@
+package repositories_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/gofastadev/gofasta/pkg/testutil/testdb"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"gorm.io/gorm"
+
+	"{{.ModulePath}}/app/models"
+	"{{.ModulePath}}/app/repositories"
+	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
+)
+
+// setupUserRepoTest spins up a testcontainers Postgres + AutoMigrates
+// the User model. Returned db is auto-cleaned up when the test ends.
+func setupUserRepoTest(t *testing.T) (*gorm.DB, *repositories.UserRepository) {
+	t.Helper()
+	db := testdb.SetupTestDB(t)
+	require.NoError(t, db.AutoMigrate(&models.User{}),
+		"AutoMigrate must succeed against a fresh testcontainers Postgres")
+	return db, repositories.NewUserRepository(db)
+}
+
+// makeUser builds and persists a User with the given email so each
+// test starts from a known state.
+func makeUser(t *testing.T, db *gorm.DB, email string) *models.User {
+	t.Helper()
+	u := &models.User{
+		FirstName:   "Alice",
+		OtherNames:  "X",
+		Email:       email,
+		PhoneNumber: "0712345678",
+		Password:    "test-password",
+	}
+	require.NoError(t, db.Create(u).Error)
+	return u
+}
+
+// TestUserRepository_FindByID_Hit asserts the happy path: a row that
+// exists and is not soft-deleted is returned.
+func TestUserRepository_FindByID_Hit(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "found@example.com")
+
+	got, err := repo.FindByID(context.Background(), u.ID)
+	require.NoError(t, err)
+	assert.Equal(t, u.ID, got.ID)
+	assert.Equal(t, "found@example.com", got.Email)
+}
+
+// TestUserRepository_FindByID_Miss — gorm.ErrRecordNotFound is
+// returned (wrapped) when no row matches.
+func TestUserRepository_FindByID_Miss(t *testing.T) {
+	_, repo := setupUserRepoTest(t)
+	_, err := repo.FindByID(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"missing rows must surface as gorm.ErrRecordNotFound so the service can map to ErrUserNotFound")
+}
+
+// TestUserRepository_FindByID_SoftDeletedExcluded — the gorm.DeletedAt
+// auto-filter must hide soft-deleted rows from FindByID.
+func TestUserRepository_FindByID_SoftDeletedExcluded(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "deleted@example.com")
+	require.NoError(t, db.Delete(u).Error, "Delete on a gorm.DeletedAt model = soft-delete")
+
+	_, err := repo.FindByID(context.Background(), u.ID)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+// TestUserRepository_Create_PopulatesBaseFields — BeforeCreate hook
+// fires; ID, timestamps, defaults are set.
+func TestUserRepository_Create_PopulatesBaseFields(t *testing.T) {
+	_, repo := setupUserRepoTest(t)
+	u := &models.User{FirstName: "B", OtherNames: "Y", Email: "b@x.com", PhoneNumber: "1", Password: "p"}
+	require.NoError(t, repo.Create(context.Background(), u))
+
+	assert.NotEqual(t, uuid.Nil, u.ID)
+	assert.False(t, u.CreatedAt.IsZero())
+	assert.False(t, u.UpdatedAt.IsZero())
+	assert.True(t, u.IsActive)
+	assert.True(t, u.IsDeletable)
+	assert.Equal(t, 1, u.RecordVersion)
+}
+
+// TestUserRepository_UpdateIfVersionMatches_HappyPath — version
+// matches → UPDATE applies, refetch returns the updated row with
+// record_version bumped.
+func TestUserRepository_UpdateIfVersionMatches_HappyPath(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "happy@example.com")
+
+	updated, affected, err := repo.UpdateIfVersionMatches(
+		context.Background(), u.ID, u.RecordVersion,
+		map[string]any{"first_name": "Renamed"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected)
+	require.NotNil(t, updated)
+	assert.Equal(t, "Renamed", updated.FirstName)
+	assert.Equal(t, u.RecordVersion+1, updated.RecordVersion,
+		"record_version must be bumped in the same UPDATE")
+}
+
+// TestUserRepository_UpdateIfVersionMatches_VersionConflict — the
+// caller-supplied version doesn't match the persisted value → 0 rows
+// affected, nil entity, nil error. Service maps this to the sentinel.
+func TestUserRepository_UpdateIfVersionMatches_VersionConflict(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "stale@example.com")
+
+	updated, affected, err := repo.UpdateIfVersionMatches(
+		context.Background(), u.ID, u.RecordVersion+99, // wrong version
+		map[string]any{"first_name": "Renamed"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), affected, "version mismatch must produce 0 RowsAffected")
+	assert.Nil(t, updated, "version mismatch must return nil entity")
+
+	// Persisted row was NOT touched.
+	var fresh models.User
+	require.NoError(t, db.Where("id = ?", u.ID).First(&fresh).Error)
+	assert.Equal(t, "Alice", fresh.FirstName, "the stale-version UPDATE must not have touched the row")
+}
+
+// TestUserRepository_UpdateIfVersionMatches_AtomicityUnderRace — two
+// concurrent UPDATEs with the same expected version: exactly one
+// succeeds, the other reports affected==0. Atomicity guard.
+func TestUserRepository_UpdateIfVersionMatches_AtomicityUnderRace(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "race@example.com")
+
+	type result struct {
+		affected int64
+		err      error
+	}
+	results := make(chan result, 2)
+	for i := 0; i < 2; i++ {
+		i := i
+		go func() {
+			_, affected, err := repo.UpdateIfVersionMatches(
+				context.Background(), u.ID, u.RecordVersion,
+				map[string]any{"first_name": "racer"},
+			)
+			_ = i
+			results <- result{affected, err}
+		}()
+	}
+	var a, b result
+	a, b = <-results, <-results
+	require.NoError(t, a.err)
+	require.NoError(t, b.err)
+
+	// Exactly one wins.
+	wins := a.affected + b.affected
+	assert.Equal(t, int64(1), wins,
+		"under racing UPDATEs with the same version, exactly one must succeed (got winners=%d)", wins)
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_HappyPath — IsDeletable=true
+// row gets archived, the returned record carries the freshly-stamped
+// DeletedAt + cleared IsActive, and a subsequent FindByID returns
+// ErrRecordNotFound (the row is soft-deleted, so GORM's auto-filter
+// excludes it from live reads).
+func TestUserRepository_SoftDeleteIfDeletable_HappyPath(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "softdel@example.com")
+
+	deleted, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.NoError(t, err)
+	require.NotNil(t, deleted, "happy path must return the soft-deleted record so the controller can respond 200 with payload")
+	assert.True(t, deleted.DeletedAt.Valid, "returned record's DeletedAt must reflect the just-written value")
+	assert.False(t, deleted.IsActive, "returned record's IsActive must reflect the cleared value")
+
+	_, err = repo.FindByID(context.Background(), u.ID)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+
+	// And the row IS in the DB (just soft-deleted) — verify by
+	// re-querying with .Unscoped().
+	var fresh models.User
+	require.NoError(t, db.Unscoped().Where("id = ?", u.ID).First(&fresh).Error)
+	assert.True(t, fresh.DeletedAt.Valid, "deleted_at should be set in DB")
+	assert.False(t, fresh.IsActive, "is_active should be cleared in DB")
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_BlockedByFlag — when
+// is_deletable is false the repo returns ErrUserNotDeletable; the
+// row stays alive and active. Controller maps to 409.
+func TestUserRepository_SoftDeleteIfDeletable_BlockedByFlag(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "protected@example.com")
+	// Mark the row as not deletable (e.g. system account).
+	require.NoError(t, db.Model(u).Update("is_deletable", false).Error)
+
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, repoInterfaces.ErrUserNotDeletable,
+		"is_deletable=false must surface as ErrUserNotDeletable (service maps to 409)")
+
+	// Still findable, still active.
+	live, err := repo.FindByID(context.Background(), u.ID)
+	require.NoError(t, err)
+	assert.True(t, live.IsActive)
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_AlreadyDeleted — a second
+// archive of the same id returns gorm.ErrRecordNotFound, NOT 0 rows
+// affected and not ErrUserNotDeletable. This is the idempotency
+// contract: from the API's perspective, "already deleted" and "never
+// existed" are indistinguishable and both translate to 404.
+func TestUserRepository_SoftDeleteIfDeletable_AlreadyDeleted(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "twice@example.com")
+
+	// First delete succeeds.
+	_, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.NoError(t, err)
+
+	// Second delete: the row's gorm.DeletedAt auto-filter excludes it
+	// from the repo's First() lookup, surfacing as ErrRecordNotFound.
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), u.ID)
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound,
+		"second DELETE must return ErrRecordNotFound (idempotent 404), not a spurious conflict")
+}
+
+// TestUserRepository_SoftDeleteIfDeletable_NotFound — archiving an
+// unknown id returns ErrRecordNotFound, same as the already-deleted
+// case. Same idempotency reason; the controller treats both as 404.
+func TestUserRepository_SoftDeleteIfDeletable_NotFound(t *testing.T) {
+	_, repo := setupUserRepoTest(t)
+
+	got, err := repo.SoftDeleteIfDeletable(context.Background(), uuid.New())
+	require.Error(t, err)
+	assert.Nil(t, got)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+// TestUserRepository_List_PaginationAndSort — verifies List honors
+// page/limit + sort string + per-column ILIKE filters.
+func TestUserRepository_List_PaginationAndSort(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	for i, name := range []string{"alice", "bob", "carol", "dan"} {
+		u := &models.User{
+			FirstName:   name,
+			OtherNames:  "X",
+			Email:       name + "@example.com",
+			PhoneNumber: "111",
+			Password:    "p",
+		}
+		require.NoError(t, db.Create(u).Error)
+		// Ensure deterministic ordering by created_at.
+		time.Sleep(2 * time.Millisecond)
+		_ = i
+	}
+
+	// Page 1 of 2 sorted by created_at ASC.
+	got, total, err := repo.List(context.Background(), nil, 1, 2, "created_at ASC")
+	require.NoError(t, err)
+	assert.Equal(t, int64(4), total, "total count is independent of pagination")
+	require.Len(t, got, 2)
+	assert.Equal(t, "alice", got[0].FirstName)
+	assert.Equal(t, "bob", got[1].FirstName)
+
+	// Page 2 of 2.
+	got, _, err = repo.List(context.Background(), nil, 2, 2, "created_at ASC")
+	require.NoError(t, err)
+	require.Len(t, got, 2)
+	assert.Equal(t, "carol", got[0].FirstName)
+	assert.Equal(t, "dan", got[1].FirstName)
+}

@@ -86,6 +86,8 @@ func stubProbesOK(t *testing.T) {
 }
 
 // withFakeExecVersion is withFakeExec with a scripted --version response.
+//
+//nolint:unparam // exitCode kept symmetrical with fakeExecCommandWithVersion for future use.
 func withFakeExecVersion(t *testing.T, exitCode int, version string) {
 	t.Helper()
 	orig := execCommand

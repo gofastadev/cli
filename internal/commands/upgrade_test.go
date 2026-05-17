@@ -15,6 +15,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestEmitUpgradeResult_JSON — JSON mode emits a cliout.Print
+// document for the supplied upgradeResult.
+func TestEmitUpgradeResult_JSON(t *testing.T) {
+	withJSONMode(t)
+	out := captureStdout(t, func() {
+		emitUpgradeResult(upgradeResult{
+			Action: "upgrade", Method: "binary", OldVersion: "0.0.1",
+			NewVersion: "0.0.2", Upgraded: true, Success: true,
+		})
+	})
+	assert.Contains(t, out, "\"upgrade\"")
+	assert.Contains(t, out, "\"binary\"")
+}
+
+// TestEmitUpgradeResult_TextNoOp — text mode is silent (the human
+// progress UX uses termcolor directly elsewhere).
+func TestEmitUpgradeResult_TextNoOp(t *testing.T) {
+	out := captureStdout(t, func() {
+		emitUpgradeResult(upgradeResult{Action: "upgrade", Success: true})
+	})
+	assert.Empty(t, out)
+}
+
 // errReader is an io.ReadCloser that always errors — used to simulate a
 // network body that fails partway through io.Copy.
 type errReader struct{}
@@ -186,12 +209,24 @@ func TestReadBinaryVersion_ExecError(t *testing.T) {
 func TestUpgradeViaGoInstall_Success(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
 	withFakeExecVersion(t, 0, "v2.0.0")
-	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
+}
+
+// TestUpgradeViaGoInstall_JSONMode — JSON mode routes the child's
+// stdout to stderr so the upgrade result emitted at the end stays
+// the only thing on stdout. Covers the JSON branch of the
+// `if cliout.JSON()` inside upgradeViaGoInstall (the only branch
+// the text-mode tests above don't reach).
+func TestUpgradeViaGoInstall_JSONMode(t *testing.T) {
+	t.Setenv("GOBIN", "/fake/gobin")
+	withFakeExecVersion(t, 0, "v2.0.0")
+	withJSONMode(t)
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
 
 func TestUpgradeViaGoInstall_InstallFailure(t *testing.T) {
 	withFakeExec(t, 1)
-	err := upgradeViaGoInstall("v2.0.0", "2.0.0")
+	err := upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "go install failed")
 }
@@ -199,7 +234,7 @@ func TestUpgradeViaGoInstall_InstallFailure(t *testing.T) {
 func TestUpgradeViaGoInstall_VersionMismatch(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
 	withFakeExecVersion(t, 0, "v1.0.0")
-	err := upgradeViaGoInstall("v2.0.0", "2.0.0")
+	err := upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "reports version")
 }
@@ -216,7 +251,7 @@ func TestUpgradeViaGoInstall_TargetPathError(t *testing.T) {
 	withFakeExec(t, 0)
 	// upgradeViaGoInstall swallows the goInstallTargetPath error and prints
 	// a warning rather than returning it.
-	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
 
 func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
@@ -230,7 +265,7 @@ func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
 	withFakeExec(t, 0)
 	// upgradeViaGoInstall swallows the readBinaryVersion error and prints a
 	// warning rather than failing. Assert no error.
-	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0"))
+	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
 
 // --- upgradeViaBinary ---
@@ -249,7 +284,7 @@ func TestUpgradeViaBinary_Success(t *testing.T) {
 	// Seed the target file so the rename has a destination
 	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
 
-	err := upgradeViaBinary(execPath, "v1.0.0")
+	err := upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
 	assert.NoError(t, err)
 	content, _ := os.ReadFile(execPath)
 	assert.Equal(t, "fake-binary-bytes", string(content))
@@ -271,7 +306,7 @@ func TestUpgradeViaBinary_WindowsSuffix(t *testing.T) {
 	dir := t.TempDir()
 	execPath := filepath.Join(dir, "gofasta")
 	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
-	_ = upgradeViaBinary(execPath, "v1.0.0")
+	_ = upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
 }
 
 // TestUpgradeViaBinary_ChmodFails — inject a failing Chmod seam.
@@ -289,7 +324,7 @@ func TestUpgradeViaBinary_ChmodFails(t *testing.T) {
 	dir := t.TempDir()
 	execPath := filepath.Join(dir, "gofasta")
 	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
-	err := upgradeViaBinary(execPath, "v1.0.0")
+	err := upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "permissions")
 }
@@ -298,7 +333,7 @@ func TestUpgradeViaBinary_HTTPError(t *testing.T) {
 	swapHTTP(t, func(url string) (*http.Response, error) {
 		return nil, fmt.Errorf("network fail")
 	})
-	err := upgradeViaBinary("/tmp/nope", "v1.0.0")
+	err := upgradeViaBinary("/tmp/nope", "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "download failed")
 }
@@ -310,7 +345,7 @@ func TestUpgradeViaBinary_Non200(t *testing.T) {
 	t.Cleanup(srv.Close)
 	swapDownloadURL(t, srv.URL+"/%s/%s")
 
-	err := upgradeViaBinary("/tmp/nope", "v1.0.0")
+	err := upgradeViaBinary("/tmp/nope", "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "HTTP 404")
 }
@@ -325,7 +360,7 @@ func TestUpgradeViaBinary_CopyError(t *testing.T) {
 			Header:     make(http.Header),
 		}, nil
 	})
-	err := upgradeViaBinary(filepath.Join(t.TempDir(), "gofasta"), "v1.0.0")
+	err := upgradeViaBinary(filepath.Join(t.TempDir(), "gofasta"), "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "download failed")
 }
@@ -345,7 +380,7 @@ func TestUpgradeViaBinary_CreateTempError(t *testing.T) {
 	execPath := filepath.Join(t.TempDir(), "gofasta")
 	// Now point os.TempDir at a nonexistent path so os.CreateTemp fails.
 	t.Setenv("TMPDIR", "/definitely/does/not/exist/gofasta-xyz")
-	err := upgradeViaBinary(execPath, "v1.0.0")
+	err := upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "temp file")
 }
@@ -372,7 +407,7 @@ func TestUpgradeViaBinary_RenameFallback(t *testing.T) {
 	// Call upgradeViaBinary with execPath = targetDir (a directory). os.Rename
 	// from a file to an existing directory fails, triggering replaceViaCopy
 	// which then also fails because os.WriteFile on a directory fails.
-	err := upgradeViaBinary(targetDir, "v1.0.0")
+	err := upgradeViaBinary(targetDir, "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 }
 
@@ -382,13 +417,13 @@ func TestReplaceViaCopy_Success(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
 	dst := filepath.Join(t.TempDir(), "dst")
 	require.NoError(t, os.WriteFile(src, []byte("hello"), 0644))
-	assert.NoError(t, replaceViaCopy(src, dst))
+	assert.NoError(t, replaceViaCopy(src, dst, "0.0.1", "v1.0.0"))
 	b, _ := os.ReadFile(dst)
 	assert.Equal(t, "hello", string(b))
 }
 
 func TestReplaceViaCopy_SourceMissing(t *testing.T) {
-	err := replaceViaCopy("/nonexistent/src", "/tmp/dst")
+	err := replaceViaCopy("/nonexistent/src", "/tmp/dst", "0.0.1", "v1.0.0")
 	assert.Error(t, err)
 }
 
@@ -396,7 +431,7 @@ func TestReplaceViaCopy_DestUnwritable(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
 	require.NoError(t, os.WriteFile(src, []byte("hi"), 0644))
 	// Target a dir that can't be written (on unix, root-owned)
-	err := replaceViaCopy(src, "/nonexistent-dir/dst")
+	err := replaceViaCopy(src, "/nonexistent-dir/dst", "0.0.1", "v1.0.0")
 	assert.Error(t, err)
 }
 

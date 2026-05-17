@@ -1,0 +1,16 @@
+package controllers
+
+import "{{.ModulePath}}/app/dtos"
+
+// Validator is the controller-facing validation surface. Accepting an
+// interface (rather than the concrete *validators.AppValidator) keeps
+// controllers testable without spinning up the project's SQL-backed
+// custom validators (does_record_exist_by_id_for_verification, …) —
+// tests that assert the controller's sentinel→status mapping can pass
+// a noop Validator and let the request flow to the service mock.
+//
+// *validators.AppValidator implements this implicitly; the wire.Bind
+// in providers.CoreSet makes Wire treat them as interchangeable.
+type Validator interface {
+	ValidateStruct(input any) []*dtos.TCommonAPIErrorDto
+}

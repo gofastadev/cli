@@ -108,7 +108,7 @@ func DeployDocker(cfg *DeployConfig) error {
 		PrintWarning(fmt.Sprintf("Cleanup warning: %v", err))
 	}
 
-	fmt.Println()
+	dprintln()
 	PrintSuccess(fmt.Sprintf("Deployed %s to %s (docker)", cfg.ReleaseTag, cfg.Host))
 	PrintInfo(fmt.Sprintf("Release: %s", cfg.ReleasePath()))
 	PrintInfo(fmt.Sprintf("App:     http://%s:%s", cfg.Host, cfg.ServerPort))
@@ -143,7 +143,7 @@ func CleanupOldReleases(cfg *DeployConfig) error {
 	)
 
 	if cfg.DryRun {
-		fmt.Printf("   \033[90m[dry-run] keeping %s releases, removing older\033[0m\n", keep)
+		dprintf("   \033[90m[dry-run] keeping %s releases, removing older\033[0m\n", keep)
 		return nil
 	}
 

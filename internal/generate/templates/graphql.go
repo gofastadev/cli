@@ -1,6 +1,15 @@
 package templates
 
 // GraphQL is the Go template for generating a GraphQL schema fragment.
+//
+// After the senior-architecture refactor:
+//   - The single-resource response wraps `data` only — validation /
+//     domain errors flow via gqlerror with structured `extensions.code`.
+//   - Mutation outputs return the typed entity directly (or Boolean!
+//     for archive) instead of a Response envelope. Less conditional
+//     branching at the client.
+//   - Input types include filter/page/sort fields directly — list
+//     queries no longer require a nested FiltersInput object.
 var GraphQL = `type {{.Name}} {
   id: ID!
   recordVersion: Int!
@@ -19,20 +28,18 @@ type T{{.PluralName}}ResponseDto {
   pagination: TPaginationObjectDto!
 }
 
-type T{{.Name}}ResponseDto {
-  data: {{.Name}}
-  errors: [TCommonApiErrorDto]
-}
-
 extend type Query {
-  findAll{{.PluralName}}(filters: {{.Name}}FiltersInput!): T{{.PluralName}}ResponseDto!
-  find{{.Name}}ById(input: TFind{{.Name}}ByIdInput!): T{{.Name}}ResponseDto!
+  findAll{{.PluralName}}(filters: T{{.Name}}FiltersInput!): T{{.PluralName}}ResponseDto!
+  find{{.Name}}ById(input: TFind{{.Name}}ByIdInput!): {{.Name}}!
 }
 
 extend type Mutation {
-  create{{.Name}}(input: TCreate{{.Name}}Input!): T{{.Name}}ResponseDto!
-  update{{.Name}}(input: TUpdate{{.Name}}Input!): T{{.Name}}ResponseDto!
-  archive{{.Name}}(input: TArchive{{.Name}}Input!): TCommonResponseDto!
+  create{{.Name}}(input: TCreate{{.Name}}Input!): {{.Name}}!
+  update{{.Name}}(input: TUpdate{{.Name}}Input!): {{.Name}}!
+  # archive returns the soft-deleted record (matches REST's 200 + body
+  # response). Idempotent: a second archive of the same id returns a
+  # NOT_FOUND gqlerror.
+  archive{{.Name}}(input: TArchive{{.Name}}Input!): {{.Name}}!
 }
 
 input TFind{{.Name}}ByIdInput {
@@ -55,10 +62,17 @@ input TUpdate{{.Name}}Input {
 {{- range .Fields}}
   {{.JSONName}}: {{.GQLType}}
 {{- end}}
+  isActive: Boolean
+  isDeletable: Boolean
 }
 
-input {{.Name}}FiltersInput {
-  pagination: TPaginationInputDto
-  sorting: TSortingInputDto
+input T{{.Name}}FiltersInput {
+{{- range .Fields}}
+  {{.JSONName}}: {{.GQLType}}
+{{- end}}
+  page: Int
+  limit: Int
+  sortByField: String
+  sortOrientation: SortOrientation
 }
 `

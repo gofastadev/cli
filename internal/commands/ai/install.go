@@ -8,6 +8,7 @@ import (
 	"text/template"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // InstallData is the template payload — every .tmpl file under an
@@ -25,12 +26,24 @@ type InstallData struct {
 // InstallResult summarizes one `gofasta ai <agent>` invocation. Files
 // are categorized so the output table shows "created 3 new, skipped 2
 // unchanged, would overwrite 1" instead of just a total count.
+//
+// Renamed/WouldRename track the doc-file rename (e.g. AGENTS.md → CLAUDE.md)
+// performed for agents that don't read AGENTS.md natively. Each entry
+// is the human-readable form "<src> → <dst>".
 type InstallResult struct {
 	Agent        string   `json:"agent"`
 	Created      []string `json:"created"`
 	Skipped      []string `json:"skipped"`
 	WouldReplace []string `json:"would_replace"`
 	Replaced     []string `json:"replaced"`
+	Renamed      []string `json:"renamed,omitempty"`
+	WouldRename  []string `json:"would_rename,omitempty"`
+
+	// renameFrom / renameTo are internal bookkeeping for the manifest —
+	// not serialized. Set when a rename actually happened (or would have
+	// in dry-run). Empty when the agent reads AGENTS.md natively.
+	renameFrom string `json:"-"`
+	renameTo   string `json:"-"`
 }
 
 // InstallOptions tunes the behavior of Install. In --dry-run mode no
@@ -43,8 +56,13 @@ type InstallOptions struct {
 
 // Install renders every template for agent into the project rooted at
 // projectRoot, honoring opts. The returned *InstallResult describes
-// which files were created/skipped/replaced so callers can render
-// either a human table or a JSON payload.
+// which files were created/skipped/replaced/renamed so callers can
+// render either a human table or a JSON payload.
+//
+// For agents that don't read AGENTS.md natively (Agent.DocFilename is
+// non-empty), Install first renames AGENTS.md → DocFilename. The rename
+// is non-destructive: if both files exist it errors; if only DocFilename
+// exists it's treated as already-renamed (idempotent re-install).
 //
 // Idempotency rule: a file that already exists on disk with byte-for-byte
 // identical contents is recorded as Skipped (no-op). A file that exists
@@ -59,6 +77,10 @@ func Install(agent *Agent, projectRoot string, data InstallData, opts InstallOpt
 	}
 
 	result := &InstallResult{Agent: agent.Key}
+
+	if err := renameDocFile(agent, projectRoot, opts, result); err != nil {
+		return nil, err
+	}
 
 	for _, tf := range files {
 		rendered, err := renderTemplate(tf.SourcePath, data)
@@ -103,6 +125,71 @@ func Install(agent *Agent, projectRoot string, data InstallData, opts InstallOpt
 	}
 
 	return result, nil
+}
+
+// osRename is a package-level seam for os.Rename so tests can force a
+// rename failure (e.g. simulate cross-device or permission errors).
+var osRename = os.Rename
+
+// renameDocFile handles the AGENTS.md → agent.DocFilename rename for
+// agents that don't read AGENTS.md natively. It records the outcome on
+// the result so the caller (and the manifest) can reverse it later.
+//
+// Rules:
+//   - agent.DocFilename empty → no-op (agent reads AGENTS.md natively).
+//   - both AGENTS.md and DocFilename present → error (ambiguous; user
+//     must resolve which one wins before re-running).
+//   - only AGENTS.md present → rename. Records renameFrom/renameTo.
+//   - only DocFilename present → treat as already-renamed; record the
+//     rename in the manifest so uninstall can reverse it.
+//   - neither present → no-op (project was generated without AGENTS.md).
+func renameDocFile(agent *Agent, projectRoot string, opts InstallOptions, result *InstallResult) error {
+	if agent.DocFilename == "" {
+		return nil
+	}
+	srcAbs := filepath.Join(projectRoot, "AGENTS.md")
+	dstAbs := filepath.Join(projectRoot, agent.DocFilename)
+
+	srcExists := fileExists(srcAbs)
+	dstExists := fileExists(dstAbs)
+
+	switch {
+	case srcExists && dstExists:
+		return clierr.Newf(clierr.CodeAIInstallFailed,
+			"both AGENTS.md and %s exist at the project root; remove one (or merge their content) before installing %s",
+			agent.DocFilename, agent.Key)
+	case srcExists && !dstExists:
+		entry := "AGENTS.md → " + agent.DocFilename
+		result.renameFrom = "AGENTS.md"
+		result.renameTo = agent.DocFilename
+		if opts.DryRun {
+			result.WouldRename = append(result.WouldRename, entry)
+			return nil
+		}
+		if err := osRename(srcAbs, dstAbs); err != nil {
+			return clierr.Wrapf(clierr.CodeAIInstallFailed, err,
+				"rename AGENTS.md → %s", agent.DocFilename)
+		}
+		result.Renamed = append(result.Renamed, entry)
+	case !srcExists && dstExists:
+		// Already-renamed (likely an idempotent re-install). Record so
+		// the manifest still knows how to reverse it on uninstall.
+		result.renameFrom = "AGENTS.md"
+		result.renameTo = agent.DocFilename
+	}
+	return nil
+}
+
+// fileExists reports whether path refers to an existing regular file
+// (not a directory). Errors other than IsNotExist are treated as
+// "exists" so the caller's downstream Stat/ReadFile surfaces the real
+// problem with better context.
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	return !info.IsDir()
 }
 
 // templateParse is a package-level seam for template.New().Parse so
@@ -153,26 +240,27 @@ func writeFile(destAbs string, body []byte) error {
 
 // PrintText renders an InstallResult as a human-friendly summary. Used
 // only when cliout.JSON() is false — JSON mode emits the struct directly.
+//
+// Uses the canonical termcolor vocabulary so output is consistent with
+// the rest of the CLI: green ✓ for created/renamed, yellow ~ for
+// replaced/dry-run, dim - for unchanged.
 func (r *InstallResult) PrintText(w io.Writer) {
-	if len(r.Created) > 0 {
-		fprintf(w, "  created %d file(s):\n", len(r.Created))
-		for _, f := range r.Created {
-			fprintf(w, "    + %s\n", f)
-		}
+	for _, f := range r.Renamed {
+		fprintln(w, "  "+termcolor.Success("renamed: %s", f))
 	}
-	if len(r.Replaced) > 0 {
-		fprintf(w, "  replaced %d file(s):\n", len(r.Replaced))
-		for _, f := range r.Replaced {
-			fprintf(w, "    ~ %s\n", f)
-		}
+	for _, f := range r.WouldRename {
+		fprintln(w, "  "+termcolor.Warn("would rename (dry-run): %s", f))
 	}
-	if len(r.WouldReplace) > 0 {
-		fprintf(w, "  would replace %d file(s) (dry run):\n", len(r.WouldReplace))
-		for _, f := range r.WouldReplace {
-			fprintf(w, "    ~ %s\n", f)
-		}
+	for _, f := range r.Created {
+		fprintln(w, "  "+termcolor.Success("created: %s", f))
+	}
+	for _, f := range r.Replaced {
+		fprintln(w, "  "+termcolor.Warn("replaced: %s", f))
+	}
+	for _, f := range r.WouldReplace {
+		fprintln(w, "  "+termcolor.Warn("would replace (dry-run): %s", f))
 	}
 	if len(r.Skipped) > 0 {
-		fprintf(w, "  skipped %d unchanged file(s)\n", len(r.Skipped))
+		fprintln(w, "  "+termcolor.Info("%d file(s) unchanged (skipped)", len(r.Skipped)))
 	}
 }

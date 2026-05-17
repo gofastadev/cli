@@ -98,3 +98,48 @@ func TestWaitHealthy_UnknownServiceFilteredOut(t *testing.T) {
 		2*time.Second, nil)
 	require.NoError(t, err)
 }
+
+// removeService — pure slice filter; covers the function which was
+// previously unreached from any test.
+func TestRemoveService_FiltersTarget(t *testing.T) {
+	got := removeService([]string{"a", "b", "c"}, "b")
+	assert.Equal(t, []string{"a", "c"}, got)
+}
+
+func TestRemoveService_TargetAbsent(t *testing.T) {
+	got := removeService([]string{"a", "c"}, "b")
+	assert.Equal(t, []string{"a", "c"}, got)
+}
+
+func TestRemoveService_EmptyInput(t *testing.T) {
+	got := removeService(nil, "b")
+	assert.Empty(t, got)
+}
+
+// startServices empty-names short-circuit.
+func TestStartServices_EmptyNamesShortCircuit(t *testing.T) {
+	require.NoError(t, startServices(nil, []string{"x"}))
+}
+
+// startServices skip-empty-profile branch — one profile is "", one is
+// "p1"; only p1 should become --profile p1.
+func TestStartServices_SkipsEmptyProfileEntries(t *testing.T) {
+	withFakeExec(t, 0)
+	require.NoError(t, startServices([]string{"db"}, []string{"", "p1"}))
+}
+
+// detectComposeServices skip-empty-profile branch.
+func TestDetectComposeServices_SkipsEmptyProfiles(t *testing.T) {
+	fakeExecOutput(t, `{"services":{"db":{}}}`, 0)
+	_, _, err := detectComposeServices([]string{""}, false)
+	require.NoError(t, err)
+}
+
+// detectComposeProfiles parses identifier lines, skipping blanks and
+// any line containing JSON-shape characters (defensive guard).
+func TestDetectComposeProfiles_ParsesAndSkipsBlanksAndJSON(t *testing.T) {
+	fakeExecOutput(t, "p1\n\n{not-a-profile}\np2\n", 0)
+	got, err := detectComposeProfiles()
+	require.NoError(t, err)
+	assert.Equal(t, []string{"p1", "p2"}, got)
+}

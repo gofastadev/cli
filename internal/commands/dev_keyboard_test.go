@@ -3,6 +3,8 @@ package commands
 import (
 	"bytes"
 	"errors"
+	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -201,4 +203,136 @@ func TestRunInDockerSupervisor_ChildExits(t *testing.T) {
 	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
 	assert.False(t, restart)
 	assert.Equal(t, "app-exited", called)
+}
+
+// printKeyboardBanner — invoked once to register coverage on the
+// banner-print function (no other test calls it directly).
+func TestPrintKeyboardBanner_DoesNotPanic(t *testing.T) {
+	assert.NotPanics(t, func() { printKeyboardBanner() })
+}
+
+// startKeyboardListener happy path — all seams succeed, listener
+// launches and returns a non-nil signals channel + active=true. The
+// race detector requires cancelableStdinReader.Close to serialize with
+// in-flight Read (see the readMu inside cancelableStdinReader).
+func TestStartKeyboardListener_HappyPath(t *testing.T) {
+	withTerminalStubs(t, true, nil)
+	origNew := newCancelableStdinReaderFn
+	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
+	}
+	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
+
+	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	require.True(t, active)
+	assert.NotNil(t, signals)
+	cancel()
+	cancel() // idempotent
+}
+
+// startKeyboardListener — newCancelableStdinReaderFn returns an error;
+// listener drops into the no-listener path and termRestore is invoked
+// to undo cbreak before returning the failure tuple.
+func TestStartKeyboardListener_StdinReaderConstructionFails(t *testing.T) {
+	withTerminalStubs(t, true, nil)
+	origNew := newCancelableStdinReaderFn
+	newCancelableStdinReaderFn = func(int) (*cancelableStdinReader, error) {
+		return nil, errors.New("pipe boom")
+	}
+	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
+
+	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	assert.Nil(t, signals)
+	assert.False(t, active)
+	cancel() // no-op cancel must not panic
+}
+
+// startKeyboardListener no-op cancel closures — when active=false, the
+// returned `cancel` is an empty `func() {}`. Existing tests check
+// return values but never invoke this closure; calling it covers the
+// empty function body.
+func TestStartKeyboardListener_NoopCancelClosuresAreCallable(t *testing.T) {
+	withTerminalStubs(t, true, errors.New("force raw failure"))
+	_, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	assert.False(t, active)
+	assert.NotPanics(t, func() { cancel() })
+}
+
+// readKeyboardLoop — `done` closed before any Read call → loop returns
+// without ever touching the reader.
+func TestReadKeyboardLoop_DoneClosedBeforeRead(t *testing.T) {
+	ch := make(chan keyboardSignal, 1)
+	done := make(chan struct{})
+	close(done)
+	r := &neverReadReader{}
+	readKeyboardLoop(r, ch, done)
+	assert.Equal(t, 0, r.calls, "Read must not be called when done is closed first")
+	assert.Empty(t, ch)
+}
+
+// readKeyboardLoop — `done` closed AFTER Read returns one byte but
+// BEFORE the post-Read switch interprets it. The re-check at the top
+// of the next iteration suppresses the would-be signal.
+func TestReadKeyboardLoop_DoneClosedAfterRead(t *testing.T) {
+	ch := make(chan keyboardSignal, 4)
+	done := make(chan struct{})
+	r := &gateReader{
+		bytes:     []byte{'r'},
+		afterRead: func() { close(done) },
+	}
+	readKeyboardLoop(r, ch, done)
+	assert.Empty(t, ch, "post-Read done check must suppress the signal")
+}
+
+// readKeyboardLoop — Read returns (0, nil) then EOF. The `if n == 0
+// { continue }` branch fires.
+func TestReadKeyboardLoop_ZeroByteRead(t *testing.T) {
+	ch := make(chan keyboardSignal, 4)
+	done := make(chan struct{})
+	r := &zeroByteThenEOFReader{}
+	readKeyboardLoop(r, ch, done)
+	assert.Empty(t, ch)
+	assert.GreaterOrEqual(t, r.calls, 2, "loop should retry after n==0")
+}
+
+// neverReadReader counts Read invocations; used to verify
+// readKeyboardLoop's done-first branch never touches the reader.
+type neverReadReader struct{ calls int }
+
+func (n *neverReadReader) Read(p []byte) (int, error) {
+	n.calls++
+	return 0, io.EOF
+}
+
+// zeroByteThenEOFReader returns (0, nil) on first call then EOF — used
+// to exercise readKeyboardLoop's `if n == 0 { continue }` branch.
+type zeroByteThenEOFReader struct{ calls int }
+
+func (z *zeroByteThenEOFReader) Read(p []byte) (int, error) {
+	z.calls++
+	if z.calls == 1 {
+		return 0, nil
+	}
+	return 0, io.EOF
+}
+
+// gateReader returns one queued byte then runs afterRead, then EOFs.
+type gateReader struct {
+	bytes     []byte
+	afterRead func()
+	pos       int
+}
+
+func (g *gateReader) Read(p []byte) (int, error) {
+	if g.pos >= len(g.bytes) {
+		return 0, io.EOF
+	}
+	p[0] = g.bytes[g.pos]
+	g.pos++
+	if g.afterRead != nil {
+		g.afterRead()
+	}
+	return 1, nil
 }

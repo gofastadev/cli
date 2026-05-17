@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 )
 
@@ -191,36 +192,36 @@ type humanEmitter struct{}
 
 // Preflight prints a single status line with detected docker / compose versions.
 func (h *humanEmitter) Preflight(docker, compose string) {
-	termcolor.PrintStep("✓ docker %s · compose %s", docker, compose)
+	cliout.Step("✓ docker %s · compose %s", docker, compose)
 }
 
 // ServiceStart prints a "starting" line for a compose service.
 func (h *humanEmitter) ServiceStart(name string) {
-	termcolor.PrintStep("→ starting %s", name)
+	cliout.Step("→ starting %s", name)
 }
 
 // ServiceHealthy prints a "healthy" line with the elapsed startup time.
 func (h *humanEmitter) ServiceHealthy(name string, elapsed time.Duration) {
-	termcolor.PrintStep("✓ %s healthy (%s)", name, elapsed.Round(100*time.Millisecond))
+	cliout.Step("✓ %s healthy (%s)", name, elapsed.Round(100*time.Millisecond))
 }
 
 // ServiceUnhealthy prints a warning for a service that never became healthy.
 func (h *humanEmitter) ServiceUnhealthy(name, reason string) {
-	termcolor.PrintWarn("✗ %s unhealthy: %s", name, reason)
+	cliout.Warn("✗ %s unhealthy: %s", name, reason)
 }
 
 // MigrateOK prints "migrations applied" or "migrations up to date".
 func (h *humanEmitter) MigrateOK(applied int) {
 	if applied > 0 {
-		termcolor.PrintStep("✓ migrations applied (%d)", applied)
+		cliout.Step("✓ migrations applied (%d)", applied)
 	} else {
-		termcolor.PrintStep("✓ migrations up to date")
+		cliout.Step("✓ migrations up to date")
 	}
 }
 
 // MigrateSkipped prints the reason migrations were skipped.
 func (h *humanEmitter) MigrateSkipped(reason string) {
-	termcolor.PrintWarn("migrations skipped: %s", reason)
+	cliout.Warn("migrations skipped: %s", reason)
 }
 
 // MigrateDelegated prints a positive checkmark line: migrations are
@@ -229,17 +230,17 @@ func (h *humanEmitter) MigrateSkipped(reason string) {
 // the user just sees the output via the foreground docker logs stream
 // instead of inline.
 func (h *humanEmitter) MigrateDelegated(reason string) {
-	termcolor.PrintStep("✓ migrations delegated to app container (%s) — output appears in the log stream below", reason)
+	cliout.Step("✓ migrations delegated to app container (%s) — output appears in the log stream below", reason)
 }
 
 // Air prints the post-start URL banner for the running app.
 func (h *humanEmitter) Air(port int, urls map[string]string) {
-	fmt.Println()
-	termcolor.PrintStep("🚀 Air running on :%d", port)
+	cliout.Blank()
+	cliout.Step("🚀 Air running on :%d", port)
 	for label, url := range urls {
-		fmt.Printf("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
+		cliout.Plain("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
 	}
-	fmt.Println()
+	cliout.Blank()
 }
 
 // AirInDocker prints the post-start URL banner when Air is running inside
@@ -247,25 +248,25 @@ func (h *humanEmitter) Air(port int, urls map[string]string) {
 // reachable on localhost — but the banner names the runtime so the
 // developer is not surprised that `tmp/main` does not exist on the host.
 func (h *humanEmitter) AirInDocker(port int, urls map[string]string) {
-	fmt.Println()
-	termcolor.PrintStep("🚀 app running in docker on :%d (Air logs streaming below)", port)
+	cliout.Blank()
+	cliout.Step("🚀 app running in docker on :%d (Air logs streaming below)", port)
 	for label, url := range urls {
-		fmt.Printf("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
+		cliout.Plain("   %s    %s\n", termcolor.CDim(label+":"), termcolor.CBlue(url))
 	}
-	fmt.Println()
+	cliout.Blank()
 }
 
 // Shutdown prints the teardown status line at pipeline exit.
 func (h *humanEmitter) Shutdown(teardown string, _ int) {
-	termcolor.PrintStep("shutdown — services %s", teardown)
+	cliout.Step("shutdown — services %s", teardown)
 }
 
 // Info prints a generic progress line.
 func (h *humanEmitter) Info(msg string) {
-	termcolor.PrintStep("%s", msg)
+	cliout.Step("%s", msg)
 }
 
 // Warn prints a generic non-fatal warning.
 func (h *humanEmitter) Warn(msg string) {
-	termcolor.PrintWarn("%s", msg)
+	cliout.Warn("%s", msg)
 }

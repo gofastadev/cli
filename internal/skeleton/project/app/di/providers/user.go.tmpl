@@ -10,7 +10,16 @@ import (
 	svcInterfaces "{{.ModulePath}}/app/services/interfaces"
 )
 
-// UserSet provides user domain: repository, service, controller.
+// UserSet wires the user resource: repository, service, controller.
+//
+// Note the dependency shape after the senior-architecture refactor:
+//
+//   - Validator dependency moved from the SERVICE constructor to the
+//     CONTROLLER constructor — validation is a boundary concern, not
+//     a business-logic concern.
+//   - PasswordGenerator (defined in app/services) is bound to its
+//     default impl from CoreSet so the service can mint random
+//     passwords without controllers having to know about that detail.
 var UserSet = wire.NewSet(
 	repositories.NewUserRepository,
 	wire.Bind(new(repoInterfaces.UserRepositoryInterface), new(*repositories.UserRepository)),

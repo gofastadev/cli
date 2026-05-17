@@ -50,7 +50,7 @@ func wrapLoggerImpl(h slog.Handler) slog.Handler { return h }
 
 // registerDBImpl is a no-op in stub builds. /debug/explain is not
 // exposed so there's no need to hold a DB handle.
-func registerDBImpl(_ interface{}) {}
+func registerDBImpl(_ any) {}
 
 // wrapCacheImpl returns its argument unchanged — the real decorator
 // is compiled only in devtools builds.

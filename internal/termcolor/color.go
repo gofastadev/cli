@@ -160,53 +160,115 @@ func CBrand(s string) string {
 	}
 }
 
-// --- Pre-composed line printers ---
+// --- Decorated line builders (return strings) ---
 //
-// Every printer writes to stdout via fmt.Println — writers are not overridable
-// because the CLI's actual progress output always goes there. Tests either
-// pin the mode with SetModeForTest and capture stdout, or assert directly
-// on the C*-wrapped strings.
+// These take a format + args and return a decorated string with the
+// canonical icon prepended. Use them inside `cliout.Print` text
+// renderers (which receive an io.Writer): `fmt.Fprintln(w, termcolor.Success("…"))`.
+// For commands that print directly to stdout, the Print* wrappers below
+// simply add a Println.
+//
+// Canonical icon vocabulary (kept ASCII so it survives every terminal /
+// log aggregator the user might pipe output through):
+//
+//	▶ — Step       in-progress action ("Applying migrations")
+//	✓ — Success    completed action / passing check
+//	✗ — Fail       failed action / failing check
+//	⚠ — Warn       non-fatal problem worth noticing
+//	·  Info        plain info line (no icon)
+
+// Header returns a bold-brand-cyan section header string.
+func Header(format string, args ...any) string {
+	return CBold(CBrand(fmt.Sprintf(format, args...)))
+}
+
+// Step returns a brand-cyan "▶" progress line. Use for "doing X now".
+func Step(format string, args ...any) string {
+	return CBrand("▶ ") + fmt.Sprintf(format, args...)
+}
+
+// Success returns a green "✓" decorated message.
+func Success(format string, args ...any) string {
+	return CGreen("✓ ") + fmt.Sprintf(format, args...)
+}
+
+// Fail returns a red "✗" decorated message. Use for failed operations
+// and check failures.
+func Fail(format string, args ...any) string {
+	return CRed("✗ ") + fmt.Sprintf(format, args...)
+}
+
+// Warn returns a yellow "⚠" decorated message. Use for non-fatal
+// problems the user should see.
+func Warn(format string, args ...any) string {
+	return CYellow("⚠ ") + fmt.Sprintf(format, args...)
+}
+
+// Info returns a plain unstyled message. Included so callers can flow
+// every line through a single set of builders, not a mix of fmt.Sprintf
+// and termcolor.* calls.
+func Info(format string, args ...any) string {
+	return fmt.Sprintf(format, args...)
+}
+
+// Hint returns a dim indented follow-up line — typically a "Try X" line
+// after a warning or failure.
+func Hint(format string, args ...any) string {
+	return "   " + CDim(fmt.Sprintf(format, args...))
+}
+
+// Path returns a dim indented path line. Used when listing files in
+// progress output so the tree is scannable.
+func Path(path string) string {
+	return "   " + CDim(path)
+}
+
+// --- Pre-composed line printers (write to stdout) ---
+//
+// Each delegates to a Builder above and adds a Println. Use when you
+// don't need cliout.Print's --json plumbing — i.e. when the command
+// has no JSON contract anyway. For commands that DO want --json, use
+// `cliout.Print(payload, func(w io.Writer) { fmt.Fprintln(w, termcolor.X(…)) })`.
 
 // PrintHeader prints a bold-brand-cyan section header.
 func PrintHeader(format string, args ...any) {
-	fmt.Println(CBold(CBrand(fmt.Sprintf(format, args...))))
+	fmt.Println(Header(format, args...))
 }
 
-// PrintStep prints a brand-cyan progress line, no bolding. Use for sub-
-// steps inside a phase ("📦 Installing gofasta library...").
+// PrintStep prints a brand-cyan "▶ " progress line.
 func PrintStep(format string, args ...any) {
-	fmt.Println(CBrand(fmt.Sprintf(format, args...)))
+	fmt.Println(Step(format, args...))
 }
 
-// PrintSuccess prints a green "✓" followed by the message. Use for
-// completed operations and final summaries.
+// PrintSuccess prints a green "✓ " decorated message.
 func PrintSuccess(format string, args ...any) {
-	fmt.Println(CGreen("✓ ") + fmt.Sprintf(format, args...))
+	fmt.Println(Success(format, args...))
 }
 
-// PrintWarn prints a yellow "⚠" followed by the message. Use for non-fatal
-// problems the user should see but that don't stop the command.
+// PrintFail prints a red "✗ " decorated message. Use for failed
+// operations and check failures.
+func PrintFail(format string, args ...any) {
+	fmt.Println(Fail(format, args...))
+}
+
+// PrintWarn prints a yellow "⚠ " decorated message.
 func PrintWarn(format string, args ...any) {
-	fmt.Println(CYellow("⚠ ") + fmt.Sprintf(format, args...))
+	fmt.Println(Warn(format, args...))
 }
 
-// PrintInfo prints a plain unstyled info line. Included here so all progress
-// output flows through a single set of printers, not a mix of fmt.Println
-// and termcolor helpers.
+// PrintInfo prints a plain unstyled info line.
 func PrintInfo(format string, args ...any) {
-	fmt.Println(fmt.Sprintf(format, args...))
+	fmt.Println(Info(format, args...))
 }
 
-// PrintPath prints a dim path line with two-space indent. Used when listing
-// many files so the tree is scannable without dominating the output.
+// PrintPath prints a dim path line with three-space indent.
 func PrintPath(path string) {
-	fmt.Println("   " + CDim(path))
+	fmt.Println(Path(path))
 }
 
-// PrintHint prints a dim indented follow-up — typically a "Try running X"
-// line after a warning.
+// PrintHint prints a dim indented follow-up line.
 func PrintHint(format string, args ...any) {
-	fmt.Println("   " + CDim(fmt.Sprintf(format, args...)))
+	fmt.Println(Hint(format, args...))
 }
 
 // PrintCreate prints a green "create:" line with a dim path. Used by the

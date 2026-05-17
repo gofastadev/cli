@@ -3,6 +3,7 @@ package generate
 import (
 	"fmt"
 
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -128,6 +129,7 @@ func repositorySteps() []Step {
 		{"migration", GenMigration},
 		{"repository interface", GenRepoInterface},
 		{"repository", GenRepo},
+		{"repository test", GenRepoTestFile},
 	}
 }
 
@@ -138,9 +140,15 @@ func serviceSteps(d ScaffoldData) []Step {
 		{"migration", GenMigration},
 		{"repository interface", GenRepoInterface},
 		{"repository", GenRepo},
+		{"repository test", GenRepoTestFile},
+		{"sentinel errors", GenErrors},
+		{"domain inputs", GenInputs},
+		{"domain inputs test", GenInputsTestFile},
 		{"service interface", GenSvcInterface},
 		{"service", GenSvc},
+		{"service test", GenSvcTestFile},
 		{"DTOs", GenDTOs},
+		{"DTOs test", GenDTOsTestFile},
 		{"Wire provider", GenWireProvider},
 	}
 	if d.IncludeGraphQL {
@@ -169,9 +177,15 @@ func controllerSteps(d ScaffoldData) []Step {
 		{"migration", GenMigration},
 		{"repository interface", GenRepoInterface},
 		{"repository", GenRepo},
+		{"repository test", GenRepoTestFile},
+		{"sentinel errors", GenErrors},
+		{"domain inputs", GenInputs},
+		{"domain inputs test", GenInputsTestFile},
 		{"service interface", GenSvcInterface},
 		{"service", GenSvc},
+		{"service test", GenSvcTestFile},
 		{"DTOs", GenDTOs},
+		{"DTOs test", GenDTOsTestFile},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
 		{"controller test", GenControllerTestFile},
@@ -208,9 +222,15 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		{"migration", GenMigration},
 		{"repository interface", GenRepoInterface},
 		{"repository", GenRepo},
+		{"repository test", GenRepoTestFile},
+		{"sentinel errors", GenErrors},
+		{"domain inputs", GenInputs},
+		{"domain inputs test", GenInputsTestFile},
 		{"service interface", GenSvcInterface},
 		{"service", GenSvc},
+		{"service test", GenSvcTestFile},
 		{"DTOs", GenDTOs},
+		{"DTOs test", GenDTOsTestFile},
 		{"Wire provider", GenWireProvider},
 		{"controller", GenController},
 		{"controller test", GenControllerTestFile},
@@ -350,12 +370,12 @@ logic in app/services/<name>.service.go.`,
 				return err
 			}
 		}
-		fmt.Println()
-		termcolor.PrintSuccess("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
-		fmt.Printf("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
-		fmt.Printf("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
+		cliout.Blank()
+		cliout.Success("Scaffold complete for %s. All files generated and wired.", termcolor.CBold(d.Name))
+		cliout.Plain("  %s  %s\n", termcolor.CDim("Run migrations:"), termcolor.CBold("gofasta migrate up"))
+		cliout.Plain("  %s  %s\n", termcolor.CDim("Write logic:"), termcolor.CBold(fmt.Sprintf("app/services/%s.service.go", d.SnakeName)))
 		if d.IncludeSwagger {
-			fmt.Printf("  %s  %s\n", termcolor.CDim("Regenerate docs:"), termcolor.CBold("gofasta swagger"))
+			cliout.Plain("  %s  %s\n", termcolor.CDim("Regenerate docs:"), termcolor.CBold("gofasta swagger"))
 		}
 		return nil
 	},

@@ -5,6 +5,7 @@ layered architecture, code generators for CRUD, and a one-command VPS
 deploy flow.
 
 Module: `{{.ModulePath}}`
+Database: `{{.DBDriver}}`
 
 ## Prerequisites
 
@@ -25,13 +26,55 @@ gofasta init
 # strings; if any dep is unreachable an interactive menu offers
 # to start it in Docker or run without it.
 gofasta dev
+{{- if ne .DBDriver "sqlite" }}
 
 # Bring up the database in Docker explicitly, app stays on host:
 gofasta dev --services db
+{{- end }}
 
-# Full stack in Docker (app + db + cache + queue):
+# Full stack in Docker (app + {{- if ne .DBDriver "sqlite" }}db + {{end}}cache + queue):
 gofasta dev --services all
 ```
+
+## Database driver
+
+This project was scaffolded for **{{.DBDriver}}**.
+{{- if eq .DBDriver "sqlite" }}
+
+SQLite is file-based — `gofasta dev --services` does not start a separate
+database container. The database file path is set by
+`{{.ProjectNameUpper}}_DATABASE_NAME` (defaults to `{{.ProjectNameLower}}.db`
+in the project root). Foundational migration `db/migrations/000001_create_users.up.sql`
+ships with the trigger-based DB-level enforcement (RAISE ABORT on DELETE
+when `is_deletable=0`).
+{{- else if eq .DBDriver "mysql" }}
+
+The compose stack provisions a `mysql:8.4` service. Schema invariants
+(`record_version` increment on UPDATE, `is_deletable` guard on DELETE) are
+enforced at the DB layer via per-table triggers — they hold for any client,
+including direct `mysql` shell access.
+{{- else if eq .DBDriver "sqlserver" }}
+
+The compose stack provisions a `mcr.microsoft.com/mssql/server:2022-latest`
+service. The SA password defaults to `YourStrong@Passw0rd` — change it in
+`.env` before pushing to production. Schema invariants enforced via an
+AFTER UPDATE trigger (updated_at + record_version) and an INSTEAD OF
+DELETE trigger (is_deletable guard).
+{{- else if eq .DBDriver "clickhouse" }}
+
+The compose stack provisions a `clickhouse/clickhouse-server` service.
+**Important**: ClickHouse does NOT support row-level triggers (engine
+limitation), so the `record_version` / `is_deletable` invariants are
+enforced **only at the application layer** in this project. A direct
+`clickhouse-client` UPDATE/DELETE bypasses them. Pick a different driver
+if you need DB-level guards against non-application writers.
+{{- else }}
+
+The compose stack provisions a `postgres:18-alpine` service. Schema
+invariants (auto-`updated_at`, `record_version` increment, `is_deletable`
+guard) are enforced at the DB layer via shared PL/pgSQL functions and
+per-table triggers — they hold for any client, including `psql`.
+{{- end }}
 
 The server listens on the port set in `config.yaml` (8080 by default).
 Visit `/swagger/index.html` for the auto-generated OpenAPI UI and

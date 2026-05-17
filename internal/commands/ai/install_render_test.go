@@ -57,7 +57,7 @@ func TestLoadManifest_ReadErrorNotExist(t *testing.T) {
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 	require.NotNil(t, m)
-	assert.Equal(t, 1, m.Version)
+	assert.Equal(t, manifestSchemaVersion, m.Version)
 	assert.NotNil(t, m.Installed)
 }
 
@@ -118,20 +118,28 @@ func TestRenderTemplate_ReadTemplateError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestTemplateFiles_InvalidDir — invalid agent.TemplateDir returns an
-// error from fs.WalkDir.
-func TestTemplateFiles_InvalidDir(t *testing.T) {
+// TestTemplateFiles_NoTemplatesIsNotAnError — an agent that ships no
+// template files (cursor, windsurf — they read AGENTS.md natively)
+// returns an empty slice and a nil error. This is the contract the
+// Install path relies on for those agents.
+func TestTemplateFiles_NoTemplatesIsNotAnError(t *testing.T) {
 	a := &Agent{Key: "x", TemplateDir: "templates/nonexistent"}
-	_, err := TemplateFiles(a)
-	require.Error(t, err)
+	files, err := TemplateFiles(a)
+	require.NoError(t, err)
+	assert.Empty(t, files)
 }
 
-// TestInstall_InvalidAgentTemplate — same as TemplateFiles_InvalidDir
-// but surfaced via Install.
-func TestInstall_InvalidAgentTemplate(t *testing.T) {
+// TestInstall_NoTemplatesSucceeds — installing an agent with no
+// templates is a no-op success. Manifest recording / rename handling
+// happen at the runInstall layer; Install itself just returns an empty
+// result.
+func TestInstall_NoTemplatesSucceeds(t *testing.T) {
 	a := &Agent{Key: "broken", TemplateDir: "templates/nonexistent"}
-	_, err := Install(a, t.TempDir(), InstallData{}, InstallOptions{})
-	require.Error(t, err)
+	result, err := Install(a, t.TempDir(), InstallData{}, InstallOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.Empty(t, result.Created)
+	assert.Empty(t, result.Replaced)
 }
 
 // TestInstall_StatError — when the destination path is not readable

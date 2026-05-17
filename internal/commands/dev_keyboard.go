@@ -1,11 +1,10 @@
 package commands
 
 import (
-	"fmt"
 	"io"
 	"os"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 	"golang.org/x/term"
 )
 
@@ -209,18 +208,18 @@ func readKeyboardLoop(in io.Reader, sigCh chan<- keyboardSignal, done <-chan str
 // notice printed after raw mode is engaged. Kept short so it does not
 // add visual weight to a typical dev run.
 func printKeyboardBanner() {
-	termcolor.PrintStep("⌨  press `r` to restart · `q` to quit · `h` for help")
+	cliout.Step("⌨  press `r` to restart · `q` to quit · `h` for help")
 }
 
 // printKeyboardHelp prints the full keybinding list to stdout. Called
 // when the user presses `h` or `?` during the dev loop.
 func printKeyboardHelp() {
-	fmt.Println()
-	termcolor.PrintStep("interactive controls:")
-	fmt.Println("   r, R    restart the dev pipeline from scratch")
-	fmt.Println("   q, Q    quit gofasta dev (same as Ctrl+C)")
-	fmt.Println("   h, H, ? show this help")
-	fmt.Println()
+	cliout.Blank()
+	cliout.Step("interactive controls:")
+	cliout.Plainln("   r, R    restart the dev pipeline from scratch")
+	cliout.Plainln("   q, Q    quit gofasta dev (same as Ctrl+C)")
+	cliout.Plainln("   h, H, ? show this help")
+	cliout.Blank()
 }
 
 // _ ensures the os.File interface check happens at compile time. If

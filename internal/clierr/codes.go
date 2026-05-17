@@ -72,6 +72,7 @@ const (
 	CodeUnknownAgent    Code = "UNKNOWN_AGENT"
 	CodeAIManifestIO    Code = "AI_MANIFEST_IO"
 	CodeAIInstallFailed Code = "AI_INSTALL_FAILED"
+	CodeAIAgentConflict Code = "AI_AGENT_CONFLICT"
 
 	// --- Debug (gofasta debug) ---
 	//
@@ -102,6 +103,13 @@ const (
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
 	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
 	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
+
+	// CodeInteractiveOnly is returned when a command that REQUIRES an
+	// interactive terminal (REPL, TUI, etc.) is invoked with --json.
+	// Agents and CI runners can pattern-match on the code and refuse
+	// to call interactive commands programmatically rather than getting
+	// a hung process or garbled output.
+	CodeInteractiveOnly Code = "INTERACTIVE_ONLY"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -268,6 +276,10 @@ var registry = map[Code]meta{
 		Hint: "one or more agent configuration files could not be written; inspect the error above",
 		Docs: "",
 	},
+	CodeAIAgentConflict: {
+		Hint: "another AI agent is already installed in this project; re-run with `--switch` to replace it, or `gofasta ai uninstall <agent>` to remove it first",
+		Docs: "",
+	},
 
 	CodeDevDockerUnavailable: {
 		Hint: "install Docker Desktop (or Docker Engine + docker compose plugin) and make sure the daemon is running — test with `docker info`",
@@ -308,6 +320,10 @@ var registry = map[Code]meta{
 	CodeDevPreflightCancel: {
 		Hint: "preflight was canceled by the user (menu option [4]) or aborted on a non-TTY session — resolve the unreachable dependency manually, then re-run `gofasta dev`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeInteractiveOnly: {
+		Hint: "this command requires an interactive terminal and cannot run in --json / headless mode; drop --json or invoke a non-interactive equivalent",
+		Docs: "https://gofasta.dev/docs/cli-reference",
 	},
 
 	CodeDebugAppUnreachable: {

@@ -2,18 +2,73 @@ package interfaces
 
 import (
 	"context"
+	"errors"
 
 	"github.com/google/uuid"
 
 	"{{.ModulePath}}/app/models"
 )
 
-// UserRepositoryInterface defines the contract for user data access.
+// ErrUserNotDeletable is the typed error SoftDeleteIfDeletable returns
+// when the row exists but its IsDeletable flag is false. Lives in the
+// interfaces package because it's part of the contract — every
+// implementation must surface this error class so callers (services)
+// can translate it to ErrUserNotDeletable in the services package
+// without depending on the concrete repository type.
+//
+// "Not found" (and the "already soft-deleted" case it covers, by
+// design) flows through as gorm.ErrRecordNotFound — no separate
+// sentinel needed because that distinction lives in the ORM already
+// and renaming it would just add a translation layer.
+var ErrUserNotDeletable = errors.New("user is not deletable")
+
+// UserRepositoryInterface is the persistence contract for users.
+//
+// Two methods (UpdateIfVersionMatches, SoftDeleteIfDeletable) bake the
+// business preconditions into the SQL WHERE clause so the operations
+// are atomic — there's no Find-then-Update gap for another writer to
+// race through. Both return RowsAffected; callers map 0 to a domain
+// sentinel error.
 type UserRepositoryInterface interface {
-	FindWithFilters(ctx context.Context, filters map[string]interface{}, page, limit int, sort string) ([]*models.User, int64, error)
-	Create(ctx context.Context, user *models.User) error
-	Update(ctx context.Context, id uuid.UUID, fields map[string]interface{}) error
+	// List returns the paginated, sorted, filtered set of users.
+	// `filter` is the per-column ILIKE map (typically built from
+	// services.ListUsersFilter.AsRepoFilter()). `sort` is a
+	// pre-sanitized "<column> ASC|DESC" string from
+	// `utils.PreparePaginating.GetSort()`.
+	List(ctx context.Context, filter map[string]any, page, limit int, sort string) ([]*models.User, int64, error)
+
+	// FindByID returns one user by primary key. Soft-deleted rows are
+	// excluded automatically by GORM's gorm.DeletedAt auto-filter.
+	// Returns gorm.ErrRecordNotFound when no row matches.
 	FindByID(ctx context.Context, id uuid.UUID) (*models.User, error)
-	FindByIDAndRecordVersion(ctx context.Context, id uuid.UUID, version int) (*models.User, error)
-	SoftDelete(ctx context.Context, id uuid.UUID) error
+
+	// Create inserts a new user row. The framework's BeforeCreate hook
+	// on BaseModelImpl sets the UUID, timestamps, and defaults.
+	Create(ctx context.Context, user *models.User) error
+
+	// UpdateIfVersionMatches runs an atomic UPDATE with the version
+	// check folded into the WHERE clause, then refetches the row in
+	// the same transaction so the returned *models.User is exactly
+	// what THIS update wrote (snapshot semantics).
+	//
+	// Returns:
+	//   (user, 1, nil) — success
+	//   (nil, 0, nil)  — version didn't match (caller maps to ErrUserVersionConflict)
+	//   (nil, 0, err)  — infrastructure failure
+	UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.User, int64, error)
+
+	// SoftDeleteIfDeletable archives the row and returns the soft-
+	// deleted record so the caller can respond 200-with-payload
+	// (Stripe-style) rather than 204. Distinguishes three outcomes:
+	//
+	//   (user, nil)                       — row found, deletable, archived
+	//   (nil,  gorm.ErrRecordNotFound)    — row missing OR already deleted
+	//                                       (the API surface treats these
+	//                                       identically — second DELETE
+	//                                       returns 404, matching GitHub /
+	//                                       Kubernetes idempotency)
+	//   (nil,  ErrUserNotDeletable)       — row exists, IsDeletable=false
+	//                                       (legitimate policy refusal → 409)
+	//   (nil,  err)                       — infrastructure failure
+	SoftDeleteIfDeletable(ctx context.Context, id uuid.UUID) (*models.User, error)
 }

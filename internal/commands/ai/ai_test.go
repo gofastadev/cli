@@ -1,6 +1,9 @@
 package ai
 
 import (
+	"bytes"
+	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -155,21 +158,28 @@ func TestInstall_DryRunWritesNothing(t *testing.T) {
 }
 
 // TestManifest_LoadSaveRoundtrip — manifest round-trips cleanly through
-// disk and InstallRecord data survives intact.
+// disk and InstallRecord data (including v2 fields) survives intact.
 func TestManifest_LoadSaveRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 	assert.Empty(t, m.Installed, "fresh manifest should be empty")
+	assert.Equal(t, manifestSchemaVersion, m.Version)
 
-	m.RecordInstall("claude", "v0.5.0-test")
+	m.RecordInstall("claude", "v0.5.0-test",
+		[]string{".claude/settings.json", ".claude/commands/verify.md"},
+		"AGENTS.md", "CLAUDE.md")
 	require.NoError(t, m.Save(dir))
 
 	m2, err := LoadManifest(dir)
 	require.NoError(t, err)
+	assert.Equal(t, "claude", m2.ActiveAgent)
 	rec, ok := m2.Installed["claude"]
 	require.True(t, ok)
 	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
+	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
+	assert.Equal(t, "AGENTS.md", rec.RenamedFrom)
+	assert.Equal(t, "CLAUDE.md", rec.RenamedTo)
 }
 
 // TestExtractModulePath — parses `module ...` lines out of go.mod text.
@@ -229,4 +239,348 @@ func TestStatusCmdRunE(t *testing.T) {
 	t.Cleanup(func() { _ = os.Chdir(orig) })
 	err := statusCmd.RunE(statusCmd, nil)
 	require.Error(t, err)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// agentConflictError — every diff branch
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAgentConflictError_PrevRenamedTargetHasDoc — prev agent renamed
+// AGENTS.md (aider→CONVENTIONS.md), target also has a DocFilename
+// (claude→CLAUDE.md). The diff should describe "rename CONVENTIONS.md → CLAUDE.md".
+func TestAgentConflictError_PrevRenamedTargetHasDoc(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("aider", false, false))
+	})
+	t.Cleanup(func() { installSwitch = false })
+
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
+	assert.Contains(t, err.Error(), "rename CONVENTIONS.md → CLAUDE.md")
+}
+
+// TestAgentConflictError_PrevRenamedTargetNoDoc — prev agent renamed
+// AGENTS.md (claude→CLAUDE.md), target has NO DocFilename (cursor).
+// The diff should reverse the rename: "CLAUDE.md → AGENTS.md".
+func TestAgentConflictError_PrevRenamedTargetNoDoc(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	t.Cleanup(func() { installSwitch = false })
+
+	err := runInstall("cursor", false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rename CLAUDE.md → AGENTS.md")
+}
+
+// TestAgentConflictError_PrevUnknownAgent — manifest references an
+// agent the running CLI doesn't know about. agentConflictError should
+// still produce a useful error using the recorded key as the name.
+func TestAgentConflictError_PrevUnknownAgent(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	m.ActiveAgent = "legacyx"
+	require.NoError(t, m.Save(dir))
+	t.Cleanup(func() { installSwitch = false })
+
+	err = runInstall("claude", false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "legacyx is currently installed")
+}
+
+// TestAgentConflictError_NoDiff — prev is an unknown agent (no rename
+// diff, no remove diff), target also has no templates and no DocFilename
+// (cursor). Diff stays empty and we hit the fallback message.
+func TestAgentConflictError_NoDiff(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	m.ActiveAgent = "legacyx"
+	require.NoError(t, m.Save(dir))
+	t.Cleanup(func() { installSwitch = false })
+
+	err = runInstall("cursor", false, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Re-run with `--switch`")
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// switchUninstall — early-return + error branches
+// ─────────────────────────────────────────────────────────────────────
+
+// TestRunInstall_SwitchPrevAgentUnknown — manifest references an
+// unknown agent under --switch. switchUninstall clears ActiveAgent
+// and returns nil so the new install proceeds.
+func TestRunInstall_SwitchPrevAgentUnknown(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	m.ActiveAgent = "legacyx"
+	require.NoError(t, m.Save(dir))
+
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	m2, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "codex", m2.ActiveAgent)
+}
+
+// TestRunInstall_SwitchPrevAgentNoRecord — ActiveAgent points to a
+// known agent with NO install record (manifest got out of sync).
+// switchUninstall clears ActiveAgent and returns nil.
+func TestRunInstall_SwitchPrevAgentNoRecord(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	m.ActiveAgent = "aider"
+	require.NoError(t, m.Save(dir))
+
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+}
+
+// TestRunInstall_SwitchDryRunDoesNotUpdateManifest — --switch +
+// --dry-run runs the uninstall in dry-run mode AND skips
+// RecordUninstall. The original agent is still recorded after the
+// dry-run switch attempt.
+func TestRunInstall_SwitchDryRunDoesNotUpdateManifest(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	mBefore, err := LoadManifest(dir)
+	require.NoError(t, err)
+	require.Contains(t, mBefore.Installed, "codex")
+
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", true, false))
+	})
+
+	mAfter, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Contains(t, mAfter.Installed, "codex")
+	assert.Equal(t, "codex", mAfter.ActiveAgent)
+}
+
+// TestSwitchUninstall_BuildInstallDataError — call switchUninstall
+// directly so buildInstallData fails specifically inside it.
+func TestSwitchUninstall_BuildInstallDataError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
+
+	err = switchUninstall(m, dir, true)
+	require.Error(t, err)
+}
+
+// TestSwitchUninstall_UninstallError — fail osRename inside Uninstall
+// to hit the Uninstall-error branch of switchUninstall.
+func TestSwitchUninstall_UninstallError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+
+	orig := osRename
+	osRename = func(_, _ string) error { return assertError("rename boom") }
+	t.Cleanup(func() { osRename = orig })
+
+	err = switchUninstall(m, dir, false)
+	require.Error(t, err)
+}
+
+// TestRunInstall_SwitchUninstallError — runInstall with --switch
+// where switchUninstall fails (osRename stubbed to fail inside the
+// Uninstall path). Surfaces the line `if err := switchUninstall(...)
+// ... return err` branch inside runInstall.
+func TestRunInstall_SwitchUninstallError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "AGENTS.md"),
+		[]byte("# briefing\n"), 0o644))
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	orig := osRename
+	osRename = func(_, _ string) error { return assertError("rename boom") }
+	t.Cleanup(func() { osRename = orig })
+
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+
+	err := runInstall("aider", false, false)
+	require.Error(t, err)
+	_ = dir
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// agentOwnedFiles
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAgentOwnedFiles_HappyPath — non-empty slice for an agent with
+// templates.
+func TestAgentOwnedFiles_HappyPath(t *testing.T) {
+	agent := AgentByKey("claude")
+	require.NotNil(t, agent)
+	files, err := agentOwnedFiles(agent)
+	require.NoError(t, err)
+	assert.NotEmpty(t, files)
+}
+
+// TestAgentOwnedFiles_EmptyForAgentWithoutTemplates — cursor has no
+// embedded template dir; agentOwnedFiles returns an empty slice and
+// no error (the "agent installs nothing on disk" representation).
+func TestAgentOwnedFiles_EmptyForAgentWithoutTemplates(t *testing.T) {
+	agent := AgentByKey("cursor")
+	require.NotNil(t, agent)
+	files, err := agentOwnedFiles(agent)
+	require.NoError(t, err)
+	assert.Empty(t, files)
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// runInstall — Cmd.RunE help path
+// ─────────────────────────────────────────────────────────────────────
+
+// TestAiCmd_NoArgsShowsHelp — `gofasta ai` with no agent argument
+// prints help and exits 0 instead of erroring.
+func TestAiCmd_NoArgsShowsHelp(t *testing.T) {
+	_ = captureStdout(t, func() {
+		require.NoError(t, Cmd.RunE(Cmd, nil))
+	})
+}
+
+// TestTemplateFiles_WalkErrorPropagates — inject a non-IsNotExist
+// walk error via the fsWalkDir seam. TemplateFiles must surface it
+// so the callers (agentOwnedFiles, Install, expectedRenderings) hit
+// their error-return branches.
+func TestTemplateFiles_WalkErrorPropagates(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_, err := TemplateFiles(AgentByKey("claude"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "synthetic walk failure")
+}
+
+// TestAgentOwnedFiles_WalkErrorPropagates — fsWalkDir failure
+// surfaces through agentOwnedFiles as a CodeAIInstallFailed clierr.
+func TestAgentOwnedFiles_WalkErrorPropagates(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_, err := agentOwnedFiles(AgentByKey("claude"))
+	require.Error(t, err)
+}
+
+// TestRunInstall_AgentOwnedFilesError — fsWalkDir failure: the
+// agentOwnedFiles call inside runInstall returns an error after the
+// install succeeded, so runInstall propagates it before saving the
+// manifest.
+func TestRunInstall_AgentOwnedFilesError(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+
+	// Install succeeds, but the post-install ownedFiles lookup fails.
+	// To trigger this ordering: let TemplateFiles succeed once (for
+	// Install's own use) and fail on the second call (agentOwnedFiles).
+	orig := fsWalkDir
+	calls := 0
+	fsWalkDir = func(fsys fs.FS, root string, fn fs.WalkDirFunc) error {
+		calls++
+		if calls >= 2 {
+			return assertError("synthetic walk failure on second call")
+		}
+		return fs.WalkDir(fsys, root, fn)
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	_ = captureStdout(t, func() {
+		err := runInstall("claude", false, false)
+		require.Error(t, err)
+	})
+}
+
+// TestInstall_TemplateFilesError — Install's first call site for
+// TemplateFiles. fsWalkDir failure on the very first call surfaces
+// as a CodeAIInstallFailed wrap.
+func TestInstall_TemplateFilesError(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	dir := t.TempDir()
+	_, err := Install(AgentByKey("claude"), dir, sampleData(), InstallOptions{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not enumerate templates")
+}
+
+// TestExpectedRenderings_TemplateFilesError — expectedRenderings
+// swallows TemplateFiles errors (returns an empty map) per design;
+// this exercises that branch via the fsWalkDir seam.
+func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	got := expectedRenderings(AgentByKey("claude"), sampleData())
+	assert.Empty(t, got)
+}
+
+// TestInstallResult_PrintText_RenameSections — covers the Renamed
+// and WouldRename branches that the aggregate sections test in
+// runners_test.go doesn't exercise.
+func TestInstallResult_PrintText_RenameSections(t *testing.T) {
+	r := &InstallResult{
+		Agent:       "claude",
+		Renamed:     []string{"AGENTS.md → CLAUDE.md"},
+		WouldRename: []string{"AGENTS.md → CLAUDE.md"},
+	}
+	var buf bytes.Buffer
+	r.PrintText(&buf)
+	out := buf.String()
+	assert.Contains(t, out, "renamed: AGENTS.md → CLAUDE.md")
+	assert.Contains(t, out, "would rename (dry-run): AGENTS.md → CLAUDE.md")
 }

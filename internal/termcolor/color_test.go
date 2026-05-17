@@ -103,6 +103,18 @@ func TestSemanticWrappers(t *testing.T) {
 	assert.Contains(t, CBlue("x"), Blue)
 }
 
+// TestFail — the Fail string-returning helper isn't reached by the
+// generic PrintHelpers test (which uses PrintFail only). Cover it
+// directly so the ✗ + formatted-args composition is verified.
+func TestFail(t *testing.T) {
+	restore := SetModeForTest(ModeTrueColor)
+	defer restore()
+	got := Fail("oops %s", "now")
+	assert.Contains(t, got, "✗ ")
+	assert.Contains(t, got, "oops now")
+	assert.Contains(t, got, Red)
+}
+
 func TestCBrand_TrueColor(t *testing.T) {
 	restore := SetModeForTest(ModeTrueColor)
 	defer restore()
@@ -131,6 +143,7 @@ func TestPrintHelpers(t *testing.T) {
 		PrintHeader("h %s", "one")
 		PrintStep("s %s", "two")
 		PrintSuccess("ok %s", "done")
+		PrintFail("fail %s", "loud")
 		PrintWarn("warn %s", "now")
 		PrintInfo("info %s", "msg")
 		PrintPath("a/b/c")
@@ -142,7 +155,7 @@ func TestPrintHelpers(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"h one", "s two", "✓ ok done", "⚠ warn now",
+		"h one", "s two", "✓ ok done", "✗ fail loud", "⚠ warn now",
 		"info msg", "a/b/c", "try it",
 		"create:", "new/file.go",
 		"patch:", "old/file.go", "note",

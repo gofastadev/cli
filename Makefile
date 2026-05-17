@@ -76,6 +76,17 @@ integration: build
 		$(CURDIR)/bin/gofasta g job cleanup-tokens "0 0 0 * * *" && \
 		$(CURDIR)/bin/gofasta g task send-welcome
 	cd /tmp/gofasta-integration-test && make preflight
+	@# Also exercise `gofasta test --coverage` inside the scaffold —
+	@# `make preflight` runs `go test -race ./...` directly, which
+	@# bypasses the wrapper. Scaffolded projects have `tool` directives
+	@# in go.mod (wire/gqlgen/swag/air), and Go's per-package coverage
+	@# merge looks up the `covdata` tool in that list before falling
+	@# back to the stdlib helper. Without -coverpkg=./... (which
+	@# `gofasta test --coverage` adds), every package without test files
+	@# emits a `go: no such tool "covdata"` warning + non-zero exit.
+	@# Running this here catches a regression in the --coverage flag
+	@# shape locally before it ships.
+	cd /tmp/gofasta-integration-test && $(CURDIR)/bin/gofasta test --coverage
 
 ## Remove build artifacts
 clean:

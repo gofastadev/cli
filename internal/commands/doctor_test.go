@@ -1,10 +1,12 @@
 package commands
 
 import (
+	"bytes"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDoctorCmd_Registered(t *testing.T) {
@@ -75,4 +77,77 @@ func TestRunDoctor_LoadsDotEnvBeforeDBCheck(t *testing.T) {
 	// regardless of whether the migrate child process succeeded.
 	assert.Equal(t, "5433", os.Getenv("GOFASTA_DATABASE_PORT"),
 		"doctor must load .env so the DB-reachability probe uses the host-mapped port, not config.yaml's in-container default")
+}
+
+// TestPrintDoctorSection_DefaultStatus — entries with a status that
+// isn't "ok" or "fail" (e.g. "skip", "warn", unknown) fall through to
+// the default switch arm. Covered nowhere else because all live
+// doctorEntry producers emit only "ok"/"fail".
+func TestPrintDoctorSection_DefaultStatus(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorSection(&buf, "Skipped:", []doctorEntry{
+		{Status: "skip", Name: "thing", Message: "n/a"},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "Skipped:")
+	assert.Contains(t, out, "thing")
+	assert.Contains(t, out, "n/a")
+}
+
+// TestRunDoctor_SQLiteSkipsDBPing — when database.driver is sqlite
+// the carve-out emits a `file-based (no ping needed)` entry instead
+// of shelling out to migrate. Covers the new sqlite/sqlite3 case in
+// runDoctor that the postgres-default tests bypass.
+func TestRunDoctor_SQLiteSkipsDBPing(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, os.WriteFile("config.yaml",
+		[]byte("database:\n  driver: sqlite\n  name: doctor-sqlite.db\n"), 0o644))
+
+	// Override execCommand so we'd notice if doctor accidentally shelled
+	// out to migrate (the test would hang otherwise on a real migrate
+	// process). After the SQLite carve-out, no exec should fire for
+	// the database probe.
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		_ = runDoctor()
+	})
+	assert.Contains(t, out, "file-based")
+}
+
+// TestRunDoctor_SQLite3AliasSkipsDBPing — `database.driver: sqlite3`
+// (golang-migrate's spelling) takes the same carve-out as `sqlite`.
+func TestRunDoctor_SQLite3AliasSkipsDBPing(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, os.WriteFile("config.yaml",
+		[]byte("database:\n  driver: sqlite3\n  name: doctor-sqlite3.db\n"), 0o644))
+
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		_ = runDoctor()
+	})
+	assert.Contains(t, out, "file-based")
+}
+
+// TestPrintDoctorSection_AllStatuses — exercises ok / fail / default
+// in a single call so the three switch arms are hit in one place
+// independent of which check produced what.
+func TestPrintDoctorSection_AllStatuses(t *testing.T) {
+	var buf bytes.Buffer
+	printDoctorSection(&buf, "Mixed:", []doctorEntry{
+		{Status: "ok", Name: "good", Message: "running"},
+		{Status: "fail", Name: "broken", Message: "missing"},
+		{Status: "skip", Name: "unknown", Message: "tbd"},
+	})
+	out := buf.String()
+	assert.Contains(t, out, "good")
+	assert.Contains(t, out, "broken")
+	assert.Contains(t, out, "unknown")
 }

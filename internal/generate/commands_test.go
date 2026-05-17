@@ -49,9 +49,11 @@ func TestMigrationSteps(t *testing.T) {
 
 func TestRepositorySteps(t *testing.T) {
 	steps := repositorySteps()
-	assert.Len(t, steps, 4)
+	// 5 steps: model + migration + repository interface + repository + repository test
+	assert.Len(t, steps, 5)
 	assert.Equal(t, "model", steps[0].Label)
 	assert.Equal(t, "repository", steps[3].Label)
+	assert.Equal(t, "repository test", steps[4].Label)
 }
 
 func TestRouteSteps(t *testing.T) {

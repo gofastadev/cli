@@ -8,10 +8,27 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
+
+// newResult is the JSON contract for `gofasta new --json`. Captures
+// the resolved paths plus the GraphQL toggle so an agent has every
+// derived value at a glance — no need to rerun the command in text
+// mode to learn what got created.
+type newResult struct {
+	Action     string `json:"action"`
+	Project    string `json:"project"`
+	Directory  string `json:"directory"`
+	ModulePath string `json:"module_path"`
+	GraphQL    bool   `json:"graphql"`
+	DBDriver   string `json:"db_driver"`
+	Success    bool   `json:"success"`
+	Error      string `json:"error,omitempty"`
+}
 
 // ProjectData holds template variables for project generation.
 type ProjectData struct {
@@ -20,6 +37,24 @@ type ProjectData struct {
 	ProjectNameUpper string // UPPERCASE: "MYAPP"
 	ModulePath       string // Go module path: "github.com/myorg/myapp"
 	GraphQL          bool   // true when --graphql flag is passed
+	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
+}
+
+// supportedDrivers is the canonical set of --driver values. The first
+// entry is the default. Wire-format string values match what
+// `database.driver` in config.yaml accepts and what
+// `internal/skeleton/migrations/<driver>/` directories are named.
+var supportedDrivers = []string{"postgres", "mysql", "sqlite", "sqlserver", "clickhouse"}
+
+// isSupportedDriver reports whether v is one of the canonical driver
+// strings. Used to validate the --driver flag before scaffolding.
+func isSupportedDriver(v string) bool {
+	for _, d := range supportedDrivers {
+		if d == v {
+			return true
+		}
+	}
+	return false
 }
 
 // graphqlOnlyPaths lists skeleton paths that should be skipped for REST-only projects.
@@ -69,7 +104,14 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 	RunE: func(cmd *cobra.Command, args []string) error {
 		gql, _ := cmd.Flags().GetBool("graphql")
 		gqlShort, _ := cmd.Flags().GetBool("gql")
-		return runNew(args[0], gql || gqlShort)
+		driver, _ := cmd.Flags().GetString("driver")
+		driver = strings.ToLower(strings.TrimSpace(driver))
+		if !isSupportedDriver(driver) {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"--driver %q is not supported — valid values: %s",
+				driver, strings.Join(supportedDrivers, ", "))
+		}
+		return runNew(args[0], gql || gqlShort, driver)
 	},
 }
 
@@ -77,6 +119,8 @@ func init() {
 	rootCmd.AddCommand(newCmd)
 	newCmd.Flags().Bool("graphql", false, "Include GraphQL support (gqlgen) alongside REST")
 	newCmd.Flags().Bool("gql", false, "Shorthand for --graphql")
+	newCmd.Flags().String("driver", "postgres",
+		"Database driver: "+strings.Join(supportedDrivers, "|"))
 }
 
 // dotfileRenames maps embedded names to actual dotfile names.
@@ -117,9 +161,43 @@ var projectFSOverride fs.FS
 // branch without racing the actual filesystem.
 var osChdir = os.Chdir
 
+// migrationsFSOverride is a package-level seam so tests can swap the
+// embedded per-driver migrations FS. Nil in production → real embed.
+var migrationsFSOverride fs.FS
+
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
-func runNew(nameOrPath string, includeGraphQL bool) error {
+func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr error) {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
+	if driver == "" {
+		driver = "postgres"
+	}
+
+	// In --json mode, redirect stdout to stderr for the duration of
+	// the scaffold so the dozens of decorative `termcolor.Print*` and
+	// `fmt.Print*` calls below — plus the streamed stdout of every
+	// child `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation — go
+	// to stderr. Restore stdout in a deferred closure and emit a
+	// single structured JSON result so agents see one parseable
+	// document on stdout. Safe because runNew is fully sequential
+	// (no goroutines), so swapping the package-level os.Stdout has
+	// no concurrency hazard.
+	if cliout.JSON() {
+		savedStdout := os.Stdout
+		os.Stdout = os.Stderr
+		defer func() {
+			os.Stdout = savedStdout
+			cliout.Print(newResult{
+				Action:     "new",
+				Project:    projectName,
+				Directory:  projectDir,
+				ModulePath: modulePath,
+				GraphQL:    includeGraphQL,
+				DBDriver:   driver,
+				Success:    resultErr == nil,
+				Error:      errString(resultErr),
+			}, nil)
+		}()
+	}
 
 	if _, err := os.Stat(projectDir); err == nil {
 		return fmt.Errorf("directory %q already exists", projectDir)
@@ -137,13 +215,14 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
+		DBDriver:         driver,
 	}
 
-	termcolor.PrintHeader("🚀 Creating new gofasta project: %s", projectName)
-	fmt.Println()
+	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
+	cliout.Blank()
 
 	// Create project directory
-	termcolor.PrintStep("📁 Creating directory %s/", projectDir)
+	cliout.Step("📁 Creating directory %s/", projectDir)
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
@@ -156,7 +235,7 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	defer func() { _ = osChdir(origDir) }()
 
 	// Initialize go module
-	termcolor.PrintStep("📦 Initializing Go module: %s", modulePath)
+	cliout.Step("📦 Initializing Go module: %s", modulePath)
 	if err := runCmdSilent("go", "mod", "init", modulePath); err != nil {
 		return fmt.Errorf("go mod init failed: %w", err)
 	}
@@ -168,11 +247,11 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	// still works, it just ships with the developer's toolchain version
 	// instead of the declared minimum.
 	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
-		termcolor.PrintWarn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
+		cliout.Warn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
 	}
 
 	// Walk embedded skeleton and generate files
-	termcolor.PrintStep("🏗  Creating project structure...")
+	cliout.Step("🏗  Creating project structure...")
 	projectFS := projectFSOverride
 	if projectFS == nil {
 		projectFS = skeleton.ProjectFS
@@ -243,17 +322,25 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 			output = content
 		}
 
-		termcolor.PrintPath(outputPath)
+		cliout.Path(outputPath)
 		return os.WriteFile(outputPath, output, 0o644)
 	})
 	if err != nil {
 		return fmt.Errorf("generating project files: %w", err)
 	}
 
+	// Copy the per-driver foundational migrations into db/migrations/.
+	// The project tree intentionally ships none of its own — see
+	// internal/skeleton/embed.go for why each driver lives in its
+	// own sibling directory under migrations/.
+	if err := copyMigrationsForDriver(driver, data); err != nil {
+		return fmt.Errorf("copying %s foundational migrations: %w", driver, err)
+	}
+
 	// Copy .env from .env.example
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
 		_ = os.WriteFile(".env", envExample, 0o644)
-		termcolor.PrintPath(".env")
+		cliout.Path(".env")
 	}
 
 	// Install gofasta library as a project dependency.
@@ -265,29 +352,29 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	// must abort the scaffold rather than silently continuing with a broken
 	// project. A vague warning misleads the developer into thinking the
 	// project is usable.
-	fmt.Println()
-	termcolor.PrintStep("📦 Installing gofasta library...")
+	cliout.Blank()
+	cliout.Step("📦 Installing gofasta library...")
 	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
 		// Print the longform hint to the user then return a short,
 		// punctuation-clean error that satisfies ST1005.
-		termcolor.PrintWarn("gofasta library install failed. Common causes:")
-		fmt.Println("  • sum.golang.org hasn't yet indexed a freshly-published release")
-		fmt.Printf("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
-		fmt.Println("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
-		fmt.Println("      generated project to retry after the sum DB catches up.")
-		fmt.Println("  • your network blocks the Go module proxy or github.com.")
-		fmt.Println("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
-		fmt.Println()
+		cliout.Warn("gofasta library install failed. Common causes:")
+		cliout.Plainln("  • sum.golang.org hasn't yet indexed a freshly-published release")
+		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
+		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
+		cliout.Plainln("      generated project to retry after the sum DB catches up.")
+		cliout.Plainln("  • your network blocks the Go module proxy or github.com.")
+		cliout.Plainln("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
+		cliout.Blank()
 		return fmt.Errorf("failed to install github.com/gofastadev/gofasta: %w", err)
 	}
 
 	// Install cobra for project commands
 	if err := runCmdSilent("go", "get", "github.com/spf13/cobra@latest"); err != nil {
-		termcolor.PrintWarn("Could not install cobra")
+		cliout.Warn("Could not install cobra")
 	}
 
 	// Add tool dependencies
-	termcolor.PrintStep("📦 Installing tool dependencies...")
+	cliout.Step("📦 Installing tool dependencies...")
 	if includeGraphQL {
 		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
 	}
@@ -305,39 +392,39 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
 
 	// Tidy
-	termcolor.PrintStep("📦 Running go mod tidy...")
+	cliout.Step("📦 Running go mod tidy...")
 	_ = runCmdSilent("go", "mod", "tidy")
 
 	// Generate code
-	fmt.Println()
-	termcolor.PrintStep("🔌 Generating Wire DI code...")
+	cliout.Blank()
+	cliout.Step("🔌 Generating Wire DI code...")
 	if err := runCmdSilent("go", "tool", "wire", "./app/di/"); err != nil {
-		termcolor.PrintWarn("Wire generation skipped (can be run later with: make wire)")
+		cliout.Warn("Wire generation skipped (can be run later with: make wire)")
 	}
 
 	if includeGraphQL {
-		termcolor.PrintStep("📊 Generating GraphQL code...")
+		cliout.Step("📊 Generating GraphQL code...")
 		if err := runCmdSilent("go", "tool", "gqlgen", "generate"); err != nil {
-			termcolor.PrintWarn("gqlgen generation skipped (can be run later with: make gqlgen)")
+			cliout.Warn("gqlgen generation skipped (can be run later with: make gqlgen)")
 		}
 	}
 
-	termcolor.PrintStep("📝 Generating Swagger/OpenAPI docs...")
+	cliout.Step("📝 Generating Swagger/OpenAPI docs...")
 	if err := runCmdSilent("go", "tool", "swag", "init",
 		"-g", "app/main/main.go", "-o", "docs/",
 		"--parseDependency", "--parseInternal"); err != nil {
-		termcolor.PrintWarn("Swagger generation skipped (can be run later with: gofasta swagger)")
+		cliout.Warn("Swagger generation skipped (can be run later with: gofasta swagger)")
 	}
 
 	// Initialize git
-	fmt.Println()
-	termcolor.PrintStep("🔧 Initializing git repository...")
+	cliout.Blank()
+	cliout.Step("🔧 Initializing git repository...")
 	_ = runCmdSilent("git", "init")
 	_ = runCmdSilent("git", "add", ".")
 	_ = runCmdSilent("git", "commit", "-m", "Initial commit: gofasta project scaffold")
 
-	fmt.Println()
-	termcolor.PrintSuccess("Project %s created successfully!", termcolor.CBold(projectName))
+	cliout.Blank()
+	cliout.Success("Project %s created successfully!", termcolor.CBold(projectName))
 	printGetStarted(projectName)
 	return nil
 }
@@ -348,12 +435,12 @@ func runNew(nameOrPath string, includeGraphQL bool) error {
 // cloned an existing one. Pass an empty projectName to skip the `cd` line
 // (useful for init, which runs from inside the project directory).
 func printGetStarted(projectName string) {
-	fmt.Println()
-	termcolor.PrintHeader("Next steps:")
-	fmt.Println()
+	cliout.Blank()
+	cliout.Header("Next steps:")
+	cliout.Blank()
 	if projectName != "" {
-		fmt.Printf("  %s\n", termcolor.CBold("cd "+projectName))
-		fmt.Println()
+		cliout.Plain("  %s\n", termcolor.CBold("cd "+projectName))
+		cliout.Blank()
 	}
 
 	// --- Development workflows ---------------------------------------------
@@ -362,36 +449,36 @@ func printGetStarted(projectName string) {
 	// tradeoff so the developer can pick without having to read the docs.
 	// gofasta commands are shown first; `make` targets are demoted to an
 	// "Also available as" block at the bottom.
-	termcolor.PrintHeader("Pick a development workflow:")
-	fmt.Println()
+	cliout.Header("Pick a development workflow:")
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("A."),
 		termcolor.CBold("Everything in Docker"),
 		termcolor.CDim(" — fully containerized, zero host setup"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up -d        "), termcolor.CDim("# build + start app and db"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose logs -f app  "), termcolor.CDim("# tail application logs"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose down         "), termcolor.CDim("# stop everything"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose up -d        "), termcolor.CDim("# build + start app and db"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose logs -f app  "), termcolor.CDim("# tail application logs"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose down         "), termcolor.CDim("# stop everything"))
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("B."),
 		termcolor.CBold("App on host, db in Docker"),
 		termcolor.CDim(" — fastest iteration, Air hot reload"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("docker compose up db -d     "), termcolor.CDim("# start only the database"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# run app with hot reload + auto-migrate"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("docker compose up db -d     "), termcolor.CDim("# start only the database"))
+	cliout.Plain("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# run app with hot reload + auto-migrate"))
+	cliout.Blank()
 
-	fmt.Printf("  %s  %s%s\n",
+	cliout.Plain("  %s  %s%s\n",
 		termcolor.CBold("C."),
 		termcolor.CBold("Everything on host"),
 		termcolor.CDim(" — you manage your own database"))
-	fmt.Printf("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# expects db at the address in config.yaml"))
-	fmt.Println()
+	cliout.Plain("     %s   %s\n", termcolor.CBold("gofasta dev                 "), termcolor.CDim("# expects db at the address in config.yaml"))
+	cliout.Blank()
 
 	// --- Common tasks -------------------------------------------------------
-	termcolor.PrintHeader("Common tasks:")
-	fmt.Println()
+	cliout.Header("Common tasks:")
+	cliout.Blank()
 	tasks := [][2]string{
 		{"gofasta g scaffold Product name:string price:float", "generate a full REST resource, auto-wired end-to-end"},
 		{"gofasta g model Product name:string price:float", "just the model + matching migration"},
@@ -405,13 +492,13 @@ func printGetStarted(projectName string) {
 		{"gofasta doctor", "check prerequisites and project health"},
 	}
 	for _, ln := range tasks {
-		fmt.Printf("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
+		cliout.Plain("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
 	}
-	fmt.Println()
+	cliout.Blank()
 
 	// --- Make shortcuts (thin wrappers over the gofasta commands above) ---
-	termcolor.PrintHeader("Also available as Make targets:")
-	fmt.Println()
+	cliout.Header("Also available as Make targets:")
+	cliout.Blank()
 	makeShortcuts := [][2]string{
 		{"make up", "docker compose up -d"},
 		{"make down", "docker compose down"},
@@ -420,16 +507,63 @@ func printGetStarted(projectName string) {
 		{"make seed", "gofasta seed"},
 	}
 	for _, ln := range makeShortcuts {
-		fmt.Printf("  %-14s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("→ "+ln[1]))
+		cliout.Plain("  %-14s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("→ "+ln[1]))
 	}
-	fmt.Println()
+	cliout.Blank()
 
 	// --- Where to go next ---------------------------------------------------
-	termcolor.PrintHeader("Full command reference:")
-	fmt.Println()
-	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
-	fmt.Printf("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
-	fmt.Println()
+	cliout.Header("Full command reference:")
+	cliout.Blank()
+	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta --help           "), termcolor.CDim("# every command, grouped by purpose"))
+	cliout.Plain("  %s            %s\n", termcolor.CBold("gofasta <command> --help "), termcolor.CDim("# details for a specific command"))
+	cliout.Blank()
+}
+
+// copyMigrationsForDriver writes the per-driver foundational migration
+// set into the new project's db/migrations/ directory. Reads from the
+// embedded skeleton.MigrationsFS (or the migrationsFSOverride test
+// seam). Each .sql file is rendered as a Go text/template against
+// ProjectData so {{.ProjectNameLower}} etc. work in SQL — same
+// pipeline the project FS walk uses for .tmpl files. The .sql files
+// themselves don't carry a .tmpl suffix because most are pure DDL;
+// only the few that interpolate get a meaningful substitution.
+func copyMigrationsForDriver(driver string, data ProjectData) error {
+	migFS := migrationsFSOverride
+	if migFS == nil {
+		migFS = skeleton.MigrationsFS
+	}
+	root := "migrations/" + driver
+	entries, err := fs.ReadDir(migFS, root)
+	if err != nil {
+		return fmt.Errorf("no foundational migrations for driver %q: %w", driver, err)
+	}
+	if err := os.MkdirAll("db/migrations", 0o755); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		src := root + "/" + e.Name()
+		raw, err := fs.ReadFile(migFS, src)
+		if err != nil {
+			return fmt.Errorf("reading %s: %w", src, err)
+		}
+		tmpl, err := template.New(e.Name()).Parse(string(raw))
+		if err != nil {
+			return fmt.Errorf("parsing migration %s: %w", src, err)
+		}
+		var buf strings.Builder
+		if err := tmpl.Execute(&buf, data); err != nil {
+			return fmt.Errorf("executing migration template %s: %w", src, err)
+		}
+		dst := filepath.Join("db", "migrations", e.Name())
+		if err := os.WriteFile(dst, []byte(buf.String()), 0o644); err != nil {
+			return fmt.Errorf("writing %s: %w", dst, err)
+		}
+		cliout.Path(dst)
+	}
+	return nil
 }
 
 // envVarSafeUpper returns name uppercased with every non-[A-Z0-9_] character

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 )
 
 // containerFieldsMarker pins the line `gofasta g scaffold` inserts new
@@ -25,7 +25,7 @@ func PatchContainer(d ScaffoldData) error {
 	s := string(content)
 
 	if strings.Contains(s, d.Name+"Service ") {
-		termcolor.PrintSkip(path, "already wired")
+		cliout.Skip(path, "already wired")
 		return nil
 	}
 
@@ -66,7 +66,7 @@ func PatchWireFile(d ScaffoldData) error {
 
 	providerRef := fmt.Sprintf("providers.%sSet", d.Name)
 	if strings.Contains(s, providerRef) {
-		termcolor.PrintSkip(path, "already wired")
+		cliout.Skip(path, "already wired")
 		return nil
 	}
 
@@ -91,7 +91,7 @@ func PatchResolver(d ScaffoldData) error {
 
 	fieldName := d.Name + "Service"
 	if strings.Contains(s, fieldName) {
-		termcolor.PrintSkip(path, "already wired")
+		cliout.Skip(path, "already wired")
 		return nil
 	}
 
@@ -138,7 +138,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 
 	controllerField := d.Name + "Controller"
 	if strings.Contains(s, controllerField) {
-		termcolor.PrintSkip(path, "already wired")
+		cliout.Skip(path, "already wired")
 		return nil
 	}
 
@@ -190,7 +190,7 @@ func PatchServeFile(d ScaffoldData) error {
 
 	controllerField := d.Name + "Controller"
 	if strings.Contains(s, controllerField) {
-		termcolor.PrintSkip(path, "already wired")
+		cliout.Skip(path, "already wired")
 		return nil
 	}
 

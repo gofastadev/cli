@@ -111,6 +111,13 @@ var wireDriftInfoErr error
 // step failed (unless keep-going was passed), returns a CodeVerifyFailed
 // error so the root command's error handler exits non-zero.
 func runVerify(opts verifyOptions) error {
+	// Load .env so the spawned `go test ./...` child inherits the
+	// project's env vars. Integration tests that read config.yaml +
+	// project-prefixed env vars (e.g. for testcontainers ports or DB
+	// fixture configuration) need these visible in os.Environ(). See
+	// migrate.go for the full rationale.
+	_, _ = loadDotEnv(".env")
+
 	start := time.Now()
 
 	// Each step is {Name, Runner}. Runners return a verifyCheck with
@@ -189,25 +196,26 @@ func runVerify(opts verifyOptions) error {
 	return nil
 }
 
+// printVerifyStep prints one check's outcome using the canonical
+// termcolor vocabulary (✓/✗/—). Pass/fail/skip line up with what other
+// commands emit so users see one visual style across the CLI.
 func printVerifyStep(c verifyCheck) {
-	var mark string
 	switch c.Status {
 	case "pass":
-		mark = termcolor.CGreen("✓")
+		cliout.Plainln("  " + termcolor.Success("%-16s (%dms)", c.Name, c.Duration))
 	case "fail":
-		mark = termcolor.CRed("✗")
-	case "skip":
-		mark = termcolor.CDim("-")
-	}
-	suffix := ""
-	if c.Message != "" && c.Status != "pass" {
-		suffix = ": " + c.Message
-	}
-	fmt.Printf("  %s %-16s (%dms)%s\n", mark, c.Name, c.Duration, suffix)
-	if c.Status == "fail" && c.Output != "" {
-		for line := range strings.SplitSeq(strings.TrimRight(c.Output, "\n"), "\n") {
-			fmt.Printf("    %s\n", line)
+		suffix := ""
+		if c.Message != "" {
+			suffix = ": " + c.Message
 		}
+		cliout.Plainln("  " + termcolor.Fail("%-16s (%dms)%s", c.Name, c.Duration, suffix))
+		if c.Output != "" {
+			for line := range strings.SplitSeq(strings.TrimRight(c.Output, "\n"), "\n") {
+				cliout.Plainln("    " + termcolor.CDim(line))
+			}
+		}
+	case "skip":
+		cliout.Plainln("  " + termcolor.CDim(fmt.Sprintf("- %-16s (%dms): skip", c.Name, c.Duration)))
 	}
 }
 
