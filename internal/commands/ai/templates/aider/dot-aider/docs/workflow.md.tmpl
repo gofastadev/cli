@@ -167,3 +167,20 @@ detection) at the same time.
 
 See `debugging.md` for the `gofasta debug` family that turns failing
 requests into structured JSON instead of grep-through-logs sessions.
+
+## Explicit-trigger commands
+
+Convert these from "exists in the catalog" to "use at this moment":
+
+| Trigger | Command | Why |
+|---|---|---|
+| Before changing any public function signature | `gofasta xrefs <Symbol> --json` | Type-aware reverse lookup; safer than grep. Returns every call site so you know what breaks. |
+| Before changing a file or package | `gofasta impact <path> --json` | Lists every direct + transitive importer. Decides review and test scope. |
+| Before applying any migration | `gofasta migrate up --explain --strict --json` | Static SQL safety preview. Flags data-loss, lock-impact, app-incompatibility patterns. No DB connection needed. |
+| Before claiming a refactor done | `gofasta verify --since=<base-ref> --json` | Scope fmt/vet/lint/test/build to changed files only. Wire/routes always full. |
+| Before opening a session in a new project | `gofasta status --json` | One-glance drift report. |
+
+If you're about to take any of those actions and haven't run the
+matching command, run it first. The cost is one tool call; the cost
+of skipping it can be a broken build or a lock-the-table migration
+applied in production.

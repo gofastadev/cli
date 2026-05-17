@@ -1,0 +1,10 @@
+# G field
+
+Add a column to a GORM model + its DTOs + a paired migration.
+
+1. Ask the user for `<Resource> <field-name>:<type>`.
+2. Run `gofasta g field <args> --dry-run --json` to preview.
+3. Show the user the planned edits and the migration pair.
+4. Re-run without `--dry-run` to apply if approved.
+5. Always run `/migrate-explain` before applying the generated
+   migration.

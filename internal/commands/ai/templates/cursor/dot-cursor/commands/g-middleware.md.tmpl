@@ -1,0 +1,9 @@
+# G-middleware — wrap a route with a chi middleware
+
+Run `gofasta g middleware <METHOD> <path> <middleware-ref>
+--dry-run --json` (e.g. `gofasta g middleware POST
+/orders/{id}/archive auth.RequireRole("admin")`).
+
+If the generator reports `ROUTE_ALREADY_WRAPPED`, the middleware is
+already applied — confirm with the user before re-running.
+Otherwise apply the planned patch.

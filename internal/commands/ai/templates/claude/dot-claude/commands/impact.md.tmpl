@@ -1,0 +1,10 @@
+---
+description: Reverse-dependency analysis. Use before changing a file or package to see what else depends on it.
+allowed-tools: Bash(gofasta impact*)
+argument-hint: <file-or-package-path>
+---
+
+Run `gofasta impact $ARGUMENTS --json`. Report `direct_importers`,
+`transitive_importers`, and `impacted_files`. Use the impacted-file
+count to decide test scope; use the importer list to decide review
+scope.

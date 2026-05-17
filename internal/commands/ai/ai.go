@@ -337,7 +337,9 @@ func runStatus() error {
 }
 
 // printNextSteps emits an agent-specific hint after a successful install
-// so the user knows what to do next.
+// so the user knows what to do next. Lists the agent's primary surfaces
+// (rules/docs, slash commands/workflows, hooks if any) so the user
+// doesn't have to discover them.
 func printNextSteps(w io.Writer, agent *Agent) {
 	fprintln(w)
 	fprintln(w, "Next steps:")
@@ -345,20 +347,34 @@ func printNextSteps(w io.Writer, agent *Agent) {
 	case "claude":
 		fprintln(w, "  Open this project in Claude Code. It will read CLAUDE.md.")
 		fprintln(w, "  Topic rules auto-load from .claude/rules/ — read conventions.md first.")
-		fprintln(w, "  Pre-approved commands: gofasta *, make *, go build/test/vet, gofmt, common read-only git.")
-		fprintln(w, "  Slash commands: /verify, /scaffold, /inspect.")
+		fprintln(w, "  Slash commands: /verify, /status, /health-check, /routes, /inspect,")
+		fprintln(w, "    /xrefs, /impact, /migrate-explain, /debug-slow, /debug-error,")
+		fprintln(w, "    /n-plus-one, /g-method, /g-field, /g-endpoint, and more under .claude/commands/.")
+		fprintln(w, "  Run /seed-memory once to populate Claude's project memory with bedrock facts.")
+		fprintln(w, "  Hooks (PostToolUse + SessionStart) surface reminders for wire/migration/swagger")
+		fprintln(w, "    drift and project status. Requires `jq` (`brew install jq` on macOS).")
+		fprintln(w, "  If upgrading from an older installer, re-run with --force to refresh settings.json.")
 	case "cursor":
 		fprintln(w, "  Open this project in Cursor. Rules auto-load from .cursor/rules/.")
-		fprintln(w, "  conventions.mdc is alwaysApply; other chunks auto-attach by file pattern or on agent request.")
+		fprintln(w, "  conventions.mdc is alwaysApply; other chunks auto-attach by file pattern.")
+		fprintln(w, "  Slash commands installed under .cursor/commands/ — type / to discover:")
+		fprintln(w, "    /status, /health-check, /routes, /xrefs, /impact, /migrate-explain,")
+		fprintln(w, "    /debug-slow, /debug-error, /n-plus-one, /g-method, /g-field, and more.")
 	case "codex":
 		fprintln(w, "  Run Codex from the project root. It reads AGENTS.md and .codex/config.toml.")
 		fprintln(w, "  Topic chunks live under .codex/docs/ — AGENTS.md links into them.")
+		fprintln(w, "  Hooks (PostToolUse + SessionStart) under .codex/hooks/ surface reminders for")
+		fprintln(w, "    wire/migration/swagger drift and project status. Requires `jq`.")
+		fprintln(w, "  Run /hooks inside Codex on first session to trust the new project hooks.")
 	case "aider":
 		fprintln(w, "  Start `aider` from the project root. CONVENTIONS.md and every .aider/docs/ chunk preload via .aider.conf.yml.")
 		fprintln(w, "  `gofasta verify` runs after every edit; `gofmt + go vet` after every save.")
 	case "windsurf":
 		fprintln(w, "  Open this project in Windsurf. Cascade auto-discovers .windsurf/rules/.")
 		fprintln(w, "  conventions.md is always-on; other chunks load on glob match or agent request.")
+		fprintln(w, "  Workflows installed under .windsurf/workflows/ — invoke with /<workflow-name>:")
+		fprintln(w, "    /status, /health-check, /routes, /xrefs, /impact, /migrate-explain,")
+		fprintln(w, "    /debug-slow, /debug-error, /n-plus-one, /g-method, /g-field, and more.")
 	}
 }
 

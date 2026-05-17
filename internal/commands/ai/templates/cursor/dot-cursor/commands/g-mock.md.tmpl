@@ -1,0 +1,8 @@
+# G-mock — generate or refresh testify mocks
+
+Run `gofasta g mock <InterfaceName> --json`. Flags:
+- `--all` refreshes every mock in the project
+- `--check` is a CI drift gate (reports `MOCK_DRIFT` if any mock is stale)
+
+If `--check` reports drift, the user has updated an interface but
+not regenerated the mock — re-run without `--check` to refresh.

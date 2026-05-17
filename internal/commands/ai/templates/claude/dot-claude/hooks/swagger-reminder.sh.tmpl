@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# PostToolUse hook for gofasta projects. Reads the hook payload from
+# stdin and reminds the agent to regenerate Swagger after editing a
+# REST controller.
+#
+# Swagger annotations on controller methods (@Summary, @Param,
+# @Success, @Router) drive OpenAPI generation. After changing a
+# controller's signature or routes, `gofasta swagger` must be re-run or
+# docs/swagger.json drifts from reality.
+
+path=$(jq -r '.tool_input.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/rest/controllers/*.go)
+    echo "Reminder: you edited a controller. Run \`gofasta swagger\` to regenerate OpenAPI docs."
+    ;;
+esac

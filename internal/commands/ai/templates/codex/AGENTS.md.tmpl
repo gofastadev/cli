@@ -7,6 +7,38 @@ starting.
 This setup was installed by `gofasta ai codex`. Run
 `gofasta ai uninstall codex` to remove every file it added.
 
+## First 60 seconds in this project
+
+When opening this project cold, do these in order:
+
+1. **Check drift:** run `gofasta status --json`. If any check reports
+   `drift` or `pending`, fix it before editing. (The SessionStart
+   hook surfaces this automatically when devtools are present.)
+2. **Read conventions:** `.codex/docs/conventions.md` is the
+   highest-leverage doc — start here.
+3. **Before editing a resource:** `gofasta inspect <Resource> --json`
+   — gives you the model, DTOs, service methods, controller methods,
+   routes in one shot.
+4. **Before changing a signature:** `gofasta xrefs <Symbol> --json`.
+5. **Before applying a migration:** `gofasta migrate up --explain
+   --strict`.
+6. **Before claiming done:** `gofasta verify --changed --json` (or
+   `gofasta do health-check`).
+
+## Hooks wired in `.codex/config.toml`
+
+PostToolUse (Edit/Write/apply_patch) and SessionStart hooks under
+`.codex/hooks/` surface reminders without ever blocking:
+
+- Edit `app/di/wire.go` or `app/di/providers/*` → reminder to run
+  `gofasta wire`
+- Edit `app/models/*` → reminder to write a migration
+- Edit `app/rest/controllers/*` → reminder to run `gofasta swagger`
+- Session start → runs `gofasta status` and surfaces drift
+
+Run `/hooks` in Codex on first session to trust them. Hook scripts
+require `jq` (`brew install jq` on macOS).
+
 ## Project at a glance
 
 - **Name:** {{.ProjectName}}

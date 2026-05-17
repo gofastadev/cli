@@ -1,0 +1,10 @@
+---
+description: Add a REST endpoint to an existing controller + register the route (modify-aware generator).
+allowed-tools: Bash(gofasta g*)
+argument-hint: <Resource> <METHOD> <path>  (e.g. Order POST /orders/{id}/archive)
+---
+
+Run `gofasta g endpoint $ARGUMENTS --dry-run --json` first to preview
+the planned edits. Surface the controller/service/route changes,
+then re-run without `--dry-run` to apply if approved. Run
+`gofasta swagger` after to refresh OpenAPI docs.

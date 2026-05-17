@@ -6,6 +6,24 @@ guidance lives in `.claude/rules/` — auto-loaded, organized by topic.
 This setup was installed by `gofasta ai claude`. Run
 `gofasta ai uninstall claude` to remove every file it added.
 
+## First 60 seconds in this project
+
+When opening this project cold, do these in order:
+
+1. **Check drift:** run `gofasta status --json` (or `/status`). If any
+   check reports `drift` or `pending`, fix it before editing.
+2. **Read conventions:** `.claude/rules/conventions.md` is the
+   highest-leverage rule — start here.
+3. **Before editing a resource:** `gofasta inspect <Resource> --json`
+   (or `/inspect <Resource>`) — gives you the model, DTOs, service
+   methods, controller methods, routes in one shot.
+4. **Before changing a signature:** `gofasta xrefs <Symbol> --json`
+   (or `/xrefs`) — type-aware reverse lookup.
+5. **Before applying a migration:** `gofasta migrate up --explain
+   --strict` (or `/migrate-explain`) — static SQL safety preview.
+6. **Before claiming done:** `gofasta verify --changed --json` (or
+   `/verify`, or `/health-check` for verify + status combined).
+
 ## Project at a glance
 
 - **Name:** {{.ProjectName}}
@@ -31,16 +49,42 @@ If you only read one rule before starting work, read
 
 ## Pre-approved slash commands
 
-Installed under `.claude/commands/`:
+Installed under `.claude/commands/`. Type `/` to see them all; the
+families are:
 
-- `/verify` — run the full preflight gauntlet (`gofasta verify`)
-- `/scaffold <Resource> [field:type ...]` — generate a full REST resource
-- `/inspect <Resource>` — print the structured AST report for a resource
+- **Core diagnostics:** `/verify`, `/status`, `/health-check`,
+  `/routes`, `/rebuild`, `/migrate-explain`, `/inspect`,
+  `/inspect-jobs`, `/inspect-tasks`
+- **Analysis (before refactors):** `/xrefs <symbol>`,
+  `/impact <file-or-package>`
+- **Debug (requires `gofasta dev`):** `/debug-slow`, `/debug-error`,
+  `/n-plus-one`
+- **Modify-aware generators:** `/scaffold`, `/g-method`, `/g-field`,
+  `/g-endpoint`, `/g-middleware`, `/g-repo-method`, `/g-relation`,
+  `/g-rename`, `/g-mock`
+- **One-time setup:** `/seed-memory` (writes bedrock facts into
+  Claude Code's project memory so future sessions open with context)
+
+## Hooks (PostToolUse + SessionStart)
+
+Wired in `.claude/settings.json` and `.claude/hooks/`. Reminders
+only — never blocking:
+
+- Edit `app/di/wire.go` or `app/di/providers/*` → reminder to run
+  `gofasta wire`
+- Edit `app/models/*` → reminder to write a migration
+- Edit `app/rest/controllers/*` → reminder to run `gofasta swagger`
+- Session start → runs `gofasta status --json` and surfaces drift
+
+The hooks pipe stdin through `jq`. Install it (`brew install jq` on
+macOS) if you don't have it.
 
 ## Pre-approved Bash allowlist (set in `.claude/settings.json`)
 
-`gofasta *`, `make *`, `go build/test/vet`, `gofmt`, `go mod tidy/download`,
-and read-only git (`status`, `diff`, `log`, `show`, `branch`).
+`gofasta *` (including `debug`, `xrefs`, `impact`, `inspect-jobs`,
+`inspect-tasks`, `migrate`, `do`, `g`), `make *`, `go build/test/vet`,
+`gofmt`, `go mod tidy/download`, `jq *`, and read-only git
+(`status`, `diff`, `log`, `show`, `branch`).
 
 ## Things you must NOT do
 

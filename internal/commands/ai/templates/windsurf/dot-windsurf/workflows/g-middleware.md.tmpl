@@ -1,0 +1,10 @@
+# G middleware
+
+Wrap an existing route's handler with a chi middleware. Idempotent.
+
+1. Ask the user for `<METHOD> <path> <middleware-ref>` (e.g.
+   `POST /orders/{id}/archive auth.RequireRole("admin")`).
+2. Run `gofasta g middleware <args> --dry-run --json` to preview.
+3. If the generator reports `ROUTE_ALREADY_WRAPPED`, the middleware
+   is already applied — confirm with the user before re-running.
+4. Otherwise re-run without `--dry-run` to apply.

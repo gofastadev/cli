@@ -1,0 +1,10 @@
+# G mock
+
+Generate or refresh testify mocks.
+
+1. Ask the user for `<InterfaceName>` (or `--all` to refresh every
+   mock, or `--check` for CI drift gate).
+2. Run `gofasta g mock <args> --json`.
+3. If `--check` reports `MOCK_DRIFT`, the user has updated an
+   interface but not regenerated the mock — re-run without
+   `--check` to refresh.

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# SessionStart hook for gofasta projects. Runs `gofasta status --json`
+# to surface drift (Wire stale, Swagger stale, pending migrations,
+# go.sum out of sync) at the start of every session so the agent and
+# user both know what's out of sync before any edits begin.
+#
+# Silent on a clean project — only emits when at least one check
+# reports drift. Exit code is always 0.
+
+if ! command -v gofasta >/dev/null 2>&1; then
+  exit 0
+fi
+
+# Drift detection is offline + fast; suppress errors so a failed status
+# call never blocks a session from starting.
+report=$(gofasta status --json 2>/dev/null || true)
+[ -z "$report" ] && exit 0
+
+echo "$report" | jq -r '
+  (.checks // []) as $checks
+  | $checks
+  | map(select(.status == "drift" or .status == "pending"))
+  | if length == 0 then empty
+    else (["gofasta status: " + (length | tostring) + " issue(s) detected — run `gofasta status` for details:"]
+          + (map("  - " + .name + (if .detail then ": " + .detail else "" end)))) | .[]
+    end
+' 2>/dev/null || true

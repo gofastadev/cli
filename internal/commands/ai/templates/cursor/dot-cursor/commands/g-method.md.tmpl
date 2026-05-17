@@ -1,0 +1,8 @@
+# G-method — add a method to an existing service
+
+Run `gofasta g method <Resource> <MethodName> [param:type ...]
+--dry-run --json` first to preview the planned edits to the service
+interface and implementation.
+
+Show the user the planned files and patches, then re-run without
+`--dry-run` to apply if approved. Run `gofasta verify` after.

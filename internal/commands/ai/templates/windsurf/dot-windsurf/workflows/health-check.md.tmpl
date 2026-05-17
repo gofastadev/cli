@@ -1,0 +1,9 @@
+# Health check
+
+Run the full project health report — verify + status combined.
+
+1. Run `gofasta do health-check --json`.
+2. Read every check in the result.
+3. Surface any failing check with its `hint` field.
+4. If everything passes, report green. This is the final gate before
+   claiming a task done.

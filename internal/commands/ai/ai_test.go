@@ -24,6 +24,153 @@ func sampleData() InstallData {
 	}
 }
 
+// claudeExpectedFiles is the canonical list of project-relative paths
+// `gofasta ai claude` writes. Centralized so both
+// TestInstall_Claude_CreatesExpectedFiles and the claude row of
+// TestInstall_PerAgentTreeShape stay in sync — adding a new template
+// file under templates/claude/ requires a single edit here.
+func claudeExpectedFiles() []string {
+	return []string{
+		"CLAUDE.md",
+		".claude/settings.json",
+		".claude/hooks/pre-commit.sh",
+		".claude/hooks/wire-reminder.sh",
+		".claude/hooks/migration-reminder.sh",
+		".claude/hooks/swagger-reminder.sh",
+		".claude/hooks/session-start.sh",
+		".claude/commands/verify.md",
+		".claude/commands/scaffold.md",
+		".claude/commands/inspect.md",
+		".claude/commands/status.md",
+		".claude/commands/health-check.md",
+		".claude/commands/routes.md",
+		".claude/commands/rebuild.md",
+		".claude/commands/migrate-explain.md",
+		".claude/commands/inspect-jobs.md",
+		".claude/commands/inspect-tasks.md",
+		".claude/commands/xrefs.md",
+		".claude/commands/impact.md",
+		".claude/commands/debug-slow.md",
+		".claude/commands/debug-error.md",
+		".claude/commands/n-plus-one.md",
+		".claude/commands/g-method.md",
+		".claude/commands/g-field.md",
+		".claude/commands/g-endpoint.md",
+		".claude/commands/g-middleware.md",
+		".claude/commands/g-repo-method.md",
+		".claude/commands/g-relation.md",
+		".claude/commands/g-rename.md",
+		".claude/commands/g-mock.md",
+		".claude/commands/seed-memory.md",
+		".claude/rules/conventions.md",
+		".claude/rules/overview.md",
+		".claude/rules/workflow.md",
+		".claude/rules/commands.md",
+		".claude/rules/debugging.md",
+		".claude/rules/docs-index.md",
+	}
+}
+
+// cursorExpectedFiles — see claudeExpectedFiles for the rationale.
+func cursorExpectedFiles() []string {
+	return []string{
+		".cursor/rules/conventions.mdc",
+		".cursor/rules/overview.mdc",
+		".cursor/rules/workflow.mdc",
+		".cursor/rules/commands.mdc",
+		".cursor/rules/debugging.mdc",
+		".cursor/rules/docs-index.mdc",
+		".cursor/commands/status.md",
+		".cursor/commands/health-check.md",
+		".cursor/commands/routes.md",
+		".cursor/commands/rebuild.md",
+		".cursor/commands/migrate-explain.md",
+		".cursor/commands/inspect-jobs.md",
+		".cursor/commands/inspect-tasks.md",
+		".cursor/commands/xrefs.md",
+		".cursor/commands/impact.md",
+		".cursor/commands/debug-slow.md",
+		".cursor/commands/debug-error.md",
+		".cursor/commands/n-plus-one.md",
+		".cursor/commands/g-method.md",
+		".cursor/commands/g-field.md",
+		".cursor/commands/g-endpoint.md",
+		".cursor/commands/g-middleware.md",
+		".cursor/commands/g-repo-method.md",
+		".cursor/commands/g-relation.md",
+		".cursor/commands/g-rename.md",
+		".cursor/commands/g-mock.md",
+		".cursor/commands/seed-memory.md",
+	}
+}
+
+// codexExpectedFiles — see claudeExpectedFiles for the rationale.
+func codexExpectedFiles() []string {
+	return []string{
+		"AGENTS.md",
+		".codex/config.toml",
+		".codex/hooks/wire-reminder.sh",
+		".codex/hooks/migration-reminder.sh",
+		".codex/hooks/swagger-reminder.sh",
+		".codex/hooks/session-start.sh",
+		".codex/docs/conventions.md",
+		".codex/docs/overview.md",
+		".codex/docs/workflow.md",
+		".codex/docs/commands.md",
+		".codex/docs/debugging.md",
+		".codex/docs/docs-index.md",
+	}
+}
+
+// aiderExpectedFiles — no new files vs prior CLI versions (Aider
+// doesn't support custom slash commands or hooks; only content edits
+// applied). Listed here for symmetry.
+func aiderExpectedFiles() []string {
+	return []string{
+		"CONVENTIONS.md",
+		".aider.conf.yml",
+		".aider/docs/conventions.md",
+		".aider/docs/overview.md",
+		".aider/docs/workflow.md",
+		".aider/docs/commands.md",
+		".aider/docs/debugging.md",
+		".aider/docs/docs-index.md",
+	}
+}
+
+// windsurfExpectedFiles — see claudeExpectedFiles for the rationale.
+func windsurfExpectedFiles() []string {
+	return []string{
+		".windsurf/rules/conventions.md",
+		".windsurf/rules/overview.md",
+		".windsurf/rules/workflow.md",
+		".windsurf/rules/commands.md",
+		".windsurf/rules/debugging.md",
+		".windsurf/rules/docs-index.md",
+		".windsurf/workflows/status.md",
+		".windsurf/workflows/health-check.md",
+		".windsurf/workflows/routes.md",
+		".windsurf/workflows/rebuild.md",
+		".windsurf/workflows/migrate-explain.md",
+		".windsurf/workflows/inspect-jobs.md",
+		".windsurf/workflows/inspect-tasks.md",
+		".windsurf/workflows/xrefs.md",
+		".windsurf/workflows/impact.md",
+		".windsurf/workflows/debug-slow.md",
+		".windsurf/workflows/debug-error.md",
+		".windsurf/workflows/n-plus-one.md",
+		".windsurf/workflows/g-method.md",
+		".windsurf/workflows/g-field.md",
+		".windsurf/workflows/g-endpoint.md",
+		".windsurf/workflows/g-middleware.md",
+		".windsurf/workflows/g-repo-method.md",
+		".windsurf/workflows/g-relation.md",
+		".windsurf/workflows/g-rename.md",
+		".windsurf/workflows/g-mock.md",
+		".windsurf/workflows/seed-memory.md",
+	}
+}
+
 func TestAgentByKey_ReturnsKnownAgent(t *testing.T) {
 	a := AgentByKey("claude")
 	require.NotNil(t, a)
@@ -55,23 +202,11 @@ func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
 
 	// Claude installs:
 	//   - CLAUDE.md root briefing
-	//   - .claude/settings.json + the pre-commit hook
-	//   - the three slash commands
+	//   - .claude/settings.json + 5 hook scripts
+	//   - 24 slash commands (3 originals + 21 new diagnostic/analysis/
+	//     debug/generator/memory commands)
 	//   - six topic rules under .claude/rules/
-	expected := []string{
-		"CLAUDE.md",
-		".claude/settings.json",
-		".claude/hooks/pre-commit.sh",
-		".claude/commands/verify.md",
-		".claude/commands/scaffold.md",
-		".claude/commands/inspect.md",
-		".claude/rules/conventions.md",
-		".claude/rules/overview.md",
-		".claude/rules/workflow.md",
-		".claude/rules/commands.md",
-		".claude/rules/debugging.md",
-		".claude/rules/docs-index.md",
-	}
+	expected := claudeExpectedFiles()
 	for _, rel := range expected {
 		path := filepath.Join(dir, rel)
 		info, err := os.Stat(path)
@@ -101,71 +236,11 @@ func TestInstall_PerAgentTreeShape(t *testing.T) {
 		key  string
 		want []string
 	}{
-		{
-			key: "claude",
-			want: []string{
-				"CLAUDE.md",
-				".claude/settings.json",
-				".claude/hooks/pre-commit.sh",
-				".claude/commands/verify.md",
-				".claude/commands/scaffold.md",
-				".claude/commands/inspect.md",
-				".claude/rules/conventions.md",
-				".claude/rules/overview.md",
-				".claude/rules/workflow.md",
-				".claude/rules/commands.md",
-				".claude/rules/debugging.md",
-				".claude/rules/docs-index.md",
-			},
-		},
-		{
-			key: "cursor",
-			want: []string{
-				".cursor/rules/conventions.mdc",
-				".cursor/rules/overview.mdc",
-				".cursor/rules/workflow.mdc",
-				".cursor/rules/commands.mdc",
-				".cursor/rules/debugging.mdc",
-				".cursor/rules/docs-index.mdc",
-			},
-		},
-		{
-			key: "codex",
-			want: []string{
-				"AGENTS.md",
-				".codex/config.toml",
-				".codex/docs/conventions.md",
-				".codex/docs/overview.md",
-				".codex/docs/workflow.md",
-				".codex/docs/commands.md",
-				".codex/docs/debugging.md",
-				".codex/docs/docs-index.md",
-			},
-		},
-		{
-			key: "aider",
-			want: []string{
-				"CONVENTIONS.md",
-				".aider.conf.yml",
-				".aider/docs/conventions.md",
-				".aider/docs/overview.md",
-				".aider/docs/workflow.md",
-				".aider/docs/commands.md",
-				".aider/docs/debugging.md",
-				".aider/docs/docs-index.md",
-			},
-		},
-		{
-			key: "windsurf",
-			want: []string{
-				".windsurf/rules/conventions.md",
-				".windsurf/rules/overview.md",
-				".windsurf/rules/workflow.md",
-				".windsurf/rules/commands.md",
-				".windsurf/rules/debugging.md",
-				".windsurf/rules/docs-index.md",
-			},
-		},
+		{key: "claude", want: claudeExpectedFiles()},
+		{key: "cursor", want: cursorExpectedFiles()},
+		{key: "codex", want: codexExpectedFiles()},
+		{key: "aider", want: aiderExpectedFiles()},
+		{key: "windsurf", want: windsurfExpectedFiles()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.key, func(t *testing.T) {

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+# PostToolUse hook for gofasta projects. Reads the hook payload from
+# stdin and reminds the agent to write a migration pair when a GORM
+# model file is edited.
+#
+# Models describe the DB schema. Changes that aren't paired with a
+# db/migrations/*.up.sql + *.down.sql will silently diverge from
+# production until the next migrate run blows up. This hook surfaces
+# that obligation without blocking.
+
+path=$(jq -r '.tool_input.file_path // ""' 2>/dev/null || true)
+
+case "$path" in
+  *app/models/*.go)
+    echo "Reminder: you edited a GORM model. Write a matching migration pair in db/migrations/ (or run \`gofasta g migration <Name>\`)."
+    ;;
+esac

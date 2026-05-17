@@ -1,0 +1,10 @@
+---
+description: Type-aware reverse lookup of a Go symbol. Use before renaming a function or changing a signature.
+allowed-tools: Bash(gofasta xrefs*)
+argument-hint: <symbol>  (e.g. UserService or app/services.UserService.Create)
+---
+
+Run `gofasta xrefs $ARGUMENTS --json`. Report the definition location
+and every reference site (file, line, enclosing function). If the
+result is `AMBIGUOUS_SYMBOL`, ask the user which package they meant
+and re-run with the fully-qualified form.

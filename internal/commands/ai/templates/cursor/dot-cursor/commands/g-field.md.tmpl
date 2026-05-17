@@ -1,0 +1,9 @@
+# G-field — add a column to a model + DTOs + migration
+
+Run `gofasta g field <Resource> <field-name>:<type> --dry-run
+--json` first to preview the model/DTOs edits and the migration
+pair.
+
+Show the user the result, then re-run without `--dry-run` to apply.
+Always run `gofasta migrate up --explain --strict` before applying
+the generated migration.

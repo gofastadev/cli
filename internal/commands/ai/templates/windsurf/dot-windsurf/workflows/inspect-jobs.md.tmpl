@@ -1,0 +1,9 @@
+# Inspect jobs
+
+List every registered cron job (static AST scan of `app/jobs/`).
+
+1. Run `gofasta inspect-jobs --json` (or pass a job name to filter).
+2. For each job, report name, type, schedule (from config.yaml),
+   and source file.
+3. Use before adding a new job to avoid name collisions or schedule
+   overlaps.

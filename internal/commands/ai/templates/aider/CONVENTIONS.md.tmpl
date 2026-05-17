@@ -7,6 +7,24 @@ loaded via `read:` so every chunk is cached on session start.
 This setup was installed by `gofasta ai aider`. Run
 `gofasta ai uninstall aider` to remove every file it added.
 
+## First 60 seconds in this project
+
+When opening this project cold, do these in order:
+
+1. **Check drift:** run `gofasta status --json`. If any check
+   reports `drift` or `pending`, fix it before editing.
+2. **Read conventions:** `.aider/docs/conventions.md` is the
+   highest-leverage doc — start here.
+3. **Before editing a resource:** `gofasta inspect <Resource> --json`
+   — gives you the model, DTOs, service methods, controller methods,
+   routes in one shot.
+4. **Before changing a signature:** `gofasta xrefs <Symbol> --json`.
+5. **Before applying a migration:** `gofasta migrate up --explain
+   --strict`.
+6. **Before claiming done:** `gofasta verify --changed --json` (or
+   `gofasta do health-check`). Note: auto-test already runs
+   `gofasta verify` after every edit.
+
 ## Project at a glance
 
 - **Name:** {{.ProjectName}}

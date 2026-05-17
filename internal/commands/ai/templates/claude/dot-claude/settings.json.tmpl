@@ -3,6 +3,14 @@
   "permissions": {
     "allow": [
       "Bash(gofasta *)",
+      "Bash(gofasta debug *)",
+      "Bash(gofasta xrefs *)",
+      "Bash(gofasta impact *)",
+      "Bash(gofasta inspect-jobs*)",
+      "Bash(gofasta inspect-tasks*)",
+      "Bash(gofasta migrate *)",
+      "Bash(gofasta do *)",
+      "Bash(gofasta g *)",
       "Bash(make *)",
       "Bash(go build *)",
       "Bash(go test *)",
@@ -20,8 +28,30 @@
       "Bash(cat *)",
       "Bash(grep *)",
       "Bash(find *)",
+      "Bash(jq *)",
+      "Bash(mkdir -p ~/.claude/projects/*)",
       "Bash(docker compose ps)",
       "Bash(docker compose logs*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {"type": "command", "command": ".claude/hooks/wire-reminder.sh"},
+          {"type": "command", "command": ".claude/hooks/migration-reminder.sh"},
+          {"type": "command", "command": ".claude/hooks/swagger-reminder.sh"}
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": ".claude/hooks/session-start.sh"}
+        ]
+      }
     ]
   }
 }

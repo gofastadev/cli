@@ -1,0 +1,8 @@
+---
+description: Show the most recent recovered panic with stack, trace, and logs in one call.
+allowed-tools: Bash(gofasta debug*)
+---
+
+Run `gofasta debug last-error --json`. The result bundles the panic,
+its full trace waterfall, and the slog records emitted during the
+failing request. Identify the root cause and propose a fix.

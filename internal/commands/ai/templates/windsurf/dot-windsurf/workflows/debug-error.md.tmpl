@@ -1,0 +1,9 @@
+# Debug error
+
+Most recent recovered panic with stack, trace, and logs in one call.
+Requires `gofasta dev` to be running.
+
+1. Run `gofasta debug last-error --json`.
+2. The result bundles the panic, its full trace waterfall, and the
+   slog records emitted during the failing request.
+3. Identify the root cause and propose a fix.

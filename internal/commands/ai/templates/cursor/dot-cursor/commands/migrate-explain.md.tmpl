@@ -1,0 +1,9 @@
+# Migrate-explain — static SQL safety preview
+
+Run `gofasta migrate up --explain --strict --json` before applying
+any migration. No DB connection required.
+
+Surface the `max_risk` field and every migration whose risk is
+`data-loss`, `lock-and-fill`, `lock-and-rewrite`, or
+`app-incompatibility`. Ask before running `gofasta migrate up` if
+any high-severity warning fires.

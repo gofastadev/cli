@@ -1,0 +1,11 @@
+---
+description: Add a column to a GORM model + its DTOs + paired migration (modify-aware generator).
+allowed-tools: Bash(gofasta g*)
+argument-hint: <Resource> <field-name>:<type>
+---
+
+Run `gofasta g field $ARGUMENTS --dry-run --json` first to preview
+the planned edits and migration pair. Show the user the result, then
+re-run without `--dry-run` to apply if approved. Always run
+`gofasta migrate up --explain --strict` before applying the
+generated migration.

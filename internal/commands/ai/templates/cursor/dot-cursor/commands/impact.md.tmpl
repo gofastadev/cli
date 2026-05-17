@@ -1,0 +1,12 @@
+# Impact — reverse-dependency analysis
+
+Run `gofasta impact <file-or-package-path> --json`. Target can be a
+file path (`app/services/order.service.go`) or an import path
+(`app/services`).
+
+Report `direct_importers`, `transitive_importers`, and
+`impacted_files`. Use the impacted-file count to decide test scope;
+use the importer list to decide review scope.
+
+Use this before changing a file or package to see what else depends
+on it.
