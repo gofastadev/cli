@@ -20,6 +20,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // FieldData is the resolved input for the field generator.
@@ -94,14 +95,17 @@ func fieldDataDefaults(d FieldData) FieldData {
 	if d.PluralSnake == "" && d.Resource != "" {
 		d.PluralSnake = toSnakeCase(pluralize(toPascalCase(d.Resource)))
 	}
-	if d.ModelFile == "" {
-		d.ModelFile = filepath.Join("app", "models", d.Snake+".model.go")
-	}
-	if d.DTOFile == "" {
-		d.DTOFile = filepath.Join("app", "dtos", d.Snake+".dtos.go")
-	}
-	if d.MigrationDir == "" {
-		d.MigrationDir = filepath.Join("db", "migrations")
+	if d.ModelFile == "" || d.DTOFile == "" || d.MigrationDir == "" {
+		lo := layout.Detect()
+		if d.ModelFile == "" {
+			d.ModelFile = lo.ModelFile(d.Snake)
+		}
+		if d.DTOFile == "" {
+			d.DTOFile = lo.DTOsFile(d.Snake)
+		}
+		if d.MigrationDir == "" {
+			d.MigrationDir = lo.MigrationsDir()
+		}
 	}
 	if d.MigrationVer == "" {
 		d.MigrationVer = nextMigrationNumber()

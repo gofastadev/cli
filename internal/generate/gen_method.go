@@ -13,11 +13,11 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MethodData is the resolved input for the method generator.
@@ -106,11 +106,14 @@ func methodDataDefaults(d MethodData) MethodData {
 	if d.ImplStructName == "" {
 		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Service"
 	}
-	if d.InterfaceFile == "" {
-		d.InterfaceFile = filepath.Join("app", "services", "interfaces", d.Snake+"_service.go")
-	}
-	if d.ImplFile == "" {
-		d.ImplFile = filepath.Join("app", "services", d.Snake+".service.go")
+	if d.InterfaceFile == "" || d.ImplFile == "" {
+		lo := layout.Detect()
+		if d.InterfaceFile == "" {
+			d.InterfaceFile = lo.SvcIfaceFile(d.Snake)
+		}
+		if d.ImplFile == "" {
+			d.ImplFile = lo.SvcImplFile(d.Snake)
+		}
 	}
 	return d
 }

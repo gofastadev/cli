@@ -1,5 +1,7 @@
 package generate
 
+import "github.com/gofastadev/cli/internal/layout"
+
 // Field represents a single field in a resource (parsed from "name:type" CLI args).
 type Field struct {
 	Name      string // PascalCase: ProductName
@@ -33,6 +35,7 @@ type ScaffoldData struct {
 	Schedule          string // cron expression for job generator
 	DBDriver          string // database driver from config (postgres, mysql, sqlite, sqlserver, clickhouse)
 	ModulePath        string // Go module path read from go.mod (e.g., "github.com/myorg/myapp")
+	Layout            layout.Layout
 }
 
 // HasTimeField reports whether any field on this resource is `time.Time`.
@@ -45,6 +48,20 @@ func (s ScaffoldData) HasTimeField() bool {
 		}
 	}
 	return false
+}
+
+// L returns the layout for this scaffold operation, defaulting to
+// layered when ScaffoldData was constructed without one. Production
+// callers go through BuildScaffoldData which always sets Layout; this
+// defaulting exists so test code that constructs ScaffoldData literals
+// (and any future caller that does the same) keeps working without
+// every test having to set the field. The default matches the historical
+// behavior — every gen_*.go used to hardcode the layered paths.
+func (s ScaffoldData) L() layout.Layout {
+	if s.Layout == nil {
+		return layout.For(layout.Layered)
+	}
+	return s.Layout
 }
 
 // Step is a single unit of work in a generator pipeline.

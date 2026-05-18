@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MockData is what GenMock needs to produce one mock file.
@@ -111,11 +112,11 @@ func GenMock(interfaceName string, opts GenMockOpts) error {
 // regenAllMocks walks the standard interfaces directories and regenerates
 // every mock file. Errors on individual interfaces don't kill the run —
 // each is reported via the normal cliout channels by writeMockForTarget.
+// Directories scanned depend on layout (layered scans
+// app/{services,repositories}/interfaces; feature walks per-resource
+// app/<resource>/ for *_iface.go).
 func regenAllMocks(module string, opts GenMockOpts) error {
-	dirs := []string{
-		filepath.Join("app", "services", "interfaces"),
-		filepath.Join("app", "repositories", "interfaces"),
-	}
+	dirs := layout.Detect().InterfaceDirs()
 	anyHit := false
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -159,12 +160,9 @@ type interfaceTarget struct {
 // findInterface walks the standard interfaces dirs and returns the first
 // interface declaration matching name. Returns CodeInterfaceNotFound when
 // the name isn't found, CodeAmbiguousSymbol when two files define the
-// same interface name.
+// same interface name. Directories scanned depend on layout.
 func findInterface(name string) (interfaceTarget, error) {
-	dirs := []string{
-		filepath.Join("app", "services", "interfaces"),
-		filepath.Join("app", "repositories", "interfaces"),
-	}
+	dirs := layout.Detect().InterfaceDirs()
 	var hits []interfaceTarget
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)

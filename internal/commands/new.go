@@ -26,6 +26,7 @@ type newResult struct {
 	ModulePath string `json:"module_path"`
 	GraphQL    bool   `json:"graphql"`
 	DBDriver   string `json:"db_driver"`
+	Layout     string `json:"layout"`
 	Success    bool   `json:"success"`
 	Error      string `json:"error,omitempty"`
 }
@@ -38,6 +39,7 @@ type ProjectData struct {
 	ModulePath       string // Go module path: "github.com/myorg/myapp"
 	GraphQL          bool   // true when --graphql flag is passed
 	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
+	Layout           string // "layered" | "feature"
 }
 
 // supportedDrivers is the canonical set of --driver values. The first
@@ -51,6 +53,22 @@ var supportedDrivers = []string{"postgres", "mysql", "sqlite", "sqlserver", "cli
 func isSupportedDriver(v string) bool {
 	for _, d := range supportedDrivers {
 		if d == v {
+			return true
+		}
+	}
+	return false
+}
+
+// supportedLayouts is the canonical set of --layout values. The first
+// entry is the default. Values match what configutil.ReadLayout returns
+// and what layout.ParseKind accepts.
+var supportedLayouts = []string{"layered", "feature"}
+
+// isSupportedLayout reports whether v is one of the canonical layout
+// strings. Used to validate the --layout flag before scaffolding.
+func isSupportedLayout(v string) bool {
+	for _, l := range supportedLayouts {
+		if l == v {
 			return true
 		}
 	}
@@ -111,7 +129,22 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 				"--driver %q is not supported — valid values: %s",
 				driver, strings.Join(supportedDrivers, ", "))
 		}
-		return runNew(args[0], gql || gqlShort, driver)
+		layoutFlag, _ := cmd.Flags().GetString("layout")
+		layoutFlag = strings.ToLower(strings.TrimSpace(layoutFlag))
+		if !isSupportedLayout(layoutFlag) {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"--layout %q is not supported — valid values: %s",
+				layoutFlag, strings.Join(supportedLayouts, ", "))
+		}
+		if layoutFlag == "feature" {
+			// Phase B.2 will wire ProjectFeatureFS. Until then, refuse
+			// rather than silently produce a layered project that
+			// contradicts the flag the user asked for. The error code
+			// is stable so docs / agents can branch on it.
+			return clierr.Newf(clierr.CodeInvalidName,
+				"--layout=feature is not yet implemented — the feature-package skeleton is being added in a follow-up. Use --layout=layered (or omit the flag) for now.")
+		}
+		return runNew(args[0], gql || gqlShort, driver, layoutFlag)
 	},
 }
 
@@ -121,6 +154,8 @@ func init() {
 	newCmd.Flags().Bool("gql", false, "Shorthand for --graphql")
 	newCmd.Flags().String("driver", "postgres",
 		"Database driver: "+strings.Join(supportedDrivers, "|"))
+	newCmd.Flags().String("layout", "layered",
+		"Project layout: "+strings.Join(supportedLayouts, "|"))
 }
 
 // dotfileRenames maps embedded names to actual dotfile names.
@@ -166,10 +201,13 @@ var osChdir = os.Chdir
 var migrationsFSOverride fs.FS
 
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
-func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr error) {
+func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (resultErr error) {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
 	if driver == "" {
 		driver = "postgres"
+	}
+	if layoutKind == "" {
+		layoutKind = "layered"
 	}
 
 	// In --json mode, redirect stdout to stderr for the duration of
@@ -193,6 +231,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 				ModulePath: modulePath,
 				GraphQL:    includeGraphQL,
 				DBDriver:   driver,
+				Layout:     layoutKind,
 				Success:    resultErr == nil,
 				Error:      errString(resultErr),
 			}, nil)
@@ -216,6 +255,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
 		DBDriver:         driver,
+		Layout:           layoutKind,
 	}
 
 	cliout.Header("🚀 Creating new gofasta project: %s", projectName)

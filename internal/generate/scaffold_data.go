@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // BuildScaffoldData converts a resource name and fields into fully computed ScaffoldData.
@@ -30,6 +31,7 @@ func BuildScaffoldData(name string, fields []Field) ScaffoldData {
 		MigrationNum: nextMigrationNumber(),
 		DBDriver:     driver,
 		ModulePath:   readModulePath(),
+		Layout:       layout.Detect(),
 	}
 }
 

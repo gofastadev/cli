@@ -17,7 +17,7 @@ const containerFieldsMarker = "// gofasta:scaffold:container-fields"
 
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
 func PatchContainer(d ScaffoldData) error {
-	path := "app/di/container.go"
+	path := d.L().ContainerFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -57,7 +57,7 @@ const wireProvidersMarker = "// gofasta:scaffold:wire-providers"
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
 func PatchWireFile(d ScaffoldData) error {
-	path := "app/di/wire.go"
+	path := d.L().WireFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -82,7 +82,7 @@ func PatchWireFile(d ScaffoldData) error {
 
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
 func PatchResolver(d ScaffoldData) error {
-	path := "app/graphql/resolvers/resolver.go"
+	path := d.L().ResolverFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -129,7 +129,7 @@ func PatchResolver(d ScaffoldData) error {
 
 // PatchRouteConfig adds controller to RouteConfig and registers routes in app/rest/routes/index.routes.go.
 func PatchRouteConfig(d ScaffoldData) error {
-	path := "app/rest/routes/index.routes.go"
+	path := d.L().RouteIndexFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -181,7 +181,7 @@ const routeConfigInitMarker = "// gofasta:scaffold:routeconfig-init"
 
 // PatchServeFile adds the controller to RouteConfig initialization in cmd/serve.go.
 func PatchServeFile(d ScaffoldData) error {
-	path := "cmd/serve.go"
+	path := d.L().ServeFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err

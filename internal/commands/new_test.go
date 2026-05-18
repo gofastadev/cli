@@ -79,7 +79,7 @@ func TestRunNew_DirectoryAlreadyExists(t *testing.T) {
 	os.Chdir(dir)
 
 	os.Mkdir("myapp", 0755)
-	err := runNew("myapp", false, "postgres")
+	err := runNew("myapp", false, "postgres", "layered")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -138,7 +138,7 @@ func TestRunNew_MkdirAllError(t *testing.T) {
 	parentFile := filepath.Join(dir, "parent")
 	require.NoError(t, os.WriteFile(parentFile, []byte("x"), 0o644))
 
-	err := runNew(filepath.Join(parentFile, "proj"), false, "postgres")
+	err := runNew(filepath.Join(parentFile, "proj"), false, "postgres", "layered")
 	assert.Error(t, err)
 }
 
@@ -158,7 +158,7 @@ func TestRunNew_ChdirError(t *testing.T) {
 	require.NoError(t, os.Chmod(parent, 0o600))
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	err := runNew(filepath.Join(parent, "proj"), false, "postgres")
+	err := runNew(filepath.Join(parent, "proj"), false, "postgres", "layered")
 	assert.Error(t, err)
 }
 
@@ -201,7 +201,7 @@ func TestRunNew_ChdirFails(t *testing.T) {
 	osChdir = func(path string) error { return os.ErrPermission }
 	t.Cleanup(func() { osChdir = origOS })
 	withFakeExec(t, 0)
-	err := runNew("chdir-fail-app", false, "postgres")
+	err := runNew("chdir-fail-app", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -218,7 +218,7 @@ func TestRunNew_BadTemplate(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-tmpl-app", false, "postgres")
+	err := runNew("bad-tmpl-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing template")
 }
@@ -234,7 +234,7 @@ func TestRunNew_TemplateExecFails(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-exec-app", false, "postgres")
+	err := runNew("bad-exec-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "executing template")
 }
@@ -263,7 +263,7 @@ func TestRunNew_ReadFileFails(t *testing.T) {
 	}
 	projectFSOverride = errFS{base: base}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("read-fail-app", false, "postgres")
+	err := runNew("read-fail-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading")
 }
@@ -278,7 +278,7 @@ func TestRunNew_WalkCallbackReceivesError(t *testing.T) {
 	// with an fs.PathError → the first branch in the callback fires.
 	projectFSOverride = fstest.MapFS{}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("walkerr-app", false, "postgres")
+	err := runNew("walkerr-app", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -288,7 +288,7 @@ func TestRunNew_UnreadableDir(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	require.NoError(t, os.WriteFile("conflict", []byte{}, 0o644))
-	err := runNew("conflict", false, "postgres")
+	err := runNew("conflict", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -310,7 +310,7 @@ func TestRunNew_JSON_EmitsResultOnEarlyReturn(t *testing.T) {
 	require.NoError(t, os.MkdirAll("collision-app", 0o755))
 
 	out := captureStdout(t, func() {
-		err := runNew("collision-app", false, "postgres")
+		err := runNew("collision-app", false, "postgres", "layered")
 		require.Error(t, err)
 	})
 
@@ -371,7 +371,7 @@ func TestRunNew_PerDriverMigrationsCopied(t *testing.T) {
 
 			projectName := driver + "app"
 			_ = captureStdout(t, func() {
-				err := runNew(projectName, false, driver)
+				err := runNew(projectName, false, driver, "layered")
 				// runNew may fail later (no real go mod tidy possible
 				// against the synthetic FS), but the migrations copy
 				// happens BEFORE any of that. Tolerate the trailing
@@ -439,7 +439,7 @@ func TestRunNew_DriverEmptyDefaultsToPostgres(t *testing.T) {
 		// Best-effort: runNew may fail later because the synthetic FS
 		// doesn't carry a full project tree, but the empty-driver
 		// branch executes BEFORE any of that.
-		_ = runNew("emptydrivertest", false, "")
+		_ = runNew("emptydrivertest", false, "", "layered")
 	})
 
 	// db/migrations should contain the postgres set (5 up + 5 down)
@@ -465,7 +465,7 @@ func TestRunNew_CopyMigrationsErrorPropagates(t *testing.T) {
 	withFakeExec(t, 0)
 
 	_ = captureStdout(t, func() {
-		err := runNew("copyfailapp", false, "postgres")
+		err := runNew("copyfailapp", false, "postgres", "layered")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "copying postgres foundational migrations")
 	})

@@ -23,6 +23,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // RelationKind enumerates the supported gorm/sql relationship shapes.
@@ -93,14 +94,20 @@ func GenRelation(d RelationData) error {
 }
 
 func relationDataDefaults(d RelationData) RelationData {
-	if d.Resource != "" && d.ResourceModel == "" {
-		d.ResourceModel = filepath.Join("app", "models", toSnakeCase(d.Resource)+".model.go")
-	}
-	if d.Other != "" && d.OtherModel == "" {
-		d.OtherModel = filepath.Join("app", "models", toSnakeCase(d.Other)+".model.go")
-	}
-	if d.MigrationDir == "" {
-		d.MigrationDir = filepath.Join("db", "migrations")
+	needsLayout := (d.Resource != "" && d.ResourceModel == "") ||
+		(d.Other != "" && d.OtherModel == "") ||
+		d.MigrationDir == ""
+	if needsLayout {
+		lo := layout.Detect()
+		if d.Resource != "" && d.ResourceModel == "" {
+			d.ResourceModel = lo.ModelFile(toSnakeCase(d.Resource))
+		}
+		if d.Other != "" && d.OtherModel == "" {
+			d.OtherModel = lo.ModelFile(toSnakeCase(d.Other))
+		}
+		if d.MigrationDir == "" {
+			d.MigrationDir = lo.MigrationsDir()
+		}
 	}
 	if d.MigrationVer == "" {
 		d.MigrationVer = nextMigrationNumber()

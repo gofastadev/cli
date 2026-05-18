@@ -11,8 +11,9 @@
 package generate
 
 import (
-	"path/filepath"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // GenRepoMethod is a thin wrapper that fills in repo-specific defaults
@@ -30,11 +31,14 @@ func GenRepoMethod(d MethodData) error {
 	if d.ImplStructName == "" {
 		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Repository"
 	}
-	if d.InterfaceFile == "" {
-		d.InterfaceFile = filepath.Join("app", "repositories", "interfaces", snake+"_repository.go")
-	}
-	if d.ImplFile == "" {
-		d.ImplFile = filepath.Join("app", "repositories", snake+".repository.go")
+	if d.InterfaceFile == "" || d.ImplFile == "" {
+		lo := layout.Detect()
+		if d.InterfaceFile == "" {
+			d.InterfaceFile = lo.RepoIfaceFile(snake)
+		}
+		if d.ImplFile == "" {
+			d.ImplFile = lo.RepoImplFile(snake)
+		}
 	}
 	d.Snake = snake
 	return GenMethod(d)

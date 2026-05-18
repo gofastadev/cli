@@ -1,12 +1,12 @@
 package generate
 
 import (
-	"fmt"
-
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
-// GenWireProvider writes a Wire provider file for the scaffolded resource.
+// GenWireProvider writes a Wire provider file for the scaffolded
+// resource. Layered puts it under app/di/providers/; feature puts it
+// inside the per-resource directory at app/<resource>/wire.go.
 func GenWireProvider(d ScaffoldData) error {
-	return WriteTemplate(fmt.Sprintf("app/di/providers/%s.go", d.SnakeName), "wire_provider", templates.WireProvider, d)
+	return WriteTemplate(d.L().WireProviderFile(d.SnakeName), "wire_provider", templates.WireProvider, d)
 }

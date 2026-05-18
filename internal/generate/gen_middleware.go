@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MiddlewareData is the resolved input.
@@ -67,7 +68,7 @@ func GenMiddleware(d MiddlewareData) error {
 
 func middlewareDataDefaults(d MiddlewareData) MiddlewareData {
 	if d.RoutesDir == "" {
-		d.RoutesDir = filepath.Join("app", "rest", "routes")
+		d.RoutesDir = layout.Detect().RoutesDir()
 	}
 	return d
 }

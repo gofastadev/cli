@@ -131,6 +131,21 @@ func ReadDBDriver() string {
 	return driver
 }
 
+// ReadLayout reads the project.layout key from config.yaml. Returns
+// "layered" or "feature" verbatim when set; returns "" when the key is
+// missing so callers can fall back to filesystem detection without
+// confusing an absent value with an explicit "layered" choice.
+//
+// The layered/feature dichotomy is the layout package's concern; this
+// helper just surfaces the raw string. `gofasta new` writes this key at
+// scaffold time so every project created with a layout-aware CLI
+// version carries an authoritative value; projects scaffolded before
+// the feature shipped get the empty-string return and fall back to
+// filesystem detection in layout.Detect().
+func ReadLayout() string {
+	return loadConfig().String("project.layout")
+}
+
 // BuildCacheEndpoint reads cache.* from config.yaml + env vars and
 // returns the cache backend's host:port endpoint, plus an `enabled`
 // flag indicating whether the app actually wants a network cache.

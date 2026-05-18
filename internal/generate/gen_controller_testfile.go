@@ -1,8 +1,6 @@
 package generate
 
 import (
-	"fmt"
-
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
@@ -16,7 +14,7 @@ import (
 // we currently add it to every flow that produces a controller.
 func GenControllerTestFile(d ScaffoldData) error {
 	return WriteTemplate(
-		fmt.Sprintf("app/rest/controllers/%s.controller_test.go", d.SnakeName),
+		d.L().ControllerTestFile(d.SnakeName),
 		"controller_test",
 		templates.ControllerTest,
 		d,

@@ -1,8 +1,6 @@
 package generate
 
 import (
-	"fmt"
-
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
@@ -11,7 +9,7 @@ import (
 // Update, Archive sentinel paths + happy paths.
 func GenSvcTestFile(d ScaffoldData) error {
 	return WriteTemplate(
-		fmt.Sprintf("app/services/%s.service_test.go", d.SnakeName),
+		d.L().SvcTestFile(d.SnakeName),
 		"svc_test", templates.SvcTest, d,
 	)
 }

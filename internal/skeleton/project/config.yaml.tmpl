@@ -1,3 +1,12 @@
+project:
+  # Layout chosen at scaffold time. Read by `gofasta g *` and
+  # `gofasta refactor` to know whether to emit files into layered
+  # directories (app/models/, app/services/, …) or per-feature
+  # directories (app/<resource>/). Don't change this by hand — use
+  # `gofasta refactor feature-package` to migrate an existing project
+  # between layouts.
+  layout: {{.Layout}}
+
 server:
   # Bind address. The default 127.0.0.1 keeps the dev server on loopback,
   # which on macOS skips the firewall popup that would otherwise fire on

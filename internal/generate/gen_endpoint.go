@@ -15,12 +15,12 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // EndpointData is the resolved input for the endpoint generator.
@@ -141,14 +141,17 @@ func endpointDataDefaults(d EndpointData) EndpointData {
 	if d.HandlerName == "" {
 		d.HandlerName = deriveHandlerName(d.HTTPMethod, d.Path, d.Resource)
 	}
-	if d.ControllerFile == "" {
-		d.ControllerFile = filepath.Join("app", "rest", "controllers", d.Snake+".controller.go")
-	}
-	if d.RoutesFile == "" {
-		d.RoutesFile = filepath.Join("app", "rest", "routes", d.Snake+".routes.go")
-	}
-	if d.ServiceFile == "" {
-		d.ServiceFile = filepath.Join("app", "services", "interfaces", d.Snake+"_service.go")
+	if d.ControllerFile == "" || d.RoutesFile == "" || d.ServiceFile == "" {
+		lo := layout.Detect()
+		if d.ControllerFile == "" {
+			d.ControllerFile = lo.ControllerFile(d.Snake)
+		}
+		if d.RoutesFile == "" {
+			d.RoutesFile = lo.RoutesFile(d.Snake)
+		}
+		if d.ServiceFile == "" {
+			d.ServiceFile = lo.SvcIfaceFile(d.Snake)
+		}
 	}
 	return d
 }

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // setupTempProject creates a temp dir with a minimal go.mod and db/migrations dir,
@@ -41,6 +43,7 @@ func sampleScaffoldData() ScaffoldData {
 		IncludeGraphQL:    false,
 		DBDriver:          "postgres",
 		ModulePath:        "github.com/testorg/testapp",
+		Layout:            layout.For(layout.Layered),
 	}
 }
 
