@@ -23,6 +23,7 @@ package commands
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -83,7 +84,9 @@ Examples:
 }
 
 var refactorFeatureCmd = &cobra.Command{
-	Use:   "feature-package [<Resource> | --all]",
+	Use:     "feature [<Resource> | --all]",
+	Aliases: []string{"feature-package"}, // back-compat alias for the pre-rename name
+	//revive:disable:exported // command-style verbiage; cobra owns the doc surface
 	Short: "Migrate the project from layered to feature-package layout",
 	Long: `Move per-resource files from layered locations (app/services/<r>.service.go,
 app/repositories/<r>.repository.go, app/rest/controllers/<r>.controller.go, etc.)
@@ -99,22 +102,112 @@ After each resource is migrated the engine runs ` + "`go build ./...`" + ` and
 partial state is left for inspection — fix or ` + "`git restore`" + ` to recover.
 
 Examples:
-  gofasta refactor feature-package User
-  gofasta refactor feature-package --all
-  gofasta refactor feature-package User --dry-run`,
+  gofasta refactor feature User
+  gofasta refactor feature --all
+  gofasta refactor feature User --dry-run`,
 	RunE: runRefactorFeature,
+}
+
+// refactorStatusCmd is a read-only inspector: tells the user which
+// layout the current project is in, how many resources it has, and
+// which migration target is available. No writes — safe to run
+// anywhere, including on a dirty tree.
+var refactorStatusCmd = &cobra.Command{
+	Use:   "status",
+	Short: "Show the current project's layout and available migrations",
+	Long: `Inspects ` + "`config.yaml`" + ` and the on-disk layout to report:
+
+  • current layout (layered | feature) per ` + "`project.layout`" + `
+  • number of resources detected (and their names)
+  • which migration target is available
+
+Read-only — touches nothing. Run before a refactor to confirm you're
+about to move in the direction you expected.
+
+Examples:
+  gofasta refactor status
+  gofasta --json refactor status`,
+	RunE: runRefactorStatus,
 }
 
 func init() {
 	rootCmd.AddCommand(refactorCmd)
 	refactorCmd.AddCommand(refactorFeatureCmd)
 	refactorCmd.AddCommand(refactorLayeredCmd)
+	refactorCmd.AddCommand(refactorStatusCmd)
 	refactorFeatureCmd.Flags().Bool("all", false, "Migrate every resource detected in app/models/")
 	refactorFeatureCmd.Flags().Bool("dry-run", false, "Show the migration plan without writing any files")
 	refactorFeatureCmd.Flags().Bool("force", false, "Proceed even when the working tree is dirty")
 	refactorLayeredCmd.Flags().Bool("all", false, "Migrate every feature directory detected under app/")
 	refactorLayeredCmd.Flags().Bool("dry-run", false, "Show the migration plan without writing any files")
 	refactorLayeredCmd.Flags().Bool("force", false, "Proceed even when the working tree is dirty")
+}
+
+// refactorStatusResult is the JSON envelope for `gofasta refactor status --json`.
+type refactorStatusResult struct {
+	Action          string   `json:"action"`
+	Layout          string   `json:"layout"`            // "layered" | "feature"
+	LayoutSource    string   `json:"layout_source"`     // "config.yaml" | "filesystem-detect"
+	Resources       []string `json:"resources"`         // detected resource names
+	MigrationTarget string   `json:"migration_target"`  // the layout you'd migrate TO
+	MigrationCmd    string   `json:"migration_command"` // exact command to run
+	Success         bool     `json:"success"`
+	Error           string   `json:"error,omitempty"`
+}
+
+func runRefactorStatus(_ *cobra.Command, _ []string) (resultErr error) {
+	result := refactorStatusResult{Action: "refactor.status"}
+	defer func() {
+		result.Success = resultErr == nil
+		if resultErr != nil {
+			result.Error = resultErr.Error()
+		}
+		cliout.Print(result, func(w io.Writer) {
+			fprintf(w, "Layout:           %s  (from %s)\n", result.Layout, result.LayoutSource)
+			fprintf(w, "Resources:        %d\n", len(result.Resources))
+			for _, r := range result.Resources {
+				fprintf(w, "  • %s\n", r)
+			}
+			fprintf(w, "Migration target: %s\n", result.MigrationTarget)
+			fprintf(w, "Command:          %s\n", result.MigrationCmd)
+		})
+	}()
+
+	// Detect layout. configutil.ReadLayout returns "" when the key is
+	// absent in config.yaml — fall back to filesystem detection so users
+	// of projects that pre-date the layout key still get a useful answer.
+	cfgLayout := configutil.ReadLayout()
+	if cfgLayout != "" {
+		result.Layout = cfgLayout
+		result.LayoutSource = "config.yaml"
+	} else if _, err := os.Stat("app/models"); err == nil {
+		result.Layout = "layered"
+		result.LayoutSource = "filesystem-detect (no project.layout in config.yaml)"
+	} else {
+		result.Layout = "unknown"
+		result.LayoutSource = "no signals found"
+		return clierr.New(clierr.CodeRefactorIneligible,
+			"not in a gofasta project root (no config.yaml `project.layout` and no app/models/)")
+	}
+
+	// Discover resources based on layout.
+	switch result.Layout {
+	case "layered":
+		rs, _ := discoverResourcesFromModels()
+		for _, r := range rs {
+			result.Resources = append(result.Resources, r.Name)
+		}
+		result.MigrationTarget = "feature"
+		result.MigrationCmd = "gofasta refactor feature --all"
+	case "feature":
+		rs, _ := discoverFeatureResources()
+		for _, r := range rs {
+			result.Resources = append(result.Resources, r.Name)
+		}
+		result.MigrationTarget = "layered"
+		result.MigrationCmd = "gofasta refactor layered --all"
+	}
+	return nil
 }
 
 //nolint:gocognit,gocyclo // linear orchestration pipeline: preconditions → resolve → (dry-run|migrate) → relocate → patch → cleanup → flip → verify. Splitting hides the order.
@@ -937,7 +1030,7 @@ func readModulePath() (string, error) {
 	if err != nil {
 		return "", clierr.Wrap(clierr.CodeNotGofastaProject, err, "reading go.mod")
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if after, ok := strings.CutPrefix(line, "module "); ok {
 			return strings.TrimSpace(after), nil
