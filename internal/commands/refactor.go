@@ -56,6 +56,32 @@ changing its behavior. Currently the only subcommand is:
 	Args: cobra.MinimumNArgs(1),
 }
 
+var refactorLayeredCmd = &cobra.Command{
+	Use:   "layered [<Resource> | --all]",
+	Short: "Migrate the project from feature-package back to layered layout",
+	Long: `Inverse of ` + "`gofasta refactor feature-package`" + `. Moves per-resource
+files out of app/<r>/ back to their layered locations (app/services/<r>.service.go,
+app/repositories/<r>.repository.go, etc.), re-qualifies the bare in-feature
+identifiers with their layered package aliases, restores shared aliases.go
+to app/dtos/, and patches container/wire/index.routes back to the layered shape.
+
+Same safety contract as the forward direction: refuses on a dirty git tree
+unless --force; --dry-run previews the plan without writing. After all moves
+the engine regenerates Wire and runs ` + "`go build ./...`" + ` — on failure it
+aborts with the partial state in place.
+
+Caveat: the reverse direction assumes the feature project follows scaffold-
+shaped conventions. Heavy hand-edits (renamed types, custom files, alternate
+layouts) may not unwind cleanly — in those cases split the migration into
+smaller pieces or manually adjust the result.
+
+Examples:
+  gofasta refactor layered User
+  gofasta refactor layered --all
+  gofasta refactor layered User --dry-run`,
+	RunE: runRefactorLayered,
+}
+
 var refactorFeatureCmd = &cobra.Command{
 	Use:   "feature-package [<Resource> | --all]",
 	Short: "Migrate the project from layered to feature-package layout",
@@ -82,9 +108,13 @@ Examples:
 func init() {
 	rootCmd.AddCommand(refactorCmd)
 	refactorCmd.AddCommand(refactorFeatureCmd)
+	refactorCmd.AddCommand(refactorLayeredCmd)
 	refactorFeatureCmd.Flags().Bool("all", false, "Migrate every resource detected in app/models/")
 	refactorFeatureCmd.Flags().Bool("dry-run", false, "Show the migration plan without writing any files")
 	refactorFeatureCmd.Flags().Bool("force", false, "Proceed even when the working tree is dirty")
+	refactorLayeredCmd.Flags().Bool("all", false, "Migrate every feature directory detected under app/")
+	refactorLayeredCmd.Flags().Bool("dry-run", false, "Show the migration plan without writing any files")
+	refactorLayeredCmd.Flags().Bool("force", false, "Proceed even when the working tree is dirty")
 }
 
 //nolint:gocognit,gocyclo // linear orchestration pipeline: preconditions → resolve → (dry-run|migrate) → relocate → patch → cleanup → flip → verify. Splitting hides the order.
@@ -219,6 +249,377 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 
 	cliout.Success("Migration complete — project is now feature-package layout")
 	return nil
+}
+
+//nolint:gocognit,gocyclo // inverse orchestration: preconditions → resolve → (dry-run|migrate-each) → relocate shared → patch cross-cutting → cleanup → flip config → wire → build. Same shape as runRefactorFeature.
+func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
+	allFlag, _ := cmd.Flags().GetBool("all")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	force, _ := cmd.Flags().GetBool("force")
+
+	result := refactorResult{Action: "refactor.layered", DryRun: dryRun}
+	defer func() {
+		result.Success = resultErr == nil
+		if resultErr != nil {
+			result.Error = resultErr.Error()
+		}
+		cliout.Print(result, nil)
+	}()
+
+	if err := requireFeatureProject(); err != nil {
+		return err
+	}
+	if !force {
+		if err := requireCleanGitTree(); err != nil {
+			return err
+		}
+	}
+
+	resources, err := resolveLayeredRevertResources(args, allFlag)
+	if err != nil {
+		return err
+	}
+	for _, r := range resources {
+		result.Resources = append(result.Resources, r.Name)
+	}
+
+	mod, err := readModulePath()
+	if err != nil {
+		return err
+	}
+
+	if dryRun {
+		cliout.Header("📋 Dry-run plan:")
+		for _, r := range resources {
+			cliout.Info("Would unwind %s:", r.Name)
+			for _, p := range featurize.ReversePerResourceMapping(r.Snake) {
+				if _, err := os.Stat(p.Feature); err == nil {
+					cliout.Plainln(fmt.Sprintf("  move: %s → %s", p.Feature, p.Dest.Path))
+				}
+			}
+		}
+		for _, pair := range featurize.SharedRelocationsReverse() {
+			if _, err := os.Stat(pair.Layered); err == nil {
+				cliout.Plainln(fmt.Sprintf("  move: %s → %s", pair.Layered, pair.Feature))
+			}
+		}
+		cliout.Info("Would patch: app/di/container.go, app/di/wire.go, app/rest/routes/index.routes.go, app/di/providers/core.go")
+		cliout.Info("Would patch testutil/mocks/<resource>_*.go for each resource")
+		cliout.Info("Would update config.yaml: project.layout: feature → layered")
+		return nil
+	}
+
+	for _, r := range resources {
+		cliout.Header("🔧 Unwinding %s back to layered", r.Name)
+		moved, patched, err := revertResource(r, mod)
+		result.FilesMoved = append(result.FilesMoved, moved...)
+		result.FilesPatched = append(result.FilesPatched, patched...)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Relocate aliases.go back: app/shared/dtos/aliases.go → app/dtos/.
+	cliout.Step("📦 Restoring shared aliases to app/dtos/")
+	relocated, err := applySharedRelocationsReverse()
+	if err != nil {
+		return err
+	}
+	result.FilesMoved = append(result.FilesMoved, relocated...)
+
+	// Move password_generator.go back: app/user/password_generator.go → app/services/.
+	cliout.Step("📦 Restoring password_generator.go to app/services/")
+	pwMoved, err := revertPasswordGenerator()
+	if err != nil {
+		return err
+	}
+	result.FilesMoved = append(result.FilesMoved, pwMoved...)
+
+	// Patch cross-cutting files back to layered shape.
+	cliout.Step("🔌 Patching cross-cutting files back to layered")
+	patched, err := applyCrossCuttingPatchesReverse(mod, resources)
+	if err != nil {
+		return err
+	}
+	result.FilesPatched = append(result.FilesPatched, patched...)
+
+	// Clean up empty feature directories.
+	cliout.Step("🧹 Cleaning empty feature directories")
+	pruneEmptyFeatureDirs(resources)
+
+	// Flip config.yaml: feature → layered.
+	cliout.Step("📝 Updating config.yaml")
+	if err := flipLayoutInConfigReverse(); err != nil {
+		return err
+	}
+
+	cliout.Step("✓ Regenerating Wire")
+	_ = os.Remove("app/di/wire_gen.go")
+	if err := runGoCommand("tool", "wire", "./app/di/"); err != nil {
+		return clierr.Wrap(clierr.CodeRefactorAborted, err,
+			"wire generation failed — inspect the partial state and `git restore` to revert")
+	}
+	cliout.Step("✓ Verifying go build ./...")
+	if err := runGoCommand("build", "./..."); err != nil {
+		return clierr.Wrap(clierr.CodeRefactorAborted, err,
+			"go build failed after unwind — inspect the partial state and `git restore` to revert")
+	}
+
+	cliout.Success("Unwind complete — project is back to layered layout")
+	return nil
+}
+
+// requireFeatureProject errors out if the project isn't currently in
+// feature layout.
+func requireFeatureProject() error {
+	v := configutil.ReadLayout()
+	if v != "feature" {
+		return clierr.New(clierr.CodeRefactorIneligible,
+			"project is not in feature-package layout — nothing to unwind")
+	}
+	return nil
+}
+
+// resolveLayeredRevertResources resolves resources from CLI args or
+// discovers them by walking app/ for feature-shaped directories.
+func resolveLayeredRevertResources(args []string, allFlag bool) ([]featurize.Resource, error) {
+	if allFlag {
+		return discoverFeatureResources()
+	}
+	if len(args) == 0 {
+		return nil, clierr.New(clierr.CodeInvalidName,
+			"specify a resource name (e.g. `gofasta refactor layered User`) or use --all")
+	}
+	pascal := args[0]
+	snake := toSnakeCaseSimple(pascal)
+	plural := pluralizeSimple(pascal)
+	if _, err := os.Stat("app/" + snake); err != nil {
+		return nil, clierr.Newf(clierr.CodeRefactorResourceNotFound,
+			"feature %q not found (expected app/%s/)", pascal, snake)
+	}
+	return []featurize.Resource{{Name: pascal, Snake: snake, Plural: plural}}, nil
+}
+
+// discoverFeatureResources walks app/ looking for per-resource feature
+// directories. Skips shared dirs (di, jobs, tasks, graphql, main,
+// devtools, shared, validators, rest, models, dtos).
+func discoverFeatureResources() ([]featurize.Resource, error) {
+	entries, err := os.ReadDir("app")
+	if err != nil {
+		return nil, clierr.Wrap(clierr.CodeFileIO, err, "reading app/")
+	}
+	shared := map[string]bool{
+		"di": true, "jobs": true, "tasks": true, "graphql": true,
+		"main": true, "devtools": true, "shared": true, "validators": true,
+		"rest": true, "models": true, "dtos": true,
+	}
+	var out []featurize.Resource
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if shared[name] {
+			continue
+		}
+		// Heuristic: feature dir contains a model.go or service.go file.
+		// Skipping is fine if absent — the user may have other dirs.
+		if _, err := os.Stat(filepath.Join("app", name, "service.go")); err != nil {
+			continue
+		}
+		pascal := toPascalCaseSimple(name)
+		out = append(out, featurize.Resource{
+			Name: pascal, Snake: name, Plural: pluralizeSimple(pascal),
+		})
+	}
+	if len(out) == 0 {
+		return nil, clierr.New(clierr.CodeRefactorResourceNotFound,
+			"no feature directories detected under app/")
+	}
+	return out, nil
+}
+
+// revertResource unwinds one resource from feature layout to layered.
+func revertResource(r featurize.Resource, mod string) (moved, patched []string, err error) {
+	for _, p := range featurize.ReversePerResourceMapping(r.Snake) {
+		content, readErr := os.ReadFile(p.Feature)
+		if readErr != nil {
+			continue
+		}
+		transformed, terr := featurize.TransformPerResourceReverse(content, p.Dest, featurize.Options{
+			ModulePath: mod, Resource: r,
+		})
+		if terr != nil {
+			return moved, patched, fmt.Errorf("featurize reverse %s: %w", p.Feature, terr)
+		}
+		if err := os.MkdirAll(filepath.Dir(p.Dest.Path), 0o755); err != nil {
+			return moved, patched, clierr.Wrap(clierr.CodeFileIO, err, "mkdir "+filepath.Dir(p.Dest.Path))
+		}
+		if err := os.WriteFile(p.Dest.Path, transformed, 0o644); err != nil {
+			return moved, patched, clierr.Wrap(clierr.CodeFileIO, err, "writing "+p.Dest.Path)
+		}
+		if err := os.Remove(p.Feature); err != nil {
+			return moved, patched, clierr.Wrap(clierr.CodeFileIO, err, "removing "+p.Feature)
+		}
+		cliout.Path(p.Dest.Path)
+		moved = append(moved, p.Feature+" → "+p.Dest.Path)
+	}
+
+	// Per-resource mocks: reverse-transform.
+	for _, suffix := range []string{"_repository_mock.go", "_service_mock.go"} {
+		mockPath := filepath.Join("testutil", "mocks", r.Snake+suffix)
+		content, readErr := os.ReadFile(mockPath)
+		if readErr != nil {
+			continue
+		}
+		transformed, terr := featurize.TransformMockReverse(content, mod, r)
+		if terr != nil {
+			return moved, patched, fmt.Errorf("featurize reverse %s: %w", mockPath, terr)
+		}
+		if err := os.WriteFile(mockPath, transformed, 0o644); err != nil {
+			return moved, patched, clierr.Wrap(clierr.CodeFileIO, err, "writing "+mockPath)
+		}
+		patched = append(patched, mockPath)
+	}
+	return moved, patched, nil
+}
+
+// applySharedRelocationsReverse moves aliases.go back from
+// app/shared/dtos/ to app/dtos/.
+func applySharedRelocationsReverse() ([]string, error) {
+	var moved []string
+	for _, pair := range featurize.SharedRelocationsReverse() {
+		content, err := os.ReadFile(pair.Layered)
+		if err != nil {
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(pair.Feature), 0o755); err != nil {
+			return moved, clierr.Wrap(clierr.CodeFileIO, err, "mkdir "+filepath.Dir(pair.Feature))
+		}
+		if err := os.WriteFile(pair.Feature, content, 0o644); err != nil {
+			return moved, clierr.Wrap(clierr.CodeFileIO, err, "writing "+pair.Feature)
+		}
+		if err := os.Remove(pair.Layered); err != nil {
+			return moved, clierr.Wrap(clierr.CodeFileIO, err, "removing "+pair.Layered)
+		}
+		cliout.Path(pair.Feature)
+		moved = append(moved, pair.Layered+" → "+pair.Feature)
+	}
+	// Also prune app/shared/dtos/ + app/shared/ if empty.
+	_ = os.Remove("app/shared/dtos")
+	_ = os.Remove("app/shared")
+	return moved, nil
+}
+
+// revertPasswordGenerator moves app/user/password_generator.go back to
+// app/services/password_generator.go, restoring `package services`.
+func revertPasswordGenerator() ([]string, error) {
+	const featurePath = "app/user/password_generator.go"
+	content, err := os.ReadFile(featurePath)
+	if err != nil {
+		return nil, nil
+	}
+	transformed, terr := featurize.TransformPerResourceReverse(content,
+		featurize.LayeredDestination{Path: "app/services/password_generator.go", PackageName: "services"},
+		featurize.Options{ModulePath: "", Resource: featurize.Resource{Name: "User", Snake: "user", Plural: "Users"}})
+	if terr != nil {
+		return nil, fmt.Errorf("featurize reverse password_generator.go: %w", terr)
+	}
+	const target = "app/services/password_generator.go"
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return nil, clierr.Wrap(clierr.CodeFileIO, err, "mkdir "+filepath.Dir(target))
+	}
+	if err := os.WriteFile(target, transformed, 0o644); err != nil {
+		return nil, clierr.Wrap(clierr.CodeFileIO, err, "writing "+target)
+	}
+	if err := os.Remove(featurePath); err != nil {
+		return nil, clierr.Wrap(clierr.CodeFileIO, err, "removing "+featurePath)
+	}
+	cliout.Path(target)
+	return []string{featurePath + " → " + target}, nil
+}
+
+// applyCrossCuttingPatchesReverse rewrites container/wire/index.routes/
+// core back to the layered shape, and flips the shared infra files'
+// `<mod>/app/shared/dtos` imports back to `<mod>/app/dtos`.
+//
+//nolint:dupl // structurally mirrors applyCrossCuttingPatches but every step uses the *Reverse transformer + different dtos consumer list — merging would obscure direction.
+func applyCrossCuttingPatchesReverse(mod string, resources []featurize.Resource) ([]string, error) {
+	var patched []string
+	type job struct {
+		path string
+		fn   func([]byte, string, []featurize.Resource) ([]byte, error)
+	}
+	jobs := []job{
+		{"app/di/container.go", featurize.TransformContainerReverse},
+		{"app/di/wire.go", featurize.TransformWireReverse},
+		{"app/rest/routes/index.routes.go", featurize.TransformIndexRoutesReverse},
+		{"app/di/providers/core.go", featurize.TransformCoreProvidersReverse},
+	}
+	for _, j := range jobs {
+		content, err := os.ReadFile(j.path)
+		if err != nil {
+			continue
+		}
+		out, terr := j.fn(content, mod, resources)
+		if terr != nil {
+			return patched, fmt.Errorf("transform reverse %s: %w", j.path, terr)
+		}
+		if err := os.WriteFile(j.path, out, 0o644); err != nil {
+			return patched, clierr.Wrap(clierr.CodeFileIO, err, "writing "+j.path)
+		}
+		patched = append(patched, j.path)
+	}
+
+	dtosImportConsumers := []string{
+		"app/validators/app_validator.go",
+		"app/rest/controllers/validator.go",
+		"app/graphql/resolvers/user.resolvers.go",
+	}
+	for _, path := range dtosImportConsumers {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		out, terr := featurize.FixSharedDtosImportPathReverse(content, mod)
+		if terr != nil {
+			return patched, fmt.Errorf("fix shared dtos import reverse %s: %w", path, terr)
+		}
+		if err := os.WriteFile(path, out, 0o644); err != nil {
+			return patched, clierr.Wrap(clierr.CodeFileIO, err, "writing "+path)
+		}
+		patched = append(patched, path)
+	}
+
+	return patched, nil
+}
+
+// pruneEmptyFeatureDirs removes per-feature directories that are
+// empty after the unwind (e.g. app/user/ once every file has moved).
+func pruneEmptyFeatureDirs(resources []featurize.Resource) {
+	for _, r := range resources {
+		dir := "app/" + r.Snake
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		if len(entries) == 0 {
+			_ = os.Remove(dir)
+		}
+	}
+}
+
+// flipLayoutInConfigReverse rewrites project.layout: feature →
+// project.layout: layered in config.yaml.
+func flipLayoutInConfigReverse() error {
+	const path = "config.yaml"
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return clierr.Wrap(clierr.CodeFileIO, err, "reading "+path)
+	}
+	s := string(content)
+	s = strings.Replace(s, "layout: feature", "layout: layered", 1)
+	return os.WriteFile(path, []byte(s), 0o644)
 }
 
 // requireLayeredProject errors out if the project isn't currently in
@@ -445,6 +846,8 @@ func applySharedRelocations() ([]string, error) {
 // (container.go, wire.go, index.routes.go, core.go) and the shared
 // infra files (app_validator.go, validator.go) that need import-path
 // updates after the relocations.
+//
+//nolint:dupl // structurally mirrors applyCrossCuttingPatchesReverse but uses the forward transformer — merging would obscure direction.
 func applyCrossCuttingPatches(mod string, resources []featurize.Resource) ([]string, error) {
 	var patched []string
 	type job struct {
