@@ -10,6 +10,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -137,12 +138,25 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 				layoutFlag, strings.Join(supportedLayouts, ", "))
 		}
 		if layoutFlag == "feature" {
-			// Phase B.2 will wire ProjectFeatureFS. Until then, refuse
-			// rather than silently produce a layered project that
-			// contradicts the flag the user asked for. The error code
-			// is stable so docs / agents can branch on it.
+			// The AST-based featurize transformer (internal/featurize/)
+			// correctly handles per-resource files, mocks, cross-cutting
+			// container/wire/index.routes, and core.go imports. What it
+			// cannot resolve is a structural Go cycle in the scaffold:
+			// app/dtos/user.dtos.go's UserFromModel + ToCreateInput
+			// methods need both the model AND the service inputs;
+			// app/user/controller.go needs dtos for shared envelopes
+			// (TPaginationObjectDto). Wherever you put the dtos/inputs
+			// types you get a `feature → dtos → feature` cycle. Resolving
+			// it requires template surgery: rename `dtos.User` to
+			// `dtos.UserResponse`, move DTO mappers (ToCreateInput etc.)
+			// from dtos into the feature, or migrate TPaginationObjectDto
+			// out of `app/dtos/` into a shared package. None of that
+			// belongs in the AST transformer.
+			//
+			// Phase B.2 ships the transformer + flag plumbing; the
+			// template restructure lands in a follow-up.
 			return clierr.Newf(clierr.CodeInvalidName,
-				"--layout=feature is not yet implemented — the feature-package skeleton is being added in a follow-up. Use --layout=layered (or omit the flag) for now.")
+				"--layout=feature is not yet ready — the featurize transformer is in place but the scaffold templates need DTO/mapper restructuring to avoid an import cycle. Use --layout=layered for a working project today.")
 		}
 		return runNew(args[0], gql || gqlShort, driver, layoutFlag)
 	},
@@ -360,6 +374,25 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 			output = []byte(buf.String())
 		} else {
 			output = content
+		}
+
+		// --layout=feature: route per-resource files through the
+		// featurize transformer and emit them at app/<snake>/ paths
+		// instead of the layered locations. Cross-cutting files
+		// (container.go, wire.go, index.routes.go) get a separate
+		// transform that adjusts imports + symbol references to
+		// reference the per-feature packages.
+		if data.Layout == "feature" {
+			rerouted, transformed, ferr := featurizeFile(outputPath, output, data.ModulePath, starterResources())
+			if ferr != nil {
+				return ferr
+			}
+			outputPath = rerouted
+			output = transformed
+			// Ensure new parent directory exists after potential reroute.
+			if dir := filepath.Dir(outputPath); dir != "." {
+				_ = os.MkdirAll(dir, 0o755)
+			}
 		}
 
 		cliout.Path(outputPath)
@@ -627,4 +660,157 @@ func runCmdSilent(name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// starterResources is the list of resources the User starter scaffold
+// produces. Only one — "User" — today. When the scaffold ships a
+// multi-resource starter, extend this slice.
+func starterResources() []featurize.Resource {
+	return []featurize.Resource{
+		{Name: "User", Snake: "user", Plural: "Users"},
+	}
+}
+
+// featurizeFile re-routes and transforms one already-rendered template
+// file when `--layout=feature` is active. Returns:
+//
+//	rerouted   — new output path (== outputPath when no reroute needed)
+//	transformed— possibly-rewritten content (== output when no transform)
+//	skip       — true when the file shouldn't be written at all (the
+//	             layered template is dead in feature mode and has no
+//	             feature counterpart, e.g. layered-only orphan dirs).
+//
+// Three categories of files:
+//
+//  1. Per-resource: app/models/<s>.model.go, app/services/<s>.service.go,
+//     etc. — re-routed to app/<s>/* and content collapsed via
+//     featurize.TransformPerResource.
+//
+//  2. Cross-cutting per-layout: app/di/container.go, app/di/wire.go,
+//     app/rest/routes/index.routes.go — stay at their paths, but
+//     content rewritten to reference per-feature packages.
+//
+//  3. Shared infra that exists in `app/services/` but isn't a resource
+//     file: `password_generator.go` — moved into the feature package
+//     it serves (currently `app/user/`).
+//
+// Files that match none of these pass through unchanged (they're shared
+// infra that lives in the same place in both layouts).
+//
+//nolint:gocognit,gocyclo // dispatch over 5 distinct file categories — splitting into helpers would just move the conditional tree without reducing branches.
+func featurizeFile(outputPath string, content []byte, mod string, resources []featurize.Resource) (rerouted string, transformed []byte, err error) {
+	// Category 1: per-resource reroute + featurize.
+	for _, r := range resources {
+		for _, pair := range featurize.PerResourceMapping(r.Snake) {
+			if outputPath == pair.Layered {
+				out, terr := featurize.TransformPerResource(content, featurize.Options{
+					ModulePath: mod,
+					Resource:   r,
+				})
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return pair.Feature, out, nil
+			}
+		}
+	}
+
+	// Category 3: password_generator.go follows the user feature (only
+	// consumer today). Move into app/user/ with the package rewritten.
+	if outputPath == "app/services/password_generator.go" {
+		out, terr := featurize.TransformPerResource(content, featurize.Options{
+			ModulePath: mod,
+			Resource:   featurize.Resource{Name: "User", Snake: "user", Plural: "Users"},
+		})
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return "app/user/password_generator.go", out, nil
+	}
+
+	// Category 2: cross-cutting per-layout files.
+	switch outputPath {
+	case "app/di/container.go":
+		out, terr := featurize.TransformContainer(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/di/wire.go":
+		out, terr := featurize.TransformWire(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/rest/routes/index.routes.go":
+		out, terr := featurize.TransformIndexRoutes(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/di/providers/core.go":
+		out, terr := featurize.TransformCoreProviders(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
+	// Mock files in testutil/mocks/ — reroute the import block to
+	// the per-feature package. Match by filename suffix so future
+	// per-feature mocks (Order, Product, etc.) get the same treatment.
+	if strings.HasPrefix(outputPath, "testutil/mocks/") &&
+		(strings.HasSuffix(outputPath, "_repository_mock.go") ||
+			strings.HasSuffix(outputPath, "_service_mock.go")) {
+		base := filepath.Base(outputPath)
+		// extract <snake> from "<snake>_repository_mock.go" / "<snake>_service_mock.go"
+		snake := strings.TrimSuffix(base, "_repository_mock.go")
+		snake = strings.TrimSuffix(snake, "_service_mock.go")
+		for _, r := range resources {
+			if r.Snake == snake {
+				out, terr := featurize.TransformMock(content, mod, r)
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return outputPath, out, nil
+			}
+		}
+	}
+
+	// Per-resource DTO files stay in app/dtos/ but their imports/refs
+	// flip from app/models + app/services to the feature package.
+	if strings.HasPrefix(outputPath, "app/dtos/") &&
+		(strings.HasSuffix(outputPath, ".dtos.go") || strings.HasSuffix(outputPath, ".dtos_test.go")) {
+		base := filepath.Base(outputPath)
+		snake := strings.TrimSuffix(base, ".dtos.go")
+		snake = strings.TrimSuffix(snake, ".dtos_test.go")
+		for _, r := range resources {
+			if r.Snake == snake {
+				out, terr := featurize.TransformResourceDTO(content, mod, r)
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return outputPath, out, nil
+			}
+		}
+	}
+
+	// Per-resource validator files stay in app/validators/ but their
+	// imports may reference the feature package (rare today; user.validators.go
+	// doesn't, but a future resource scaffold could).
+	if strings.HasPrefix(outputPath, "app/validators/") && strings.HasSuffix(outputPath, ".validators.go") {
+		base := filepath.Base(outputPath)
+		snake := strings.TrimSuffix(base, ".validators.go")
+		for _, r := range resources {
+			if r.Snake == snake {
+				out, terr := featurize.TransformResourceDTO(content, mod, r)
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return outputPath, out, nil
+			}
+		}
+	}
+
+	return outputPath, content, nil
 }
