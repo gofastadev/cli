@@ -137,27 +137,6 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 				"--layout %q is not supported — valid values: %s",
 				layoutFlag, strings.Join(supportedLayouts, ", "))
 		}
-		if layoutFlag == "feature" {
-			// The AST-based featurize transformer (internal/featurize/)
-			// correctly handles per-resource files, mocks, cross-cutting
-			// container/wire/index.routes, and core.go imports. What it
-			// cannot resolve is a structural Go cycle in the scaffold:
-			// app/dtos/user.dtos.go's UserFromModel + ToCreateInput
-			// methods need both the model AND the service inputs;
-			// app/user/controller.go needs dtos for shared envelopes
-			// (TPaginationObjectDto). Wherever you put the dtos/inputs
-			// types you get a `feature → dtos → feature` cycle. Resolving
-			// it requires template surgery: rename `dtos.User` to
-			// `dtos.UserResponse`, move DTO mappers (ToCreateInput etc.)
-			// from dtos into the feature, or migrate TPaginationObjectDto
-			// out of `app/dtos/` into a shared package. None of that
-			// belongs in the AST transformer.
-			//
-			// Phase B.2 ships the transformer + flag plumbing; the
-			// template restructure lands in a follow-up.
-			return clierr.Newf(clierr.CodeInvalidName,
-				"--layout=feature is not yet ready — the featurize transformer is in place but the scaffold templates need DTO/mapper restructuring to avoid an import cycle. Use --layout=layered for a working project today.")
-		}
 		return runNew(args[0], gql || gqlShort, driver, layoutFlag)
 	},
 }
@@ -777,40 +756,33 @@ func featurizeFile(outputPath string, content []byte, mod string, resources []fe
 		}
 	}
 
-	// Per-resource DTO files stay in app/dtos/ but their imports/refs
-	// flip from app/models + app/services to the feature package.
-	if strings.HasPrefix(outputPath, "app/dtos/") &&
-		(strings.HasSuffix(outputPath, ".dtos.go") || strings.HasSuffix(outputPath, ".dtos_test.go")) {
-		base := filepath.Base(outputPath)
-		snake := strings.TrimSuffix(base, ".dtos.go")
-		snake = strings.TrimSuffix(snake, ".dtos_test.go")
-		for _, r := range resources {
-			if r.Snake == snake {
-				out, terr := featurize.TransformResourceDTO(content, mod, r)
-				if terr != nil {
-					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
-				}
-				return outputPath, out, nil
-			}
+	// Shared relocations — files that just move path with no source
+	// rewrites (e.g. app/dtos/aliases.go → app/shared/dtos/aliases.go).
+	for _, pair := range featurize.SharedRelocations() {
+		if outputPath == pair.Layered {
+			return pair.Feature, content, nil
 		}
 	}
 
-	// Per-resource validator files stay in app/validators/ but their
-	// imports may reference the feature package (rare today; user.validators.go
-	// doesn't, but a future resource scaffold could).
-	if strings.HasPrefix(outputPath, "app/validators/") && strings.HasSuffix(outputPath, ".validators.go") {
-		base := filepath.Base(outputPath)
-		snake := strings.TrimSuffix(base, ".validators.go")
-		for _, r := range resources {
-			if r.Snake == snake {
-				out, terr := featurize.TransformResourceDTO(content, mod, r)
-				if terr != nil {
-					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
-				}
-				return outputPath, out, nil
-			}
+	// Shared infra files that stay in their layered location but
+	// reference the relocated shared dtos package. Only their import
+	// path needs flipping — no other source rewrite.
+	switch outputPath {
+	case "app/validators/app_validator.go",
+		"app/rest/controllers/validator.go",
+		"app/graphql/resolvers/user.resolvers.go":
+		out, terr := featurize.FixDtosImportPath(content, mod)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
 		}
+		return outputPath, out, nil
 	}
+
+	// Per-resource validator files stay in app/validators/ as-is.
+	// The user.validators.go template only references gorm + validator
+	// + slog (no per-resource types), so no transformation needed.
+	// If a future per-resource validator references the feature
+	// package, add a transformer case here.
 
 	return outputPath, content, nil
 }

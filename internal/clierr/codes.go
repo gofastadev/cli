@@ -168,6 +168,22 @@ const (
 	// --- Debug stack resolver (gofasta debug stack) ---
 	CodeDebugStackParseFailed  Code = "DEBUG_STACK_PARSE_FAILED"
 	CodeDebugSourceUnavailable Code = "DEBUG_SOURCE_UNAVAILABLE"
+
+	// --- Refactor (gofasta refactor feature-package) ---
+	//
+	// Ineligible — the project isn't in layered layout, so there's
+	// nothing to convert.
+	CodeRefactorIneligible Code = "REFACTOR_INELIGIBLE"
+	// Aborted — the migration ran the per-resource compile-gate and
+	// found a failure. The partial state is left for the user to
+	// inspect (or `git restore`).
+	CodeRefactorAborted Code = "REFACTOR_ABORTED"
+	// DirtyTree — the working tree has uncommitted changes; pass
+	// --force to proceed anyway.
+	CodeRefactorDirtyTree Code = "REFACTOR_DIRTY_TREE"
+	// ResourceNotFound — the named resource doesn't have a model file
+	// at the expected layered path.
+	CodeRefactorResourceNotFound Code = "REFACTOR_RESOURCE_NOT_FOUND"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up

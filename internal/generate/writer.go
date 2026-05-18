@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/featurize"
 )
 
 // tokenPair is one __TOKEN__ → value substitution for renderAndEmit.
@@ -42,6 +43,12 @@ func renderAndEmit(path, tmpl string, substitutions []tokenPair) error {
 // the file already exists. In dry-run mode (see planner.go) the render
 // still happens — so template errors surface identically — but the file
 // is recorded in the plan instead of written to disk.
+//
+// When the project's layout is feature, the rendered Go source is
+// piped through featurize so per-resource symbols collapse and the
+// package decl matches the destination directory. Non-.go paths (SQL
+// migrations, .gql schemas, HTML email templates) pass through
+// unchanged because featurize only operates on parseable Go source.
 func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if _, err := os.Stat(path); err == nil {
 		cliout.Skip(path, "exists")
@@ -60,5 +67,35 @@ func WriteTemplate(path, name, tmpl string, data ScaffoldData) error {
 	if err := t.Execute(&buf, data); err != nil {
 		return err
 	}
-	return writeOrRecordCreate(path, buf.Bytes())
+	output := buf.Bytes()
+	if data.L().IsFeature() && shouldFeaturizeGenOutput(path, data.SnakeName) {
+		transformed, terr := featurize.TransformPerResource(output, featurize.Options{
+			ModulePath: data.ModulePath,
+			Resource: featurize.Resource{
+				Name:   data.Name,
+				Snake:  data.SnakeName,
+				Plural: data.PluralName,
+			},
+		})
+		if terr == nil {
+			output = transformed
+		}
+		// On transform error fall back to the un-transformed bytes so
+		// the user at least sees a file; the build error will point at
+		// the specific symbol resolution failure.
+	}
+	return writeOrRecordCreate(path, output)
+}
+
+// shouldFeaturizeGenOutput reports whether a generated file's output
+// should be piped through featurize. Only Go files inside the feature's
+// own directory (`app/<snake>/`) get the transform. Files emitted to
+// shared locations (app/models/, app/validators/, etc.) skip it
+// because their package decl and references are intentionally
+// untouched in feature mode.
+func shouldFeaturizeGenOutput(path, snake string) bool {
+	if !strings.HasSuffix(path, ".go") {
+		return false
+	}
+	return strings.HasPrefix(path, "app/"+snake+"/")
 }

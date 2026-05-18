@@ -16,6 +16,9 @@ import (
 const containerFieldsMarker = "// gofasta:scaffold:container-fields"
 
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
+// Field type qualifiers depend on the project layout — in layered mode
+// the fields reference repoInterfaces/svcInterfaces/controllers, in
+// feature mode they reference the per-feature package alias.
 func PatchContainer(d ScaffoldData) error {
 	path := d.L().ContainerFile()
 	content, err := os.ReadFile(path)
@@ -29,16 +32,38 @@ func PatchContainer(d ScaffoldData) error {
 		return nil
 	}
 
-	repoImport := fmt.Sprintf("\trepoInterfaces \"%s/app/repositories/interfaces\"", d.ModulePath)
-	controllersImport := fmt.Sprintf("\"%s/app/rest/controllers\"", d.ModulePath)
-	if !strings.Contains(s, "repoInterfaces") {
-		s = strings.Replace(s, "\t"+controllersImport, repoImport+"\n\t"+controllersImport, 1)
-	}
-
-	fields := fmt.Sprintf("\t%sRepo       repoInterfaces.%sRepositoryInterface\n\t%sService    svcInterfaces.%sServiceInterface\n",
-		d.Name, d.Name, d.Name, d.Name)
-	if d.IncludeController {
-		fields += fmt.Sprintf("\t%sController *controllers.%sController\n", d.Name, d.Name)
+	var fields string
+	if d.L().IsFeature() {
+		// Feature layout: ensure `<snake>pkg "<mod>/app/<snake>"` is
+		// imported, then reference fields via the alias.
+		alias := d.SnakeName + "pkg"
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			// Insert into the existing import block — anchored on the
+			// closing `)` of the first import GenDecl.
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+		fields = fmt.Sprintf("\t%sRepo       %s.%sRepositoryInterface\n\t%sService    %s.%sServiceInterface\n",
+			d.Name, alias, d.Name, d.Name, alias, d.Name)
+		if d.IncludeController {
+			fields += fmt.Sprintf("\t%sController *%s.%sController\n", d.Name, alias, d.Name)
+		}
+	} else {
+		// Layered layout: original behavior.
+		repoImport := fmt.Sprintf("\trepoInterfaces \"%s/app/repositories/interfaces\"", d.ModulePath)
+		controllersImport := fmt.Sprintf("\"%s/app/rest/controllers\"", d.ModulePath)
+		if !strings.Contains(s, "repoInterfaces") {
+			s = strings.Replace(s, "\t"+controllersImport, repoImport+"\n\t"+controllersImport, 1)
+		}
+		fields = fmt.Sprintf("\t%sRepo       repoInterfaces.%sRepositoryInterface\n\t%sService    svcInterfaces.%sServiceInterface\n",
+			d.Name, d.Name, d.Name, d.Name)
+		if d.IncludeController {
+			fields += fmt.Sprintf("\t%sController *controllers.%sController\n", d.Name, d.Name)
+		}
 	}
 
 	if !strings.Contains(s, containerFieldsMarker) {
@@ -56,6 +81,8 @@ func PatchContainer(d ScaffoldData) error {
 const wireProvidersMarker = "// gofasta:scaffold:wire-providers"
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
+// Provider reference depends on layout: `providers.<Name>Set` in
+// layered, `<snake>pkg.<Name>Set` in feature.
 func PatchWireFile(d ScaffoldData) error {
 	path := d.L().WireFile()
 	content, err := os.ReadFile(path)
@@ -64,7 +91,23 @@ func PatchWireFile(d ScaffoldData) error {
 	}
 	s := string(content)
 
-	providerRef := fmt.Sprintf("providers.%sSet", d.Name)
+	var providerRef string
+	if d.L().IsFeature() {
+		alias := d.SnakeName + "pkg"
+		providerRef = fmt.Sprintf("%s.%sSet", alias, d.Name)
+		// Ensure the feature package import is present.
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+	} else {
+		providerRef = fmt.Sprintf("providers.%sSet", d.Name)
+	}
+
 	if strings.Contains(s, providerRef) {
 		cliout.Skip(path, "already wired")
 		return nil
@@ -149,13 +192,28 @@ func PatchRouteConfig(d ScaffoldData) error {
 		return fmt.Errorf("%s is missing the %q marker — restore the marker comment to enable code generation", path, routeRegistrationsMarker)
 	}
 
-	newField := fmt.Sprintf("\t%s *controllers.%sController", controllerField, d.Name)
+	var newField, routeCall string
+	if d.L().IsFeature() {
+		alias := d.SnakeName + "pkg"
+		// Ensure the feature import is in the import block.
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+		newField = fmt.Sprintf("\t%s *%s.%sController", controllerField, alias, d.Name)
+		routeCall = fmt.Sprintf("\t%s.RegisterRoutes(api, config.%s)", alias, controllerField)
+	} else {
+		newField = fmt.Sprintf("\t%s *controllers.%sController", controllerField, d.Name)
+		routeCall = fmt.Sprintf("\t%sRoutes(api, config.%s)", d.Name, controllerField)
+	}
 	s = strings.Replace(s,
 		"\t"+routeConfigFieldsMarker,
 		newField+"\n\t"+routeConfigFieldsMarker,
 		1)
-
-	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)", d.Name, controllerField)
 	s = strings.Replace(s,
 		"\t"+routeRegistrationsMarker,
 		routeCall+"\n\t"+routeRegistrationsMarker,

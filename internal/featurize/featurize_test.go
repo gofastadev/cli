@@ -107,10 +107,11 @@ func TestStub(t *testing.T) {
 	if !strings.Contains(out, "package user_test") {
 		t.Errorf("external test package not rewritten:\n%s", out)
 	}
-	// dtos is intentionally NOT collapsed — it stays as a cross-package
-	// reference per the architectural decision in featurize.go.
-	if !strings.Contains(out, "dtos.User") {
-		t.Errorf("dtos.User reference should survive:\n%s", out)
+	// Per Option B: dtos.User (per-resource) collapses to bare User
+	// because per-resource DTOs move into the feature package. Only
+	// shared aliases (TPaginationObjectDto etc.) survive as `dtos.X`.
+	if strings.Contains(out, "dtos.User") {
+		t.Errorf("dtos.User should be collapsed to bare User in feature mode:\n%s", out)
 	}
 }
 
@@ -220,8 +221,14 @@ func InitializeServiceContainer() (*ServiceContainer, error) {
 	if !strings.Contains(out, "userpkg.UserSet") {
 		t.Errorf("providers.UserSet not rewritten to userpkg.UserSet:\n%s", out)
 	}
-	if strings.Contains(out, `"example.com/myapp/app/di/providers"`) {
-		t.Errorf("providers import not dropped:\n%s", out)
+	// providers.CoreSet still references the providers package, so
+	// the import must stay (conservative drop — never strip an import
+	// whose alias still has live references).
+	if !strings.Contains(out, "providers.CoreSet") {
+		t.Errorf("providers.CoreSet should still be referenced (CoreSet doesn't move):\n%s", out)
+	}
+	if !strings.Contains(out, `"example.com/myapp/app/di/providers"`) {
+		t.Errorf("providers import should stay because providers.CoreSet still references it:\n%s", out)
 	}
 }
 
@@ -263,7 +270,7 @@ func InitAPIRoutes(config *RouteConfig) *chi.Mux {
 
 func TestPerResourceMapping_AllPaths(t *testing.T) {
 	pairs := PerResourceMapping("user")
-	wantCount := 13 // models + dtos (2) + validators stay in shared layered dirs
+	wantCount := 15 // models + validators stay in shared layered dirs; dtos collapse into feature per Option B
 	if len(pairs) != wantCount {
 		t.Errorf("PerResourceMapping returned %d pairs, want %d", len(pairs), wantCount)
 	}

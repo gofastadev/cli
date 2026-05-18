@@ -76,32 +76,53 @@ type Options struct {
 // Intentionally NOT collapsed:
 //
 //   - app/models: model types stay in `package models` because DTO
-//     mappers (app/dtos/<resource>.dtos.go::FooFromModel) need to take
-//     them as arguments. Moving the model into the feature package
-//     creates a `dtos → feature → dtos` import cycle (the dtos
-//     mapper needs the model; the feature's controller imports dtos
-//     for shared envelopes like TPaginationObjectDto). Keeping models
-//     where they are is the pragmatic break.
-//   - app/dtos: keeps cross-feature DTO aliases (TPaginationObjectDto,
-//     SortOrientation) addressable. Also avoids the `dtos.User` vs
-//     model name collision that would otherwise occur.
+//     mappers in the feature's dtos.go (UserFromModel etc.) need to
+//     reference *models.User. The model stays as a cross-package
+//     reference from the feature.
 //   - app/validators: keeps the shared registration function set
 //     (register.go calls isRecordExistByEmailForConflict etc., which
 //     are package-private). Scattering per-resource validators would
 //     break that wiring.
 //
-// The feature-package layout shipped here is therefore a HYBRID:
-// service, repository (impl + iface), controller, routes, wire
-// provider, errors, inputs all live in app/<feature>/. Models, DTOs,
-// and validators stay in their layered package locations. This
-// matches the "Standard Package Layout" school of Go architecture
-// (Ben Johnson) and is documented as the layout's intended shape.
+// Treated specially (Option B layout):
+//
+//   - app/dtos: split into two packages in feature mode. The shared
+//     aliases (TPaginationObjectDto, SortOrientation, TCommon* etc.)
+//     move to `app/shared/dtos/aliases.go` and stay in `package dtos`.
+//     The per-resource DTOs (TCreateUserDto, UserFromModel, TUserResponseDto)
+//     move into the feature package at `app/<snake>/dtos.go`. Bare
+//     references to shared aliases inside the moved per-resource files
+//     are qualified with `dtos.` and the import is rewritten to
+//     `<mod>/app/shared/dtos`. Cross-package references from other
+//     feature files retain the `dtos.` qualifier with the new path.
 var collapsablePaths = []string{
+	"/app/dtos",
 	"/app/services",
 	"/app/services/interfaces",
 	"/app/repositories",
 	"/app/repositories/interfaces",
 	"/app/rest/controllers",
+	"/app/rest/routes",
+}
+
+// sharedDtoSymbols are the identifiers exported by `app/shared/dtos/
+// aliases.go` (formerly `app/dtos/aliases.go`). When the transformer
+// collapses `dtos.X` references in feature mode, it keeps these as
+// `dtos.X` (only the import path changes) while collapsing every other
+// `dtos.Y` (per-resource types) to bare `Y`.
+//
+// Inside the moved per-resource dtos file these symbols were referenced
+// bare (same package); after the move they need re-qualifying with
+// `dtos.` since the file is now in the feature package.
+var sharedDtoSymbols = map[string]bool{
+	"TPaginationInputDto":  true,
+	"TSortingInputDto":     true,
+	"TPaginationObjectDto": true,
+	"TCommonAPIErrorDto":   true,
+	"TCommonResponseDto":   true,
+	"SortOrientation":      true,
+	"SortOrientationAsc":   true,
+	"SortOrientationDesc":  true,
 }
 
 // TransformPerResource rewrites a single per-resource layered Go source
@@ -123,6 +144,8 @@ var collapsablePaths = []string{
 // guess which identifier means what. An aliased import like
 // `repoInterfaces "<mod>/app/repositories/interfaces"` correctly
 // collapses every `repoInterfaces.X` reference, regardless of name.
+//
+//nolint:gocyclo // 10-step linear pipeline; splitting hides the pipeline order.
 func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 	dec := decorator.NewDecorator(token.NewFileSet())
 	file, err := dec.Parse(src)
@@ -132,6 +155,13 @@ func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 
 	// Step 1: rewrite package declaration.
 	file.Name.Name = rewritePackageName(file.Name.Name, opts.Resource.Snake)
+
+	// Determine whether this is an external test package — `<feature>_test`.
+	// External tests can only access exported symbols of the feature
+	// package via the package qualifier, not bare. So we route the
+	// SelectorExpr collapse differently for these files: rewrite
+	// `services.UserService` → `<snake>.UserService` instead of bare.
+	isExternalTest := strings.HasSuffix(file.Name.Name, "_test")
 
 	// Step 2: identify which imports are collapsable.
 	// collapseAliases maps import alias → true for imports that should
@@ -146,7 +176,16 @@ func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 		collapseAliases[alias] = true
 	}
 
-	// Step 3: walk and collapse SelectorExprs.
+	// Step 3: walk and rewrite SelectorExprs.
+	//
+	// Special case for the dtos alias: shared symbols (TPaginationObjectDto
+	// etc.) stay qualified as `dtos.X` because they live in the relocated
+	// `app/shared/dtos` package; only per-resource symbols collapse.
+	//
+	// Same-package files (e.g. user/service.go in `package user`)
+	// collapse `services.X` → `X`. External test files (e.g.
+	// user/controller_test.go in `package user_test`) qualify with the
+	// feature package: `services.X` → `<snake>.X`.
 	dst.Inspect(file, func(n dst.Node) bool {
 		sel, ok := n.(*dst.SelectorExpr)
 		if !ok {
@@ -158,6 +197,28 @@ func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 		}
 		if !collapseAliases[ident.Name] {
 			return true
+		}
+		// Don't collapse shared dtos symbols — they're cross-package
+		// references after the move.
+		if ident.Name == "dtos" && sharedDtoSymbols[sel.Sel.Name] {
+			return true
+		}
+		if isExternalTest {
+			// Qualify with feature package name so external tests can
+			// reach the moved symbol: services.X → user.X.
+			// Special case: `routes.<Name>Routes(r, c)` becomes
+			// `<snake>.RegisterRoutes(r, c)` because the routes func
+			// is renamed at move time.
+			if ident.Name == "routes" && sel.Sel.Name == opts.Resource.Name+"Routes" {
+				sel.Sel.Name = "RegisterRoutes"
+			}
+			ident.Name = opts.Resource.Snake
+			return true
+		}
+		// Same-package collapse: `<Name>Routes(...)` → `RegisterRoutes(...)`
+		// when collapsing routes refs from outside the routes file.
+		if ident.Name == "routes" && sel.Sel.Name == opts.Resource.Name+"Routes" {
+			sel.Sel.Name = "RegisterRoutes"
 		}
 		// Mark the X identifier as the bare Y — the parent node will
 		// replace this SelectorExpr with the bare Sel ident in the
@@ -172,10 +233,30 @@ func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 	// sentinel ident.
 	replaceSelectorsWithIdent(file)
 
-	// Step 4: drop now-unused imports. Match by path → drop.
+	// Step 4: handle the dtos package specially. If the file imports
+	// `<mod>/app/dtos` AND any reference to `dtos.X` survived the
+	// collapse (i.e. X is a shared alias), rewrite the import path to
+	// `<mod>/app/shared/dtos`. The package qualifier `dtos.` stays.
+	rewriteDtosImportPath(file, opts.ModulePath)
+
+	// Step 5: requalify bare shared-alias references. The per-resource
+	// dtos file referenced `TPaginationObjectDto` bare (in-package in
+	// layered) — after moving to the feature package, those refs need
+	// `dtos.` prefix + the shared-dtos import.
+	requalifyBareSharedAliases(file, opts.ModulePath)
+
+	// Step 6: drop now-unused imports. Match by path → drop.
 	dropCollapsableImports(file, opts.ModulePath)
 
-	// Step 5: drop duplicate var declarations that collide with the
+	// Step 6b: for external test packages, add `<mod>/app/<snake>`
+	// import so the qualified references introduced in Step 3
+	// resolve. Skipped for same-package files (they reach symbols
+	// in-package).
+	if isExternalTest && opts.ModulePath != "" {
+		ensureImport(file, opts.ModulePath+"/app/"+opts.Resource.Snake, "")
+	}
+
+	// Step 7: drop duplicate var declarations that collide with the
 	// canonical version in another feature file. The layered code has
 	// Err<Resource>NotDeletable declared in BOTH repositories/interfaces
 	// AND services — separate packages, both legitimate. Once collapsed
@@ -184,7 +265,313 @@ func TransformPerResource(src []byte, opts Options) ([]byte, error) {
 	// service's domain sentinel error); drop the repo iface duplicate.
 	dropDuplicateErrorVars(file, opts.Resource.Name)
 
+	// Step 8: requalify bare references to types that live in shared
+	// packages but were bare in the layered scaffold (because the
+	// source file was IN that package). Example: `Validator` is defined
+	// in app/rest/controllers/validator.go; the layered user.controller.go
+	// references it bare. After the move to app/user/, the bare ref
+	// becomes undefined — featurize qualifies with `controllers.` and
+	// adds the import.
+	requalifyBareSharedTypes(file, opts.ModulePath)
+
+	// Step 9: drop now-orphaned imports — primarily the `errors` import
+	// left dangling when dropDuplicateErrorVars removed the only
+	// `errors.New(...)` call site.
+	dropOrphanedImports(file)
+
+	// Step 10: rename the per-resource routes function from
+	// `<Name>Routes(r chi.Router, ...)` to `RegisterRoutes(r chi.Router, ...)`.
+	// The convention drops the redundant `<Name>` prefix once inside
+	// the feature package — and TransformIndexRoutes rewrites the
+	// caller to use `<snake>pkg.RegisterRoutes(...)`.
+	renameRoutesFunc(file, opts.Resource.Name)
+
 	return renderFile(file)
+}
+
+// renameRoutesFunc renames `<R>Routes` (a top-level FuncDecl) to
+// `RegisterRoutes`. No-op if the source file doesn't declare the
+// function — most per-resource files don't (only routes.go does).
+func renameRoutesFunc(file *dst.File, resourceName string) {
+	target := resourceName + "Routes"
+	for _, decl := range file.Decls {
+		fd, ok := decl.(*dst.FuncDecl)
+		if !ok {
+			continue
+		}
+		if fd.Name.Name == target {
+			fd.Name.Name = "RegisterRoutes"
+			return
+		}
+	}
+}
+
+// sharedBareTypes maps bare identifier names to (package alias, import
+// path) for types that were referenced bare in layered (because the
+// source file was IN that package) but need qualifying when the source
+// file moves to a different package.
+//
+//	`Validator` → controllers.Validator from app/rest/controllers
+//
+// Add new entries when you observe a "bare reference undefined" build
+// failure on a feature scaffold. Each entry costs one Walk over the
+// file in Step 8 — keep the list small.
+type sharedBareType struct {
+	pkgAlias   string
+	pathSuffix string
+}
+
+var sharedBareTypes = map[string]sharedBareType{
+	"Validator": {pkgAlias: "controllers", pathSuffix: "/app/rest/controllers"},
+}
+
+func requalifyBareSharedTypes(file *dst.File, mod string) {
+	if mod == "" {
+		return
+	}
+	addedAliases := map[string]string{} // alias → fullPath
+	applyOnFile(file, func(c *applyCursor) bool {
+		ident, ok := c.Node.(*dst.Ident)
+		if !ok {
+			return true
+		}
+		entry, ok := sharedBareTypes[ident.Name]
+		if !ok {
+			return true
+		}
+		c.Replace(&dst.SelectorExpr{
+			X:   &dst.Ident{Name: entry.pkgAlias},
+			Sel: &dst.Ident{Name: ident.Name},
+		})
+		addedAliases[entry.pkgAlias] = mod + entry.pathSuffix
+		return true
+	})
+	for alias, path := range addedAliases {
+		alreadyImported := false
+		for _, imp := range file.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == path {
+				alreadyImported = true
+				break
+			}
+		}
+		if alreadyImported {
+			continue
+		}
+		newImport := &dst.ImportSpec{
+			Name: &dst.Ident{Name: alias},
+			Path: &dst.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", path)},
+		}
+		file.Imports = append(file.Imports, newImport)
+		appended := false
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*dst.GenDecl)
+			if !ok || gd.Tok != token.IMPORT {
+				continue
+			}
+			gd.Specs = append(gd.Specs, newImport)
+			appended = true
+			break
+		}
+		if !appended {
+			file.Decls = append([]dst.Decl{&dst.GenDecl{
+				Tok: token.IMPORT, Specs: []dst.Spec{newImport}, Lparen: true, Rparen: true,
+			}}, file.Decls...)
+		}
+	}
+}
+
+// ensureImport adds an import with optional alias if it isn't already
+// present in the file.
+func ensureImport(file *dst.File, path, alias string) {
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) == path {
+			return
+		}
+	}
+	spec := &dst.ImportSpec{
+		Path: &dst.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", path)},
+	}
+	if alias != "" {
+		spec.Name = &dst.Ident{Name: alias}
+	}
+	file.Imports = append(file.Imports, spec)
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		gd.Specs = append(gd.Specs, spec)
+		return
+	}
+	file.Decls = append([]dst.Decl{&dst.GenDecl{
+		Tok: token.IMPORT, Specs: []dst.Spec{spec}, Lparen: true, Rparen: true,
+	}}, file.Decls...)
+}
+
+// dropOrphanedImports removes imports that have no remaining references
+// in the file. Currently scoped to a small allowlist of imports that
+// transformer steps are known to leave dangling (e.g. `errors` after
+// dropDuplicateErrorVars). A broader unused-import detector would
+// require type info; that's overkill for the specific cases we hit.
+//
+//nolint:gocognit // 4-layer walk (decls → genDecl → specs → ident match) is the natural shape; helpers don't reduce branches.
+func dropOrphanedImports(file *dst.File) {
+	candidates := map[string]string{
+		"errors": "errors", // alias → import path
+	}
+	for alias, path := range candidates {
+		referenced := false
+		dst.Inspect(file, func(n dst.Node) bool {
+			sel, ok := n.(*dst.SelectorExpr)
+			if !ok {
+				return true
+			}
+			ident, ok := sel.X.(*dst.Ident)
+			if !ok {
+				return true
+			}
+			if ident.Name == alias {
+				referenced = true
+				return false
+			}
+			return true
+		})
+		if referenced {
+			continue
+		}
+		// Drop the import.
+		keptImports := make([]*dst.ImportSpec, 0, len(file.Imports))
+		for _, imp := range file.Imports {
+			if strings.Trim(imp.Path.Value, `"`) == path {
+				continue
+			}
+			keptImports = append(keptImports, imp)
+		}
+		file.Imports = keptImports
+		for _, decl := range file.Decls {
+			gd, ok := decl.(*dst.GenDecl)
+			if !ok || gd.Tok != token.IMPORT {
+				continue
+			}
+			kept := make([]dst.Spec, 0, len(gd.Specs))
+			for _, spec := range gd.Specs {
+				is, ok := spec.(*dst.ImportSpec)
+				if !ok {
+					kept = append(kept, spec)
+					continue
+				}
+				if strings.Trim(is.Path.Value, `"`) == path {
+					continue
+				}
+				kept = append(kept, is)
+			}
+			gd.Specs = kept
+		}
+	}
+}
+
+// rewriteDtosImportPath flips `<mod>/app/dtos` to `<mod>/app/shared/dtos`
+// IF the file still references `dtos.X` after the collapse (i.e. the
+// references are shared aliases that didn't collapse). When no such
+// reference remains, the import is just dropped by dropCollapsableImports.
+func rewriteDtosImportPath(file *dst.File, mod string) {
+	if mod == "" {
+		return
+	}
+	hasDtosRef := false
+	dst.Inspect(file, func(n dst.Node) bool {
+		sel, ok := n.(*dst.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*dst.Ident)
+		if !ok {
+			return true
+		}
+		if ident.Name == "dtos" {
+			hasDtosRef = true
+			return false
+		}
+		return true
+	})
+	if !hasDtosRef {
+		return
+	}
+	oldPath := mod + "/app/dtos"
+	newPath := mod + "/app/shared/dtos"
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) == oldPath {
+			imp.Path.Value = fmt.Sprintf("%q", newPath)
+		}
+	}
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if !ok {
+				continue
+			}
+			if strings.Trim(is.Path.Value, `"`) == oldPath {
+				is.Path.Value = fmt.Sprintf("%q", newPath)
+			}
+		}
+	}
+}
+
+// requalifyBareSharedAliases walks the file for bare Ident nodes whose
+// name matches a shared dtos alias, and converts them into
+// `dtos.<Name>` SelectorExprs. Used when a per-resource dtos file
+// (which referenced these symbols bare in layered) moves into the
+// feature package. Adds the `<mod>/app/shared/dtos` import if any
+// requalification happens.
+func requalifyBareSharedAliases(file *dst.File, mod string) {
+	if mod == "" {
+		return
+	}
+	addedImport := false
+	applyOnFile(file, func(c *applyCursor) bool {
+		ident, ok := c.Node.(*dst.Ident)
+		if !ok {
+			return true
+		}
+		if !sharedDtoSymbols[ident.Name] {
+			return true
+		}
+		c.Replace(&dst.SelectorExpr{
+			X:   &dst.Ident{Name: "dtos"},
+			Sel: &dst.Ident{Name: ident.Name},
+		})
+		addedImport = true
+		return true
+	})
+	if !addedImport {
+		return
+	}
+	// Add `<mod>/app/shared/dtos` import if not already present.
+	target := mod + "/app/shared/dtos"
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) == target {
+			return
+		}
+	}
+	newImport := &dst.ImportSpec{
+		Path: &dst.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", target)},
+	}
+	file.Imports = append(file.Imports, newImport)
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		gd.Specs = append(gd.Specs, newImport)
+		return
+	}
+	file.Decls = append([]dst.Decl{&dst.GenDecl{
+		Tok: token.IMPORT, Specs: []dst.Spec{newImport}, Lparen: true, Rparen: true,
+	}}, file.Decls...)
 }
 
 // dropDuplicateErrorVars removes the `var ErrXNotDeletable = errors.New(...)`
@@ -423,16 +810,32 @@ type PathPair struct {
 	Feature string
 }
 
+// SharedRelocations returns the (layered, feature) path pairs for files
+// that simply move location in feature mode without any source-level
+// rewriting. Per Option B:
+//
+//   - app/dtos/aliases.go → app/shared/dtos/aliases.go (package stays
+//     `dtos`, but the import path callers use becomes
+//     `<mod>/app/shared/dtos` — featurize handles that rewrite on the
+//     caller side via rewriteDtosImportPath).
+func SharedRelocations() []PathPair {
+	return []PathPair{
+		{Layered: "app/dtos/aliases.go", Feature: "app/shared/dtos/aliases.go"},
+	}
+}
+
 // PerResourceMapping returns the (sourcePath, destPath) pairs for a
 // given resource — i.e. which layered files become which feature files.
 // Used by both `gofasta new --layout=feature` (to know which layered
 // templates to transform) and Phase D's refactor command.
 func PerResourceMapping(snake string) []PathPair {
-	// dtos, models, and validators files intentionally NOT moved — see
-	// `collapsablePaths` for the rationale. They stay at their layered
-	// locations and are referenced via cross-package import from the
-	// feature package.
+	// Models and validators files intentionally NOT moved — see
+	// `collapsablePaths` for the rationale. Per-resource dtos files
+	// DO move into the feature (Option B). Shared aliases relocate
+	// to app/shared/dtos/ via SharedRelocations() instead.
 	return []PathPair{
+		{Layered: fmt.Sprintf("app/dtos/%s.dtos.go", snake), Feature: fmt.Sprintf("app/%s/dtos.go", snake)},
+		{Layered: fmt.Sprintf("app/dtos/%s.dtos_test.go", snake), Feature: fmt.Sprintf("app/%s/dtos_test.go", snake)},
 		{Layered: fmt.Sprintf("app/repositories/%s.repository.go", snake), Feature: fmt.Sprintf("app/%s/repository.go", snake)},
 		{Layered: fmt.Sprintf("app/repositories/interfaces/%s_repository.go", snake), Feature: fmt.Sprintf("app/%s/repository_iface.go", snake)},
 		{Layered: fmt.Sprintf("app/repositories/%s.repository_test.go", snake), Feature: fmt.Sprintf("app/%s/repository_test.go", snake)},
@@ -522,6 +925,21 @@ func TransformResourceDTO(src []byte, mod string, resource Resource) ([]byte, er
 	})
 }
 
+// FixDtosImportPath rewrites a file's `<mod>/app/dtos` import to
+// `<mod>/app/shared/dtos`. No-op if the file doesn't import dtos.
+// Used by shared infra files (app/validators/app_validator.go,
+// app/rest/controllers/validator.go, etc.) that stay in their layered
+// location but reference the shared dtos package which has moved.
+func FixDtosImportPath(src []byte, mod string) ([]byte, error) {
+	dec := decorator.NewDecorator(token.NewFileSet())
+	file, err := dec.Parse(src)
+	if err != nil {
+		return nil, fmt.Errorf("featurize: parse: %w", err)
+	}
+	rewriteDtosImportPath(file, mod)
+	return renderFile(file)
+}
+
 // TransformMock rewrites a testutil/mocks/<snake>_*_mock.go file: the
 // mock stays in `package mocks` but the imports flip from the layered
 // `<mod>/app/models` + `<mod>/app/repositories/interfaces` (or
@@ -542,7 +960,9 @@ func TransformMock(src []byte, mod string, resource Resource) ([]byte, error) {
 	alias := resource.Snake + "pkg"
 	return transformCrossCutting(src, mod, []Resource{resource}, crossCuttingOptions{
 		dropImports: []string{
-			mod + "/app/models",
+			// `app/models` is intentionally NOT dropped — under Option B
+			// the model stays in package models, so the mock keeps
+			// `*models.User` as a cross-package reference.
 			mod + "/app/services",
 			mod + "/app/repositories/interfaces",
 			mod + "/app/services/interfaces",
@@ -551,7 +971,7 @@ func TransformMock(src []byte, mod string, resource Resource) ([]byte, error) {
 			{alias: alias, path: mod + "/app/" + resource.Snake},
 		},
 		selectorSwaps: map[string]string{
-			"models." + resource.Name:                                 alias + "." + resource.Name,
+			// models.X stays as-is.
 			"repoInterfaces." + resource.Name + "RepositoryInterface": alias + "." + resource.Name + "RepositoryInterface",
 			"svcInterfaces." + resource.Name + "ServiceInterface":     alias + "." + resource.Name + "ServiceInterface",
 			"repoInterfaces.Err" + resource.Name + "NotDeletable":     alias + ".Err" + resource.Name + "NotDeletable",
@@ -685,8 +1105,6 @@ type crossCuttingOptions struct {
 // transformCrossCutting drives the four cross-cutting file transforms
 // from one place. The four use different combinations of the same
 // primitives (import drop/add, selector rewrite, call rewrite).
-//
-//nolint:gocognit,gocyclo // linear: parse → drop imports → add imports → rewrite selectors → rewrite calls. Splitting hides the pipeline order.
 func transformCrossCutting(src []byte, mod string, _ []Resource, opts crossCuttingOptions) ([]byte, error) {
 	_ = mod
 	dec := decorator.NewDecorator(token.NewFileSet())
@@ -695,70 +1113,8 @@ func transformCrossCutting(src []byte, mod string, _ []Resource, opts crossCutti
 		return nil, fmt.Errorf("featurize: parse: %w", err)
 	}
 
-	// Drop targeted imports.
-	if len(opts.dropImports) > 0 {
-		drop := map[string]bool{}
-		for _, p := range opts.dropImports {
-			drop[p] = true
-		}
-		keptImports := make([]*dst.ImportSpec, 0, len(file.Imports))
-		for _, imp := range file.Imports {
-			if drop[strings.Trim(imp.Path.Value, `"`)] {
-				continue
-			}
-			keptImports = append(keptImports, imp)
-		}
-		file.Imports = keptImports
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*dst.GenDecl)
-			if !ok || gd.Tok != token.IMPORT {
-				continue
-			}
-			kept := make([]dst.Spec, 0, len(gd.Specs))
-			for _, spec := range gd.Specs {
-				is, ok := spec.(*dst.ImportSpec)
-				if !ok {
-					kept = append(kept, spec)
-					continue
-				}
-				if drop[strings.Trim(is.Path.Value, `"`)] {
-					continue
-				}
-				kept = append(kept, is)
-			}
-			gd.Specs = kept
-		}
-	}
-
-	// Add new imports.
-	for _, ai := range opts.addImports {
-		newImport := &dst.ImportSpec{
-			Name: &dst.Ident{Name: ai.alias},
-			Path: &dst.BasicLit{Kind: token.STRING, Value: fmt.Sprintf("%q", ai.path)},
-		}
-		file.Imports = append(file.Imports, newImport)
-		// Append to the file's import GenDecl, or create a new one.
-		appended := false
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*dst.GenDecl)
-			if !ok || gd.Tok != token.IMPORT {
-				continue
-			}
-			gd.Specs = append(gd.Specs, newImport)
-			appended = true
-			break
-		}
-		if !appended {
-			file.Decls = append([]dst.Decl{&dst.GenDecl{
-				Tok:    token.IMPORT,
-				Specs:  []dst.Spec{newImport},
-				Lparen: true,
-				Rparen: true,
-			}}, file.Decls...)
-		}
-	}
-
-	// Rewrite selectors and calls.
+	// Rewrite selectors and calls FIRST so we know which import aliases
+	// the swapped references will actually need.
 	merged := mergeRewrites(opts.fieldRewrites, opts.selectorSwaps)
 	if len(merged) > 0 {
 		rewriteSelectors(file, merged)
@@ -767,7 +1123,101 @@ func transformCrossCutting(src []byte, mod string, _ []Resource, opts crossCutti
 		rewriteCallNames(file, opts.callRewrites)
 	}
 
+	// Drop targeted imports — but only when no reference to the
+	// import's alias survives in the file after the rewrites. The
+	// scaffolded wire.go references both `providers.UserSet` (which
+	// the swap moves to `userpkg.UserSet`) AND `providers.CoreSet`
+	// (which stays). If we dropped the providers import unconditionally
+	// the file wouldn't compile.
+	if len(opts.dropImports) > 0 {
+		for _, p := range opts.dropImports {
+			alias := importAliasForPath(file, p)
+			if alias != "" && aliasReferenced(file, alias) {
+				continue
+			}
+			dropImportPath(file, p)
+		}
+	}
+
+	// Add new imports ONLY if their alias is actually referenced in
+	// the file after the rewrites. Otherwise the generated file ends
+	// up with an unused import that fails to compile.
+	for _, ai := range opts.addImports {
+		if !aliasReferenced(file, ai.alias) {
+			continue
+		}
+		ensureImport(file, ai.path, ai.alias)
+	}
+
 	return renderFile(file)
+}
+
+// importAliasForPath returns the alias used to reference the given
+// import path in the file — the explicit alias when one is set,
+// otherwise the path's last segment. Returns "" if the import is not
+// present.
+func importAliasForPath(file *dst.File, path string) string {
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) != path {
+			continue
+		}
+		return importAlias(imp, path)
+	}
+	return ""
+}
+
+// dropImportPath removes an import entry by path from both file.Imports
+// and the underlying import GenDecl.
+func dropImportPath(file *dst.File, path string) {
+	keptImports := make([]*dst.ImportSpec, 0, len(file.Imports))
+	for _, imp := range file.Imports {
+		if strings.Trim(imp.Path.Value, `"`) == path {
+			continue
+		}
+		keptImports = append(keptImports, imp)
+	}
+	file.Imports = keptImports
+	for _, decl := range file.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.IMPORT {
+			continue
+		}
+		kept := make([]dst.Spec, 0, len(gd.Specs))
+		for _, spec := range gd.Specs {
+			is, ok := spec.(*dst.ImportSpec)
+			if !ok {
+				kept = append(kept, spec)
+				continue
+			}
+			if strings.Trim(is.Path.Value, `"`) == path {
+				continue
+			}
+			kept = append(kept, is)
+		}
+		gd.Specs = kept
+	}
+}
+
+// aliasReferenced reports whether any SelectorExpr in the file has its
+// X identifier equal to alias.
+func aliasReferenced(file *dst.File, alias string) bool {
+	found := false
+	dst.Inspect(file, func(n dst.Node) bool {
+		sel, ok := n.(*dst.SelectorExpr)
+		if !ok {
+			return true
+		}
+		ident, ok := sel.X.(*dst.Ident)
+		if !ok {
+			return true
+		}
+		if ident.Name == alias {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 func mergeRewrites(a, b map[string]string) map[string]string {
@@ -1116,7 +1566,13 @@ func applyOnExpr(e *dst.Expr, fn func(*applyCursor) bool) {
 			applyOnExpr(&n.Elts[i], fn)
 		}
 	case *dst.KeyValueExpr:
-		applyOnExpr(&n.Key, fn)
+		// Skip walking a bare-Ident Key — in struct literals the Key
+		// is a field NAME, not an identifier reference. Rewriting it
+		// would emit `dtos.SortOrientation: &asc` which is invalid
+		// (`invalid field name X.Y in struct literal`).
+		if _, isIdent := n.Key.(*dst.Ident); !isIdent {
+			applyOnExpr(&n.Key, fn)
+		}
 		applyOnExpr(&n.Value, fn)
 	case *dst.FuncLit:
 		if n.Type != nil {

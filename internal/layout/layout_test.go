@@ -102,7 +102,8 @@ func TestFeature_PerResourceFiles(t *testing.T) {
 		got  string
 		want string
 	}{
-		{"ModelFile", lo.ModelFile("user"), "app/user/model.go"},
+		// Under Option B, models stay in app/models/ in feature mode.
+		{"ModelFile", lo.ModelFile("user"), "app/models/user.model.go"},
 		{"RepoIfaceFile", lo.RepoIfaceFile("user"), "app/user/repository_iface.go"},
 		{"RepoImplFile", lo.RepoImplFile("user"), "app/user/repository.go"},
 		{"RepoTestFile", lo.RepoTestFile("user"), "app/user/repository_test.go"},
@@ -117,7 +118,8 @@ func TestFeature_PerResourceFiles(t *testing.T) {
 		{"ControllerFile", lo.ControllerFile("user"), "app/user/controller.go"},
 		{"ControllerTestFile", lo.ControllerTestFile("user"), "app/user/controller_test.go"},
 		{"RoutesFile", lo.RoutesFile("user"), "app/user/routes.go"},
-		{"ValidatorsFile", lo.ValidatorsFile("user"), "app/user/validators.go"},
+		// Under Option B, per-resource validators stay in app/validators/.
+		{"ValidatorsFile", lo.ValidatorsFile("user"), "app/validators/user.validators.go"},
 		{"WireProviderFile", lo.WireProviderFile("user"), "app/user/wire.go"},
 	}
 	for _, c := range cases {

@@ -33,8 +33,10 @@ type featureLayout struct{}
 func (featureLayout) Kind() Kind      { return Feature }
 func (featureLayout) IsFeature() bool { return true }
 
+// Under Option B, models stay in app/models/ because DTO mappers in
+// the feature need to reference *models.X without creating a cycle.
 func (featureLayout) ModelFile(snake string) string {
-	return fmt.Sprintf("app/%s/model.go", snake)
+	return fmt.Sprintf("app/models/%s.model.go", snake)
 }
 func (featureLayout) RepoIfaceFile(snake string) string {
 	return fmt.Sprintf("app/%s/repository_iface.go", snake)
@@ -78,8 +80,12 @@ func (featureLayout) ControllerTestFile(snake string) string {
 func (featureLayout) RoutesFile(snake string) string {
 	return fmt.Sprintf("app/%s/routes.go", snake)
 }
+
+// Under Option B, per-resource validators stay in app/validators/
+// because register.go calls package-private helpers (isRecordExist*,
+// isValidPhoneNumber) that would break if scattered into features.
 func (featureLayout) ValidatorsFile(snake string) string {
-	return fmt.Sprintf("app/%s/validators.go", snake)
+	return fmt.Sprintf("app/validators/%s.validators.go", snake)
 }
 func (featureLayout) WireProviderFile(snake string) string {
 	return fmt.Sprintf("app/%s/wire.go", snake)
