@@ -304,14 +304,22 @@ func TestDeriveImportPath_NormalDir(t *testing.T) {
 // — renderMock: ensure imports with no alias use bare-string form.
 
 func TestRenderMock_BareImport(t *testing.T) {
+	// A bare (unaliased) import referenced by a method signature renders
+	// without an alias; imports the signatures never use are PRUNED
+	// (goimports pass) — the interface's source file routinely imports
+	// packages for its other declarations.
 	body := renderMock(MockData{
 		Interface:     "I",
 		PackageImport: "ex/m/p",
 		PackageAlias:  "p",
-		ExtraImports:  []MockImport{{Path: "fmt"}},
-		Methods:       []MockMethod{{Name: "F"}},
+		ExtraImports:  []MockImport{{Path: "fmt"}, {Path: "errors"}},
+		Methods: []MockMethod{{
+			Name:    "F",
+			Returns: []MockParam{{Type: "fmt.Stringer"}},
+		}},
 	})
 	require.Contains(t, string(body), `"fmt"`)
+	require.NotContains(t, string(body), `"errors"`, "unused source-file imports must be pruned")
 }
 
 // — scanFileForInterfaces: non-GenDecl skipped (line 217-218).
@@ -415,4 +423,49 @@ func TestRenderMock_FormatFallsBackOnInvalidSource(t *testing.T) {
 	require.NotEmpty(t, body)
 	// Doc-comment marker still present even though gofmt failed.
 	require.True(t, bytes.HasPrefix(body, []byte("// Code generated")))
+}
+
+// — qualifyLocalTypes: package-local exported types must be qualified
+// with the interface package name so the mock compiles from package
+// mocks. Regression for the senda-v2 Inbox/Metrics alias bug.
+
+func TestBuildInterfaceTarget_QualifiesPackageLocalTypes(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "iface.go")
+	require.NoError(t, os.WriteFile(path, []byte(`package interfaces
+import "context"
+
+type Filters struct{ Channel string }
+type Attachment struct{ Name string }
+
+type MetricsSvc interface {
+	Summary(ctx context.Context, f Filters) ([]*Attachment, error)
+	ByNames(ctx context.Context, names []string, byKey map[string]Filters) (*Attachment, error)
+	Stream(ctx context.Context, ch chan Filters, fn func(Filters) (*Attachment, error)) error
+	Variadic(ctx context.Context, fs ...Filters) error
+}
+`), 0o644))
+	targets, err := scanFileForInterfaces(path)
+	require.NoError(t, err)
+	require.Equal(t, 1, len(targets))
+
+	m := targets[0].Methods[0] // Summary
+	require.Equal(t, "interfaces.Filters", m.Params[1].Type)
+	require.Equal(t, "[]*interfaces.Attachment", m.Returns[0].Type)
+	require.Equal(t, "error", m.Returns[1].Type, "predeclared types stay bare")
+
+	m = targets[0].Methods[1] // ByNames
+	require.Equal(t, "[]string", m.Params[1].Type, "builtin element types stay bare")
+	require.Equal(t, "map[string]interfaces.Filters", m.Params[2].Type)
+	require.Equal(t, "*interfaces.Attachment", m.Returns[0].Type)
+
+	m = targets[0].Methods[2] // Stream
+	require.Equal(t, "chan interfaces.Filters", m.Params[1].Type)
+	require.Equal(t, "func(interfaces.Filters) (*interfaces.Attachment, error)", m.Params[2].Type)
+
+	m = targets[0].Methods[3] // Variadic
+	require.Equal(t, "...interfaces.Filters", m.Params[1].Type)
+
+	// Cross-package references stay verbatim.
+	require.Equal(t, "context.Context", targets[0].Methods[0].Params[0].Type)
 }

@@ -27,6 +27,8 @@ import (
 	"sort"
 	"strings"
 
+	goimports "golang.org/x/tools/imports"
+
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/layout"
 )
@@ -263,7 +265,7 @@ func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport
 			// Embedded interfaces — skip for now.
 			continue
 		}
-		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft))
+		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft, pkgName))
 	}
 	return t
 }
@@ -271,13 +273,16 @@ func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport
 // buildMockMethod produces one MockMethod from a method's FuncType,
 // flattening parameter lists (multi-name fields like `a, b int` become
 // two MockParam entries) and detecting whether ctx.Context is first.
-func buildMockMethod(name string, ft *ast.FuncType) MockMethod {
+// pkgName qualifies package-local type identifiers (see
+// qualifyLocalTypes) so the emitted expressions compile inside
+// package mocks.
+func buildMockMethod(name string, ft *ast.FuncType, pkgName string) MockMethod {
 	m := MockMethod{Name: name}
 	if ft.Params != nil {
-		m.Params = flattenFuncFieldList(ft.Params)
+		m.Params = flattenFuncFieldList(ft.Params, pkgName)
 	}
 	if ft.Results != nil {
-		m.Returns = flattenFuncFieldList(ft.Results)
+		m.Returns = flattenFuncFieldList(ft.Results, pkgName)
 	}
 	if len(m.Params) > 0 && strings.HasSuffix(m.Params[0].Type, "context.Context") {
 		m.HasContext = true
@@ -287,10 +292,10 @@ func buildMockMethod(name string, ft *ast.FuncType) MockMethod {
 
 // flattenFuncFieldList turns Go's grouped-name field list (e.g. a, b int)
 // into a flat sequence of MockParam{Name, Type} entries.
-func flattenFuncFieldList(fl *ast.FieldList) []MockParam {
+func flattenFuncFieldList(fl *ast.FieldList, pkgName string) []MockParam {
 	var out []MockParam
 	for _, fld := range fl.List {
-		typ := exprString(fld.Type)
+		typ := exprString(qualifyLocalTypes(fld.Type, pkgName))
 		if len(fld.Names) == 0 {
 			out = append(out, MockParam{Type: typ})
 			continue
@@ -300,6 +305,79 @@ func flattenFuncFieldList(fl *ast.FieldList) []MockParam {
 		}
 	}
 	return out
+}
+
+// qualifyLocalTypes rewrites a type expression so it compiles from
+// OUTSIDE the interface's package: a bare exported identifier
+// (`InboxAttachment`) resolves to the interface package's own scope in
+// the source file, so the mock (package mocks) must say
+// `interfaces.InboxAttachment`. Bare exported idents are exactly the
+// package-local case — every predeclared type is lowercase, and
+// cross-package references are already SelectorExprs. Unexported bare
+// idents are left alone: a mock in another package could never
+// reference them anyway, and qualifying wouldn't fix that.
+//
+// The rewrite returns fresh nodes for the paths it touches and never
+// mutates the parsed file's AST (other consumers may still read it).
+func qualifyLocalTypes(e ast.Expr, pkgName string) ast.Expr {
+	if e == nil || pkgName == "" {
+		return e
+	}
+	switch n := e.(type) {
+	case *ast.Ident:
+		if n.IsExported() {
+			return &ast.SelectorExpr{X: ast.NewIdent(pkgName), Sel: ast.NewIdent(n.Name)}
+		}
+		return n
+	case *ast.SelectorExpr:
+		return n // already qualified (other package) — leave verbatim
+	case *ast.StarExpr:
+		return &ast.StarExpr{X: qualifyLocalTypes(n.X, pkgName)}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Len: n.Len, Elt: qualifyLocalTypes(n.Elt, pkgName)}
+	case *ast.Ellipsis:
+		return &ast.Ellipsis{Elt: qualifyLocalTypes(n.Elt, pkgName)}
+	case *ast.MapType:
+		return &ast.MapType{
+			Key:   qualifyLocalTypes(n.Key, pkgName),
+			Value: qualifyLocalTypes(n.Value, pkgName),
+		}
+	case *ast.ChanType:
+		return &ast.ChanType{Dir: n.Dir, Value: qualifyLocalTypes(n.Value, pkgName)}
+	case *ast.IndexExpr: // generic instantiation with one type arg
+		return &ast.IndexExpr{
+			X:     qualifyLocalTypes(n.X, pkgName),
+			Index: qualifyLocalTypes(n.Index, pkgName),
+		}
+	case *ast.IndexListExpr: // generic instantiation with several type args
+		indices := make([]ast.Expr, len(n.Indices))
+		for i, idx := range n.Indices {
+			indices[i] = qualifyLocalTypes(idx, pkgName)
+		}
+		return &ast.IndexListExpr{X: qualifyLocalTypes(n.X, pkgName), Indices: indices}
+	case *ast.FuncType:
+		return &ast.FuncType{
+			Params:  qualifyFieldList(n.Params, pkgName),
+			Results: qualifyFieldList(n.Results, pkgName),
+		}
+	case *ast.ParenExpr:
+		return &ast.ParenExpr{X: qualifyLocalTypes(n.X, pkgName)}
+	}
+	// Struct/interface literals and anything exotic pass through
+	// verbatim — same behavior as before this fix.
+	return e
+}
+
+// qualifyFieldList maps qualifyLocalTypes over a func-type field list.
+func qualifyFieldList(fl *ast.FieldList, pkgName string) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	fields := make([]*ast.Field, len(fl.List))
+	for i, f := range fl.List {
+		fields[i] = &ast.Field{Names: f.Names, Type: qualifyLocalTypes(f.Type, pkgName)}
+	}
+	return &ast.FieldList{List: fields}
 }
 
 // writeMockForTarget renders and writes the mock for one resolved
@@ -399,8 +477,17 @@ func renderMock(d MockData) []byte {
 		emitMockMethod(&b, mockType, m)
 	}
 
-	formatted, err := format.Source(b.Bytes())
+	// imports.Process (goimports) both formats and PRUNES unused
+	// imports: the mock re-emits every import from the interface's
+	// source file, but many (errors for sentinel docs, packages used
+	// only by other declarations in that file) never appear in the
+	// method signatures. format.Source alone would leave them and the
+	// build would fail.
+	formatted, err := goimports.Process(d.OutPath, b.Bytes(), nil)
 	if err != nil {
+		if fallback, ferr := format.Source(b.Bytes()); ferr == nil {
+			return fallback
+		}
 		return b.Bytes()
 	}
 	return formatted
