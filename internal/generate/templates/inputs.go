@@ -63,7 +63,7 @@ type List{{.PluralName}}Filter struct {
 	Page  int
 	Limit int
 
-	SortField string // already-sanitized column name; empty → default
+	SortField string // requested sort column (untrusted; validated in build{{.Name}}SortClause against {{.LowerName}}SortColumns)
 	SortDesc  bool   // true → DESC, false → ASC
 }
 

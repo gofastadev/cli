@@ -12,6 +12,10 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// resetBannerShown clears the bannerShown guard so each test starts from
+// a clean slate. Test-only helper — the production banner never resets.
+func resetBannerShown() { bannerShown = false }
+
 // Helper to swap the color-support detector and restore on cleanup.
 // Also resets the bannerShown guard so each test starts fresh.
 func withColorSupport(t *testing.T, truecolor, any bool) {

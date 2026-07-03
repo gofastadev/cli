@@ -39,21 +39,33 @@ func DeployDocker(cfg *DeployConfig) error {
 		return fmt.Errorf("failed to create remote directories: %w", err)
 	}
 
-	// Step 4: Transfer Docker image
+	// Step 4: Transfer Docker image. Built as two argv commands piped in-process
+	// (docker save | ssh ... docker load) rather than a `sh -c "<string>"` so
+	// that cfg.Host / imageTag (which embed values from the project's config.yaml
+	// and go.mod) can never inject a local shell command.
 	step++
 	PrintStep(step, dockerTotalSteps, "Transferring Docker image to server...")
-	pipeline := fmt.Sprintf("docker save %s | ssh -p %d %s 'docker load'",
-		imageTag, cfg.Port, cfg.Host)
-	if err := RunLocalPiped(cfg, pipeline); err != nil {
+	saveArgs := []string{"docker", "save", imageTag}
+	loadArgs := append([]string{"ssh"}, sshBaseArgs(cfg)...)
+	loadArgs = append(loadArgs, "--", cfg.Host, "docker load")
+	if err := RunLocalPiped(cfg, saveArgs, loadArgs); err != nil {
 		return fmt.Errorf("docker image transfer failed: %w", err)
 	}
 
-	// Step 5: Copy shared config files
+	// Step 5: Copy shared config files, then link them into the release dir so
+	// `docker compose` (which reads .env only from its working directory)
+	// picks up the real credentials. Without this link, compose interpolates
+	// empty DB credentials and the database container never becomes healthy.
 	step++
 	PrintStep(step, dockerTotalSteps, "Uploading configuration files...")
 	if err := copySharedFiles(cfg); err != nil {
 		return err
 	}
+	linkShared := fmt.Sprintf(
+		"ln -sf %s/.env %s/.env 2>/dev/null; ln -sf %s/config.yaml %s/config.yaml 2>/dev/null",
+		cfg.SharedPath(), cfg.ReleasePath(), cfg.SharedPath(), cfg.ReleasePath(),
+	)
+	_ = RunRemote(cfg, linkShared)
 
 	// Step 6: Copy compose file
 	step++
@@ -74,14 +86,18 @@ func DeployDocker(cfg *DeployConfig) error {
 		return fmt.Errorf("docker compose up failed: %w", err)
 	}
 
-	// Step 8: Run migrations
+	// Step 8: Run migrations via the app's own `migrate` subcommand, which
+	// loads DB credentials from config.yaml + the {{PREFIX}}_DATABASE_* env
+	// (the container image bakes in the migrate CLI). This replaces an earlier
+	// call that referenced an unset $DATABASE_URL and silently swallowed every
+	// failure, so the schema was never actually migrated.
 	step++
 	PrintStep(step, dockerTotalSteps, "Running database migrations...")
 	containerName := cfg.AppName + "_app"
-	// The app container has migrate CLI built in from the Dockerfile.
-	migrateCmd := fmt.Sprintf("docker exec %s sh -c 'migrate -path /migrations -database \"$DATABASE_URL\" up 2>/dev/null' || echo '   Migrations: nothing to apply or skipped'",
-		containerName)
-	_ = RunRemote(cfg, migrateCmd)
+	migrateCmd := fmt.Sprintf("docker exec %s /app migrate up", containerName)
+	if err := RunRemote(cfg, migrateCmd); err != nil {
+		PrintWarning(fmt.Sprintf("Migrations reported an error (continuing): %v", err))
+	}
 
 	// Step 9: Health check
 	step++

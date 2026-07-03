@@ -32,9 +32,10 @@ var ErrUserNotDeletable = errors.New("user is not deletable")
 type UserRepositoryInterface interface {
 	// List returns the paginated, sorted, filtered set of users.
 	// `filter` is the per-column ILIKE map (typically built from
-	// services.ListUsersFilter.AsRepoFilter()). `sort` is a
-	// pre-sanitized "<column> ASC|DESC" string from
-	// `utils.PreparePaginating.GetSort()`.
+	// services.ListUsersFilter.AsRepoFilter()). `sort` is an
+	// allowlist-validated "<column> ASC|DESC" string produced by the
+	// service's buildSortClause (via utils.SafeOrderBy) — never raw
+	// request input — so it is safe to pass to GORM's .Order().
 	List(ctx context.Context, filter map[string]any, page, limit int, sort string) ([]*models.User, int64, error)
 
 	// FindByID returns one user by primary key. Soft-deleted rows are

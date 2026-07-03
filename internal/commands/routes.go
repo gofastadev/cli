@@ -4,19 +4,21 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/layout"
 	"github.com/spf13/cobra"
 )
 
 var routesCmd = &cobra.Command{
 	Use:   "routes",
 	Short: "List every registered REST route in a table (method, path, source)",
-	Long: `Statically parse every file under app/rest/routes/ for chi router
+	Long: `Statically parse every route file for chi router
 method calls (` + "`r.Get`" + `, ` + "`r.Post`" + `, ` + "`r.Put`" + `, ` + "`r.Delete`" + `, ` + "`r.Patch`" + `) and print
 a formatted table showing HTTP method, full path (including mounted
 subrouter prefixes), and source file. Does not import or run your project
@@ -53,46 +55,48 @@ var (
 )
 
 func runRoutes() error {
-	routesDir := "app/rest/routes"
-	if _, err := os.Stat(routesDir); os.IsNotExist(err) {
-		return clierr.Newf(clierr.CodeRoutesDirMissing,
-			"routes directory not found: %s", routesDir)
+	// Layout-aware. Layered keeps every route under app/rest/routes/, so we
+	// retain the original directory scan (with its missing/unreadable-dir
+	// diagnostics). Feature moves per-resource registrations to
+	// app/<resource>/routes.go, which the layout resolves via RouteFiles().
+	var files []string
+	if layout.Detect().IsFeature() {
+		files = layout.Detect().RouteFiles()
+	} else {
+		var err error
+		if files, err = layeredRouteFiles(); err != nil {
+			return err
+		}
 	}
 
-	entries, err := os.ReadDir(routesDir)
-	if err != nil {
-		return clierr.Wrapf(clierr.CodeFileIO, err,
-			"failed to read routes directory %s", routesDir)
-	}
-
-	// Extract API prefix from index file via the chi Mount call.
+	// Extract the API prefix from the index file's chi Mount call.
 	apiPrefix := ""
-	indexPath := routesDir + "/index.routes.go"
-	if indexContent, err := os.ReadFile(indexPath); err == nil {
-		if matches := mountRe.FindSubmatch(indexContent); len(matches) > 1 {
-			apiPrefix = string(matches[1])
+	for _, f := range files {
+		if filepath.Base(f) != "index.routes.go" {
+			continue
+		}
+		if indexContent, err := os.ReadFile(f); err == nil {
+			if matches := mountRe.FindSubmatch(indexContent); len(matches) > 1 {
+				apiPrefix = string(matches[1])
+			}
 		}
 	}
 
 	var allRoutes []routeEntry
 
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || !strings.HasSuffix(name, ".routes.go") {
-			continue
-		}
-
-		content, err := os.ReadFile(routesDir + "/" + name)
+	for _, file := range files {
+		content, err := os.ReadFile(file)
 		if err != nil {
 			continue
 		}
 
+		base := filepath.Base(file)
 		prefix := ""
-		if name != "index.routes.go" {
+		if base != "index.routes.go" {
 			prefix = apiPrefix
 		}
 
-		allRoutes = append(allRoutes, extractRoutes(string(content), prefix, name)...)
+		allRoutes = append(allRoutes, extractRoutes(string(content), prefix, base)...)
 	}
 
 	// Render: JSON (array, always — empty list for no routes) or a
@@ -111,6 +115,29 @@ func runRoutes() error {
 		_ = tw.Flush()
 	})
 	return nil
+}
+
+// layeredRouteFiles returns the *.routes.go files under app/rest/routes for the
+// layered layout, preserving the missing-dir and unreadable-dir diagnostics.
+func layeredRouteFiles() ([]string, error) {
+	routesDir := "app/rest/routes"
+	if _, err := os.Stat(routesDir); os.IsNotExist(err) {
+		return nil, clierr.Newf(clierr.CodeRoutesDirMissing,
+			"routes directory not found: %s", routesDir)
+	}
+	entries, err := os.ReadDir(routesDir)
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.CodeFileIO, err,
+			"failed to read routes directory %s", routesDir)
+	}
+	var files []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".routes.go") {
+			continue
+		}
+		files = append(files, filepath.Join(routesDir, entry.Name()))
+	}
+	return files, nil
 }
 
 func extractRoutes(content, prefix, filename string) []routeEntry {

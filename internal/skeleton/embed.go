@@ -4,7 +4,10 @@ package skeleton
 import "embed"
 
 // ProjectFS holds the embedded skeleton project used by `gofasta new`
-// when --layout=layered (the default).
+// for BOTH the layered and feature layouts. The layered layout renders
+// these files directly; the feature layout is derived by transforming
+// the same embedded files at generation time (there is no separate
+// feature-layout embed).
 //
 // The project tree intentionally ships NO db/migrations directory of
 // its own; the per-driver foundational migrations live in MigrationsFS
@@ -12,12 +15,6 @@ import "embed"
 //
 //go:embed all:project
 var ProjectFS embed.FS
-
-// ProjectLayeredFS is a clearer-named alias for ProjectFS — new code
-// (Phase B onward) should use this name to make layout selection
-// explicit; the bare `ProjectFS` is kept for older callers and the
-// embed_test.go invariant suite.
-var ProjectLayeredFS = ProjectFS
 
 // MigrationsFS holds the per-driver foundational migration sets that
 // `gofasta new --driver X` copies into the new project's db/migrations

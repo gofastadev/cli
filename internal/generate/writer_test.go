@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,21 +90,35 @@ func TestWriteTemplate_TemplateExecutionError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-func TestWriteTemplate_AbsolutePath(t *testing.T) {
-	dir := t.TempDir()
+// TestWriteTemplate_RejectsAbsolutePath — the planner's
+// ensureWithinProject guard refuses to write an output file to an
+// absolute path. Defense-in-depth against a name-derived path that
+// escapes the project tree; every production generator writes to a
+// relative path under the project root.
+func TestWriteTemplate_RejectsAbsolutePath(t *testing.T) {
+	setupTempProject(t)
 	d := sampleScaffoldData()
-	path := filepath.Join(dir, "sub", "file.go")
-	tmpl := "package sub"
+	path := filepath.Join(t.TempDir(), "sub", "file.go")
 
-	err := WriteTemplate(path, "test", tmpl, d)
-	require.NoError(t, err)
+	err := WriteTemplate(path, "test", "package sub", d)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
+}
 
-	data, err := os.ReadFile(path)
-	require.NoError(t, err)
-	// `.go` outputs are normalized through go/format.Source, which is
-	// what guarantees scaffolded files pass `gofmt -s -l .` — that
-	// normalization includes a trailing newline.
-	assert.Equal(t, "package sub\n", string(data))
+// TestWriteTemplate_RejectsTraversalPath — a relative output path that
+// climbs out of the project root with `..` is rejected by the same
+// guard.
+func TestWriteTemplate_RejectsTraversalPath(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	err := WriteTemplate("../escape/file.go", "test", "package escape", d)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
 }
 
 // TestWriteTemplate_UsesTimestamp — a template that calls
@@ -112,7 +127,7 @@ func TestWriteTemplate_AbsolutePath(t *testing.T) {
 // template references it.
 func TestWriteTemplate_UsesTimestamp(t *testing.T) {
 	setupTempProject(t)
-	path := filepath.Join(t.TempDir(), "out.txt")
+	path := "out.txt"
 	data := sampleScaffoldData()
 	err := WriteTemplate(path, "t", `{{timestamp}} {{lbrace}} x {{rbrace}}`, data)
 	require.NoError(t, err)

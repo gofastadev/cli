@@ -39,16 +39,6 @@ func TestWriteFile_ParentWriteBlocked(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestInstall_TemplateReadError — we can't easily fabricate an
-// unreadable embedded template (the fs.FS doesn't expose filesystem
-// errors). Skip with a rationale so the coverage tool records the
-// branch as intentionally uncovered.
-func TestInstall_DocumentedUnreachable(t *testing.T) {
-	t.Skip("the embed.FS read-error branch is unreachable at runtime: " +
-		"templates are compiled into the binary and the fs.ReadFile call " +
-		"only fails on a path that was misspelled in code review.")
-}
-
 // TestLoadManifest_ReadErrorNotExist — missing file returns an
 // empty manifest without error (tested implicitly by other happy-
 // path tests, exercised here directly to hit the specific branch).
@@ -59,17 +49,6 @@ func TestLoadManifest_ReadErrorNotExist(t *testing.T) {
 	require.NotNil(t, m)
 	assert.Equal(t, manifestSchemaVersion, m.Version)
 	assert.NotNil(t, m.Installed)
-}
-
-// TestSave_WriteTempFails — we can't cleanly force os.WriteFile to
-// fail, so instead we cover the MkdirAll success + rename path via
-// a read-only parent directory. On read-only FS os.Rename would
-// fail; on macOS/Linux this is non-trivial without root. Document
-// instead.
-func TestSave_DocumentedUnreachable(t *testing.T) {
-	t.Skip("the os.Rename error branch requires an unwritable FS which " +
-		"isn't portable to test — rely on the happy-path TestManifest_Save_AtomicRename " +
-		"for the rename is exercised there.")
 }
 
 // TestTemplateFiles_EmptyAgent — an agent pointing at a nonexistent
@@ -179,12 +158,6 @@ func TestInstall_WriteFileFails(t *testing.T) {
 	agent := AgentByKey("claude")
 	_, err := Install(agent, dir, sampleData(), InstallOptions{})
 	require.Error(t, err)
-}
-
-// TestInstall_RenderTemplateError — all shipped templates parse; this
-// branch is only reachable via a custom embed FS.
-func TestInstall_RenderTemplateError(t *testing.T) {
-	t.Skip("all shipped templates parse; renderTemplate error path only reachable with custom FS")
 }
 
 // TestRenderTemplate_ParseError — templateParse seam returns an error.

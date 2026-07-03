@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -46,6 +47,13 @@ func startServer() error {
 
 	cfg := container.Config
 	logger := container.Logger
+
+	// Fail fast if security-critical secrets are still empty or set to the
+	// framework's development placeholder — never serve traffic with a
+	// publicly-known JWT/session signing key.
+	if err := cfg.ValidateSecrets(); err != nil {
+		return fmt.Errorf("refusing to start: %w", err)
+	}
 
 	// Hand the DB to devtools so /debug/explain can issue EXPLAIN
 	// queries against captured SQL. No-op in production.

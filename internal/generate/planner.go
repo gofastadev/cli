@@ -11,8 +11,26 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 )
+
+// ensureWithinProject rejects an output path that would escape the
+// project root (the current working directory). Generators build paths
+// from user-supplied resource / field names; this is the defense-in-depth
+// net that stops a name which slipped past validateIdentifier from
+// writing outside the tree. It fires for both real writes and dry-run
+// recordings so a plan can never reference an out-of-tree path.
+func ensureWithinProject(path string) error {
+	cleaned := filepath.Clean(path)
+	if filepath.IsAbs(cleaned) ||
+		cleaned == ".." ||
+		strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return clierr.Newf(clierr.CodeInvalidName,
+			"refusing to write outside the project root: %q", path)
+	}
+	return nil
+}
 
 // formatGoIfNeeded runs gofmt on body when path looks like Go source
 // AND body is a full Go file (starts with a `package` declaration).
@@ -135,6 +153,9 @@ func recordPatch(path, detail string, newSize int) {
 // planned action. Every caller should prefer this over os.WriteFile
 // directly so dry-run mode stays consistent across the package.
 func writeOrRecordCreate(path string, body []byte) error {
+	if err := ensureWithinProject(path); err != nil {
+		return err
+	}
 	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordCreate(path, len(body))
@@ -155,6 +176,9 @@ func writeOrRecordCreate(path string, body []byte) error {
 // files. Detail is a short human-readable description of the change —
 // agents see it in --json output.
 func writeOrRecordPatch(path, detail string, body []byte) error {
+	if err := ensureWithinProject(path); err != nil {
+		return err
+	}
 	body = formatGoIfNeeded(path, body)
 	if GetDryRun() {
 		recordPatch(path, detail, len(body))

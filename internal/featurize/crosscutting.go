@@ -28,7 +28,7 @@ import (
 // controllers) with per-feature alias imports, and rewrites every
 // resource's field types to point at the feature packages.
 func TransformContainer(src []byte, mod string, resources []Resource) ([]byte, error) {
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: []string{
 			mod + "/app/repositories/interfaces",
 			mod + "/app/services/interfaces",
@@ -42,7 +42,7 @@ func TransformContainer(src []byte, mod string, resources []Resource) ([]byte, e
 // TransformWire rewrites app/di/wire.go: replaces
 // `providers.<R>Set` with `<snake>pkg.<R>Set` and updates the import.
 func TransformWire(src []byte, mod string, resources []Resource) ([]byte, error) {
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports:   []string{mod + "/app/di/providers"},
 		addImports:    perFeatureImports(mod, resources),
 		selectorSwaps: wireSelectorSwaps(resources),
@@ -53,44 +53,11 @@ func TransformWire(src []byte, mod string, resources []Resource) ([]byte, error)
 // replaces `<R>Routes(api, ...)` with `<snake>pkg.RegisterRoutes(api, ...)`
 // and updates the controller field types in RouteConfig.
 func TransformIndexRoutes(src []byte, mod string, resources []Resource) ([]byte, error) {
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports:   []string{mod + "/app/rest/controllers"},
 		addImports:    perFeatureImports(mod, resources),
 		fieldRewrites: indexRoutesFieldRewrites(resources),
 		callRewrites:  indexRoutesCallRewrites(resources),
-	})
-}
-
-// TransformResourceDTO rewrites a per-resource dtos file (e.g.
-// app/dtos/user.dtos.go) which STAYS in the dtos package in feature
-// layout. The file imports the model and service packages — those have
-// moved to the feature package, so the imports and selectors need to
-// flip:
-//
-//	models.User          → userpkg.User
-//	services.CreateUserInput → userpkg.CreateUserInput
-//	services.UpdateUserPatch → userpkg.UpdateUserPatch
-//	services.ListUsersFilter → userpkg.ListUsersFilter
-//
-// Same applies to validator files staying in app/validators/ that
-// reference per-feature types (rare in the user scaffold but possible
-// for resources that build cross-resource validators).
-func TransformResourceDTO(src []byte, mod string, resource Resource) ([]byte, error) {
-	alias := resource.Snake + "pkg"
-	return transformCrossCutting(src, mod, []Resource{resource}, crossCuttingOptions{
-		dropImports: []string{
-			mod + "/app/models",
-			mod + "/app/services",
-		},
-		addImports: []importSpec{
-			{alias: alias, path: mod + "/app/" + resource.Snake},
-		},
-		selectorSwaps: map[string]string{
-			"models." + resource.Name:                    alias + "." + resource.Name,
-			"services.Create" + resource.Name + "Input":  alias + ".Create" + resource.Name + "Input",
-			"services.Update" + resource.Name + "Patch":  alias + ".Update" + resource.Name + "Patch",
-			"services.List" + resource.Plural + "Filter": alias + ".List" + resource.Plural + "Filter",
-		},
 	})
 }
 
@@ -107,7 +74,7 @@ func TransformContainerReverse(src []byte, mod string, resources []Resource) ([]
 		swaps[alias+"."+r.Name+"ServiceInterface"] = "svcInterfaces." + r.Name + "ServiceInterface"
 		swaps[alias+"."+r.Name+"Controller"] = "controllers." + r.Name + "Controller"
 	}
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: dropImports,
 		addImports: []importSpec{
 			{alias: "repoInterfaces", path: mod + "/app/repositories/interfaces"},
@@ -129,7 +96,7 @@ func TransformWireReverse(src []byte, mod string, resources []Resource) ([]byte,
 		dropImports = append(dropImports, mod+"/app/"+r.Snake)
 		swaps[alias+"."+r.Name+"Set"] = "providers." + r.Name + "Set"
 	}
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: dropImports,
 		addImports: []importSpec{
 			{alias: "", path: mod + "/app/di/providers"},
@@ -156,7 +123,7 @@ func TransformIndexRoutesReverse(src []byte, mod string, resources []Resource) (
 		// engine handles single-word destinations as Ident replacements.
 		callSwaps[alias+".RegisterRoutes"] = r.Name + "Routes"
 	}
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: dropImports,
 		addImports: []importSpec{
 			{alias: "", path: mod + "/app/rest/controllers"},
@@ -175,7 +142,7 @@ func TransformCoreProvidersReverse(src []byte, mod string, resources []Resource)
 	if user == nil {
 		return src, nil
 	}
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: []string{mod + "/app/" + user.Snake},
 		addImports: []importSpec{
 			{alias: "", path: mod + "/app/services"},
@@ -191,7 +158,7 @@ func TransformCoreProvidersReverse(src []byte, mod string, resources []Resource)
 // + qualifier flip to `repoInterfaces` / `svcInterfaces` / `services`.
 func TransformMockReverse(src []byte, mod string, resource Resource) ([]byte, error) {
 	alias := resource.Snake + "pkg"
-	return transformCrossCutting(src, mod, []Resource{resource}, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: []string{mod + "/app/" + resource.Snake},
 		addImports: []importSpec{
 			{alias: "repoInterfaces", path: mod + "/app/repositories/interfaces"},
@@ -222,7 +189,7 @@ func TransformMockReverse(src []byte, mod string, resource Resource) ([]byte, er
 // — only the X identifier changes.
 func TransformMock(src []byte, mod string, resource Resource) ([]byte, error) {
 	alias := resource.Snake + "pkg"
-	return transformCrossCutting(src, mod, []Resource{resource}, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: []string{
 			// `app/models` is intentionally NOT dropped — under Option B
 			// the model stays in package models, so the mock keeps
@@ -260,7 +227,7 @@ func TransformCoreProviders(src []byte, mod string, resources []Resource) ([]byt
 	if userResource == nil {
 		return src, nil // no user feature → nothing to rewrite
 	}
-	return transformCrossCutting(src, mod, resources, crossCuttingOptions{
+	return transformCrossCutting(src, crossCuttingOptions{
 		dropImports: []string{mod + "/app/services"},
 		addImports: []importSpec{
 			{alias: userResource.Snake + "pkg", path: mod + "/app/" + userResource.Snake},
@@ -367,8 +334,7 @@ type crossCuttingOptions struct {
 }
 
 // transformCrossCutting drives the four cross-cutting file transforms
-func transformCrossCutting(src []byte, mod string, _ []Resource, opts crossCuttingOptions) ([]byte, error) {
-	_ = mod
+func transformCrossCutting(src []byte, opts crossCuttingOptions) ([]byte, error) {
 	dec := decorator.NewDecorator(token.NewFileSet())
 	file, err := dec.Parse(src)
 	if err != nil {

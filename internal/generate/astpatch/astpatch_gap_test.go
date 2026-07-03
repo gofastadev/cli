@@ -51,25 +51,6 @@ func TestRender_RestoreErrorOnUnformattableButValid(t *testing.T) {
 	require.NotNil(t, body)
 }
 
-// — WriteBack: render-fine but disk-write fails ────────────────────────
-
-func TestWriteBack_DiskWriteError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.go")
-	require.NoError(t, os.WriteFile(path, []byte("package x\n"), 0o644))
-	f, err := Parse(path)
-	require.NoError(t, err)
-
-	// Point f.Path at a path inside a read-only directory.
-	readonly := filepath.Join(dir, "ro")
-	require.NoError(t, os.Mkdir(readonly, 0o555))
-	t.Cleanup(func() { _ = os.Chmod(readonly, 0o755) })
-	f.Path = filepath.Join(readonly, "x.go")
-
-	_, err = WriteBack(f)
-	require.Error(t, err)
-}
-
 // — FindInterface / FindStruct: no GenDecl + wrong-token branches ──────
 
 func TestFindInterface_NotATypeDecl(t *testing.T) {
@@ -306,23 +287,6 @@ func TestRender_RestorerError(t *testing.T) {
 	t.Cleanup(func() { restorerFprintFn = saved })
 
 	_, err = Render(f)
-	require.Error(t, err)
-}
-
-// — WriteBack propagates Render's error ────────────────────────────────
-
-func TestWriteBack_RenderError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.go")
-	require.NoError(t, os.WriteFile(path, []byte("package x\n"), 0o644))
-	f, err := Parse(path)
-	require.NoError(t, err)
-
-	saved := restorerFprintFn
-	restorerFprintFn = func(_ *bytes.Buffer, _ *dst.File) error { return errStubAst }
-	t.Cleanup(func() { restorerFprintFn = saved })
-
-	_, err = WriteBack(f)
 	require.Error(t, err)
 }
 

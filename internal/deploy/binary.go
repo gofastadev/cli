@@ -116,14 +116,20 @@ func DeployBinary(cfg *DeployConfig) error {
 		PrintWarning("No systemd service file found at " + serviceFile)
 	}
 
-	// Step 9: Run migrations
+	// Step 9: Run migrations. The app's own `migrate` subcommand resolves the
+	// migrations directory (it lives at <release>/migrations here) and loads DB
+	// credentials from config. Failures are surfaced as a warning rather than
+	// silently swallowed with `|| echo`, which previously masked a broken path
+	// and a missing migrate CLI.
 	step++
 	PrintStep(step, binaryTotalSteps, "Running database migrations...")
 	migrateCmd := fmt.Sprintf(
-		"cd %s && /usr/local/bin/%s migrate up 2>/dev/null || echo '   Migrations: nothing to apply or skipped'",
+		"cd %s && /usr/local/bin/%s migrate up",
 		releasePath, cfg.AppName,
 	)
-	_ = RunRemote(cfg, migrateCmd)
+	if err := RunRemote(cfg, migrateCmd); err != nil {
+		PrintWarning(fmt.Sprintf("Migrations reported an error (continuing): %v", err))
+	}
 
 	// Step 10: Restart service
 	step++

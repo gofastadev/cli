@@ -13,11 +13,13 @@
 // callers differ only in inputs: scaffolding starts from the embedded
 // skeleton, refactor starts from a user's on-disk project.
 //
-// Per-resource compile gate: after migrating each resource the engine
-// runs `go build ./...` + `go tool wire ./app/di/`. On failure it
-// aborts loudly and leaves the partial state in place. Matches the
-// docs' contract "moving one resource at a time keeps the app
-// compilable throughout" (project-structure.mdx:212).
+// End-of-migration verification: after ALL resources are moved and the
+// cross-cutting files are patched, the engine regenerates Wire
+// (`go tool wire ./app/di/`) and runs `go build ./...` once. On failure
+// it aborts loudly and leaves the partial state in place for inspection
+// (`git restore` to revert). The build+wire run once at the end — the
+// cross-cutting wire/container patches are applied as a single pass, so
+// intermediate per-resource states are not independently compilable.
 
 package commands
 
@@ -97,8 +99,9 @@ app/shared/dtos/. Models stay in app/models/ and validators stay in
 app/validators/ for the reasons documented in
 ` + "`internal/featurize/featurize.go`" + ` and ` + "`docs/getting-started/project-structure.mdx`" + `.
 
-After each resource is migrated the engine runs ` + "`go build ./...`" + ` and
-` + "`go tool wire ./app/di/`" + `. On failure the migration aborts and the
+After all resources are moved and the cross-cutting files are patched,
+the engine regenerates Wire (` + "`go tool wire ./app/di/`" + `) and runs
+` + "`go build ./...`" + ` once. On failure the migration aborts and the
 partial state is left for inspection — fix or ` + "`git restore`" + ` to recover.
 
 Examples:
@@ -216,7 +219,7 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
 
-	result := refactorResult{Action: "refactor.feature-package", DryRun: dryRun}
+	result := refactorResult{Action: "refactor.feature", DryRun: dryRun}
 	defer func() {
 		result.Success = resultErr == nil
 		if resultErr != nil {
@@ -264,18 +267,26 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 				cliout.Plainln(fmt.Sprintf("  move: %s → %s", pair.Layered, pair.Feature))
 			}
 		}
+		// password_generator.go follows the user feature — mirror the
+		// real run (relocatePasswordGenerator), which only moves it when
+		// the user resource is in scope and the layered file exists.
+		if refactorResolvesUser(resources) {
+			if _, err := os.Stat("app/services/password_generator.go"); err == nil {
+				cliout.Plainln("  move: app/services/password_generator.go → app/user/password_generator.go")
+			}
+		}
 		cliout.Info("Would patch: app/di/container.go, app/di/wire.go, app/rest/routes/index.routes.go, app/di/providers/core.go")
 		cliout.Info("Would patch testutil/mocks/<resource>_*.go for each resource")
 		cliout.Info("Would update config.yaml: project.layout: layered → feature")
 		return nil
 	}
 
-	// Migrate each resource. The per-resource compile gate runs after
-	// each one — abort if a build fails so the user can inspect the
-	// partial state.
+	// Migrate each resource (file moves + per-file AST transforms). The
+	// build+wire verification runs once at the end, after the
+	// cross-cutting files are patched — see the tail of this function.
 	for _, r := range resources {
 		cliout.Header("🔧 Migrating %s", r.Name)
-		moved, patched, err := migrateResource(r, mod, resources)
+		moved, patched, err := migrateResource(r, mod)
 		result.FilesMoved = append(result.FilesMoved, moved...)
 		result.FilesPatched = append(result.FilesPatched, patched...)
 		if err != nil {
@@ -395,6 +406,12 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 			if _, err := os.Stat(pair.Layered); err == nil {
 				cliout.Plainln(fmt.Sprintf("  move: %s → %s", pair.Layered, pair.Feature))
 			}
+		}
+		// Mirror the real reverse run (revertPasswordGenerator), which
+		// moves the file back whenever app/user/password_generator.go
+		// exists on disk.
+		if _, err := os.Stat("app/user/password_generator.go"); err == nil {
+			cliout.Plainln("  move: app/user/password_generator.go → app/services/password_generator.go")
 		}
 		cliout.Info("Would patch: app/di/container.go, app/di/wire.go, app/rest/routes/index.routes.go, app/di/providers/core.go")
 		cliout.Info("Would patch testutil/mocks/<resource>_*.go for each resource")
@@ -770,6 +787,19 @@ func resolveRefactorResources(args []string, allFlag bool) ([]featurize.Resource
 	return []featurize.Resource{{Name: pascal, Snake: snake, Plural: plural}}, nil
 }
 
+// refactorResolvesUser reports whether the "user" resource is in the
+// migration set — the precondition relocatePasswordGenerator uses to
+// decide whether app/services/password_generator.go moves into the user
+// feature. The dry-run preview consults it so the plan matches reality.
+func refactorResolvesUser(resources []featurize.Resource) bool {
+	for i := range resources {
+		if resources[i].Snake == "user" {
+			return true
+		}
+	}
+	return false
+}
+
 // discoverResourcesFromModels walks app/models/ to find every layered
 // resource by its model file naming convention (<snake>.model.go).
 func discoverResourcesFromModels() ([]featurize.Resource, error) {
@@ -796,8 +826,7 @@ func discoverResourcesFromModels() ([]featurize.Resource, error) {
 
 // migrateResource performs the file moves + featurize transforms for
 // a single resource. Returns the lists of moved/patched paths.
-func migrateResource(r featurize.Resource, mod string, allResources []featurize.Resource) (moved, patched []string, err error) {
-	_ = allResources
+func migrateResource(r featurize.Resource, mod string) (moved, patched []string, err error) {
 	for _, pair := range featurize.PerResourceMapping(r.Snake) {
 		content, readErr := os.ReadFile(pair.Layered)
 		if readErr != nil {
@@ -1056,9 +1085,14 @@ func toSnakeCaseSimple(s string) string {
 	return b.String()
 }
 
-// toPascalCaseSimple converts snake_case → PascalCase.
+// toPascalCaseSimple converts snake_case (or dash-case) → PascalCase.
+// Mirrors internal/generate/stringutil.go's toPascalCase — it splits on
+// BOTH '_' and '-' so `gofasta refactor` and `gofasta g scaffold`
+// produce identical PascalCase for dash-containing names. Kept as a
+// local copy rather than a shared package to avoid a cross-package
+// dependency for two tiny helpers.
 func toPascalCaseSimple(s string) string {
-	parts := strings.Split(s, "_")
+	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
 	var b strings.Builder
 	for _, p := range parts {
 		if p == "" {

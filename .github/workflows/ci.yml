@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# Least privilege: CI only needs to read the repo. Any job that needs more
+# must opt in explicitly. (Third-party actions below are pinned to tags; for
+# stronger supply-chain guarantees pin them to full commit SHAs.)
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest

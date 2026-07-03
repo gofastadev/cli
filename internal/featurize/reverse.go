@@ -414,5 +414,3 @@ func FixSharedDtosImportPathReverse(src []byte, mod string) ([]byte, error) {
 	}
 	return renderFile(file)
 }
-
-// SharedRelocationsReverse mirrors SharedRelocations but inverted:

@@ -150,7 +150,7 @@ underscore-separated section and key names. Examples:
 ```bash
 export {{.ProjectNameUpper}}_DATABASE_HOST=db.internal
 export {{.ProjectNameUpper}}_SERVER_PORT=9090
-export {{.ProjectNameUpper}}_JWT_SECRET=changeme
+export {{.ProjectNameUpper}}_AUTH_JWT_SECRET=your-production-secret
 ```
 
 Local development reads additional values from `.env` (copied from

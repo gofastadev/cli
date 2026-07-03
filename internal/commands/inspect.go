@@ -12,6 +12,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/layout"
 	"github.com/spf13/cobra"
 )
 
@@ -97,6 +98,12 @@ func runInspect(name string) error {
 	snake := toSnakeLower(name)
 	out := inspectedResource{Name: name, Snake: snake}
 
+	// Resolve every path through the active layout so `inspect` reports the
+	// full composition under both the layered and feature layouts (feature
+	// keeps DTOs/service-iface/controller/routes in app/<resource>/, not the
+	// layered per-layer directories).
+	lay := layout.Detect()
+
 	// Each lookup is best-effort: missing files are a valid outcome
 	// (you might inspect a resource that has a model but no controller).
 	if m, ok := tryParseModel(name, snake); ok {
@@ -104,31 +111,27 @@ func runInspect(name string) error {
 		out.Files = append(out.Files, m.File)
 	}
 	out.DTOs = append(out.DTOs, tryParseDTOs(snake)...)
-	if dtoFile := filepath.Join("app", "dtos", snake+".dtos.go"); fileExists(dtoFile) {
+	if dtoFile := lay.DTOsFile(snake); fileExists(dtoFile) {
 		out.Files = append(out.Files, dtoFile)
 	}
-	if methods, ok := tryParseInterfaceMethods(
-		filepath.Join("app", "services", "interfaces", snake+"_service.go"),
-		name+"ServiceInterface",
-	); ok {
+	svcIfaceFile := lay.SvcIfaceFile(snake)
+	if methods, ok := tryParseInterfaceMethods(svcIfaceFile, name+"ServiceInterface"); ok {
 		out.ServiceMethods = methods
-		out.Files = append(out.Files, filepath.Join("app", "services", "interfaces", snake+"_service.go"))
+		out.Files = append(out.Files, svcIfaceFile)
 	}
-	if methods, ok := tryParseControllerMethods(
-		filepath.Join("app", "rest", "controllers", snake+".controller.go"),
-		name+"Controller",
-	); ok {
+	controllerFile := lay.ControllerFile(snake)
+	if methods, ok := tryParseControllerMethods(controllerFile, name+"Controller"); ok {
 		out.ControllerMeth = methods
-		out.Files = append(out.Files, filepath.Join("app", "rest", "controllers", snake+".controller.go"))
+		out.Files = append(out.Files, controllerFile)
 	}
 	if routes := tryParseRoutesForResource(snake); len(routes) > 0 {
 		out.Routes = routes
-		out.Files = append(out.Files, filepath.Join("app", "rest", "routes", snake+".routes.go"))
+		out.Files = append(out.Files, lay.RoutesFile(snake))
 	}
 
 	if len(out.Files) == 0 {
 		return clierr.Newf(clierr.CodeInvalidName,
-			"no files found for resource %q — checked app/models, app/dtos, app/services/interfaces, app/rest/controllers, app/rest/routes",
+			"no files found for resource %q — checked the model, DTOs, service interface, controller, and routes for this project's layout",
 			name)
 	}
 
@@ -196,7 +199,7 @@ func renderInspectText(w io.Writer, r *inspectedResource) {
 // with typeName, and returns its fields. Zero-values + false when the
 // file doesn't exist or parse fails.
 func tryParseModel(typeName, snake string) (*modelInfo, bool) {
-	path := filepath.Join("app", "models", snake+".model.go")
+	path := layout.Detect().ModelFile(snake)
 	file, err := parseGoFile(path)
 	if err != nil {
 		return nil, false
@@ -212,7 +215,7 @@ func tryParseModel(typeName, snake string) (*modelInfo, bool) {
 // Each struct becomes one dtoInfo entry — the file typically defines
 // several (create, update, response, filters, etc.).
 func tryParseDTOs(snake string) []dtoInfo {
-	path := filepath.Join("app", "dtos", snake+".dtos.go")
+	path := layout.Detect().DTOsFile(snake)
 	file, err := parseGoFile(path)
 	if err != nil {
 		return nil
@@ -329,7 +332,8 @@ func tryParseControllerMethods(path, typeName string) ([]methodSignature, bool) 
 // reuses the existing regex-based route extractor to pick out registered
 // routes. Cheap and consistent with `gofasta routes` output.
 func tryParseRoutesForResource(snake string) []routeEntry {
-	path := filepath.Join("app", "rest", "routes", snake+".routes.go")
+	lay := layout.Detect()
+	path := lay.RoutesFile(snake)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return nil
@@ -337,12 +341,12 @@ func tryParseRoutesForResource(snake string) []routeEntry {
 	// Routes files register under the apiPrefix that the index file
 	// sets via r.Mount("/api/v1", api). We read that once.
 	apiPrefix := ""
-	if index, err := os.ReadFile(filepath.Join("app", "rest", "routes", "index.routes.go")); err == nil {
+	if index, err := os.ReadFile(lay.RouteIndexFile()); err == nil {
 		if matches := mountRe.FindSubmatch(index); len(matches) > 1 {
 			apiPrefix = string(matches[1])
 		}
 	}
-	return extractRoutes(string(content), apiPrefix, snake+".routes.go")
+	return extractRoutes(string(content), apiPrefix, filepath.Base(path))
 }
 
 // --- AST helpers ------------------------------------------------------------

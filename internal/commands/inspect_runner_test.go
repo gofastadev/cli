@@ -357,12 +357,6 @@ type B struct { N int }
 	assert.Len(t, got, 1)
 }
 
-// TestTryParseDTOs_NonTypeSpecBranch — GenDecl with Tok=="type" can
-// only contain TypeSpec by Go syntax; branch is defensive.
-func TestTryParseDTOs_NonTypeSpecBranch(t *testing.T) {
-	t.Skip("gd.Specs for Tok=type always yields TypeSpec; branch defensive")
-}
-
 // TestTryParseInterfaceMethods_NoMatch — interface exists but not the
 // requested name → no methods returned.
 func TestTryParseInterfaceMethods_NoMatch(t *testing.T) {

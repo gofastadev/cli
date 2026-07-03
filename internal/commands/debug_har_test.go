@@ -66,13 +66,6 @@ func TestRunDebugHar_EncodeError(t *testing.T) {
 	require.Error(t, runDebugHar())
 }
 
-// TestRunDebugHar_EncodeFailure — json.NewEncoder.Encode of a HAR
-// struct cannot fail without a Writer seam; the seam-based case is
-// TestRunDebugHar_EncodeFails above.
-func TestRunDebugHar_EncodeFailure(t *testing.T) {
-	t.Skip("json.NewEncoder.Encode of HAR struct cannot fail; would need io.Writer seam")
-}
-
 // TestDebugHarCmd_RunE — exercises the Cobra RunE wrapper.
 func TestDebugHarCmd_RunE(t *testing.T) {
 	url := debugFixtureAll(t)

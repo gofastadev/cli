@@ -30,6 +30,10 @@ scp deployments/systemd/app.service "${SERVER}:/tmp/${APP_NAME}.service"
 
 # Install and restart
 ssh "${SERVER}" bash <<'REMOTE'
+    # Abort on the first failing command so a broken migration (or any
+    # other step) surfaces as a non-zero exit instead of being swallowed.
+    set -euo pipefail
+
     sudo mv /usr/local/bin/{{.ProjectNameLower}}.new /usr/local/bin/{{.ProjectNameLower}}
     sudo chmod +x /usr/local/bin/{{.ProjectNameLower}}
     sudo cp /tmp/{{.ProjectNameLower}}.service /etc/systemd/system/{{.ProjectNameLower}}.service
@@ -38,8 +42,15 @@ ssh "${SERVER}" bash <<'REMOTE'
     id -u {{.ProjectNameLower}} &>/dev/null || sudo useradd -r -s /bin/false {{.ProjectNameLower}}
     sudo chown -R {{.ProjectNameLower}}:{{.ProjectNameLower}} /etc/{{.ProjectNameLower}}
 
-    # Run migrations
-    cd /etc/{{.ProjectNameLower}} && sudo -u {{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}} migrate up || echo "Migrations: nothing to apply"
+    # Run migrations. The app binary's `migrate` subcommand resolves the
+    # migrations directory relative to the working dir (it tries
+    # db/migrations, then ./migrations, then /migrations), so run it from
+    # /etc/{{.ProjectNameLower}} where the scp'd `migrations/` lives. No
+    # external `migrate` CLI is required — the binary handles it. A real
+    # migration failure must abort the deploy, so it is NOT masked; the
+    # migrate command is a no-op (exit 0) when there is nothing to apply.
+    cd /etc/{{.ProjectNameLower}}
+    sudo -u {{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}} migrate up
 
     # Restart service
     sudo systemctl daemon-reload

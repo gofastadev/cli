@@ -195,12 +195,6 @@ func TestRefresherLoop_Tick(t *testing.T) {
 
 // TestRefresherLoop_TickFiresRefresh — refresherLoop's ticker-fire
 // branch only reaches case <-ticker.C once the interval elapses.
-// Without a seam on the interval that's 5s, so we skip and rely on
-// TestRefresherLoop_TickFires which overrides refresherTickInterval.
-func TestRefresherLoop_TickFiresRefresh(t *testing.T) {
-	t.Skip("refresherLoop ticker hard-wired to 5s; branch unreachable within test budget")
-}
-
 // TestStartDashboard_InvalidPort — listen on port -1 so
 // ListenAndServe fails quickly; the goroutine's err-handler branch
 // fires.

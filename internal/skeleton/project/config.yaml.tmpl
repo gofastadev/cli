@@ -17,8 +17,13 @@ server:
   host: "127.0.0.1"
   port: "8080"
   shutdown_timeout: 15s
+  # Origins allowed to make browser (CORS) requests. Do NOT use "*" in
+  # production — list your real frontend origin(s) here, or override via
+  # {{.ProjectNameUpper}}_SERVER_ALLOWED_ORIGINS. Defaults to localhost for
+  # local development only.
   allowed_origins:
-    - "*"
+    - "http://localhost:3000"
+    - "http://localhost:8080"
 
 database:
   driver: {{.DBDriver}}
@@ -89,7 +94,10 @@ email:
   #   api_key: xkeysib-your-api-key
 
 auth:
-  jwt_secret: "change-me-in-production"
+  # Randomly generated per project by `gofasta new`. Override in production
+  # via {{.ProjectNameUpper}}_AUTH_JWT_SECRET. The app refuses to boot if this
+  # is empty or the framework placeholder.
+  jwt_secret: "{{.JWTSecret}}"
   access_token_expiry: 15m
   refresh_token_expiry: 168h
   rbac_model: configs/rbac_model.conf
@@ -160,7 +168,10 @@ encryption:
 
 session:
   driver: cookie          # cookie or filesystem
-  secret: "change-me-in-production-32bytes!"
+  # Randomly generated per project by `gofasta new`. Override in production
+  # via {{.ProjectNameUpper}}_SESSION_SECRET. The app refuses to boot if this
+  # is empty or the framework placeholder.
+  secret: "{{.SessionSecret}}"
   session_name: {{.ProjectNameLower}}_session
   # filesystem_path: ./sessions
 

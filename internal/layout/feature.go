@@ -97,19 +97,37 @@ func (featureLayout) RouteIndexFile() string { return "app/rest/routes/index.rou
 func (featureLayout) ServeFile() string      { return "cmd/serve.go" }
 func (featureLayout) ResolverFile() string   { return "app/graphql/resolvers/resolver.go" }
 
-// InterfaceDirs returns the per-feature directories `g mock --all`
-// should walk. Excludes shared concern directories (di, jobs, tasks,
-// graphql, main, devtools, shared, validators, rest).
-//
-// Implementation in Phase A is a placeholder — the feature layout isn't
-// reachable from configutil.ReadLayout yet because the `--layout=feature`
-// flag is wired in Phase B. The full directory-walking implementation
-// lands when Phase C extends gen_mock.go.
+// InterfaceDirs returns the per-feature directories `g mock --all` should
+// walk. In the feature layout each resource keeps its interfaces alongside
+// its implementation (app/<resource>/repository_iface.go, service_iface.go),
+// so this walks app/*/ and returns every resource directory that declares at
+// least one *_iface.go file, excluding shared-concern directories.
 func (featureLayout) InterfaceDirs() []string {
-	// Phase-C TODO: walk app/*/ filtered by IsFeatureResourceDir.
-	// For Phase A this is unreachable (Detect always returns Layered).
-	return nil
+	var dirs []string
+	for _, dir := range featureResourceDirs() {
+		if dirHasSuffixFile(dir, "_iface.go") {
+			dirs = append(dirs, dir)
+		}
+	}
+	return dirs
 }
 
-func (featureLayout) RoutesDir() string     { return filepath.Join("app", "rest", "routes") }
+func (featureLayout) RoutesDir() string { return filepath.Join("app", "rest", "routes") }
+
+// RouteFiles returns the feature-layout route files: the shared route index
+// plus each resource's own routes.go (app/<resource>/routes.go), which is
+// where renameRoutesFunc moves the per-resource r.Get/r.Post registrations.
+func (featureLayout) RouteFiles() []string {
+	var files []string
+	if index := filepath.Join("app", "rest", "routes", "index.routes.go"); fileExists(index) {
+		files = append(files, index)
+	}
+	for _, dir := range featureResourceDirs() {
+		if routes := filepath.Join(dir, "routes.go"); fileExists(routes) {
+			files = append(files, routes)
+		}
+	}
+	return files
+}
+
 func (featureLayout) MigrationsDir() string { return filepath.Join("db", "migrations") }

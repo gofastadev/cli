@@ -122,8 +122,17 @@ type Layout interface {
 	InterfaceDirs() []string
 
 	// RoutesDir returns the directory `gofasta g middleware` scans for
-	// route registration files.
+	// route registration files. Retained for callers that need a single
+	// base directory; use RouteFiles for the full layout-aware set.
 	RoutesDir() string
+
+	// RouteFiles returns every file that carries chi route registrations,
+	// resolved for this layout. Layered returns app/rest/routes/*.routes.go;
+	// feature returns app/rest/routes/index.routes.go plus each
+	// app/<resource>/routes.go. Consumers (`gofasta routes`,
+	// `gofasta g middleware`) scan these for r.Get/r.Post/... calls instead
+	// of assuming a single layered directory.
+	RouteFiles() []string
 
 	// MigrationsDir returns the path to the SQL migrations directory.
 	// Stable across layouts (always "db/migrations") but exposed via the

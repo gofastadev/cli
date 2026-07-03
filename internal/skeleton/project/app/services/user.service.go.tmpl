@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	"github.com/gofastadev/gofasta/pkg/utils"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/otel"
 	"gorm.io/gorm"
@@ -13,6 +14,21 @@ import (
 	"{{.ModulePath}}/app/models"
 	repoInterfaces "{{.ModulePath}}/app/repositories/interfaces"
 )
+
+// userSortColumns is the allowlist of database columns clients may sort by via
+// the sortByField query parameter. Any other value falls back to created_at.
+// This allowlist is the trust boundary between untrusted request input and the
+// SQL ORDER BY clause — without it, sortByField would flow straight into
+// GORM's .Order() and enable ORDER-BY SQL injection.
+var userSortColumns = []string{
+	"id",
+	"created_at",
+	"updated_at",
+	"first_name",
+	"other_names",
+	"email",
+	"phone_number",
+}
 
 // userServiceTracerName is the OpenTelemetry tracer scope for this
 // service. Every method opens a span under this scope so the dev
@@ -155,15 +171,16 @@ func (s *UserService) Archive(ctx context.Context, id uuid.UUID) (*models.User, 
 	return user, nil
 }
 
-// buildSortClause turns the typed sort intent into the string GORM
-// expects. The caller (controller) has already sanitized SortField
-// (whitelist or regex) — this function just composes the clause.
+// buildSortClause turns the typed sort intent into the ORDER BY string GORM
+// expects, validating the requested field against userSortColumns first.
+// utils.SafeOrderBy guarantees the returned column is one of the allowlisted
+// names (or the created_at fallback), so the value composed here can never
+// carry a SQL-injection payload from the sortByField query parameter.
 func buildSortClause(field string, desc bool) string {
-	if field == "" {
-		field = "created_at"
+	col := utils.SafeOrderBy(field, desc, userSortColumns, "created_at")
+	direction := "ASC"
+	if col.Desc {
+		direction = "DESC"
 	}
-	if desc {
-		return field + " DESC"
-	}
-	return field + " ASC"
+	return col.Column.Name + " " + direction
 }

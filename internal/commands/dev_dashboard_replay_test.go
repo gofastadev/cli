@@ -253,14 +253,6 @@ func TestHandleReplay_BadAppURL(t *testing.T) {
 }
 
 // TestHandleReplay_NewRequestError — handleReplay's
-// http.NewRequestWithContext error branch is unreachable after the
-// validators; documented here.
-func TestHandleReplay_NewRequestError(t *testing.T) {
-	srv := &dashboardServer{appURL: "http://localhost:1234"}
-	_ = srv
-	t.Skip("handleReplay NewRequestWithContext error unreachable after validators")
-}
-
 // TestHandleReplay_AcceptsValidReplay — end-to-end happy path:
 // dashboard → /api/replay → upstream app → response bubbled back as
 // JSON. The upstream is our own stub; we just confirm the response

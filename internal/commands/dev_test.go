@@ -9,9 +9,38 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// runMigrations and runMigrateUp were the original best-effort migration
+// entrypoints in the dev command. The live dev pipeline now uses
+// runMigrationsWithCount (which has no retry), so these helpers were
+// removed from production source. They live here so the retry-behavior
+// tests below (SuccessOnRetry, FailsBothAttempts, etc.) keep exercising
+// the two-attempt logic verbatim.
+func runMigrations() error {
+	if _, err := execLookPath("migrate"); err != nil {
+		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
+			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
+	}
+	dbURL := configutil.BuildMigrationURL()
+	if err := runMigrateUp(dbURL); err == nil {
+		return nil
+	}
+	cliout.Hint("Database not ready, retrying in 2 seconds...")
+	time.Sleep(2 * time.Second)
+	return runMigrateUp(dbURL)
+}
+
+func runMigrateUp(dbURL string) error {
+	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
 
 // strconvItoa is a tiny alias — scoped to this file's exec-stubbing
 // helpers that build GOFASTA_FAKE_EXIT env values.

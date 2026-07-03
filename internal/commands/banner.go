@@ -45,10 +45,6 @@ var bannerStream io.Writer = os.Stderr
 // HelpFunc, which also tries to print the banner.
 var bannerShown bool
 
-// resetBannerShown is an internal helper exposed to tests so each test can
-// start from a clean slate.
-func resetBannerShown() { bannerShown = false }
-
 // isTTYFn reports whether w is an interactive terminal. Split out as a
 // package-level var so tests can mock terminal detection without needing
 // a real pty. Returns (isTTY, statError). A non-*os.File writer returns

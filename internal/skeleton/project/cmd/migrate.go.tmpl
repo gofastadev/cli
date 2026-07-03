@@ -46,21 +46,36 @@ func runMigration(direction string) error {
 	logger.NewLogger(&cfg.Log)
 
 	dbURL := buildMigrationURL(cfg)
+	migrationsPath := resolveMigrationsPath()
 
 	migrateCmd := exec.Command("migrate",
-		"-path", "db/migrations",
+		"-path", migrationsPath,
 		"-database", dbURL,
 		direction,
 	)
 	migrateCmd.Stdout = os.Stdout
 	migrateCmd.Stderr = os.Stderr
 
-	slog.Info("running migration", "direction", direction)
+	slog.Info("running migration", "direction", direction, "path", migrationsPath)
 	if err := migrateCmd.Run(); err != nil {
 		return fmt.Errorf("migration %s failed: %w", direction, err)
 	}
 	slog.Info("migration completed", "direction", direction)
 	return nil
+}
+
+// resolveMigrationsPath returns the migrations directory, tolerating the
+// different layouts the app runs under: local dev keeps them at db/migrations,
+// while deploys flatten them to ./migrations (systemd/binary release dir) or
+// /migrations (the Docker image). The first existing candidate wins; if none
+// exist we fall back to db/migrations so the error message is meaningful.
+func resolveMigrationsPath() string {
+	for _, candidate := range []string{"db/migrations", "migrations", "/migrations"} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+	}
+	return "db/migrations"
 }
 
 func buildMigrationURL(cfg *config.AppConfig) string {

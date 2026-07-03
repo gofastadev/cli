@@ -798,7 +798,7 @@ func TestRunLocalPiped_Live(t *testing.T) {
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 	withFakeExec(t, 0)
-	assert.NoError(t, RunLocalPiped(cfg, "true"))
+	assert.NoError(t, RunLocalPiped(cfg, []string{"true"}, []string{"cat"}))
 }
 
 func TestRunLocal_Live(t *testing.T) {

@@ -52,6 +52,20 @@ func SetupServer(cfg *DeployConfig) error {
 		)
 		_ = RunRemote(cfg, createUser)
 		PrintSuccess("Service user ready")
+
+		// Binary deploys shell out to the golang-migrate CLI on the server
+		// (the docker image bakes its own copy). Install it if missing.
+		installMigrate := fmt.Sprintf(
+			"command -v migrate >/dev/null 2>&1 || "+
+				"(curl -fsSL https://github.com/golang-migrate/migrate/releases/download/v4.18.1/migrate.linux-%s.tar.gz "+
+				"| sudo tar xz -C /usr/local/bin migrate)",
+			cfg.Arch,
+		)
+		if err := RunRemote(cfg, installMigrate); err != nil {
+			PrintWarning("Failed to install migrate CLI — install it manually before running migrations: " + err.Error())
+		} else {
+			PrintSuccess("migrate CLI ready")
+		}
 	}
 
 	// Step 4: Create directory structure

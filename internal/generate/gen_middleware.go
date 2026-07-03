@@ -10,7 +10,6 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -73,8 +72,11 @@ func middlewareDataDefaults(d MiddlewareData) MiddlewareData {
 	return d
 }
 
-// findRouteFile walks routes/*.routes.go looking for the file that
-// registers <METHOD> <path>. Returns the matching path + hit flag.
+// findRouteFile scans the layout's route files looking for the one that
+// registers <METHOD> <path>. Returns the matching path + hit flag. The set of
+// files is layout-aware (layered: app/rest/routes/*.routes.go; feature: the
+// route index plus each app/<resource>/routes.go), so `g middleware` works in
+// both layouts.
 func findRouteFile(d MiddlewareData) (path string, hit bool, err error) {
 	if d.RoutesFile != "" {
 		body, err := os.ReadFile(d.RoutesFile)
@@ -83,22 +85,13 @@ func findRouteFile(d MiddlewareData) (path string, hit bool, err error) {
 		}
 		return d.RoutesFile, endpointRouteRegistered(body, d.HTTPMethod, d.Path), nil
 	}
-	entries, err := os.ReadDir(d.RoutesDir)
-	if err != nil {
-		return "", false, clierr.Wrap(clierr.CodeRoutesDirMissing, err, "reading "+d.RoutesDir)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".routes.go") {
-			continue
-		}
-		path := filepath.Join(d.RoutesDir, name)
-		body, err := os.ReadFile(path)
+	for _, file := range layout.Detect().RouteFiles() {
+		body, err := os.ReadFile(file)
 		if err != nil {
 			continue
 		}
 		if endpointRouteRegistered(body, d.HTTPMethod, d.Path) {
-			return path, true, nil
+			return file, true, nil
 		}
 	}
 	return "", false, nil

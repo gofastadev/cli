@@ -475,12 +475,6 @@ func TestHandleIndex_ExecuteError(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 }
 
-// TestHandleIndex_TemplateError — with real embedded template the
-// Execute error case has no natural trigger.
-func TestHandleIndex_TemplateError(t *testing.T) {
-	t.Skip("dashboard template always parses + executes; no natural trigger")
-}
-
 // TestWriteSSE_MarshalFails_ViaSeam — the writeSSEMarshal seam
 // returns an error; writeSSE returns early without writing.
 func TestWriteSSE_MarshalFails_ViaSeam(t *testing.T) {
@@ -491,12 +485,6 @@ func TestWriteSSE_MarshalFails_ViaSeam(t *testing.T) {
 	writeSSE(rec, rec, dashboardState{})
 	// No data should have been written.
 	assert.Empty(t, rec.Body.String())
-}
-
-// TestWriteSSE_MarshalFails — dashboardState always marshals cleanly,
-// so this branch needs the marshaler seam above to be reachable.
-func TestWriteSSE_MarshalFails(t *testing.T) {
-	t.Skip("dashboardState is always marshalable; branch needs marshaler seam")
 }
 
 // TestHandleStream_ReceivesUpdate — subscribe to the stream, then

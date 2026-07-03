@@ -142,19 +142,3 @@ func F() { fmt.Println() }
 	require.NoError(t, err)
 	require.True(t, strings.Contains(string(body), `"context"`))
 }
-
-func TestWriteBack_OverwritesFile(t *testing.T) {
-	path := writeTemp(t, "package x\n\ntype S struct{ A string }\n")
-	f, err := Parse(path)
-	require.NoError(t, err)
-	st, _ := FindStruct(f, "S")
-	require.NoError(t, AppendStructField(st, "B int"))
-
-	body, err := WriteBack(f)
-	require.NoError(t, err)
-
-	onDisk, err := os.ReadFile(path)
-	require.NoError(t, err)
-	require.Equal(t, string(body), string(onDisk))
-	require.Contains(t, string(onDisk), "B int")
-}

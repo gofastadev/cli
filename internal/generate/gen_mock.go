@@ -143,8 +143,12 @@ func regenAllMocks(module string, opts GenMockOpts) error {
 		}
 	}
 	if !anyHit {
-		return clierr.New(clierr.CodeInterfaceNotFound,
-			"no interfaces found under app/services/interfaces or app/repositories/interfaces")
+		scanned := "the project's interface directories"
+		if len(dirs) > 0 {
+			scanned = strings.Join(dirs, ", ")
+		}
+		return clierr.Newf(clierr.CodeInterfaceNotFound,
+			"no interfaces found under %s", scanned)
 	}
 	return nil
 }
@@ -331,6 +335,16 @@ func qualifyLocalTypes(e ast.Expr, pkgName string) ast.Expr {
 		return n
 	case *ast.SelectorExpr:
 		return n // already qualified (other package) — leave verbatim
+	}
+	return qualifyCompositeType(e, pkgName)
+}
+
+// qualifyCompositeType handles the composite/recursive type nodes for
+// qualifyLocalTypes (pointers, slices, maps, channels, generics, func types).
+// Split out from qualifyLocalTypes to keep each type switch small. Struct/
+// interface literals and anything exotic pass through verbatim.
+func qualifyCompositeType(e ast.Expr, pkgName string) ast.Expr {
+	switch n := e.(type) {
 	case *ast.StarExpr:
 		return &ast.StarExpr{X: qualifyLocalTypes(n.X, pkgName)}
 	case *ast.ArrayType:
@@ -363,8 +377,6 @@ func qualifyLocalTypes(e ast.Expr, pkgName string) ast.Expr {
 	case *ast.ParenExpr:
 		return &ast.ParenExpr{X: qualifyLocalTypes(n.X, pkgName)}
 	}
-	// Struct/interface literals and anything exotic pass through
-	// verbatim — same behavior as before this fix.
 	return e
 }
 

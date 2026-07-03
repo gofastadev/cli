@@ -113,5 +113,12 @@ func (layeredLayout) InterfaceDirs() []string {
 	}
 }
 
-func (layeredLayout) RoutesDir() string     { return filepath.Join("app", "rest", "routes") }
+func (layeredLayout) RoutesDir() string { return filepath.Join("app", "rest", "routes") }
+
+// RouteFiles returns every *.routes.go file under app/rest/routes/, where the
+// layered layout keeps all route registrations.
+func (layeredLayout) RouteFiles() []string {
+	return globRouteFiles(filepath.Join("app", "rest", "routes"))
+}
+
 func (layeredLayout) MigrationsDir() string { return filepath.Join("db", "migrations") }

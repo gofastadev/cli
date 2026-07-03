@@ -687,11 +687,11 @@ func captureVersionLine(cmd *exec.Cmd) string {
 	return strings.TrimSpace(line)
 }
 
-// runMigrationsWithCount re-uses the existing runMigrations but also
-// tries to extract a count of applied migrations from the migrate CLI
-// output. The golang-migrate CLI prints one line per applied step to
-// stderr in the form "N/u migration_name (duration)" — counting those
-// is a good-enough approximation of "how many ran".
+// runMigrationsWithCount runs `migrate up` and also tries to extract a
+// count of applied migrations from the migrate CLI output. The
+// golang-migrate CLI prints one line per applied step to stderr in the
+// form "N/u migration_name (duration)" — counting those is a
+// good-enough approximation of "how many ran".
 func runMigrationsWithCount() (int, error) {
 	if _, err := execLookPath("migrate"); err != nil {
 		return 0, errors.New("migrate CLI not found on $PATH")
@@ -969,29 +969,4 @@ func appendTag(existing, tag string) string {
 		break
 	}
 	return "GOFLAGS=" + strings.Join(parts, " ")
-}
-
-// Legacy helpers kept for backward-compat with other files that still
-// reference them. runMigrations is the original best-effort entrypoint
-// used elsewhere in the codebase; leaving it here avoids churning
-// callers outside the dev command.
-func runMigrations() error {
-	if _, err := execLookPath("migrate"); err != nil {
-		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
-			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
-	}
-	dbURL := configutil.BuildMigrationURL()
-	if err := runMigrateUp(dbURL); err == nil {
-		return nil
-	}
-	cliout.Hint("Database not ready, retrying in 2 seconds...")
-	time.Sleep(2 * time.Second)
-	return runMigrateUp(dbURL)
-}
-
-func runMigrateUp(dbURL string) error {
-	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

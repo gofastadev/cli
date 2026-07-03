@@ -3,7 +3,9 @@ package generate
 import (
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCmd_HasSubcommands(t *testing.T) {
@@ -148,7 +150,37 @@ func TestHasGraphQLFlag_False(t *testing.T) {
 
 func TestBuildFromArgs(t *testing.T) {
 	setupTempProject(t)
-	d := buildFromArgs([]string{"product", "name:string"})
+	d, err := buildFromArgs([]string{"product", "name:string"})
+	assert.NoError(t, err)
 	assert.Equal(t, "Product", d.Name)
 	assert.Len(t, d.Fields, 1)
+}
+
+func TestBuildFromArgs_RejectsInvalidNames(t *testing.T) {
+	setupTempProject(t)
+	cases := []struct {
+		name string
+		args []string
+	}{
+		{"resource with slash", []string{"../etc/passwd", "name:string"}},
+		{"resource with dotdot", []string{"..", "name:string"}},
+		{"resource with space", []string{"my resource", "name:string"}},
+		{"resource with quote", []string{`x"y`, "name:string"}},
+		{"resource with semicolon", []string{"x;drop", "name:string"}},
+		{"resource with template", []string{"a{{.X}}", "name:string"}},
+		{"field with slash", []string{"Product", "na/me:string"}},
+		{"field with dotdot", []string{"Product", "..:string"}},
+		{"field with space", []string{"Product", "bad name:string"}},
+		{"field with quote", []string{"Product", `na"me:string`}},
+		{"field with semicolon", []string{"Product", "name;drop:string"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := buildFromArgs(tc.args)
+			require.Error(t, err)
+			var ce *clierr.Error
+			require.ErrorAs(t, err, &ce)
+			assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
+		})
+	}
 }

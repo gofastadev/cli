@@ -104,6 +104,14 @@ const (
 	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
 	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
 
+	// --- Upgrade (gofasta upgrade) ---
+	//
+	// CodeUpgradeVerification fires when the self-update cannot prove the
+	// downloaded binary's integrity: the checksums.txt asset couldn't be
+	// fetched/parsed, or the computed SHA-256 does not match the published
+	// checksum. Either way we refuse to install the unverified binary.
+	CodeUpgradeVerification Code = "UPGRADE_VERIFICATION_FAILED"
+
 	// CodeInteractiveOnly is returned when a command that REQUIRES an
 	// interactive terminal (REPL, TUI, etc.) is invoked with --json.
 	// Agents and CI runners can pattern-match on the code and refuse
@@ -399,6 +407,10 @@ var registry = map[Code]meta{
 		Hint: "this command requires an interactive terminal and cannot run in --json / headless mode; drop --json or invoke a non-interactive equivalent",
 		Docs: "https://gofasta.dev/docs/cli-reference",
 	},
+	CodeUpgradeVerification: {
+		Hint: "could not verify the downloaded binary against the release checksums.txt — retry, or download and verify the release asset manually before installing",
+		Docs: "https://gofasta.dev/docs/cli-reference/upgrade",
+	},
 
 	CodeDebugAppUnreachable: {
 		Hint: "the target app is not reachable at the resolved URL — start it with `gofasta dev` or pass `--app-url=http://host:port` if it runs on a different address",
@@ -546,15 +558,4 @@ func lookup(code Code) meta {
 		return m
 	}
 	return meta{}
-}
-
-// AllCodes returns every code present in the registry, sorted in the order
-// they are declared above. Intended for tests that want to assert all codes
-// have non-empty hint strings.
-func AllCodes() []Code {
-	codes := make([]Code, 0, len(registry))
-	for code := range registry {
-		codes = append(codes, code)
-	}
-	return codes
 }

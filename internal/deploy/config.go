@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -31,7 +32,18 @@ type DeployConfig struct {
 	AppName       string
 	ServerPort    string
 	ReleaseTag    string
+	StrictHostKey string // ssh StrictHostKeyChecking value (default "accept-new")
 }
+
+// deployHostPattern accepts an optional user@ prefix followed by a hostname or
+// IP. It deliberately forbids a leading "-" and shell metacharacters so a Host
+// read from a (possibly untrusted, cloned) config.yaml cannot be parsed by ssh
+// as an option (CVE-2017-1000117 class) or smuggle shell syntax.
+var deployHostPattern = regexp.MustCompile(`^([A-Za-z0-9._-]+@)?[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
+
+// deployAppNamePattern constrains the go.mod-derived app name (which is
+// interpolated into image tags and remote commands) to safe characters.
+var deployAppNamePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
 // LoadDeployConfig reads deploy config from config.yaml, overlays env vars, then CLI flags.
 //
@@ -49,6 +61,7 @@ func LoadDeployConfig(cmd *cobra.Command) (*DeployConfig, error) {
 		HealthTimeout: k.Int("deploy.health_timeout"),
 		KeepReleases:  k.Int("deploy.keep_releases"),
 		ServerPort:    k.String("server.port"),
+		StrictHostKey: k.String("deploy.strict_host_key"),
 	}
 
 	// Apply CLI flag overrides (only if explicitly set)
@@ -114,30 +127,17 @@ func LoadDeployConfig(cmd *cobra.Command) (*DeployConfig, error) {
 	if cfg.Host == "" {
 		return nil, fmt.Errorf("deploy host is required — set deploy.host in config.yaml or use --host flag")
 	}
+	if !deployHostPattern.MatchString(cfg.Host) {
+		return nil, fmt.Errorf("invalid deploy.host %q — must be a hostname, IP, or user@host (no leading '-' or shell metacharacters)", cfg.Host)
+	}
+	if !deployAppNamePattern.MatchString(cfg.AppName) {
+		return nil, fmt.Errorf("invalid app name %q derived from go.mod — must match [A-Za-z0-9._-]", cfg.AppName)
+	}
 	if cfg.Method != "docker" && cfg.Method != "binary" {
 		return nil, fmt.Errorf("deploy method must be 'docker' or 'binary', got %q", cfg.Method)
 	}
 
 	return cfg, nil
-}
-
-// loadDeployConfigForLax is a seam over LoadDeployConfig so tests can
-// exercise the "host-required swallow" branch in LoadDeployConfigLax
-// — the current LoadDeployConfig never returns a non-nil cfg alongside
-// that error, so the branch is otherwise defensive.
-var loadDeployConfigForLax = LoadDeployConfig
-
-// LoadDeployConfigLax loads config without requiring Host (for setup/status commands that get host from flag).
-func LoadDeployConfigLax(cmd *cobra.Command) (*DeployConfig, error) {
-	cfg, err := loadDeployConfigForLax(cmd)
-	if err != nil && cfg == nil {
-		return nil, err
-	}
-	// If the only error was missing host, return the config anyway
-	if err != nil && strings.Contains(err.Error(), "deploy host is required") {
-		return cfg, nil
-	}
-	return cfg, err
 }
 
 // ReleasePath returns the full path for the current release on the remote server.

@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // Every printer in this file delegates to cliout.Out() so the deploy
@@ -18,24 +19,27 @@ import (
 // child SSH session's stdout to the same destination as our prints.
 func printOut() io.Writer { return cliout.Out() }
 
-// PrintStep prints a numbered step message.
+// PrintStep prints a numbered step message. Decorations are built via
+// termcolor so they honor NO_COLOR and non-TTY output (the previous hardcoded
+// ANSI escapes were emitted unconditionally, leaking raw codes into piped or
+// NO_COLOR output).
 func PrintStep(step, total int, msg string) {
-	_, _ = fmt.Fprintf(printOut(), "\033[1m==> [%d/%d] %s\033[0m\n", step, total, msg)
+	_, _ = fmt.Fprintln(printOut(), termcolor.CBold(fmt.Sprintf("==> [%d/%d] %s", step, total, msg)))
 }
 
 // PrintSuccess prints a green success message.
 func PrintSuccess(msg string) {
-	_, _ = fmt.Fprintf(printOut(), "\033[32m✓  %s\033[0m\n", msg)
+	_, _ = fmt.Fprintln(printOut(), termcolor.CGreen("✓  "+msg))
 }
 
 // PrintWarning prints a yellow warning message.
 func PrintWarning(msg string) {
-	_, _ = fmt.Fprintf(printOut(), "\033[33m⚠  %s\033[0m\n", msg)
+	_, _ = fmt.Fprintln(printOut(), termcolor.CYellow("⚠  "+msg))
 }
 
 // PrintError prints a red error message.
 func PrintError(msg string) {
-	_, _ = fmt.Fprintf(printOut(), "\033[31m✗  %s\033[0m\n", msg)
+	_, _ = fmt.Fprintln(printOut(), termcolor.CRed("✗  "+msg))
 }
 
 // PrintInfo prints an info message.

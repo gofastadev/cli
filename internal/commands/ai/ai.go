@@ -128,7 +128,7 @@ func runInstall(key string, dryRun, force bool) error {
 	// can decide. With --switch, uninstall the previous agent first.
 	if m.ActiveAgent != "" && m.ActiveAgent != agent.Key {
 		if !installSwitch {
-			return agentConflictError(m, agent, root, data)
+			return agentConflictError(m, agent)
 		}
 		if err := switchUninstall(m, root, dryRun); err != nil {
 			return err
@@ -189,7 +189,7 @@ func agentOwnedFiles(agent *Agent) ([]string, error) {
 // agentConflictError builds the "another agent is installed" error,
 // inlining the would-be diff (a dry-run of both the uninstall and the
 // install) so the user can see exactly what `--switch` would do.
-func agentConflictError(m *Manifest, target *Agent, root string, data InstallData) error {
+func agentConflictError(m *Manifest, target *Agent) error {
 	prev := AgentByKey(m.ActiveAgent)
 	prevName := m.ActiveAgent
 	if prev != nil {
@@ -227,8 +227,6 @@ func agentConflictError(m *Manifest, target *Agent, root string, data InstallDat
 		msg.WriteString(target.Name)
 		msg.WriteByte('.')
 	}
-	_ = root
-	_ = data
 	return clierr.New(clierr.CodeAIAgentConflict, msg.String())
 }
 

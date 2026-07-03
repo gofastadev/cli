@@ -214,12 +214,10 @@ func runWorkflow(name string, passed []string) error {
 			continue
 		}
 
-		if !cliout.JSON() {
-			fprintf(os.Stdout, "%s %s %s\n",
-				termcolor.CBrand("→"),
-				step.Description,
-				termcolor.CDim("(gofasta "+strings.Join(step.Args, " ")+")"))
-		}
+		cliout.Plain("%s %s %s\n",
+			termcolor.CBrand("→"),
+			step.Description,
+			termcolor.CDim("(gofasta "+strings.Join(step.Args, " ")+")"))
 		stepStart := time.Now()
 		err := runGofastaStep(step.Args)
 		stepResult.DurationMS = time.Since(stepStart).Milliseconds()
@@ -255,7 +253,7 @@ func runWorkflow(name string, passed []string) error {
 func runGofastaStep(args []string) error {
 	binary := os.Args[0]
 	cmd := execCommand(binary, args...)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()

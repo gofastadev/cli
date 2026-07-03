@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -397,22 +398,6 @@ func TestStepWireDrift_WalkErr(t *testing.T) {
 	_, _, _ = stepWireDrift()
 }
 
-// TestRunVerify_MessageEmptyFallback — a step returns an error with an
-// empty message. runVerify falls back to err.Error().
-func TestRunVerify_MessageEmptyFallback(t *testing.T) {
-	chdirTemp(t)
-	// Every step uses runShellFn, so we force the first step (gofmt)
-	// to succeed with drift, then ensure the subsequent tests run.
-	withStubShell(t,
-		// gofmt → no drift
-		stubResponse{out: "", err: nil},
-		// go vet → fails with empty message (msg="vet reported issues" actually)
-		stubResponse{out: "", err: fmt.Errorf("boom")},
-	)
-	// Also disable lint.
-	_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
-}
-
 // TestRunVerify_AllPass — every step succeeds → runVerify returns nil.
 func TestRunVerify_AllPass(t *testing.T) {
 	chdirTemp(t)
@@ -437,17 +422,24 @@ func TestRunVerify_IncludesLint(t *testing.T) {
 	golangciLintLookPath = func() (string, error) { return "", fmt.Errorf("not found") }
 	t.Cleanup(func() { golangciLintLookPath = origLP })
 	withStubShell(t, stubResponse{out: "", err: nil})
+	withJSONMode(t)
 	// skipLint=false → lint step is included; lookPath says missing
 	// → "skip" result, so the whole run passes.
-	err := runVerify(verifyOptions{skipLint: false, skipRace: true, keepGoing: false})
-	_ = err
-}
-
-// TestRunVerify_EmptyErrorMessage — stepGoVet sets the msg directly,
-// so the fallback branch at the runVerify level is unreachable via
-// the canned steps.
-func TestRunVerify_EmptyErrorMessage(t *testing.T) {
-	t.Skip("stepGoVet sets Message directly; fallback unreachable from step level")
+	var err error
+	out := captureStdout(t, func() {
+		err = runVerify(verifyOptions{skipLint: false, skipRace: true, keepGoing: false})
+	})
+	assert.NoError(t, err)
+	var res verifyResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	var lint *verifyCheck
+	for i := range res.Checks {
+		if res.Checks[i].Name == "golangci-lint" {
+			lint = &res.Checks[i]
+		}
+	}
+	require.NotNil(t, lint, "lint step should be present when skipLint=false")
+	assert.Equal(t, "skip", lint.Status)
 }
 
 // TestRunVerify_KeepGoingContinuesPastFailure — a failed step with
@@ -465,23 +457,21 @@ func TestRunVerify_KeepGoingContinuesPastFailure(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRunVerify_EmptyMessageFallback — inject a step that returns
-// ("", "", err) so runVerify's fallback branch assigning err.Error()
-// as the message fires.
+// TestRunVerify_EmptyMessageFallback — when a step returns ("", "", err)
+// with an empty message, runVerifyStep falls back to err.Error() as the
+// check message. Assert that fallback directly at the step level.
 func TestRunVerify_EmptyMessageFallback(t *testing.T) {
-	chdirTemp(t)
-	origLP := golangciLintLookPath
-	golangciLintLookPath = func() (string, error) { return "", fmt.Errorf("nope") }
-	t.Cleanup(func() { golangciLintLookPath = origLP })
-	// All built-in steps pass; the injected one fails with empty msg.
-	withStubShell(t, stubResponse{out: "", err: nil})
-	extraVerifySteps = []verifyStepDef{
-		{"custom", func() (string, string, error) {
+	step := verifyStepDef{
+		name: "custom",
+		fn: func() (string, string, error) {
 			return "", "", fmt.Errorf("silent fail")
-		}},
+		},
 	}
-	t.Cleanup(func() { extraVerifySteps = nil })
-	_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
+	var result verifyResult
+	check := runVerifyStep(step, &result)
+	assert.Equal(t, "fail", check.Status)
+	assert.Equal(t, "silent fail", check.Message)
+	assert.Equal(t, 1, result.Failed)
 }
 
 // TestRunVerify_BreakOnFirstFail — keep-going=false breaks on the

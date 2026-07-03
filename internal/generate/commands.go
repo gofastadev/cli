@@ -2,6 +2,7 @@ package generate
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
@@ -333,8 +334,28 @@ func providerSteps() []Step {
 
 // --- Helpers ---
 
-func buildFromArgs(args []string) ScaffoldData {
-	return BuildScaffoldData(args[0], ParseFields(args[1:]))
+// buildFromArgs validates the raw resource name and every raw field
+// name BEFORE they flow into BuildScaffoldData / ParseFields (and from
+// there into file paths and rendered templates), then builds the
+// ScaffoldData. A name containing `/`, `..`, whitespace, quotes, or a
+// semicolon is rejected with clierr.CodeInvalidName rather than being
+// turned into a traversal / injection payload.
+func buildFromArgs(args []string) (ScaffoldData, error) {
+	if err := validateIdentifier(args[0]); err != nil {
+		return ScaffoldData{}, err
+	}
+	for _, fieldArg := range args[1:] {
+		parts := strings.SplitN(fieldArg, ":", 2)
+		if len(parts) != 2 {
+			// ParseFields silently ignores args without a `name:type`
+			// shape; mirror that here so we don't reject them.
+			continue
+		}
+		if err := validateIdentifier(parts[0]); err != nil {
+			return ScaffoldData{}, err
+		}
+	}
+	return BuildScaffoldData(args[0], ParseFields(args[1:])), nil
 }
 
 func hasGraphQLFlag(cmd *cobra.Command) bool {
@@ -395,7 +416,10 @@ logic in app/services/<name>.service.go.`,
 	Aliases: []string{"s"},
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		d.IncludeController = true
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
@@ -459,23 +483,16 @@ func scaffoldStepsWithoutRegeneration(d ScaffoldData) []Step {
 	return out
 }
 
-// printPlanResult writes the recorded plan to stdout. In --json mode
-// the full []PlannedAction is emitted; otherwise the human table is.
-// Called at the end of a successful dry-run.
-func printPlanResult(cmd *cobra.Command) {
-	// Import cycle avoidance: generate package can't import cliout
-	// directly (cliout is in internal/, generate is in internal/ too
-	// — same level — but importing would cross the dependency graph
-	// that tests rely on). Use Cobra's OutOrStdout + check the --json
-	// flag manually.
-	jsonMode, _ := cmd.Root().PersistentFlags().GetBool("json")
-	w := cmd.OutOrStdout()
-	if jsonMode {
-		enc := jsonEncoder{}
-		enc.WriteTo(w, Plan())
-		return
-	}
-	PrintPlanText(w)
+// printPlanResult writes the recorded plan. In --json mode the full
+// []PlannedAction is emitted as a single-line JSON document; otherwise
+// the human-readable table is printed. Routing (stdout vs the JSON
+// contract) is handled by cliout.Print, which this package already
+// imports for the rest of its output. Called at the end of a
+// successful dry-run.
+func printPlanResult(_ *cobra.Command) {
+	cliout.Print(Plan(), func(w io.Writer) {
+		PrintPlanText(w)
+	})
 }
 
 var modelCmd = &cobra.Command{
@@ -487,7 +504,11 @@ when you only need persistence scaffolding and will write the repository
 and service layers by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), modelSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, modelSteps())
 	},
 }
 
@@ -504,7 +525,11 @@ Use this when you want persistence + data-access but plan to write your
 own service or expose the repository directly.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), repositorySteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, repositorySteps())
 	},
 }
 
@@ -525,7 +550,10 @@ Wire injector. Use --graphql (or --gql) to additionally patch the GraphQL
 resolver with the new service dependency.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
 		return RunSteps(d, serviceSteps(d))
 	},
@@ -548,7 +576,10 @@ facing shortcut and this subcommand is the explicit "up through controller"
 step.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		d.IncludeController = true
 		d.IncludeGraphQL = hasGraphQLFlag(cmd)
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
@@ -565,7 +596,11 @@ no model, repository, or wiring — useful when you already have a model
 and want DTOs for an RPC or GraphQL-only resource.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), dtoSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, dtoSteps())
 	},
 }
 
@@ -579,7 +614,11 @@ clickhouse). Does not touch any Go code — useful for schema-only changes
 such as indexes, constraints, or data migrations.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), migrationSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, migrationSteps())
 	},
 }
 
@@ -592,7 +631,11 @@ patch index.routes.go — use this when you want custom wiring or you have
 already written the controller by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), routeSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, routeSteps())
 	},
 }
 
@@ -605,7 +648,11 @@ GraphQL schema and want the resolver to gain access to a newly-created
 service without running full scaffolding.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), resolverSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, resolverSteps())
 	},
 }
 
@@ -627,7 +674,10 @@ quoted so your shell does not expand ` + "`*`" + `:
   gofasta g job sync-data                         # every hour (default)`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		if len(args) >= 2 {
 			d.Schedule = args[1]
 		}
@@ -649,7 +699,10 @@ templating — substitute variables with ` + "`{{.FieldName}}`" + ` and render i
 mailer.Renderer in your service code.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		return RunSteps(d, []Step{{"email template", GenEmailTemplate}})
 	},
 }
@@ -668,7 +721,11 @@ Examples:
   gofasta g task resize-image`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), []Step{{"task handler", GenTask}})
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, []Step{{"task handler", GenTask}})
 	},
 }
 
@@ -681,7 +738,11 @@ it, then regenerate the Wire injector. Useful when integrating hand-
 written services that were not created through ` + "`gofasta g service`" + `.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), providerSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, providerSteps())
 	},
 }
 

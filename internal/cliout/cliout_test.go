@@ -126,12 +126,3 @@ func TestJSONFlag_Toggles(t *testing.T) {
 		t.Error("JSON() should be true after SetJSONMode(true)")
 	}
 }
-
-func TestPrintJSONIndented_ProducesIndentation(t *testing.T) {
-	stdout, _ := capture(t, func() {
-		PrintJSONIndented(map[string]string{"a": "b"})
-	})
-	if !bytes.Contains(stdout, []byte("  \"a\": \"b\"")) {
-		t.Errorf("expected two-space indented JSON, got %q", stdout)
-	}
-}

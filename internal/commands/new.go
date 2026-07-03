@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
@@ -41,6 +43,20 @@ type ProjectData struct {
 	GraphQL          bool   // true when --graphql flag is passed
 	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
 	Layout           string // "layered" | "feature"
+	JWTSecret        string // per-project random JWT signing secret
+	SessionSecret    string // per-project random session store secret
+}
+
+// randomSecret returns a cryptographically-random, URL-safe secret string.
+// Each `gofasta new` mints fresh JWT and session secrets so a generated
+// project is never seeded with the framework's publicly-known placeholder
+// (which pkg/config.ValidateSecrets rejects at boot).
+func randomSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // supportedDrivers is the canonical set of --driver values. The first
@@ -203,15 +219,15 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		layoutKind = "layered"
 	}
 
-	// In --json mode, redirect stdout to stderr for the duration of
-	// the scaffold so the dozens of decorative `termcolor.Print*` and
-	// `fmt.Print*` calls below — plus the streamed stdout of every
-	// child `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation — go
-	// to stderr. Restore stdout in a deferred closure and emit a
-	// single structured JSON result so agents see one parseable
-	// document on stdout. Safe because runNew is fully sequential
-	// (no goroutines), so swapping the package-level os.Stdout has
-	// no concurrency hazard.
+	// In --json mode, redirect stdout to stderr for the duration of the
+	// scaffold so the streamed stdout of every child
+	// `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation goes to stderr.
+	// (Decorated progress already routes correctly via cliout; this swap
+	// exists solely to catch child-process stdout that is wired directly to
+	// os.Stdout.) Restore stdout in a deferred closure and emit a single
+	// structured JSON result so agents see one parseable document on stdout.
+	// Safe because runNew is fully sequential (no goroutines), so swapping the
+	// package-level os.Stdout has no concurrency hazard.
 	if cliout.JSON() {
 		savedStdout := os.Stdout
 		os.Stdout = os.Stderr
@@ -235,6 +251,15 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		return fmt.Errorf("directory %q already exists", projectDir)
 	}
 
+	jwtSecret, err := randomSecret()
+	if err != nil {
+		return clierr.Wrap(clierr.CodeInternal, err, "generating JWT secret")
+	}
+	sessionSecret, err := randomSecret()
+	if err != nil {
+		return clierr.Wrap(clierr.CodeInternal, err, "generating session secret")
+	}
+
 	data := ProjectData{
 		ProjectName:      projectName,
 		ProjectNameLower: strings.ToLower(projectName),
@@ -249,6 +274,8 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		GraphQL:          includeGraphQL,
 		DBDriver:         driver,
 		Layout:           layoutKind,
+		JWTSecret:        jwtSecret,
+		SessionSecret:    sessionSecret,
 	}
 
 	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
@@ -289,7 +316,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	if projectFS == nil {
 		projectFS = skeleton.ProjectFS
 	}
-	err := fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -655,9 +682,7 @@ func starterResources() []featurize.Resource {
 //
 //	rerouted   — new output path (== outputPath when no reroute needed)
 //	transformed— possibly-rewritten content (== output when no transform)
-//	skip       — true when the file shouldn't be written at all (the
-//	             layered template is dead in feature mode and has no
-//	             feature counterpart, e.g. layered-only orphan dirs).
+//	err        — non-nil if the transform fails
 //
 // Three categories of files:
 //

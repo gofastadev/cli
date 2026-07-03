@@ -625,16 +625,6 @@ func isCollapsablePath(path, mod string) bool {
 // context — we can mark the SelectorExpr for replacement in the first
 // pass, then surgically replace at every container site in the second.
 func replaceSelectorsWithIdent(file *dst.File) {
-	replaceInExprList := func(list []dst.Expr) {
-		for i, expr := range list {
-			if sel, ok := expr.(*dst.SelectorExpr); ok {
-				if ident, ok := sel.X.(*dst.Ident); ok && ident.Name == "" {
-					list[i] = &dst.Ident{Name: sel.Sel.Name}
-				}
-			}
-		}
-	}
-	_ = replaceInExprList
 	// The Apply API gives parent context — use it to replace the
 	// SelectorExpr in any slot a Node can sit in.
 	post := func(c *applyCursor) bool {
@@ -714,19 +704,3 @@ func FixDtosImportPath(src []byte, mod string) ([]byte, error) {
 	rewriteDtosImportPath(file, mod)
 	return renderFile(file)
 }
-
-// TransformMock rewrites a testutil/mocks/<snake>_*_mock.go file: the
-// mock stays in `package mocks` but the imports flip from the layered
-// `<mod>/app/models` + `<mod>/app/repositories/interfaces` (or
-// `<mod>/app/services/interfaces`) to a single per-feature alias
-// import `<snake>pkg "<mod>/app/<snake>"`, and every selector
-// referencing the layered packages is rewritten to point at the
-// feature package.
-//
-//	models.User                          → userpkg.User
-//	repoInterfaces.UserRepositoryInterface → userpkg.UserRepositoryInterface
-//	svcInterfaces.UserServiceInterface     → userpkg.UserServiceInterface
-//	repoInterfaces.ErrUserNotDeletable     → userpkg.ErrUserNotDeletable
-//
-// The mock impl is in a separate package from the feature it mocks
-// (testify/mock convention), so the references stay as SelectorExprs

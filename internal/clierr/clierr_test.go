@@ -101,31 +101,6 @@ func TestError_MarshalJSONFoldsCauseIntoMessage(t *testing.T) {
 	}
 }
 
-func TestFrom_PassesThroughExistingClierr(t *testing.T) {
-	original := New(CodeDeployHostRequired, "deploy host is required")
-	out := From(CodeInternal, original)
-	if out != original {
-		t.Error("From did not return the original *Error by identity")
-	}
-}
-
-func TestFrom_WrapsArbitraryError(t *testing.T) {
-	plain := errors.New("some lower-layer error")
-	out := From(CodeGoBuildFailed, plain)
-	if out.Code != string(CodeGoBuildFailed) {
-		t.Errorf("Code = %q, want %q", out.Code, CodeGoBuildFailed)
-	}
-	if !errors.Is(out, plain) {
-		t.Error("From did not preserve the original error in the cause chain")
-	}
-}
-
-func TestFrom_NilReturnsNil(t *testing.T) {
-	if From(CodeInternal, nil) != nil {
-		t.Error("From(nil) must return nil so callers can chain safely")
-	}
-}
-
 func TestAs_ReturnsFalseForNonClierr(t *testing.T) {
 	_, ok := As(errors.New("plain"))
 	if ok {

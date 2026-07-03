@@ -15,7 +15,6 @@ import (
 	"embed"
 	"errors"
 	"io/fs"
-	"sort"
 )
 
 // templatesFS embeds every template file so they're shipped inside the
@@ -95,17 +94,6 @@ func AgentByKey(key string) *Agent {
 		}
 	}
 	return nil
-}
-
-// ListKeys returns every registered agent key in sorted order. Used by
-// the `gofasta ai list` subcommand.
-func ListKeys() []string {
-	keys := make([]string, 0, len(Agents))
-	for _, a := range Agents {
-		keys = append(keys, a.Key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 // fsWalkDir is a package-level seam over fs.WalkDir so tests can

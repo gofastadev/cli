@@ -211,14 +211,6 @@ func TestAgentByKey_NilForUnknown(t *testing.T) {
 	assert.Nil(t, AgentByKey("nonexistent-agent"))
 }
 
-func TestListKeys_Sorted(t *testing.T) {
-	keys := ListKeys()
-	require.NotEmpty(t, keys)
-	for i := 1; i < len(keys); i++ {
-		assert.LessOrEqual(t, keys[i-1], keys[i], "ListKeys output must be sorted")
-	}
-}
-
 // TestInstall_Claude_CreatesExpectedFiles exercises a full end-to-end
 // install of the claude templates into a temp directory.
 func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
@@ -516,7 +508,7 @@ func TestAgentConflictError_PrevUnknownAgent(t *testing.T) {
 func TestAgentConflictError_NoDiff(t *testing.T) {
 	m := &Manifest{ActiveAgent: "legacyx", Installed: map[string]InstallRecord{}}
 	target := &Agent{Key: "synthetic", Name: "Synthetic", TemplateDir: "templates/nonexistent"}
-	err := agentConflictError(m, target, "/nowhere", InstallData{})
+	err := agentConflictError(m, target)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Re-run with `--switch`")
 	assert.Contains(t, err.Error(), "Synthetic")

@@ -133,28 +133,30 @@ func TestRunDebugProfile_NonOKStatus(t *testing.T) {
 	require.Error(t, runDebugProfile("heap"))
 }
 
-// TestRunDebugProfile_FetchError — server succeeds on /debug/health
-// but closes before the subsequent /debug/pprof/heap fetch lands.
+// TestRunDebugProfile_FetchError — /debug/health passes so
+// requireDevtools succeeds, then the profile endpoint hijacks and
+// closes the connection with no response, so the subsequent
+// client.Get fails deterministically (the "profile fetch failed"
+// Get-error branch, distinct from the status-code branch).
 func TestRunDebugProfile_FetchError(t *testing.T) {
-	ch := make(chan struct{}, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/debug/health" {
-			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
-			// Schedule the server to close after this response flushes.
-			go func() { ch <- struct{}{} }()
-			return
-		}
-	}))
-	withDebugAppURL(t, srv.URL)
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/heap": func(w http.ResponseWriter, _ *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_ = conn.Close() // no HTTP response → client Get errors
+		},
+	})
+	withDebugAppURL(t, url)
 	debugProfileDuration = ""
 	debugProfileOutput = ""
-	go func() {
-		<-ch
-		srv.Close()
-	}()
-	err := runDebugProfile("heap")
-	// Either error is fine — the test just exercises the paths.
-	_ = err
+	t.Cleanup(func() { debugProfileDuration = ""; debugProfileOutput = "" })
+	require.Error(t, runDebugProfile("heap"))
 }
 
 // TestRunDebugProfile_WriteFails — os.Create fails because the target

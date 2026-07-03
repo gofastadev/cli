@@ -129,7 +129,7 @@ func TestDryRun_CopyDir(t *testing.T) {
 
 func TestDryRun_RunLocalPiped(t *testing.T) {
 	cfg := &DeployConfig{DryRun: true}
-	err := RunLocalPiped(cfg, "echo hello | cat")
+	err := RunLocalPiped(cfg, []string{"echo", "hello"}, []string{"cat"})
 	assert.NoError(t, err)
 }
 

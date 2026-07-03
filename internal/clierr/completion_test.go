@@ -10,7 +10,7 @@ import (
 
 // ─────────────────────────────────────────────────────────────────────
 // Completion coverage for clierr — the Error()/Unwrap() nil
-// branches, Wrapf, AllCodes.
+// branches, Wrapf, and the code registry.
 // ─────────────────────────────────────────────────────────────────────
 
 // TestError_Nil — nil receiver returns empty string rather than
@@ -60,21 +60,12 @@ func TestWrapf_FormatsMessage(t *testing.T) {
 	assert.Equal(t, "count=42: c", e.Error())
 }
 
-// TestAllCodes_NonEmpty — the registry enumeration returns every
-// declared code. Used by docs generators; must include at least
-// the canonical codes.
-func TestAllCodes_NonEmpty(t *testing.T) {
-	codes := AllCodes()
-	require.NotEmpty(t, codes)
-	var foundInternal, foundWire bool
-	for _, c := range codes {
-		if c == CodeInternal {
-			foundInternal = true
-		}
-		if c == CodeWireMissingProvider {
-			foundWire = true
-		}
-	}
-	assert.True(t, foundInternal, "CodeInternal missing from AllCodes()")
-	assert.True(t, foundWire, "CodeWireMissingProvider missing from AllCodes()")
+// TestRegistry_NonEmpty — the code registry enumerates every declared
+// code and must include at least the canonical codes.
+func TestRegistry_NonEmpty(t *testing.T) {
+	require.NotEmpty(t, registry)
+	_, foundInternal := registry[CodeInternal]
+	_, foundWire := registry[CodeWireMissingProvider]
+	assert.True(t, foundInternal, "CodeInternal missing from registry")
+	assert.True(t, foundWire, "CodeWireMissingProvider missing from registry")
 }

@@ -198,8 +198,11 @@ func mergeIntoDotEnv(path string, kvs map[string]string) error {
 		body += "\n"
 	}
 
+	// .env holds secrets (DB credentials, API keys). Write the temp file
+	// 0o600 so the final .env (which inherits the temp file's mode across
+	// the rename) is owner read/write only.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
 	if err := osRenameFn(tmp, path); err != nil {

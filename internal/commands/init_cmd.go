@@ -46,6 +46,34 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 }
 
+// createEnvFile creates .env when it doesn't already exist, recording the
+// outcome as an init step. .env holds secrets (DB credentials, API keys), so
+// it's written 0o600 — owner read/write only. Read/write errors are surfaced
+// as a "fail" step rather than silently reported "ok".
+func createEnvFile(steps *initSteps) {
+	if _, err := os.Stat(".env"); err == nil {
+		cliout.Success(".env already exists")
+		steps.add("env.create", "skip", nil)
+		return
+	}
+
+	var content []byte
+	if input, rerr := os.ReadFile(".env.example"); rerr == nil {
+		cliout.Step("Creating .env from .env.example")
+		content = input
+	} else {
+		cliout.Step("Creating empty .env file")
+		content = []byte("# Environment config\n")
+	}
+
+	if werr := os.WriteFile(".env", content, 0o600); werr != nil {
+		cliout.Warn("Could not write .env: %v", werr)
+		steps.add("env.create", "fail", werr)
+		return
+	}
+	steps.add("env.create", "ok", nil)
+}
+
 func runInit() error {
 	steps := initSteps{}
 
@@ -53,22 +81,8 @@ func runInit() error {
 		cliout.Header("Initializing gofasta project...")
 	}
 
-	// Step 1: Create .env if missing
-	if _, err := os.Stat(".env"); os.IsNotExist(err) {
-		if _, err := os.Stat(".env.example"); err == nil {
-			cliout.Step("Creating .env from .env.example")
-			input, _ := os.ReadFile(".env.example")
-			_ = os.WriteFile(".env", input, 0o644)
-			steps.add("env.create", "ok", nil)
-		} else {
-			cliout.Step("Creating empty .env file")
-			_ = os.WriteFile(".env", []byte("# Environment config\n"), 0o644)
-			steps.add("env.create", "ok", nil)
-		}
-	} else {
-		cliout.Success(".env already exists")
-		steps.add("env.create", "skip", nil)
-	}
+	// Step 1: Create .env if missing.
+	createEnvFile(&steps)
 
 	cliout.Blank()
 	cliout.Step("Installing dependencies")

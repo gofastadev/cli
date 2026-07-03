@@ -11,6 +11,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// runMigration is a backward-compat dispatcher retained for tests only.
+// Production code calls runMigrationUp / runMigrationDown directly; this
+// helper lives in the test file so it isn't compiled into the binary.
+func runMigration(direction string) error {
+	if direction == "down" {
+		return runMigrationDown()
+	}
+	return runMigrationUp()
+}
+
 func TestMigrateCmd_HasUpDown(t *testing.T) {
 	subCmds := migrateCmd.Commands()
 	names := make([]string, 0, len(subCmds))

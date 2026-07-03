@@ -42,7 +42,10 @@ func AutoVerify() error {
 	cmd.Stderr = &buf
 	if err := cmd.Run(); err != nil {
 		if output := buf.String(); output != "" {
-			_, _ = os.Stderr.WriteString(output)
+			// Route the captured build output through cliout so it
+			// lands on stderr in --json mode (keeping stdout a clean
+			// JSON stream) and on stdout in text mode.
+			_, _ = fmt.Fprint(cliout.Out(), output)
 		}
 		return clierr.Wrap(clierr.CodeGoBuildFailed, err,
 			"the generated code does not compile")
@@ -54,7 +57,7 @@ func AutoVerify() error {
 func RunWire(_ ScaffoldData) error {
 	cliout.Plain("  %s go tool wire ./app/di/\n", termcolor.CBrand("running:"))
 	cmd := execCommand("go", "tool", "wire", "./app/di/")
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -63,7 +66,7 @@ func RunWire(_ ScaffoldData) error {
 func RunGqlgen(_ ScaffoldData) error {
 	cliout.Plain("  %s go tool gqlgen generate\n", termcolor.CBrand("running:"))
 	cmd := execCommand("go", "tool", "gqlgen", "generate")
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

@@ -121,17 +121,6 @@ func TestWriteFile_PlainMode(t *testing.T) {
 	assert.Zero(t, info.Mode()&0o100, "expected non-exec mode, got %v", info.Mode())
 }
 
-// TestRenderTemplate_BadTemplate — malformed .tmpl source surfaces
-// as a parse error.
-func TestRenderTemplate_BadTemplate(t *testing.T) {
-	// Need a path into the embed FS that points at a real file, but
-	// we can't plant malformed content into the embed FS at runtime.
-	// Skip — renderTemplate's error path is exercised indirectly via
-	// the real template corpus (TestAllTemplatesAreParseable in the
-	// generator test suite asserts every shipped template parses).
-	t.Skip("renderTemplate parse-error branch requires custom embed FS")
-}
-
 // TestInstall_StatReadFails_NonIsNotExist — destAbs is a DIRECTORY,
 // so os.ReadFile returns "is a directory" — not IsNotExist. This
 // covers the `default` arm of the switch in Install that wraps the

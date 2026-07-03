@@ -51,22 +51,6 @@ func Parse(path string) (*File, error) {
 	return &File{Path: path, Dst: df, Dec: dec}, nil
 }
 
-// WriteBack restores the (possibly modified) dst.File to source, runs
-// gofmt over the result, and writes it to disk. Returns the byte body
-// and the size; the file is overwritten in place.
-//
-// Tests that don't want disk writes can call Render instead.
-func WriteBack(f *File) ([]byte, error) {
-	body, err := Render(f)
-	if err != nil {
-		return nil, err
-	}
-	if err := os.WriteFile(f.Path, body, 0o644); err != nil {
-		return nil, clierr.Wrap(clierr.CodeFileIO, err, "writing "+f.Path)
-	}
-	return body, nil
-}
-
 // restorerFprintFn is a package-level seam over decorator.NewRestorer().Fprint
 // so tests can inject a failure into the otherwise-unreachable
 // "restoring dst file" error branch.

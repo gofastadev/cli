@@ -117,20 +117,6 @@ func Wrapf(code Code, cause error, format string, args ...any) *Error {
 	return Wrap(code, cause, fmt.Sprintf(format, args...))
 }
 
-// From returns err as a *Error when it already is one (pass-through) or
-// wraps it with code and the err's own text otherwise. Intended for use
-// at command boundaries that receive an arbitrary error from a helper.
-func From(code Code, err error) *Error {
-	if err == nil {
-		return nil
-	}
-	var structured *Error
-	if errors.As(err, &structured) {
-		return structured
-	}
-	return Wrap(code, err, err.Error())
-}
-
 // As is a convenience wrapper around errors.As for *clierr.Error so
 // callers can unwrap without importing the errors package just for
 // the assertion.
