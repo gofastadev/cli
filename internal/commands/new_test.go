@@ -9,6 +9,7 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -628,4 +629,382 @@ func TestCopyMigrationsForDriver_ReadFileError(t *testing.T) {
 	err := copyMigrationsForDriver("postgres", ProjectData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading")
+}
+
+func TestStarterResources(t *testing.T) {
+	got := starterResources()
+	require.Len(t, got, 1, "the scaffold ships exactly one starter resource")
+	assert.Equal(t, featurize.Resource{Name: "User", Snake: "user", Plural: "Users"}, got[0])
+}
+
+func TestFeaturizeFile_ReroutesPerResourceFiles(t *testing.T) {
+	resources := starterResources()
+
+	cases := map[string]string{
+		"app/services/user.service.go":                   "app/user/service.go",
+		"app/repositories/user.repository.go":            "app/user/repository.go",
+		"app/rest/controllers/user.controller.go":        "app/user/controller.go",
+		"app/rest/routes/user.routes.go":                 "app/user/routes.go",
+		"app/dtos/user.dtos.go":                          "app/user/dtos.go",
+		"app/repositories/interfaces/user_repository.go": "app/user/repository_iface.go",
+		"app/services/interfaces/user_service.go":        "app/user/service_iface.go",
+		"app/di/providers/user.go":                       "app/user/wire.go",
+	}
+
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			out, body, err := featurizeFile(in, []byte("package services\n\ntype UserService struct{}\n"),
+				fixtureModulePath, resources)
+			require.NoError(t, err)
+			assert.Equal(t, want, out)
+			assert.Contains(t, string(body), "package user\n",
+				"a file rerouted into app/user/ must declare the feature package")
+		})
+	}
+}
+
+func TestFeaturizeFile_PerResourceTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/services/user.service.go",
+		[]byte("package services\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "featurize")
+}
+
+// TestFeaturizeFile_PasswordGeneratorFollowsUser covers the standalone file
+// that is not a per-resource mapping entry but still belongs to a feature.
+func TestFeaturizeFile_PasswordGeneratorFollowsUser(t *testing.T) {
+	out, body, err := featurizeFile("app/services/password_generator.go",
+		[]byte("package services\n\ntype PasswordGenerator struct{}\n"),
+		fixtureModulePath, starterResources())
+	require.NoError(t, err)
+
+	assert.Equal(t, "app/user/password_generator.go", out)
+	assert.Contains(t, string(body), "package user\n")
+}
+
+func TestFeaturizeFile_PasswordGeneratorTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/services/password_generator.go",
+		[]byte("package services\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_CrossCuttingFilesStayPut covers the four shared files: the
+// path is unchanged, only the content is rewritten to reach the feature
+// packages.
+func TestFeaturizeFile_CrossCuttingFilesStayPut(t *testing.T) {
+	resources := starterResources()
+
+	cases := map[string]string{
+		"app/di/container.go": `package di
+
+import (
+	svcInterfaces "` + fixtureModulePath + `/app/services/interfaces"
+)
+
+type Container struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+`,
+		"app/di/wire.go": `package di
+
+import "github.com/google/wire"
+
+var Set = wire.NewSet()
+`,
+		"app/rest/routes/index.routes.go": `package routes
+
+type RouteConfig struct{}
+
+func InitAPIRoutes(config *RouteConfig) {}
+`,
+		"app/di/providers/core.go": `package providers
+
+import "` + fixtureModulePath + `/app/services"
+
+var CoreSet = services.NewDefaultPasswordGenerator
+`,
+	}
+
+	for path, src := range cases {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, []byte(src), fixtureModulePath, resources)
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "cross-cutting files must not be rerouted")
+			assert.NotEmpty(t, body)
+		})
+	}
+}
+
+func TestFeaturizeFile_CrossCuttingTransformFailures(t *testing.T) {
+	for _, path := range []string{
+		"app/di/container.go",
+		"app/di/wire.go",
+		"app/rest/routes/index.routes.go",
+		"app/di/providers/core.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			_, _, err := featurizeFile(path, []byte("package x\n\nfunc Broken( {\n"),
+				fixtureModulePath, starterResources())
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestFeaturizeFile_MocksAreRewrittenInPlace covers the testutil/mocks branch:
+// the mock stays where it is, but its qualifiers follow the resource.
+func TestFeaturizeFile_MocksAreRewrittenInPlace(t *testing.T) {
+	src := `package mocks
+
+import (
+	svcInterfaces "` + fixtureModulePath + `/app/services/interfaces"
+)
+
+type UserServiceMock struct{}
+
+var _ svcInterfaces.UserServiceInterface = (*UserServiceMock)(nil)
+`
+	for _, path := range []string{
+		"testutil/mocks/user_service_mock.go",
+		"testutil/mocks/user_repository_mock.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, []byte(src), fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "mocks stay in testutil/mocks")
+			assert.Contains(t, string(body), "userpkg")
+		})
+	}
+}
+
+// TestFeaturizeFile_MockForUnknownResourceIsUntouched covers the loop falling
+// through: a mock whose snake name matches no resource is left alone.
+func TestFeaturizeFile_MockForUnknownResourceIsUntouched(t *testing.T) {
+	src := []byte("package mocks\n\ntype GhostServiceMock struct{}\n")
+	out, body, err := featurizeFile("testutil/mocks/ghost_service_mock.go", src,
+		fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "testutil/mocks/ghost_service_mock.go", out)
+	assert.Equal(t, src, body)
+}
+
+func TestFeaturizeFile_MockTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("testutil/mocks/user_service_mock.go",
+		[]byte("package mocks\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_UnrelatedFilesPassThrough covers the default: a file that
+// matches no category lives in the same place in both layouts and must come
+// back byte-identical.
+func TestFeaturizeFile_UnrelatedFilesPassThrough(t *testing.T) {
+	src := []byte("package models\n\ntype User struct{}\n")
+
+	for _, path := range []string{
+		"app/models/user.model.go", // models deliberately do not move
+		"cmd/serve.go",
+		"config.yaml",
+		"db/migrations/000001_create_users.up.sql",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out)
+			assert.Equal(t, src, body)
+		})
+	}
+}
+
+// TestFeaturizeFile_SharedRelocationsMovePathOnly covers the relocation arm:
+// aliases.go changes location but not content, because the rewriting happens
+// on the caller side (see rewriteDtosImportPath).
+func TestFeaturizeFile_SharedRelocationsMovePathOnly(t *testing.T) {
+	src := []byte("package dtos\n\ntype TPaginationInputDto struct{}\n")
+
+	out, body, err := featurizeFile("app/dtos/aliases.go", src, fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "app/shared/dtos/aliases.go", out)
+	assert.Equal(t, src, body, "a relocation must not rewrite the file")
+}
+
+// TestFeaturizeFile_SharedInfraGetsDtosImportFlipped covers the three shared
+// infra files that stay where they are but import the relocated dtos package.
+func TestFeaturizeFile_SharedInfraGetsDtosImportFlipped(t *testing.T) {
+	src := []byte(`package validators
+
+import "` + fixtureModulePath + `/app/dtos"
+
+func Check(in dtos.TPaginationInputDto) error { return nil }
+`)
+
+	for _, path := range []string{
+		"app/validators/app_validator.go",
+		"app/rest/controllers/validator.go",
+		"app/graphql/resolvers/user.resolvers.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "shared infra files stay put")
+			assert.Contains(t, string(body), "/app/shared/dtos",
+				"the import must follow the relocated package")
+		})
+	}
+}
+
+func TestFeaturizeFile_SharedInfraTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/validators/app_validator.go",
+		[]byte("package validators\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestIsSupportedLayout covers both arms of the --layout validation. An
+// unrecognized value must be refused before scaffolding starts, not silently
+// treated as layered.
+func TestIsSupportedLayout(t *testing.T) {
+	assert.True(t, isSupportedLayout("layered"))
+	assert.True(t, isSupportedLayout("feature"))
+	assert.False(t, isSupportedLayout("hexagonal"))
+	assert.False(t, isSupportedLayout(""))
+}
+
+// TestToolVersions_ArePinned guards the pinning decision itself: an @latest
+// tool is exactly how the floor moved without anyone choosing it.
+func TestToolVersions_ArePinned(t *testing.T) {
+	versions := map[string]string{
+		"gqlgen":       toolVersionGqlgen,
+		"wire":         toolVersionWire,
+		"air":          toolVersionAir,
+		"swag":         toolVersionSwag,
+		"http-swagger": toolVersionHTTPSwagger,
+		"chi":          toolVersionChi,
+	}
+	for name, v := range versions {
+		t.Run(name, func(t *testing.T) {
+			assert.NotEqual(t, "latest", v, "tool versions must be pinned, not tracked")
+			assert.True(t, strings.HasPrefix(v, "v"), "want a semver tag, got %q", v)
+		})
+	}
+}
+
+// TestToolVersionAir_StaysBelowTheGoFloorBump pins the specific version that
+// caused the incident. air v1.67.2 is the first release declaring go 1.26.0;
+// moving to it (or later) without also raising scaffoldGoVersion and the
+// linter reintroduces the exact failure.
+func TestToolVersionAir_StaysBelowTheGoFloorBump(t *testing.T) {
+	assert.Equal(t, "v1.67.1", toolVersionAir,
+		"air v1.67.2+ declares go 1.26.0 and raises the scaffold's Go floor; "+
+			"bumping this requires raising scaffoldGoVersion and the pinned golangci-lint together")
+}
+
+// TestScaffoldGoVersion_MatchesSkeletonAndRepo keeps the three places that
+// declare the support floor from drifting apart.
+func TestScaffoldGoVersion_MatchesSkeletonAndRepo(t *testing.T) {
+	root := repoRoot(t)
+
+	goVersionFile, err := os.ReadFile(filepath.Join(root, "internal", "skeleton", "project", "dot-go-version"))
+	require.NoError(t, err)
+	assert.Equal(t, scaffoldGoVersion, strings.TrimSpace(string(goVersionFile)),
+		"skeleton dot-go-version must match scaffoldGoVersion")
+
+	goMod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	require.NoError(t, err)
+	assert.Equal(t, scaffoldGoVersion, readGoDirectiveFromBytes(goMod),
+		"this repo's go directive must match the floor it generates")
+}
+
+func TestReadGoDirective(t *testing.T) {
+	dir := t.TempDir()
+
+	cases := map[string]struct {
+		content string
+		want    string
+	}{
+		"plain": {"module example.com/a\n\ngo 1.25.0\n", "1.25.0"},
+		"with toolchain": {
+			"module example.com/a\n\ngo 1.26.0\n\ntoolchain go1.26.1\n", "1.26.0",
+		},
+		"with requires": {
+			"module example.com/a\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/x/y v1.0.0\n)\n", "1.25.0",
+		},
+		"no directive": {"module example.com/a\n", ""},
+		// A `go` inside a require block must not be mistaken for the directive.
+		"go-prefixed require": {
+			"module example.com/a\n\nrequire golang.org/x/tools v0.45.0\n", "",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "_")+".mod")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
+			assert.Equal(t, tc.want, readGoDirective(path))
+		})
+	}
+}
+
+func TestReadGoDirective_UnreadableFile(t *testing.T) {
+	assert.Empty(t, readGoDirective(filepath.Join(t.TempDir(), "does-not-exist.mod")),
+		"a missing go.mod yields no directive rather than a panic")
+}
+
+// TestVerifyGoFloor_WarnsOnlyWhenTheFloorMoved drives the guard directly. It
+// warns rather than aborting: by this point the project is written and
+// otherwise usable, and the developer can pin the offending tool themselves.
+func TestVerifyGoFloor_WarnsOnlyWhenTheFloorMoved(t *testing.T) {
+	cases := map[string]struct {
+		goMod    string
+		wantWarn bool
+	}{
+		"at the floor":     {"module example.com/a\n\ngo " + scaffoldGoVersion + "\n", false},
+		"raised by a tool": {"module example.com/a\n\ngo 1.26.0\n", true},
+		"no go.mod at all": {"", false},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			orig, err := os.Getwd()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Chdir(orig) })
+			require.NoError(t, os.Chdir(dir))
+
+			if tc.goMod != "" {
+				require.NoError(t, os.WriteFile("go.mod", []byte(tc.goMod), 0o644))
+			}
+
+			out := captureStdout(t, func() { verifyGoFloor("myapp") })
+
+			if tc.wantWarn {
+				assert.Contains(t, out, "raised this project's Go version to 1.26.0")
+				assert.Contains(t, out, "make lint", "the warning must name the concrete consequence")
+			} else {
+				assert.NotContains(t, out, "raised this project's Go version")
+			}
+		})
+	}
+}
+
+// readGoDirectiveFromBytes is the in-memory twin of readGoDirective, used to
+// check this repo's own go.mod without writing a temp copy.
+func readGoDirectiveFromBytes(b []byte) string {
+	m := goDirectivePattern.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// repoRoot walks up from the test's working directory to the module root.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqual(t, parent, dir, "walked past the filesystem root without finding go.mod")
+		dir = parent
+	}
 }

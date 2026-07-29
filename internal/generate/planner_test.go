@@ -218,3 +218,18 @@ func TestDescribePatch_Truncates(t *testing.T) {
 	assert.Len(t, got, 60)
 	assert.True(t, strings.HasSuffix(got, "..."))
 }
+
+// TestWriteOrRecordPatch_RefusesOutOfTreePath covers the defense-in-depth net
+// that stops a resource name which slipped past validateIdentifier from
+// patching a file outside the project root.
+func TestWriteOrRecordPatch_RefusesOutOfTreePath(t *testing.T) {
+	setupTempProject(t)
+
+	for _, path := range []string{"../escape.go", "/etc/passwd", ".."} {
+		t.Run(path, func(t *testing.T) {
+			err := writeOrRecordPatch(path, "attempted patch", []byte("package x\n"))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "refusing to write outside the project root")
+		})
+	}
+}
