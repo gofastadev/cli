@@ -126,6 +126,8 @@ func runDoctor() error {
 				report.Project = append(report.Project, entry)
 			}
 		}
+
+		report.Project = append(report.Project, doctorRefactorEntries()...)
 	}
 
 	cliout.Print(report, func(w io.Writer) { printDoctorReport(w, report) })
@@ -134,6 +136,53 @@ func runDoctor() error {
 		return fmt.Errorf("some required checks failed")
 	}
 	return nil
+}
+
+// doctorRefactorEntries runs the refactor eligibility preflight (the
+// same engine `gofasta refactor status` and the migration commands
+// use) and renders its findings as project-health entries: a summary
+// line, one "fail" entry per blocker, one "info" entry per warning.
+// Findings never flip doctor's overall Passed flag — they are facts
+// about the project's shape, not broken prerequisites.
+func doctorRefactorEntries() []doctorEntry {
+	layout := configutil.ReadLayout()
+	if layout == "" {
+		if _, err := os.Stat("app/models"); err != nil {
+			return nil // not a gofasta project shape — nothing to assess
+		}
+		layout = "layered"
+	}
+	direction := preflightToFeature
+	if layout == "feature" {
+		direction = preflightToLayered
+	}
+
+	pf := refactorPreflight(direction)
+	summary := doctorEntry{
+		Name:   "refactor",
+		Status: "ok",
+		Message: fmt.Sprintf("eligible for `gofasta refactor %s` (%d warning(s))",
+			direction, len(pf.Warnings)),
+	}
+	if len(pf.Blockers) > 0 {
+		summary.Status = "fail"
+		summary.Message = fmt.Sprintf("%d blocker(s) for `gofasta refactor %s` — run `gofasta refactor status` for details",
+			len(pf.Blockers), direction)
+	}
+	entries := []doctorEntry{summary}
+	for _, b := range pf.Blockers {
+		entries = append(entries, doctorEntry{
+			Name: "refactor", Status: "fail",
+			Message: "[" + b.Check + "] " + preflightLineFor(b),
+		})
+	}
+	for _, w := range pf.Warnings {
+		entries = append(entries, doctorEntry{
+			Name: "refactor", Status: "info",
+			Message: "[" + w.Check + "] " + preflightLineFor(w),
+		})
+	}
+	return entries
 }
 
 // doctorEntryFor turns the legacy (info, ok) tuple into a structured

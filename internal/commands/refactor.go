@@ -47,9 +47,52 @@ type refactorResult struct {
 	// GraphQLSkipped lists per-resource resolver files that don't exist
 	// (REST-only resources inside a GraphQL project — legal, skipped).
 	GraphQLSkipped []string `json:"graphql_skipped,omitempty"`
-	DryRun         bool     `json:"dry_run"`
-	Success        bool     `json:"success"`
-	Error          string   `json:"error,omitempty"`
+	// Preflight carries the eligibility findings (blockers refuse the
+	// migration; warnings are informational).
+	Preflight *preflightReport `json:"preflight,omitempty"`
+	DryRun    bool             `json:"dry_run"`
+	Success   bool             `json:"success"`
+	Error     string           `json:"error,omitempty"`
+}
+
+// printPreflightFindings renders a preflight report through cliout —
+// warnings first, blockers last so the refusal reason sits next to the
+// error message that follows it.
+func printPreflightFindings(pf *preflightReport) {
+	for _, w := range pf.Warnings {
+		if w.Path != "" {
+			cliout.Warn("[%s] %s: %s", w.Check, w.Path, w.Message)
+			continue
+		}
+		cliout.Warn("[%s] %s", w.Check, w.Message)
+	}
+	for _, b := range pf.Blockers {
+		if b.Path != "" {
+			cliout.Fail("[%s] %s: %s", b.Check, b.Path, b.Message)
+			continue
+		}
+		cliout.Fail("[%s] %s", b.Check, b.Message)
+	}
+}
+
+// preflightRefusal converts a non-eligible report into the command
+// error: REFACTOR_NO_GIT when the missing repository is the only
+// blocker (it has a dedicated --force escape), REFACTOR_PRECHECK_FAILED
+// otherwise.
+func preflightRefusal(pf *preflightReport) error {
+	onlyNoGit := true
+	for _, b := range pf.Blockers {
+		if b.Check != "no-git" {
+			onlyNoGit = false
+			break
+		}
+	}
+	if onlyNoGit {
+		return clierr.New(clierr.CodeRefactorNoGit,
+			"not a git repository — commit a checkpoint first (`git init && git add -A && git commit`) or pass --force to accept that an aborted migration cannot be undone")
+	}
+	return clierr.New(clierr.CodeRefactorPrecheckFailed,
+		fmt.Sprintf("%d blocking condition(s) found — nothing was changed; fix them and re-run (`gofasta refactor status` re-checks eligibility)", len(pf.Blockers)))
 }
 
 var refactorCmd = &cobra.Command{
@@ -157,8 +200,12 @@ type refactorStatusResult struct {
 	Resources       []string `json:"resources"`         // detected resource names
 	MigrationTarget string   `json:"migration_target"`  // the layout you'd migrate TO
 	MigrationCmd    string   `json:"migration_command"` // exact command to run
-	Success         bool     `json:"success"`
-	Error           string   `json:"error,omitempty"`
+	// Preflight carries the eligibility findings for the migration
+	// target. Status stays exit-zero even with blockers — it is an
+	// inspector; the JSON carries the verdict.
+	Preflight *preflightReport `json:"preflight,omitempty"`
+	Success   bool             `json:"success"`
+	Error     string           `json:"error,omitempty"`
 }
 
 func runRefactorStatus(_ *cobra.Command, _ []string) (resultErr error) {
@@ -176,6 +223,22 @@ func runRefactorStatus(_ *cobra.Command, _ []string) (resultErr error) {
 			}
 			fprintf(w, "Migration target: %s\n", result.MigrationTarget)
 			fprintf(w, "Command:          %s\n", result.MigrationCmd)
+			if result.Preflight == nil {
+				return
+			}
+			switch {
+			case len(result.Preflight.Blockers) > 0:
+				fprintf(w, "Eligibility:      ✗ %d blocker(s), %d warning(s)\n",
+					len(result.Preflight.Blockers), len(result.Preflight.Warnings))
+			default:
+				fprintf(w, "Eligibility:      ✓ eligible (%d warning(s))\n", len(result.Preflight.Warnings))
+			}
+			for _, b := range result.Preflight.Blockers {
+				fprintf(w, "  ✗ [%s] %s\n", b.Check, preflightLineFor(b))
+			}
+			for _, warn := range result.Preflight.Warnings {
+				fprintf(w, "  ⚠ [%s] %s\n", warn.Check, preflightLineFor(warn))
+			}
 		})
 	}()
 
@@ -213,7 +276,22 @@ func runRefactorStatus(_ *cobra.Command, _ []string) (resultErr error) {
 		result.MigrationTarget = "layered"
 		result.MigrationCmd = "gofasta refactor layered --all"
 	}
+
+	// Eligibility for the natural migration target — same engine the
+	// migration commands refuse on.
+	if result.MigrationTarget != "" {
+		pf := refactorPreflight(result.MigrationTarget)
+		result.Preflight = &pf
+	}
 	return nil
+}
+
+// preflightLineFor renders one finding for the status text view.
+func preflightLineFor(i preflightIssue) string {
+	if i.Path != "" {
+		return i.Path + ": " + i.Message
+	}
+	return i.Message
 }
 
 //nolint:gocognit,gocyclo // linear orchestration pipeline: preconditions → resolve → (dry-run|migrate) → relocate → patch → cleanup → flip → verify. Splitting hides the order.
@@ -239,6 +317,21 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 		if err := requireCleanGitTree(); err != nil {
 			return err
 		}
+	}
+
+	// Eligibility preflight — full-tree scan for states the migration
+	// would corrupt (blockers, never overridable) or silently mishandle
+	// (warnings). --force downgrades only the no-git blocker: a missing
+	// safety net, not a broken project. Dry-run shows the findings but
+	// never refuses — it writes nothing.
+	pf := refactorPreflight(preflightToFeature)
+	if force {
+		pf.downgradeNoGit()
+	}
+	result.Preflight = &pf
+	printPreflightFindings(&pf)
+	if !dryRun && !pf.eligible() {
+		return preflightRefusal(&pf)
 	}
 
 	// Resolve the resources to migrate.
@@ -402,6 +495,18 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 		if err := requireCleanGitTree(); err != nil {
 			return err
 		}
+	}
+
+	// Eligibility preflight — mirror of the forward direction; see
+	// runRefactorFeature for the semantics.
+	pf := refactorPreflight(preflightToLayered)
+	if force {
+		pf.downgradeNoGit()
+	}
+	result.Preflight = &pf
+	printPreflightFindings(&pf)
+	if !dryRun && !pf.eligible() {
+		return preflightRefusal(&pf)
 	}
 
 	resources, err := resolveLayeredRevertResources(args, allFlag)

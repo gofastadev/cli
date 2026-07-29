@@ -464,3 +464,22 @@ func TestBuildReverseSymbolMap_DtosEntriesMatchSharedList(t *testing.T) {
 	}
 	assert.ElementsMatch(t, perResourceDtoSymbolNames(r), dtosEntries)
 }
+
+// TestExpectedResourceSymbols pins the public recognition surface: it
+// must contain everything buildReverseSymbolMap recognizes plus the
+// rename-handled routes functions and the wire provider set. The
+// refactor preflight diffs real projects against this set — a symbol
+// missing here produces false "renamed" warnings for scaffold-shaped
+// projects (the preflight's pristine-project tests catch that end to
+// end; this pins the contract locally).
+func TestExpectedResourceSymbols(t *testing.T) {
+	r := userResource()
+	got := ExpectedResourceSymbols(r)
+
+	for name := range buildReverseSymbolMap(r) {
+		assert.True(t, got[name], "missing reverse-map symbol %q", name)
+	}
+	for _, extra := range []string{"UserRoutes", "RegisterRoutes", "UserSet"} {
+		assert.True(t, got[extra], "missing %q", extra)
+	}
+}

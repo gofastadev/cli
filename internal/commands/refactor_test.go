@@ -1451,8 +1451,9 @@ func TestRunRefactorFeature_DirtyTreeStopsWithoutForce(t *testing.T) {
 	assert.Contains(t, err.Error(), "uncommitted changes")
 }
 
-// TestRunRefactorFeature_MigrateFailureStops covers the per-resource migrate
-// error surfacing out of the loop.
+// TestRunRefactorFeature_MigrateFailureStops: a broken per-resource
+// source file is now caught by the eligibility preflight BEFORE any
+// write — the historical mid-flight abort left a half-rewritten tree.
 func TestRunRefactorFeature_MigrateFailureStops(t *testing.T) {
 	inRenderedProject(t)
 	setRefactorFlagsWithAll(t, false, false)
@@ -1462,7 +1463,9 @@ func TestRunRefactorFeature_MigrateFailureStops(t *testing.T) {
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "featurize")
+	assert.Contains(t, err.Error(), "blocking condition")
+	assert.False(t, fileExistsInFixture(t, "app/user/service.go"),
+		"the preflight must refuse before any file moves")
 }
 
 // TestRunRefactorFeature_SharedRelocationFailureStops covers the relocation
@@ -1478,7 +1481,8 @@ func TestRunRefactorFeature_SharedRelocationFailureStops(t *testing.T) {
 	assert.Contains(t, err.Error(), "app/shared")
 }
 
-// TestRunRefactorFeature_CrossCuttingFailureStops covers the patch step's arm.
+// TestRunRefactorFeature_CrossCuttingFailureStops: a broken
+// cross-cutting file is caught by the preflight before any write.
 func TestRunRefactorFeature_CrossCuttingFailureStops(t *testing.T) {
 	inRenderedProject(t)
 	setRefactorFlagsWithAll(t, false, false)
@@ -1488,7 +1492,9 @@ func TestRunRefactorFeature_CrossCuttingFailureStops(t *testing.T) {
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "transform")
+	assert.Contains(t, err.Error(), "blocking condition")
+	assert.False(t, fileExistsInFixture(t, "app/user/service.go"),
+		"the preflight must refuse before any file moves")
 }
 
 // TestRunRefactorFeature_ConfigFlipFailureStops covers the config arm.
@@ -1531,6 +1537,8 @@ func TestRunRefactorLayered_DirtyTreeStopsWithoutForce(t *testing.T) {
 	assert.Contains(t, err.Error(), "uncommitted changes")
 }
 
+// TestRunRefactorLayered_RevertFailureStops: a broken feature-side file
+// is caught by the preflight before the reverse migration writes.
 func TestRunRefactorLayered_RevertFailureStops(t *testing.T) {
 	migratedProject(t)
 	require.NoError(t, os.WriteFile("app/user/service.go",
@@ -1538,7 +1546,9 @@ func TestRunRefactorLayered_RevertFailureStops(t *testing.T) {
 
 	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "featurize reverse")
+	assert.Contains(t, err.Error(), "blocking condition")
+	assert.False(t, fileExistsInFixture(t, "app/services/user.service.go"),
+		"the preflight must refuse before any file moves back")
 }
 
 func TestRunRefactorLayered_SharedRelocationFailureStops(t *testing.T) {
@@ -1882,8 +1892,9 @@ func TestRunRefactorLayered_UnreadableModulePathStops(t *testing.T) {
 	assert.Contains(t, err.Error(), "go.mod")
 }
 
-// TestRunRefactorFeature_PasswordGeneratorFailureStops covers the relocation
-// step's error arm inside the orchestrator.
+// TestRunRefactorFeature_PasswordGeneratorFailureStops: a broken
+// password_generator.go is caught by the preflight before any write —
+// the file is on the transformed set (it follows the User feature).
 func TestRunRefactorFeature_PasswordGeneratorFailureStops(t *testing.T) {
 	inRenderedProject(t)
 	setRefactorFlagsWithAll(t, false, false)
@@ -1893,7 +1904,9 @@ func TestRunRefactorFeature_PasswordGeneratorFailureStops(t *testing.T) {
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "password_generator.go")
+	assert.Contains(t, err.Error(), "blocking condition")
+	assert.False(t, fileExistsInFixture(t, "app/user/password_generator.go"),
+		"the preflight must refuse before the relocation")
 }
 
 // TestRunRefactorLayered_ConfigFlipWriteFailureStops covers the reverse config
@@ -2263,4 +2276,105 @@ func TestWarnPartialGraphQLMigration(t *testing.T) {
 		warnPartialGraphQLMigration(all[:1], discover)
 	})
 	assert.NotContains(t, out, "migrate all resources together")
+}
+
+// ---------- Eligibility preflight wiring ----------
+
+// TestRunRefactorFeature_NoGitRefusedWithoutForce: without --force and
+// without a git repository the migration refuses — there is no
+// recovery path for an aborted run. (requireCleanGitTree is permissive
+// when there's no repo, so the preflight owns this gate.)
+func TestRunRefactorFeature_NoGitRefusedWithoutForce(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	setRefactorFlagsWithoutForce(t)
+	stubGoCommands(t, nil)
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not a git repository")
+	assert.False(t, fileExistsInFixture(t, "app/user/service.go"),
+		"refusal must happen before any write")
+}
+
+// TestRunRefactorFeature_TornStateRefusedEvenWithForce: --force only
+// bypasses the dirty-tree/no-git safety net — a torn per-resource
+// state is a hard refusal.
+func TestRunRefactorFeature_TornStateRefusedEvenWithForce(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false) // force=true via the helper
+	stubGoCommands(t, nil)
+	writeRefactorFile(t, "app/user/service.go", "package user\n")
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "blocking condition")
+	assert.True(t, fileExistsInFixture(t, "app/services/user.service.go"),
+		"no layered file may move when the preflight refuses")
+}
+
+// TestRunRefactorFeature_DryRunShowsFindingsWithoutRefusing: dry-run
+// writes nothing, so it reports the findings instead of refusing.
+func TestRunRefactorFeature_DryRunShowsFindingsWithoutRefusing(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, true /*dry-run*/, false)
+	writeRefactorFile(t, "app/user/service.go", "package user\n")
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
+	})
+	assert.Contains(t, out, "[layout-state]")
+	assert.Contains(t, out, "BOTH layouts")
+}
+
+// TestRunRefactorStatus_ReportsEligibility: status surfaces the same
+// preflight — blockers and warnings — while staying exit-zero.
+func TestRunRefactorStatus_ReportsEligibility(t *testing.T) {
+	inRenderedProject(t)
+	writeRefactorFile(t, "app/user/service.go", "package user\n")
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
+	})
+	assert.Contains(t, out, "Eligibility:      ✗")
+	assert.Contains(t, out, "[layout-state]")
+}
+
+func TestRunRefactorStatus_EligibleProject(t *testing.T) {
+	inRenderedProject(t)
+	gitInitOrSkip(t)
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
+	})
+	assert.Contains(t, out, "Eligibility:      ✓ eligible")
+}
+
+func TestRunRefactorStatus_JSONCarriesPreflight(t *testing.T) {
+	inRenderedProject(t)
+	withJSONMode(t)
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
+	})
+	var res refactorStatusResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	require.NotNil(t, res.Preflight)
+	// The temp fixture is not a git repo — the verdict must say so.
+	require.Len(t, res.Preflight.Blockers, 1)
+	assert.Equal(t, "no-git", res.Preflight.Blockers[0].Check)
+}
+
+func TestPreflightRefusal_CodeSelection(t *testing.T) {
+	var onlyGit preflightReport
+	onlyGit.block("no-git", "", "no repo")
+	err := preflightRefusal(&onlyGit)
+	assert.Contains(t, err.Error(), "not a git repository")
+	assert.Contains(t, err.Error(), "--force")
+
+	var mixed preflightReport
+	mixed.block("no-git", "", "no repo")
+	mixed.block("layout-state", "app/user", "torn")
+	err = preflightRefusal(&mixed)
+	assert.Contains(t, err.Error(), "2 blocking condition(s)")
 }

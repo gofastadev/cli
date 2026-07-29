@@ -81,6 +81,31 @@ func buildReverseSymbolMap(r Resource) map[string]reverseSymbolPackage {
 	return out
 }
 
+// ExpectedResourceSymbols returns the exported identifiers the scaffold
+// generates for one resource — the surface the migration engines
+// recognize and re-qualify. Derived from buildReverseSymbolMap (the
+// reverse transformer's recognition table) plus the routes function
+// names, which the transformers handle by rename rather than by
+// re-qualification. The refactor preflight diffs a project's actual
+// exports against this set to detect renamed scaffold types, which the
+// migrations would silently fail to rewrite.
+func ExpectedResourceSymbols(r Resource) map[string]bool {
+	symMap := buildReverseSymbolMap(r)
+	out := make(map[string]bool, len(symMap)+2)
+	for name := range symMap {
+		out[name] = true
+	}
+	// Route registration function: `<R>Routes` in layered, renamed to
+	// `RegisterRoutes` in feature layout.
+	out[r.Name+"Routes"] = true
+	out["RegisterRoutes"] = true
+	// Wire provider set: `<R>Set` in app/di/providers/<r>.go (layered)
+	// and app/<r>/wire.go (feature). Referenced by wire.go, swapped by
+	// the cross-cutting transforms rather than the reverse symbol map.
+	out[r.Name+"Set"] = true
+	return out
+}
+
 // TransformPerResourceReverse migrates a single per-resource source
 // file from feature-package layout back to its layered location. It's
 // the inverse of TransformPerResource:

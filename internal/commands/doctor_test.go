@@ -249,3 +249,31 @@ func TestPrintDoctorSection_AllStatuses(t *testing.T) {
 	assert.Contains(t, out, "broken")
 	assert.Contains(t, out, "unknown")
 }
+
+// TestRunDoctor_RefactorEligibility: inside a real project shape,
+// doctor surfaces the refactor preflight as project-health entries.
+// The temp fixture is not a git repo, so the summary reports blockers;
+// required checks still pass, so doctor's exit stays zero (project
+// shape facts never flip Passed).
+func TestRunDoctor_RefactorEligibility(t *testing.T) {
+	inRenderedProject(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "refactor")
+	assert.Contains(t, out, "blocker(s) for `gofasta refactor feature`")
+	assert.Contains(t, out, "[no-git]")
+}
+
+func TestRunDoctor_RefactorEligibilityClean(t *testing.T) {
+	inRenderedProject(t)
+	gitInitOrSkip(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "eligible for `gofasta refactor feature`")
+}

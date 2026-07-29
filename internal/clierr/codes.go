@@ -192,6 +192,14 @@ const (
 	// ResourceNotFound — the named resource doesn't have a model file
 	// at the expected layered path.
 	CodeRefactorResourceNotFound Code = "REFACTOR_RESOURCE_NOT_FOUND"
+	// PrecheckFailed — the eligibility preflight found blocking
+	// conditions (torn per-resource state, unparseable files the
+	// migration must transform, a non-scaffold-shaped gqlgen.yml).
+	// Not overridable: proceeding would corrupt the project.
+	CodeRefactorPrecheckFailed Code = "REFACTOR_PRECHECK_FAILED"
+	// NoGit — the project is not a git repository, so an aborted
+	// migration cannot be reverted; pass --force to accept the risk.
+	CodeRefactorNoGit Code = "REFACTOR_NO_GIT"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -297,6 +305,15 @@ var registry = map[Code]meta{
 	CodeDBResetFailed: {
 		Hint: "`gofasta db reset` could not complete; inspect the step that failed above",
 		Docs: "https://gofasta.dev/docs/cli-reference/db",
+	},
+
+	CodeRefactorPrecheckFailed: {
+		Hint: "fix the blocking conditions listed above (run `gofasta refactor status` to re-check), then re-run the migration",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorNoGit: {
+		Hint: "run `git init && git add -A && git commit -m checkpoint` so an aborted migration can be reverted, or pass --force to accept the risk",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
 	},
 
 	CodeDeployHostRequired: {

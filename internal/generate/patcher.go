@@ -17,6 +17,20 @@ import (
 // warning. Keep this string in sync with container.go.tmpl.
 const containerFieldsMarker = "// gofasta:scaffold:container-fields"
 
+// GeneratorMarkers maps project files to the scaffold marker comments
+// the `gofasta g` patchers anchor on. The refactor preflight consumes
+// this to warn when a marker was removed: the refactor itself succeeds
+// without them (its transforms are AST-anchored), but every future
+// `gofasta g scaffold` on the project would fail to patch that file.
+func GeneratorMarkers() map[string][]string {
+	return map[string][]string{
+		"app/di/container.go":             {containerFieldsMarker},
+		"app/di/wire.go":                  {wireProvidersMarker},
+		"app/rest/routes/index.routes.go": {routeConfigFieldsMarker, routeRegistrationsMarker},
+		"cmd/serve.go":                    {routeConfigInitMarker},
+	}
+}
+
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
 // Field type qualifiers depend on the project layout — in layered mode
 // the fields reference repoInterfaces/svcInterfaces/controllers, in
