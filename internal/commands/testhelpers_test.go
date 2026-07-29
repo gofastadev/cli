@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"text/template"
 
@@ -112,12 +113,73 @@ func renderSkeleton(t *testing.T, dir string) {
 func inRenderedProject(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	renderSkeleton(t, dir)
+	copyTree(t, renderedSkeletonOnce(t), dir)
 
 	orig, err := os.Getwd()
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(dir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+// The skeleton is rendered ONCE per test binary and copied per test.
+//
+// Rendering parses and executes ~78 templates; doing that in every test made
+// this package exceed the 10-minute -race timeout. Copying the finished tree is
+// an order of magnitude cheaper and gives each test the same isolated,
+// writable copy.
+var (
+	skeletonOnce sync.Once
+	skeletonDir  string
+	skeletonErr  error
+)
+
+func renderedSkeletonOnce(t *testing.T) string {
+	t.Helper()
+	skeletonOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gofasta-skeleton-*")
+		if err != nil {
+			skeletonErr = err
+			return
+		}
+		skeletonDir = dir
+		renderSkeleton(t, dir)
+	})
+	require.NoError(t, skeletonErr)
+	require.NotEmpty(t, skeletonDir)
+	return skeletonDir
+}
+
+// copyTree copies the contents of src into dst, preserving file modes.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	require.NoError(t, filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		body, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(target, body, info.Mode().Perm())
+	}))
 }
 
 // userResourceFixture is the resource every scaffold ships with, and therefore

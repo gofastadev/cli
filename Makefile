@@ -38,11 +38,13 @@ lint: lint-install
 
 ## Run tests with the race detector
 test:
-	go test -race ./...
+# -timeout 20m: internal/commands is large and its -race run sits near Go's
+# 10-minute default, which fails as a timeout rather than a test failure.
+	go test -race -timeout 20m ./...
 
 ## Run tests with coverage report
 coverage:
-	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	go test -race -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 ## Build the CLI binary
