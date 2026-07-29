@@ -92,8 +92,6 @@ const (
 // refactorPreflight traverses the project and returns every blocker and
 // warning for migrating in the given direction. Read-only; every check
 // tolerates missing files and directories.
-//
-//nolint:gocognit,gocyclo // linear check pipeline: state → git → tree walk → symbols → gqlgen → markers. Splitting hides the order the report is assembled in.
 func refactorPreflight(direction string) preflightReport {
 	var report preflightReport
 

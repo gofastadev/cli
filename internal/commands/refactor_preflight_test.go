@@ -245,11 +245,23 @@ func TestRefactorPreflight_MissingGeneratorMarkerWarns(t *testing.T) {
 
 	content, err := os.ReadFile("app/di/container.go")
 	require.NoError(t, err)
-	stripped := strings.ReplaceAll(string(content), "// gofasta:scaffold:container-fields", "")
-	require.NoError(t, os.WriteFile("app/di/container.go", []byte(stripped), 0o644))
+	// Drop the whole marker LINE — the scaffold's marker comment
+	// carries trailing text, so substring removal would leave an
+	// unparseable dangling comment and hit the parse-error blocker
+	// instead of the marker warning.
+	var kept []string
+	for line := range strings.SplitSeq(string(content), "\n") {
+		if strings.Contains(line, "gofasta:scaffold:container-fields") {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	require.NoError(t, os.WriteFile("app/di/container.go", []byte(strings.Join(kept, "\n")), 0o644))
 
 	pf := refactorPreflight(preflightToFeature)
 
+	assert.Empty(t, findingsFor(pf.Blockers, "parse-error"),
+		"removing a marker line must not corrupt the file")
 	warns := findingsFor(pf.Warnings, "generator-markers")
 	require.Len(t, warns, 1)
 	assert.Equal(t, "app/di/container.go", warns[0].Path)
