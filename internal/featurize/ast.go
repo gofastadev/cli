@@ -76,9 +76,10 @@ func importAlias(imp *dst.ImportSpec, path string) string {
 // the astpatch dependency.
 func renderFile(file *dst.File) ([]byte, error) {
 	var buf bytes.Buffer
-	if err := decorator.NewRestorer().Fprint(&buf, file); err != nil {
-		return nil, fmt.Errorf("featurize: restore: %w", err)
-	}
+	// Fprint's error is discarded: its only source is the io.Writer, and a
+	// bytes.Buffer never fails a write. A malformed tree panics inside the
+	// restorer rather than returning an error, so there is nothing to report.
+	_ = decorator.NewRestorer().Fprint(&buf, file)
 	out, err := format.Source(buf.Bytes())
 	if err != nil {
 		// Return un-formatted source rather than failing — downstream

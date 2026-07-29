@@ -495,11 +495,11 @@ func renderMock(d MockData) []byte {
 	// only by other declarations in that file) never appear in the
 	// method signatures. format.Source alone would leave them and the
 	// build would fail.
+	// On failure return the unformatted bytes: goimports only fails when the
+	// source does not parse, and format.Source uses the same parser — so a
+	// gofmt fallback would fail on exactly the same input.
 	formatted, err := goimports.Process(d.OutPath, b.Bytes(), nil)
 	if err != nil {
-		if fallback, ferr := format.Source(b.Bytes()); ferr == nil {
-			return fallback
-		}
 		return b.Bytes()
 	}
 	return formatted

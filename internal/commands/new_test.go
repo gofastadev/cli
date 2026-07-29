@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -1007,4 +1008,132 @@ func repoRoot(t *testing.T) string {
 		require.NotEqual(t, parent, dir, "walked past the filesystem root without finding go.mod")
 		dir = parent
 	}
+}
+
+// TestNewCmd_RejectsUnsupportedLayout covers the --layout validation in the
+// command's RunE. An unrecognized layout must be refused before any scaffolding
+// begins, not silently treated as layered.
+func TestNewCmd_RejectsUnsupportedLayout(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, newCmd.Flags().Set("layout", "hexagonal"))
+	t.Cleanup(func() { _ = newCmd.Flags().Set("layout", "layered") })
+
+	err := newCmd.RunE(newCmd, []string{"someapp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--layout")
+}
+
+// TestRunNew_EmptyLayoutDefaultsToLayered covers the default arm. runNew is
+// also called from `init`-style paths that pass no layout, and an empty value
+// must resolve rather than propagate into the template data.
+func TestRunNew_EmptyLayoutDefaultsToLayered(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.MkdirAll("myapp", 0o755))
+
+	// The directory already exists, so runNew stops right after resolving the
+	// defaults — far enough to exercise the empty-layout branch.
+	err := runNew("myapp", false, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+// TestRunNew_FeatureLayoutRoutesFilesThroughFeaturize covers the feature arm of
+// the scaffold walk: a per-resource template must land at its feature path with
+// its package rewritten, rather than at the layered path it was authored as.
+func TestRunNew_FeatureLayoutRoutesFilesThroughFeaturize(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	root, err := os.Getwd()
+	require.NoError(t, err)
+
+	projectFSOverride = fstest.MapFS{
+		"project":                              {Mode: fs.ModeDir},
+		"project/app":                          {Mode: fs.ModeDir},
+		"project/app/services":                 {Mode: fs.ModeDir},
+		"project/app/services/user.service.go": {Data: []byte("package services\n\ntype UserService struct{}\n")},
+	}
+	t.Cleanup(func() { projectFSOverride = nil })
+
+	require.NoError(t, runNew("featapp", false, "postgres", "feature"))
+
+	body, err := os.ReadFile(filepath.Join(root, "featapp", "app", "user", "service.go"))
+	require.NoError(t, err, "the per-resource file must be rerouted into the feature package")
+	assert.Contains(t, string(body), "package user\n")
+}
+
+// TestRunNew_FeatureLayoutReportsATransformFailure covers the error arm of that
+// same branch.
+func TestRunNew_FeatureLayoutReportsATransformFailure(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+
+	projectFSOverride = fstest.MapFS{
+		"project":                              {Mode: fs.ModeDir},
+		"project/app":                          {Mode: fs.ModeDir},
+		"project/app/services":                 {Mode: fs.ModeDir},
+		"project/app/services/user.service.go": {Data: []byte("package services\n\nfunc Broken( {\n")},
+	}
+	t.Cleanup(func() { projectFSOverride = nil })
+
+	err := runNew("brokenfeat", false, "postgres", "feature")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "featurize")
+}
+
+// swapRandRead replaces the crypto/rand seam for the duration of a test.
+func swapRandRead(t *testing.T, fn func([]byte) (int, error)) {
+	t.Helper()
+	orig := randReadFn
+	randReadFn = fn
+	t.Cleanup(func() { randReadFn = orig })
+}
+
+// TestRandomSecret_EntropyFailureIsReported covers the error return. It is only
+// reachable through the seam: rand.Read fails solely when the OS entropy source
+// is broken, and a scaffold must abort rather than mint a predictable secret.
+func TestRandomSecret_EntropyFailureIsReported(t *testing.T) {
+	swapRandRead(t, func([]byte) (int, error) { return 0, errors.New("entropy source unavailable") })
+
+	_, err := randomSecret()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entropy")
+}
+
+func TestRandomSecret_ProducesDistinctURLSafeSecrets(t *testing.T) {
+	a, err := randomSecret()
+	require.NoError(t, err)
+	b, err := randomSecret()
+	require.NoError(t, err)
+
+	assert.NotEqual(t, a, b, "each scaffold must get its own secret")
+	assert.NotContains(t, a, "=", "the secret is raw URL encoding — no padding")
+	assert.NotContains(t, a, "+")
+	assert.NotContains(t, a, "/")
+}
+
+// TestRunNew_JWTSecretFailureStops and its session twin cover the two
+// propagation sites in runNew.
+func TestRunNew_JWTSecretFailureStops(t *testing.T) {
+	chdirTemp(t)
+	swapRandRead(t, func([]byte) (int, error) { return 0, errors.New("entropy source unavailable") })
+
+	err := runNew("secretless", false, "postgres", "layered")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT secret")
+}
+
+func TestRunNew_SessionSecretFailureStops(t *testing.T) {
+	chdirTemp(t)
+	calls := 0
+	swapRandRead(t, func(b []byte) (int, error) {
+		calls++
+		if calls == 1 {
+			return len(b), nil // JWT secret succeeds
+		}
+		return 0, errors.New("entropy source unavailable")
+	})
+
+	err := runNew("sessionless", false, "postgres", "layered")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "session secret")
 }

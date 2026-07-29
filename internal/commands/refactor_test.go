@@ -1705,3 +1705,231 @@ func TestPruneEmptyLayeredDirs_MissingDirsAreSkipped(t *testing.T) {
 
 	assert.NotPanics(t, pruneEmptyLayeredDirs)
 }
+
+// --- shared-infra dtos import loop (both directions) ---
+
+// TestApplyCrossCuttingPatches_SkipsAbsentDtosConsumers covers the read-error
+// continue in the dtos-import loop. Those three files are optional — a
+// REST-only project has no resolver — so a missing one is not an error.
+func TestApplyCrossCuttingPatches_SkipsAbsentDtosConsumers(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.Remove("app/validators/app_validator.go"))
+
+	patched, err := applyCrossCuttingPatches(fixtureModulePath, []featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.NotContains(t, patched, "app/validators/app_validator.go")
+}
+
+func TestApplyCrossCuttingPatches_DtosConsumerTransformFailure(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.WriteFile("app/validators/app_validator.go",
+		[]byte("package validators\n\nfunc Broken( {\n"), 0o644))
+
+	_, err := applyCrossCuttingPatches(fixtureModulePath, []featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fix dtos import")
+}
+
+func TestApplyCrossCuttingPatches_DtosConsumerWriteFailure(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedProject(t)
+	makeReadOnly(t, "app/validators/app_validator.go")
+
+	_, err := applyCrossCuttingPatches(fixtureModulePath, []featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/validators/app_validator.go")
+}
+
+func TestApplyCrossCuttingPatchesReverse_SkipsAbsentJobs(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.Remove("app/di/wire.go"))
+	require.NoError(t, os.Remove("app/validators/app_validator.go"))
+
+	patched, err := applyCrossCuttingPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.NotContains(t, patched, "app/di/wire.go")
+}
+
+func TestApplyCrossCuttingPatchesReverse_DtosConsumerTransformFailure(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.WriteFile("app/validators/app_validator.go",
+		[]byte("package validators\n\nfunc Broken( {\n"), 0o644))
+
+	_, err := applyCrossCuttingPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fix shared dtos import reverse")
+}
+
+func TestApplyCrossCuttingPatchesReverse_DtosConsumerWriteFailure(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedProject(t)
+	makeReadOnly(t, "app/validators/app_validator.go")
+
+	_, err := applyCrossCuttingPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+}
+
+// --- remaining single branches ---
+
+// TestApplySharedRelocationsReverse_MkdirFailureIsReported covers the mkdir arm
+// of the reverse relocation.
+func TestApplySharedRelocationsReverse_MkdirFailureIsReported(t *testing.T) {
+	inRenderedProject(t)
+	_, err := applySharedRelocations()
+	require.NoError(t, err)
+	blockPath(t, "app/dtos")
+
+	_, err = applySharedRelocationsReverse()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "mkdir app/dtos")
+}
+
+// TestMigrateResource_MockTransformFailureIsReported covers the mock transform
+// arm: an unparseable mock must abort rather than be written back mangled.
+func TestMigrateResource_MockTransformFailureIsReported(t *testing.T) {
+	inRenderedProject(t)
+	mockPath := filepath.Join("testutil", "mocks", "user_service_mock.go")
+	require.NoError(t, os.MkdirAll(filepath.Dir(mockPath), 0o755))
+	require.NoError(t, os.WriteFile(mockPath, []byte("package mocks\n\nfunc Broken( {\n"), 0o644))
+
+	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "featurize")
+}
+
+// TestRelocatePasswordGenerator_AbsentFileIsANoOp covers the read-error return:
+// a project that already migrated has nothing left to move.
+func TestRelocatePasswordGenerator_AbsentFileIsANoOp(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.Remove("app/services/password_generator.go"))
+
+	moved, err := relocatePasswordGenerator(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.Empty(t, moved)
+}
+
+func TestRelocatePasswordGenerator_TransformFailureIsReported(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.WriteFile("app/services/password_generator.go",
+		[]byte("package services\n\nfunc Broken( {\n"), 0o644))
+
+	_, err := relocatePasswordGenerator(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password_generator.go")
+}
+
+// TestRequireCleanGitTree_CleanRepoPasses covers the success return. An empty
+// repo reports a clean tree without needing a commit.
+func TestRequireCleanGitTree_CleanRepoPasses(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not installed")
+	}
+	dir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, exec.Command("git", "init").Run())
+
+	assert.NoError(t, requireCleanGitTree(), "an empty repo has no uncommitted changes")
+}
+
+// --- orchestrator arms not yet reached ---
+
+func TestRunRefactorFeature_ResolveFailureStops(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, true /*all*/)
+	stubGoCommands(t, nil)
+	require.NoError(t, os.RemoveAll("app/models"))
+	require.NoError(t, os.MkdirAll("app/models", 0o755))
+
+	err := runRefactorFeature(refactorFeatureCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no layered resources")
+}
+
+func TestRunRefactorLayered_ResolveFailureStops(t *testing.T) {
+	migratedProject(t)
+	setRefactorFlagsWithAll(t, false, true /*all*/)
+	require.NoError(t, os.RemoveAll("app/user"))
+
+	err := runRefactorLayered(refactorLayeredCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no feature directories")
+}
+
+func TestRunRefactorLayered_PasswordGeneratorFailureStops(t *testing.T) {
+	migratedProject(t)
+	require.NoError(t, os.WriteFile("app/user/password_generator.go",
+		[]byte("package user\n\nfunc Broken( {\n"), 0o644))
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+}
+
+// TestApplyCrossCuttingPatches_SkipsAbsentJobs covers the read-error continue
+// in the cross-cutting jobs loop (the dtos loop above it is a separate list).
+// A REST-only project has no GraphQL resolver, so a missing target is normal.
+func TestApplyCrossCuttingPatches_SkipsAbsentJobs(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, os.Remove("app/di/wire.go"))
+
+	patched, err := applyCrossCuttingPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.NotContains(t, patched, "app/di/wire.go")
+}
+
+// TestRunRefactorFeature_UnreadableModulePathStops and its layered twin cover
+// the readModulePath arm: without a module path the transforms cannot rewrite
+// import paths, so the refactor must stop before touching anything.
+func TestRunRefactorFeature_UnreadableModulePathStops(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	stubGoCommands(t, nil)
+	require.NoError(t, os.Remove("go.mod"))
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "go.mod")
+}
+
+func TestRunRefactorLayered_UnreadableModulePathStops(t *testing.T) {
+	migratedProject(t)
+	require.NoError(t, os.Remove("go.mod"))
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "go.mod")
+}
+
+// TestRunRefactorFeature_PasswordGeneratorFailureStops covers the relocation
+// step's error arm inside the orchestrator.
+func TestRunRefactorFeature_PasswordGeneratorFailureStops(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	stubGoCommands(t, nil)
+	require.NoError(t, os.WriteFile("app/services/password_generator.go",
+		[]byte("package services\n\nfunc Broken( {\n"), 0o644))
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password_generator.go")
+}
+
+// TestRunRefactorLayered_ConfigFlipWriteFailureStops covers the reverse config
+// flip's error arm. config.yaml must stay READABLE — the eligibility check
+// reads it — while being unwritable, so this needs permissions.
+func TestRunRefactorLayered_ConfigFlipWriteFailureStops(t *testing.T) {
+	requireNonRoot(t)
+	migratedProject(t)
+	makeReadOnly(t, "config.yaml")
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+}

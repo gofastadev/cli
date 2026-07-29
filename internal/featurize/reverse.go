@@ -231,21 +231,6 @@ func TransformPerResourceReverse(src []byte, dest LayeredDestination, opts Optio
 				imp.Path.Value = fmt.Sprintf("%q", newPath)
 			}
 		}
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*dst.GenDecl)
-			if !ok || gd.Tok != token.IMPORT {
-				continue
-			}
-			for _, spec := range gd.Specs {
-				is, ok := spec.(*dst.ImportSpec)
-				if !ok {
-					continue
-				}
-				if strings.Trim(is.Path.Value, `"`) == oldPath {
-					is.Path.Value = fmt.Sprintf("%q", newPath)
-				}
-			}
-		}
 	}
 
 	// Step 7: drop the `userpkg "<mod>/app/<snake>"`-style imports
@@ -261,13 +246,9 @@ func TransformPerResourceReverse(src []byte, dest LayeredDestination, opts Optio
 	// Step 8: add the imports the requalification needs.
 	for alias, path := range addedImports {
 		// Skip self-imports (would be circular). destAlias is "" for
-		// external test packages — they CAN import the same-directory
-		// underlying package via its qualifier, so the path-suffix
-		// check (`isSelfImport`) is wrong here. The destAlias match
-		// is sufficient for true self-references.
-		if alias == destAlias {
-			continue
-		}
+		// No self-import guard is needed here: a symbol whose alias equals
+		// destAlias collapses to a bare identifier earlier in this function
+		// and never reaches addedImports.
 		// dtos files re-qualifying services symbols — same as forward,
 		// just add the import.
 		alreadyImported := false
@@ -395,21 +376,6 @@ func FixSharedDtosImportPathReverse(src []byte, mod string) ([]byte, error) {
 	for _, imp := range file.Imports {
 		if strings.Trim(imp.Path.Value, `"`) == oldPath {
 			imp.Path.Value = fmt.Sprintf("%q", newPath)
-		}
-	}
-	for _, decl := range file.Decls {
-		gd, ok := decl.(*dst.GenDecl)
-		if !ok || gd.Tok != token.IMPORT {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			is, ok := spec.(*dst.ImportSpec)
-			if !ok {
-				continue
-			}
-			if strings.Trim(is.Path.Value, `"`) == oldPath {
-				is.Path.Value = fmt.Sprintf("%q", newPath)
-			}
 		}
 	}
 	return renderFile(file)

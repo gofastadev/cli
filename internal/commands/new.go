@@ -123,13 +123,19 @@ func verifyGoFloor(projectName string) {
 	cliout.Blank()
 }
 
+// randReadFn is the crypto/rand seam. Production reads real entropy; tests
+// swap it to drive the failure path, which is otherwise unreachable —
+// rand.Read only errors when the OS entropy source is broken. Same pattern as
+// runDevPipelineFn in dev.go.
+var randReadFn = rand.Read
+
 // randomSecret returns a cryptographically-random, URL-safe secret string.
 // Each `gofasta new` mints fresh JWT and session secrets so a generated
 // project is never seeded with the framework's publicly-known placeholder
 // (which pkg/config.ValidateSecrets rejects at boot).
 func randomSecret() (string, error) {
 	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
+	if _, err := randReadFn(buf); err != nil {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(buf), nil

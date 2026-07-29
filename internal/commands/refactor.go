@@ -1099,12 +1099,10 @@ func toSnakeCaseSimple(s string) string {
 // local copy rather than a shared package to avoid a cross-package
 // dependency for two tiny helpers.
 func toPascalCaseSimple(s string) string {
+	// FieldsFunc never returns empty strings, so every part has a first byte.
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
 	var b strings.Builder
 	for _, p := range parts {
-		if p == "" {
-			continue
-		}
 		first := p[0]
 		if first >= 'a' && first <= 'z' {
 			first -= 'a' - 'A'

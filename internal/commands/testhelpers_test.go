@@ -8,12 +8,12 @@
 package commands
 
 import (
-	"html/template"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/gofastadev/cli/internal/skeleton"
