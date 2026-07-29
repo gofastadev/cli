@@ -212,7 +212,10 @@ func serviceSteps(d ScaffoldData) []Step {
 		Step{"auto-wire: wire.go", PatchWireFile},
 	)
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
+		steps = append(steps,
+			Step{"auto-wire: resolver", PatchResolver},
+			Step{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
+		)
 	}
 	// Regenerate
 	steps = append(steps, Step{"regenerate Wire", RunWire})
@@ -222,49 +225,12 @@ func serviceSteps(d ScaffoldData) []Step {
 	return steps
 }
 
+// controllerSteps is scaffoldSteps under another name: `g controller`
+// generates the full REST (+optional GraphQL) stack, exactly like
+// `g scaffold`. Kept as a distinct function so the two commands can
+// diverge later without churning their call sites.
 func controllerSteps(d ScaffoldData) []Step {
-	steps := []Step{
-		// Files
-		{"model", GenModel},
-		{"migration", GenMigration},
-		{"repository interface", GenRepoInterface},
-		{"repository", GenRepo},
-		{"repository test", GenRepoTestFile},
-		{"sentinel errors", GenErrors},
-		{"domain inputs", GenInputs},
-		{"domain inputs test", GenInputsTestFile},
-		{"service interface", GenSvcInterface},
-		{"service", GenSvc},
-		{"service test", GenSvcTestFile},
-		{"DTOs", GenDTOs},
-		{"DTOs test", GenDTOsTestFile},
-		{"Wire provider", GenWireProvider},
-		{"controller", GenController},
-		{"controller test", GenControllerTestFile},
-		{"routes", GenRoutes},
-	}
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"GraphQL schema", GenGraphQL})
-	}
-	// Patch
-	steps = append(steps,
-		Step{"auto-wire: container", PatchContainer},
-		Step{"auto-wire: wire.go", PatchWireFile},
-	)
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
-	}
-	//nolint:gocritic // split intentionally around optional resolver step above.
-	steps = append(steps,
-		Step{"auto-wire: route config", PatchRouteConfig},
-		Step{"auto-wire: serve.go", PatchServeFile},
-	)
-	// Regenerate
-	steps = append(steps, Step{"regenerate Wire", RunWire})
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"regenerate gqlgen", RunGqlgen})
-	}
-	return steps
+	return scaffoldSteps(d)
 }
 
 func scaffoldSteps(d ScaffoldData) []Step {
@@ -297,7 +263,10 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		Step{"auto-wire: wire.go", PatchWireFile},
 	)
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
+		steps = append(steps,
+			Step{"auto-wire: resolver", PatchResolver},
+			Step{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
+		)
 	}
 	//nolint:gocritic // split intentionally around optional resolver step above.
 	steps = append(steps,
@@ -321,6 +290,7 @@ func routeSteps() []Step {
 func resolverSteps() []Step {
 	return []Step{
 		{"auto-wire: resolver", GenResolver},
+		{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
 	}
 }
 

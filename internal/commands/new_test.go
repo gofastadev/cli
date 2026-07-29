@@ -886,8 +886,10 @@ func TestFeaturizeFile_SharedRelocationsMovePathOnly(t *testing.T) {
 	assert.Equal(t, src, body, "a relocation must not rewrite the file")
 }
 
-// TestFeaturizeFile_SharedInfraGetsDtosImportFlipped covers the three shared
+// TestFeaturizeFile_SharedInfraGetsDtosImportFlipped covers the two shared
 // infra files that stay where they are but import the relocated dtos package.
+// (GraphQL resolver files used to be in this list — they now route through
+// the full TransformGraphQL arm, covered below.)
 func TestFeaturizeFile_SharedInfraGetsDtosImportFlipped(t *testing.T) {
 	src := []byte(`package validators
 
@@ -899,7 +901,6 @@ func Check(in dtos.TPaginationInputDto) error { return nil }
 	for _, path := range []string{
 		"app/validators/app_validator.go",
 		"app/rest/controllers/validator.go",
-		"app/graphql/resolvers/user.resolvers.go",
 	} {
 		t.Run(path, func(t *testing.T) {
 			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
@@ -909,6 +910,72 @@ func Check(in dtos.TPaginationInputDto) error { return nil }
 				"the import must follow the relocated package")
 		})
 	}
+}
+
+// TestFeaturizeFile_GraphQLResolverFilesAreRequalified covers the GraphQL arm:
+// EVERY .go file under app/graphql/resolvers/ — matched by prefix, not by a
+// hardcoded name — is re-qualified in place: per-resource symbols move to the
+// feature package alias, shared dtos references keep their qualifier with the
+// flipped import path.
+func TestFeaturizeFile_GraphQLResolverFilesAreRequalified(t *testing.T) {
+	src := []byte(`package resolvers
+
+import (
+	"` + fixtureModulePath + `/app/dtos"
+	"` + fixtureModulePath + `/app/services"
+)
+
+func (r *queryResolver) helper(in dtos.TCreateUserDto) error {
+	_ = dtos.TPaginationObjectDto{}
+	return services.ErrUserNotFound
+}
+`)
+
+	for _, path := range []string{
+		"app/graphql/resolvers/user.resolvers.go",
+		"app/graphql/resolvers/anything.resolvers.go",
+		"app/graphql/resolvers/gql_helpers.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "resolver files stay put — gqlgen owns the directory")
+			s := string(body)
+			assert.Contains(t, s, "userpkg.TCreateUserDto")
+			assert.Contains(t, s, "userpkg.ErrUserNotFound")
+			assert.Contains(t, s, "dtos.TPaginationObjectDto", "shared aliases keep the dtos qualifier")
+			assert.Contains(t, s, "/app/shared/dtos")
+			assert.NotContains(t, s, `"`+fixtureModulePath+`/app/services"`)
+		})
+	}
+}
+
+func TestFeaturizeFile_GraphQLResolverTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/graphql/resolvers/user.resolvers.go",
+		[]byte("package resolvers\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_GqlgenConfigIsRewritten covers the gqlgen.yml arm: the
+// model path and autobind list follow the dtos relocation so `new`'s gqlgen
+// step generates into the feature shape.
+func TestFeaturizeFile_GqlgenConfigIsRewritten(t *testing.T) {
+	src := []byte(`model:
+  filename: app/dtos/generated-types.dtos.go
+  package: dtos
+
+autobind:
+ - "` + fixtureModulePath + `/app/dtos"
+`)
+
+	out, body, err := featurizeFile("gqlgen.yml", src, fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "gqlgen.yml", out)
+	s := string(body)
+	assert.Contains(t, s, "filename: app/shared/dtos/generated-types.dtos.go")
+	assert.Contains(t, s, `- "`+fixtureModulePath+`/app/shared/dtos"`)
+	assert.Contains(t, s, `- "`+fixtureModulePath+`/app/user"`)
+	assert.NotContains(t, s, `- "`+fixtureModulePath+`/app/dtos"`)
 }
 
 func TestFeaturizeFile_SharedInfraTransformFailure(t *testing.T) {

@@ -351,13 +351,6 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 		return err
 	}
 
-	// gqlgen runs BEFORE wire: the regenerated resolver scaffolding must
-	// exist before wire typechecks app/di (which imports the resolvers
-	// package), and both must be in place before the final go build.
-	if err := regenerateGqlgen(); err != nil {
-		return err
-	}
-
 	// Wire goes FIRST so the stale wire_gen.go (which still references
 	// layered imports like app/repositories) is regenerated against the
 	// new layout. Then go build can verify the whole tree.
@@ -370,6 +363,13 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"wire generation failed — inspect the partial state and `git restore` to revert")
 	}
+
+	// gqlgen runs AFTER wire (its validation pass compiles the module,
+	// which needs the fresh wire_gen.go) and before the final build.
+	if err := regenerateGqlgen(); err != nil {
+		return err
+	}
+
 	cliout.Step("✓ Verifying go build ./...")
 	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
@@ -503,18 +503,19 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 		return err
 	}
 
-	// gqlgen runs BEFORE wire — same ordering rationale as the forward
-	// direction (see runRefactorFeature).
-	if err := regenerateGqlgen(); err != nil {
-		return err
-	}
-
 	cliout.Step("✓ Regenerating Wire")
 	_ = os.Remove("app/di/wire_gen.go")
 	if err := runGoCommandFn("tool", "wire", "./app/di/"); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"wire generation failed — inspect the partial state and `git restore` to revert")
 	}
+
+	// gqlgen runs AFTER wire — same ordering rationale as the forward
+	// direction (see runRefactorFeature).
+	if err := regenerateGqlgen(); err != nil {
+		return err
+	}
+
 	cliout.Step("✓ Verifying go build ./...")
 	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
@@ -1241,8 +1242,15 @@ func warnPartialGraphQLMigration(inScope []featurize.Resource, discoverAll func(
 // regenerateGqlgen deletes the stale generated exec file and re-runs
 // gqlgen, iff the project uses gqlgen. The stale app/generated.go
 // imports the pre-migration dtos package, so it must go before the
-// generator (and the final go build) runs. Same delete-and-regen
-// pattern as wire_gen.go.
+// generator runs (gqlgen rewrites it from the migrated config).
+//
+// ORDERING: must run AFTER the wire step. gqlgen's final validation
+// pass compiles the whole module, and cmd/serve.go references
+// di.InitializeServiceContainer — which only exists in wire_gen.go,
+// the file the wire step regenerates. Wire itself doesn't need gqlgen
+// first: it typechecks only ./app/di/, whose resolver dependency is
+// the hand-written (and already re-qualified) resolvers package, not
+// gqlgen's exec output.
 func regenerateGqlgen() error {
 	if _, err := os.Stat("gqlgen.yml"); err != nil {
 		return nil

@@ -876,13 +876,38 @@ func featurizeFile(outputPath string, content []byte, mod string, resources []fe
 		}
 	}
 
+	// GraphQL resolver files stay in app/graphql/resolvers/ (gqlgen owns
+	// the directory) but reference the moved per-resource symbols and the
+	// relocated shared dtos package. EVERY .go file in the directory gets
+	// the full re-qualification — matching by prefix, not by name, so a
+	// project's own resolver files are covered too (the historical
+	// hardcoded user.resolvers.go case missed every other file).
+	if strings.HasPrefix(outputPath, "app/graphql/resolvers/") && strings.HasSuffix(outputPath, ".go") {
+		out, terr := featurize.TransformGraphQL(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
+	// gqlgen.yml follows the dtos relocation: model.filename and autobind
+	// point at app/shared/dtos plus the per-resource feature packages, so
+	// the `go tool gqlgen generate` step of `new` emits code that
+	// compiles against the feature layout.
+	if outputPath == "gqlgen.yml" {
+		out, terr := featurize.RewriteGqlgenConfig(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
 	// Shared infra files that stay in their layered location but
 	// reference the relocated shared dtos package. Only their import
 	// path needs flipping — no other source rewrite.
 	switch outputPath {
 	case "app/validators/app_validator.go",
-		"app/rest/controllers/validator.go",
-		"app/graphql/resolvers/user.resolvers.go":
+		"app/rest/controllers/validator.go":
 		out, terr := featurize.FixDtosImportPath(content, mod)
 		if terr != nil {
 			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)

@@ -3,6 +3,7 @@ package generate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -733,4 +734,124 @@ type Container struct {
 	assert.Equal(t, "patch", plan[0].Kind)
 	assert.Equal(t, "app/di/container.go", plan[0].Path)
 	assert.Contains(t, plan[0].Detail, "Product")
+}
+
+// TestPatchResolver_FeatureUsesFeaturePackage covers the feature-layout
+// branch: the injected service field references the per-feature package
+// (with its alias import inserted), not svcInterfaces — the layered
+// qualifier would not compile because app/services/interfaces is empty
+// in a feature project.
+func TestPatchResolver_FeatureUsesFeaturePackage(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+
+	// A feature-shaped resolver.go: the User feature is already wired
+	// via its alias import (the shape `gofasta new --graphql
+	// --layout=feature` and `refactor feature` both produce).
+	resolverContent := `package resolvers
+
+import (
+	userpkg "github.com/testorg/testapp/app/user"
+	"github.com/testorg/testapp/app/validators"
+)
+
+type Resolver struct {
+	UserService userpkg.UserServiceInterface
+	Validator   *validators.AppValidator
+}
+
+// NewResolver creates a new resolver.
+func NewResolver(userService userpkg.UserServiceInterface, validator *validators.AppValidator) *Resolver {
+	return &Resolver{UserService: userService, Validator: validator}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	require.NoError(t, PatchResolver(d))
+
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Contains(t, content, `productpkg "github.com/testorg/testapp/app/product"`,
+		"the feature package must be imported before it is referenced")
+	assert.Contains(t, content, "ProductService productpkg.ProductServiceInterface")
+	assert.Contains(t, content, "productService productpkg.ProductServiceInterface")
+	assert.Contains(t, content, "ProductService: productService")
+	assert.NotContains(t, content, "svcInterfaces.ProductServiceInterface",
+		"the layered qualifier must not leak into a feature project")
+}
+
+// TestPatchResolver_FeatureDoesNotDuplicateImport covers re-patching: a
+// resolver already carrying the alias import must not gain it twice.
+func TestPatchResolver_FeatureDoesNotDuplicateImport(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+
+	resolverContent := `package resolvers
+
+import (
+	productpkg "github.com/testorg/testapp/app/product"
+)
+
+type Resolver struct {
+	OtherService productpkg.OtherServiceInterface
+}
+
+// NewResolver creates a new resolver.
+func NewResolver(otherService productpkg.OtherServiceInterface) *Resolver {
+	return &Resolver{OtherService: otherService}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	require.NoError(t, PatchResolver(d))
+
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Equal(t, 1,
+		strings.Count(content, `productpkg "github.com/testorg/testapp/app/product"`),
+		"the alias import must appear exactly once")
+}
+
+// TestPatchGqlgenAutobind covers the autobind patcher: feature layout
+// adds the new resource's package to gqlgen.yml; layered layout and
+// already-covered resources are no-ops.
+func TestPatchGqlgenAutobind_FeatureAddsEntry(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "gqlgen.yml", `autobind:
+ - "github.com/testorg/testapp/app/shared/dtos"
+ - "github.com/testorg/testapp/app/user"
+`)
+
+	require.NoError(t, PatchGqlgenAutobind(d))
+
+	content := readTestFile(t, "gqlgen.yml")
+	assert.Contains(t, content, ` - "github.com/testorg/testapp/app/product"`)
+}
+
+func TestPatchGqlgenAutobind_SkipsWhenAlreadyPresent(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	original := `autobind:
+ - "github.com/testorg/testapp/app/shared/dtos"
+ - "github.com/testorg/testapp/app/product"
+`
+	writeTestFile(t, "gqlgen.yml", original)
+
+	require.NoError(t, PatchGqlgenAutobind(d))
+	assert.Equal(t, original, readTestFile(t, "gqlgen.yml"))
+}
+
+func TestPatchGqlgenAutobind_LayeredIsNoop(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData() // layered layout
+	// Deliberately NO gqlgen.yml on disk: the layered branch must
+	// return before reading the file.
+	require.NoError(t, PatchGqlgenAutobind(d))
+}
+
+func TestPatchGqlgenAutobind_ReadError(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	// Feature layout but no gqlgen.yml → the read error surfaces (the
+	// step only runs for --graphql scaffolds, where the file exists).
+	require.Error(t, PatchGqlgenAutobind(d))
 }

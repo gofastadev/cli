@@ -548,7 +548,9 @@ func TestRouteSteps(t *testing.T) {
 
 func TestResolverSteps(t *testing.T) {
 	steps := resolverSteps()
-	assert.Len(t, steps, 1)
+	assert.Len(t, steps, 2)
+	assert.Equal(t, "auto-wire: resolver", steps[0].Label)
+	assert.Equal(t, "auto-wire: gqlgen autobind", steps[1].Label)
 }
 
 func TestProviderSteps(t *testing.T) {
@@ -562,6 +564,7 @@ func TestServiceSteps_REST(t *testing.T) {
 	for _, s := range steps {
 		assert.NotEqual(t, "GraphQL schema", s.Label)
 		assert.NotEqual(t, "auto-wire: resolver", s.Label)
+		assert.NotEqual(t, "auto-wire: gqlgen autobind", s.Label)
 		assert.NotEqual(t, "regenerate gqlgen", s.Label)
 	}
 }
@@ -575,6 +578,7 @@ func TestServiceSteps_GraphQL(t *testing.T) {
 	}
 	assert.Contains(t, labels, "GraphQL schema")
 	assert.Contains(t, labels, "auto-wire: resolver")
+	assert.Contains(t, labels, "auto-wire: gqlgen autobind")
 	assert.Contains(t, labels, "regenerate gqlgen")
 }
 
@@ -599,6 +603,7 @@ func TestScaffoldSteps_GraphQL(t *testing.T) {
 		labels = append(labels, s.Label)
 	}
 	assert.Contains(t, labels, "GraphQL schema")
+	assert.Contains(t, labels, "auto-wire: gqlgen autobind")
 	assert.Contains(t, labels, "regenerate gqlgen")
 }
 

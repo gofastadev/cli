@@ -2054,7 +2054,26 @@ func migratedGraphQLProject(t *testing.T) {
 func TestRunRefactorFeature_GraphQLProjectPatchesResolverFiles(t *testing.T) {
 	inRenderedGraphQLProject(t)
 	setRefactorFlagsWithAll(t, false, true)
-	calls := stubGoCommands(t, nil)
+
+	// Seed a stale layered-shaped wire_gen.go: gqlgen's validation pass
+	// compiles the module, so the stale file must have been deleted (by
+	// the wire step, which runs first) before the gqlgen call fires.
+	require.NoError(t, os.WriteFile("app/di/wire_gen.go",
+		[]byte("package di\n\nimport _ \""+fixtureModulePath+"/app/repositories\"\n"), 0o644))
+
+	var calls [][]string
+	orig := runGoCommandFn
+	runGoCommandFn = func(args ...string) error {
+		calls = append(calls, args)
+		if len(args) > 1 && args[1] == "gqlgen" {
+			assert.False(t, fileExistsInFixture(t, "app/di/wire_gen.go"),
+				"stale wire_gen.go must be gone (deleted by the wire step) before gqlgen runs")
+			assert.False(t, fileExistsInFixture(t, "app/generated.go"),
+				"stale exec file must be deleted before gqlgen runs")
+		}
+		return nil
+	}
+	t.Cleanup(func() { runGoCommandFn = orig })
 
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
 
@@ -2093,11 +2112,12 @@ func TestRunRefactorFeature_GraphQLProjectPatchesResolverFiles(t *testing.T) {
 	// The stale exec file is deleted before gqlgen reruns.
 	assert.False(t, fileExistsInFixture(t, "app/generated.go"))
 
-	// Pipeline order: gqlgen → wire → build.
-	require.Len(t, *calls, 3)
-	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, (*calls)[0])
-	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, (*calls)[1])
-	assert.Equal(t, []string{"build", "./..."}, (*calls)[2])
+	// Pipeline order: wire → gqlgen → build. gqlgen's validation pass
+	// compiles the module, which needs the regenerated wire_gen.go.
+	require.Len(t, calls, 3)
+	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, calls[0])
+	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, calls[1])
+	assert.Equal(t, []string{"build", "./..."}, calls[2])
 }
 
 func TestRunRefactorFeature_GraphQLGqlgenFailureAborts(t *testing.T) {
@@ -2211,10 +2231,10 @@ func TestRunRefactorLayered_GraphQLRoundTripRestoresLayeredShape(t *testing.T) {
 	assert.True(t, fileExistsInFixture(t, "app/dtos/generated-types.dtos.go"))
 	assert.False(t, fileExistsInFixture(t, "app/shared/dtos/generated-types.dtos.go"))
 
-	// Reverse pipeline order matches forward: gqlgen → wire → build.
+	// Reverse pipeline order matches forward: wire → gqlgen → build.
 	require.Len(t, *calls, 3)
-	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, (*calls)[0])
-	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, (*calls)[1])
+	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, (*calls)[0])
+	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, (*calls)[1])
 	assert.Equal(t, []string{"build", "./..."}, (*calls)[2])
 }
 
@@ -2222,7 +2242,8 @@ func TestWarnPartialGraphQLMigration(t *testing.T) {
 	inRenderedGraphQLProject(t)
 
 	all := []featurize.Resource{userResourceFixture(), {Name: "Invoice", Snake: "invoice", Plural: "Invoices"}}
-	discover := func() ([]featurize.Resource, error) { return all, nil }
+	discoverErr := error(nil)
+	discover := func() ([]featurize.Resource, error) { return all, discoverErr }
 
 	out := captureStdout(t, func() {
 		warnPartialGraphQLMigration(all[:1], discover)
@@ -2234,4 +2255,12 @@ func TestWarnPartialGraphQLMigration(t *testing.T) {
 	})
 	assert.NotContains(t, out, "migrate all resources together",
 		"full-scope migrations must not warn")
+
+	// A discovery failure must stay silent — the warning is advisory,
+	// and the migration itself will surface the real error.
+	discoverErr = errors.New("discovery blew up")
+	out = captureStdout(t, func() {
+		warnPartialGraphQLMigration(all[:1], discover)
+	})
+	assert.NotContains(t, out, "migrate all resources together")
 }

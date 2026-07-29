@@ -1,11 +1,13 @@
 package generate
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/featurize"
 )
 
 // containerFieldsMarker pins the line `gofasta g scaffold` inserts new
@@ -124,6 +126,10 @@ func PatchWireFile(d ScaffoldData) error {
 }
 
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
+// The service-interface qualifier depends on the project layout — in
+// layered mode the interface lives in svcInterfaces, in feature mode it
+// lives in the per-feature package (referenced via `<snake>pkg`), same
+// branching as PatchContainer / PatchWireFile.
 func PatchResolver(d ScaffoldData) error {
 	path := d.L().ResolverFile()
 	content, err := os.ReadFile(path)
@@ -138,8 +144,25 @@ func PatchResolver(d ScaffoldData) error {
 		return nil
 	}
 
+	// Pick the layout-dependent qualifier; in feature mode ensure the
+	// per-feature alias import exists (svcInterfaces is already imported
+	// by the layered resolver.go template).
+	qualifier := "svcInterfaces"
+	if d.L().IsFeature() {
+		qualifier = d.SnakeName + "pkg"
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", qualifier, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+	}
+	ifaceType := fmt.Sprintf("%s.%sServiceInterface", qualifier, d.Name)
+
 	// Add field to Resolver struct
-	fieldLine := fmt.Sprintf("\t%s svcInterfaces.%sServiceInterface\n", fieldName, d.Name)
+	fieldLine := fmt.Sprintf("\t%s %s\n", fieldName, ifaceType)
 	s = strings.Replace(s, "}\n\n// NewResolver", fieldLine+"}\n\n// NewResolver", 1)
 
 	// Update NewResolver signature
@@ -151,7 +174,7 @@ func PatchResolver(d ScaffoldData) error {
 	}
 	sigEnd := strings.Index(s[sigStart:], ")")
 	currentParams := s[sigStart+len(oldSig) : sigStart+sigEnd]
-	newParam := fmt.Sprintf("%s svcInterfaces.%sServiceInterface", paramName, d.Name)
+	newParam := fmt.Sprintf("%s %s", paramName, ifaceType)
 	s = s[:sigStart+len(oldSig)] + currentParams + ", " + newParam + s[sigStart+sigEnd:]
 
 	// Add field assignment in constructor body
@@ -168,6 +191,33 @@ func PatchResolver(d ScaffoldData) error {
 	return writeOrRecordPatch(path,
 		describePatch("inject "+fieldName+" into Resolver"),
 		[]byte(s))
+}
+
+// PatchGqlgenAutobind adds the new resource's feature package to
+// gqlgen.yml's autobind list, so gqlgen binds the schema types against
+// the hand-written DTOs in app/<snake>/ instead of regenerating
+// duplicates. Feature layout only — the layered autobind entry
+// (<mod>/app/dtos) already covers every resource's DTOs.
+func PatchGqlgenAutobind(d ScaffoldData) error {
+	if !d.L().IsFeature() {
+		return nil
+	}
+	const path = "gqlgen.yml"
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	out, err := featurize.EnsureGqlgenAutobind(content, d.ModulePath, d.SnakeName)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(out, content) {
+		cliout.Skip(path, "autobind already covers app/"+d.SnakeName)
+		return nil
+	}
+	return writeOrRecordPatch(path,
+		describePatch("add "+d.ModulePath+"/app/"+d.SnakeName+" to autobind"),
+		out)
 }
 
 // PatchRouteConfig adds controller to RouteConfig and registers routes in app/rest/routes/index.routes.go.
