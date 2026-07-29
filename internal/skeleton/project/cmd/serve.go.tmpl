@@ -110,30 +110,7 @@ func startServer() error {
 	mux.Handle("/debug/", devtools.Handler())
 
 	// Build middleware chain
-	middlewares := []middleware.Middleware{
-		middleware.RequestID(),
-		middleware.RequestLogging(logger),
-		// Devtools Recovery wraps the framework's Recovery: in devtools
-		// builds it captures the panic + stack + request into the
-		// exceptions ring (surfaced on the dashboard); in production
-		// it delegates straight to pkg/middleware.Recovery so behavior
-		// is unchanged.
-		middleware.Middleware(devtools.Recovery(middleware.Recovery(logger))),
-		middleware.CORS(cfg.Server.AllowedOrigins),
-		middleware.SecurityHeaders(cfg.Security),
-		// Devtools request-capture — pass-through no-op in production builds.
-		middleware.Middleware(devtools.Middleware),
-	}
-	if cfg.RateLimit.Enabled {
-		middlewares = append(middlewares, middleware.RateLimit(cfg.RateLimit))
-	}
-	if cfg.Observability.MetricsEnabled {
-		middlewares = append(middlewares, middleware.Middleware(observability.MetricsMiddleware))
-	}
-	if cfg.Observability.TracingEnabled {
-		middlewares = append(middlewares, middleware.Middleware(observability.TracingMiddleware(cfg.Observability.ServiceName)))
-	}
-	rootHandler := middleware.Chain(mux, middlewares...)
+	rootHandler := middleware.Chain(mux, buildMiddlewareChain(container)...)
 
 	// Bind to cfg.Server.Host:Port. The default host (set in pkg/config) is
 	// 127.0.0.1, which keeps macOS's firewall quiet during local Air rebuilds —
@@ -194,6 +171,43 @@ func startServer() error {
 
 	slog.Info("server stopped")
 	return nil
+}
+
+// buildMiddlewareChain assembles the HTTP middleware stack in the order it
+// should run: request identity and logging outermost, then panic recovery,
+// then the security-relevant headers, then the optional feature middlewares.
+//
+// Split out of startServer so the three optional-feature toggles live here
+// rather than adding branches to an already long startup function. Add new
+// conditional middleware here, not inline in startServer.
+func buildMiddlewareChain(container *di.ServiceContainer) []middleware.Middleware {
+	cfg := container.Config
+	logger := container.Logger
+
+	middlewares := []middleware.Middleware{
+		middleware.RequestID(),
+		middleware.RequestLogging(logger),
+		// Devtools Recovery wraps the framework's Recovery: in devtools
+		// builds it captures the panic + stack + request into the
+		// exceptions ring (surfaced on the dashboard); in production
+		// it delegates straight to pkg/middleware.Recovery so behavior
+		// is unchanged.
+		middleware.Middleware(devtools.Recovery(middleware.Recovery(logger))),
+		middleware.CORS(cfg.Server.AllowedOrigins),
+		middleware.SecurityHeaders(cfg.Security),
+		// Devtools request-capture — pass-through no-op in production builds.
+		middleware.Middleware(devtools.Middleware),
+	}
+	if cfg.RateLimit.Enabled {
+		middlewares = append(middlewares, middleware.RateLimit(cfg.RateLimit))
+	}
+	if cfg.Observability.MetricsEnabled {
+		middlewares = append(middlewares, middleware.Middleware(observability.MetricsMiddleware))
+	}
+	if cfg.Observability.TracingEnabled {
+		middlewares = append(middlewares, middleware.Middleware(observability.TracingMiddleware(cfg.Observability.ServiceName)))
+	}
+	return middlewares
 }
 
 func startScheduler(container *di.ServiceContainer, logger *slog.Logger) *scheduler.Scheduler {

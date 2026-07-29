@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -45,6 +46,81 @@ type ProjectData struct {
 	Layout           string // "layered" | "feature"
 	JWTSecret        string // per-project random JWT signing secret
 	SessionSecret    string // per-project random session store secret
+}
+
+// scaffoldGoVersion is the Go language version every generated project
+// declares. It is the toolkit's stated support floor, deliberately decoupled
+// from whatever toolchain the developer running `gofasta new` happens to have.
+//
+// Keep in sync with:
+//   - internal/skeleton/project/dot-go-version
+//   - the `go` directive in this repo's go.mod
+const scaffoldGoVersion = "1.25.0"
+
+// Tool dependency versions, pinned rather than tracked at @latest.
+//
+// Two reasons the versions are pinned:
+//
+//  1. Reproducibility — two developers running `gofasta new` weeks apart get
+//     identical tool versions in go.mod.
+//
+//  2. The Go floor. A tool dependency lives in the generated project's go.mod,
+//     so ITS `go` directive raises the project's. air v1.67.2 moved to
+//     `go 1.26.0`, which silently bumped every new scaffold from 1.25.0 to
+//     1.26.0 and broke the project's own `make lint`: golangci-lint is itself
+//     a go1.25 module, so the pinned binary refuses to load a config targeting
+//     a newer language version. Pinning air to v1.67.1 — the last release
+//     declaring go 1.25 — keeps the floor where scaffoldGoVersion says it is.
+//
+// When bumping any of these, re-run `make integration`: it scaffolds a project
+// and runs that project's full preflight, which is what catches a version whose
+// `go` directive exceeds scaffoldGoVersion.
+const (
+	toolVersionGqlgen      = "v0.17.94"
+	toolVersionWire        = "v0.7.0"
+	toolVersionAir         = "v1.67.1" // last release declaring go 1.25 — see above
+	toolVersionSwag        = "v1.16.6"
+	toolVersionHTTPSwagger = "v2.0.2"
+	toolVersionChi         = "v5.3.1"
+)
+
+// goDirectivePattern extracts the `go` directive from a go.mod file.
+var goDirectivePattern = regexp.MustCompile(`(?m)^go\s+(\S+)\s*$`)
+
+// readGoDirective returns the `go` version declared in the go.mod at path, or
+// "" when the file cannot be read or carries no directive.
+func readGoDirective(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	m := goDirectivePattern.FindSubmatch(content)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// verifyGoFloor checks that installing the tool dependencies did not raise the
+// generated project's Go language version above the declared floor.
+//
+// This is the guard for the failure mode described on the tool version block:
+// `go get` silently rewrites the `go` directive upward when a dependency
+// requires a newer language version, and nothing downstream complains until the
+// developer runs the project's own lint — by which point the cause is several
+// steps behind them. Warn rather than abort: the project is already written and
+// otherwise usable, and the developer can pin the offending tool themselves.
+func verifyGoFloor(projectName string) {
+	got := readGoDirective("go.mod")
+	if got == "" || got == scaffoldGoVersion {
+		return
+	}
+	cliout.Blank()
+	cliout.Warn("A tool dependency raised this project's Go version to %s (expected %s).", got, scaffoldGoVersion)
+	cliout.Hint("`make lint` in %s will fail until this is resolved — golangci-lint cannot", projectName)
+	cliout.Hint("lint a module targeting a newer Go version than the linter was built with.")
+	cliout.Hint("Pin the offending tool in go.mod, or upgrade the toolchain and linter together.")
+	cliout.Blank()
 }
 
 // randomSecret returns a cryptographically-random, URL-safe secret string.
@@ -306,8 +382,8 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	// developer's local toolchain. Best-effort: if this fails, the scaffold
 	// still works, it just ships with the developer's toolchain version
 	// instead of the declared minimum.
-	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
-		cliout.Warn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
+	if err := runCmdSilent("go", "mod", "edit", "-go="+scaffoldGoVersion); err != nil {
+		cliout.Warn("Could not normalise go directive to %s (generated go.mod may pin a higher version): %v", scaffoldGoVersion, err)
 	}
 
 	// Walk embedded skeleton and generate files
@@ -452,16 +528,17 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		cliout.Warn("Could not install cobra")
 	}
 
-	// Add tool dependencies
+	// Add tool dependencies. Versions are pinned — see the tool version block
+	// for why @latest is not used here.
 	cliout.Step("📦 Installing tool dependencies...")
 	if includeGraphQL {
-		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@"+toolVersionGqlgen)
 	}
-	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
-	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
-	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
-	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@latest")
-	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@latest")
+	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@"+toolVersionWire)
+	_ = runCmdSilent("go", "get", "github.com/air-verse/air@"+toolVersionAir)
+	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@"+toolVersionSwag)
+	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@"+toolVersionHTTPSwagger)
+	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@"+toolVersionChi)
 	// Register as Go tools
 	if includeGraphQL {
 		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
@@ -473,6 +550,10 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	// Tidy
 	cliout.Step("📦 Running go mod tidy...")
 	_ = runCmdSilent("go", "mod", "tidy")
+
+	// Tidy resolves the final module graph, so this is the first point where
+	// the effective Go floor is known.
+	verifyGoFloor(projectName)
 
 	// Generate code
 	cliout.Blank()

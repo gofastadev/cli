@@ -1,0 +1,66 @@
+package resolvers
+
+// GraphQL error helpers shared by every resolver in this package.
+//
+// These live here rather than in a *.resolvers.go file on purpose. gqlgen
+// OWNS the `{name}.resolvers.go` files (see gqlgen.yml → resolver.layout:
+// follow-schema): on every `go tool gqlgen generate` it rewrites them from the
+// schema, preserves the bodies of recognized resolver methods, and moves
+// everything else — including plain helper functions — into a commented-out
+// `/* ... */` block at the end under a "!!! WARNING !!!" banner.
+//
+// That is exactly what happened when these three helpers lived in
+// user.resolvers.go: `gofasta new --graphql` ran gqlgen, the helpers were
+// commented out, and the generated project failed to compile with
+// "undefined: gqlError" before the developer ever touched it.
+//
+// Anything in this package that is not a resolver method belongs in a file
+// gqlgen does not own. Add new shared helpers here, never to a *.resolvers.go.
+
+import (
+	"github.com/vektah/gqlparser/v2/gqlerror"
+
+	"{{.ModulePath}}/app/dtos"
+)
+
+// gqlError builds a structured GraphQL error with a stable `code`
+// extension so clients can branch on it.
+func gqlError(code, message string) *gqlerror.Error {
+	return &gqlerror.Error{
+		Message:    message,
+		Extensions: map[string]any{"code": code},
+	}
+}
+
+// validationGqlError translates the framework's validation result into
+// a GraphQL error with per-field details under `extensions.fields`.
+func validationGqlError(errs []*dtos.TCommonAPIErrorDto) *gqlerror.Error {
+	fields := make([]map[string]any, 0, len(errs))
+	for _, e := range errs {
+		field := map[string]any{"message": e.Message}
+		if e.FieldName != nil {
+			field["fieldName"] = *e.FieldName
+		}
+		fields = append(fields, field)
+	}
+	return &gqlerror.Error{
+		Message: "invalid input",
+		Extensions: map[string]any{
+			"code":   "VALIDATION_FAILED",
+			"fields": fields,
+		},
+	}
+}
+
+// internalGqlError surfaces the underlying error for log correlation
+// without leaking it in the public message field. The extension's
+// `code` is stable; the wrapped error is preserved via Err so log
+// scrapers can dig in.
+func internalGqlError(message string, err error) *gqlerror.Error {
+	gqlErr := &gqlerror.Error{
+		Message:    message,
+		Extensions: map[string]any{"code": "INTERNAL"},
+	}
+	gqlErr.Err = err
+	return gqlErr
+}

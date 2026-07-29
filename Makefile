@@ -87,6 +87,16 @@ integration: build
 	@# Running this here catches a regression in the --coverage flag
 	@# shape locally before it ships.
 	cd /tmp/gofasta-integration-test && $(CURDIR)/bin/gofasta test --coverage
+	@# The --graphql variant is a SEPARATE scaffold because its breakages are
+	@# invisible to the run above: `gofasta new --graphql` invokes gqlgen,
+	@# which rewrites app/graphql/resolvers/*.resolvers.go from the schema and
+	@# relocates any non-resolver declaration into a commented-out block. That
+	@# silently commented out the shared error helpers and shipped a project
+	@# that would not compile — for as long as this target only built the
+	@# non-GraphQL variant, nothing caught it.
+	rm -rf /tmp/gofasta-integration-test-gql
+	./bin/gofasta new /tmp/gofasta-integration-test-gql --graphql
+	cd /tmp/gofasta-integration-test-gql && make preflight
 
 ## Remove build artifacts
 clean:
