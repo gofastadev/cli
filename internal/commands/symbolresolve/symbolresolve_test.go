@@ -187,7 +187,7 @@ func (fakeObject) Type() types.Type { return nil }
 
 func (fakeObject) Exported() bool { return false }
 
-func (fakeObject) Id() string { return "fake" }
+func (fakeObject) Id() string { return "fake" } //nolint:revive // implements types.Object interface (stdlib name)
 
 func (fakeObject) Parent() *types.Scope { return nil }
 
