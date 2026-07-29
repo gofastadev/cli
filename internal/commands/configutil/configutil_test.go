@@ -443,3 +443,26 @@ func TestBuildMigrationURL_DefaultPortPerDriver(t *testing.T) {
 		})
 	}
 }
+
+// TestReadLayout covers the layout key. The empty-string return matters: it is
+// how a project scaffolded before the feature shipped is told apart from one
+// that explicitly chose "layered", so callers know when to fall back to
+// filesystem detection rather than trusting an absent value.
+func TestReadLayout(t *testing.T) {
+	cases := map[string]struct {
+		config string
+		want   string
+	}{
+		"feature":        {"project:\n  layout: feature\n", "feature"},
+		"layered":        {"project:\n  layout: layered\n", "layered"},
+		"key absent":     {"database:\n  driver: postgres\n", ""},
+		"no config file": {"", ""},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setupConfigDir(t, tc.config)
+			assert.Equal(t, tc.want, ReadLayout())
+		})
+	}
+}
