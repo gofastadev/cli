@@ -205,6 +205,7 @@ func f() {
 	UserRoutes(r, c)
 	pkg.OtherRoutes(r, c)
 	Renamed(r)
+	NotInTheMap(r)
 }
 `)
 	rewriteCallNames(file, map[string]string{
@@ -219,6 +220,7 @@ func f() {
 	assert.Contains(t, got, "userpkg.RegisterRoutes(r, c)")
 	assert.Contains(t, got, "PlainName(r)", "a replacement with no dot stays a bare callee")
 	assert.Contains(t, got, "pkg.OtherRoutes(r, c)", "an already-qualified callee is not a bare Ident")
+	assert.Contains(t, got, "NotInTheMap(r)", "a callee absent from the map is left alone")
 }
 
 // --- renderFile ---

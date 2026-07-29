@@ -341,12 +341,12 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	// invocation needs ALL Go files in the package to compile, and the
 	// stale generated file references packages that no longer exist.
 	_ = os.Remove("app/di/wire_gen.go")
-	if err := runGoCommand("tool", "wire", "./app/di/"); err != nil {
+	if err := runGoCommandFn("tool", "wire", "./app/di/"); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"wire generation failed — inspect the partial state and `git restore` to revert")
 	}
 	cliout.Step("✓ Verifying go build ./...")
-	if err := runGoCommand("build", "./..."); err != nil {
+	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"go build failed after migration — inspect the partial state and `git restore` to revert")
 	}
@@ -465,12 +465,12 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 
 	cliout.Step("✓ Regenerating Wire")
 	_ = os.Remove("app/di/wire_gen.go")
-	if err := runGoCommand("tool", "wire", "./app/di/"); err != nil {
+	if err := runGoCommandFn("tool", "wire", "./app/di/"); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"wire generation failed — inspect the partial state and `git restore` to revert")
 	}
 	cliout.Step("✓ Verifying go build ./...")
-	if err := runGoCommand("build", "./..."); err != nil {
+	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"go build failed after unwind — inspect the partial state and `git restore` to revert")
 	}
@@ -1045,6 +1045,13 @@ func flipLayoutInConfig() error {
 
 // runGoCommand invokes `go <args>` in the current working directory,
 // streaming output to stdout/stderr.
+// runGoCommandFn is the seam the refactor orchestrators call instead of
+// runGoCommand directly. Production assigns the real function; tests swap it
+// so the wire/build steps — which need a fully resolved module and several
+// minutes — do not have to run for the surrounding orchestration to be
+// exercised. Same pattern as runDevPipelineFn in dev.go.
+var runGoCommandFn = runGoCommand
+
 func runGoCommand(args ...string) error {
 	cmd := exec.Command("go", args...)
 	cmd.Stdout = os.Stdout
