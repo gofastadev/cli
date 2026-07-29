@@ -205,3 +205,56 @@ func TestFeaturizeFile_UnrelatedFilesPassThrough(t *testing.T) {
 		})
 	}
 }
+
+// TestFeaturizeFile_SharedRelocationsMovePathOnly covers the relocation arm:
+// aliases.go changes location but not content, because the rewriting happens
+// on the caller side (see rewriteDtosImportPath).
+func TestFeaturizeFile_SharedRelocationsMovePathOnly(t *testing.T) {
+	src := []byte("package dtos\n\ntype TPaginationInputDto struct{}\n")
+
+	out, body, err := featurizeFile("app/dtos/aliases.go", src, fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "app/shared/dtos/aliases.go", out)
+	assert.Equal(t, src, body, "a relocation must not rewrite the file")
+}
+
+// TestFeaturizeFile_SharedInfraGetsDtosImportFlipped covers the three shared
+// infra files that stay where they are but import the relocated dtos package.
+func TestFeaturizeFile_SharedInfraGetsDtosImportFlipped(t *testing.T) {
+	src := []byte(`package validators
+
+import "` + fixtureModulePath + `/app/dtos"
+
+func Check(in dtos.TPaginationInputDto) error { return nil }
+`)
+
+	for _, path := range []string{
+		"app/validators/app_validator.go",
+		"app/rest/controllers/validator.go",
+		"app/graphql/resolvers/user.resolvers.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "shared infra files stay put")
+			assert.Contains(t, string(body), "/app/shared/dtos",
+				"the import must follow the relocated package")
+		})
+	}
+}
+
+func TestFeaturizeFile_SharedInfraTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/validators/app_validator.go",
+		[]byte("package validators\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestIsSupportedLayout covers both arms of the --layout validation. An
+// unrecognized value must be refused before scaffolding starts, not silently
+// treated as layered.
+func TestIsSupportedLayout(t *testing.T) {
+	assert.True(t, isSupportedLayout("layered"))
+	assert.True(t, isSupportedLayout("feature"))
+	assert.False(t, isSupportedLayout("hexagonal"))
+	assert.False(t, isSupportedLayout(""))
+}

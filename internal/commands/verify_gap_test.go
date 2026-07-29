@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -156,4 +157,31 @@ func TestResolveVerifyScopeImpl_ReverseDepsErrorFallback(t *testing.T) {
 	scope, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
 	require.NoError(t, err)
 	require.Equal(t, scope.Packages, scope.TestSet)
+}
+
+// TestRunVerify_ExtraStepsAreAppended covers the extraVerifySteps seam itself.
+// The seam exists so other tests can inject defensive branches without
+// shelling out; the append that consumes it needs its own coverage, or a
+// regression that dropped injected steps would go unnoticed and quietly
+// disable every test relying on it.
+func TestRunVerify_ExtraStepsAreAppended(t *testing.T) {
+	inRenderedProject(t)
+
+	called := false
+	orig := extraVerifySteps
+	extraVerifySteps = []verifyStepDef{{
+		name: "injected",
+		fn: func() (string, string, error) {
+			called = true
+			return "injected step ran", "", nil
+		},
+	}}
+	t.Cleanup(func() { extraVerifySteps = orig })
+
+	out := captureStdout(t, func() {
+		_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
+	})
+
+	assert.True(t, called, "an injected step must actually be executed")
+	assert.Contains(t, out, "injected")
 }

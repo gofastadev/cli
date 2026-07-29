@@ -32,7 +32,7 @@ func TestToSnakeCaseSimple(t *testing.T) {
 	}
 }
 
-// TestPluralizeSimple covers each arm of the pluralisation switch. The plural
+// TestPluralizeSimple covers each arm of the pluralization switch. The plural
 // lands in generated type names (ListUsersFilter), so a wrong form produces
 // code that does not match what the generators emit.
 func TestPluralizeSimple(t *testing.T) {
