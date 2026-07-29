@@ -960,3 +960,38 @@ func TestCheckHealth_RetriesThenFails(t *testing.T) {
 	err := CheckHealth(cfg)
 	require.Error(t, err)
 }
+
+// --- Migrations-failed warnings (deploy continues deliberately) ---
+
+// TestDeployBinary_MigrationFailureIsNonFatal pins the choice that a failing
+// migration warns rather than aborts: the new binary is already installed, so
+// stopping midway would leave the release half-applied.
+func TestDeployBinary_MigrationFailureIsNonFatal(t *testing.T) {
+	withinProject(t)
+	withFailOnArg(t, "migrate up")
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+
+	assert.NoError(t, DeployBinary(cfg), "a failed migration must not fail the deploy")
+}
+
+func TestDeployDocker_MigrationFailureIsNonFatal(t *testing.T) {
+	withinProject(t)
+	withFailOnArg(t, "migrate up")
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+
+	assert.NoError(t, DeployDocker(cfg), "a failed migration must not fail the deploy")
+}
+
+// TestSetupServer_MigrateInstallFailureIsNonFatal covers the warning branch
+// when the migrate CLI cannot be fetched: setup still completes, leaving the
+// operator to install it by hand.
+func TestSetupServer_MigrateInstallFailureIsNonFatal(t *testing.T) {
+	withinProject(t)
+	withFailOnArg(t, "command -v migrate")
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+
+	assert.NoError(t, SetupServer(cfg))
+}

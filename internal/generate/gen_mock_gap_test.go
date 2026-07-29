@@ -3,12 +3,14 @@ package generate
 import (
 	"bytes"
 	"go/ast"
+	"go/parser"
 	"go/token"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -468,4 +470,84 @@ type MetricsSvc interface {
 
 	// Cross-package references stay verbatim.
 	require.Equal(t, "context.Context", targets[0].Methods[0].Params[0].Type)
+}
+
+// --- qualifyLocalTypes and friends ---
+
+// mustParseType parses a type expression for the qualifier tests.
+func mustParseType(t *testing.T, src string) ast.Expr {
+	t.Helper()
+	e, err := parser.ParseExpr(src)
+	require.NoError(t, err)
+	return e
+}
+
+// typeString renders an expression back to source for comparison.
+func typeString(t *testing.T, e ast.Expr) string {
+	t.Helper()
+	return exprString(e)
+}
+
+func TestQualifyLocalTypes_NilAndEmptyPackage(t *testing.T) {
+	assert.Nil(t, qualifyLocalTypes(nil, "interfaces"))
+
+	// An empty package name means "nothing to qualify with" — the expression
+	// must come back untouched rather than gaining a leading dot.
+	e := mustParseType(t, "Filters")
+	assert.Equal(t, e, qualifyLocalTypes(e, ""))
+}
+
+// TestQualifyLocalTypes_Generics covers the two generic-instantiation nodes.
+// A mock for an interface with generic parameters would otherwise emit
+// unqualified type arguments and fail to compile from package mocks.
+func TestQualifyLocalTypes_Generics(t *testing.T) {
+	cases := []struct {
+		name string
+		src  string
+		want string
+	}{
+		{"single type arg", "Result[Filters]", "interfaces.Result[interfaces.Filters]"},
+		{"single builtin arg", "Result[string]", "interfaces.Result[string]"},
+		{"several type args", "Pair[Filters, Attachment]", "interfaces.Pair[interfaces.Filters, interfaces.Attachment]"},
+		{"mixed args", "Pair[string, Filters]", "interfaces.Pair[string, interfaces.Filters]"},
+		{"parenthesized", "(Filters)", "(interfaces.Filters)"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := qualifyLocalTypes(mustParseType(t, tc.src), "interfaces")
+			assert.Equal(t, tc.want, typeString(t, got))
+		})
+	}
+}
+
+func TestQualifyFieldList_Nil(t *testing.T) {
+	assert.Nil(t, qualifyFieldList(nil, "interfaces"),
+		"a func type with no results has a nil field list")
+}
+
+// TestQualifyLocalTypes_FuncTypeWithoutResults exercises the func-type arm
+// through a signature whose Results list is nil.
+func TestQualifyLocalTypes_FuncTypeWithoutResults(t *testing.T) {
+	got := qualifyLocalTypes(mustParseType(t, "func(Filters)"), "interfaces")
+	assert.Equal(t, "func(interfaces.Filters)", typeString(t, got))
+}
+
+// TestQualifyLocalTypes_ExoticTypesPassThrough covers the fall-through arm.
+// Struct and interface literals in a signature are left verbatim: their field
+// types would need qualifying too, and an interface method set written inline
+// is rare enough that rewriting it is not worth the risk of corrupting it.
+func TestQualifyLocalTypes_ExoticTypesPassThrough(t *testing.T) {
+	for _, src := range []string{
+		"struct{ X Filters }",
+		"interface{ Do() error }",
+		"chan<- struct{}",
+	} {
+		t.Run(src, func(t *testing.T) {
+			e := mustParseType(t, src)
+			got := qualifyLocalTypes(e, "interfaces")
+			assert.Equal(t, typeString(t, e), typeString(t, got),
+				"composite literal types must pass through unchanged")
+		})
+	}
 }
