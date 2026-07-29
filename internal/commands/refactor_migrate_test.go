@@ -23,7 +23,7 @@ import (
 // location and is deleted from the layered one. A file left behind in both
 // places compiles as a duplicate declaration.
 func TestMigrateResource_MovesEveryMappedFile(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	// Record which layered files the scaffold actually ships, so the
@@ -51,7 +51,7 @@ func TestMigrateResource_MovesEveryMappedFile(t *testing.T) {
 // transformed, not merely relocated: a file in app/user/ declaring `package
 // services` would not compile.
 func TestMigrateResource_RewritesPackageDeclarations(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	_, _, err := migrateResource(r, fixtureModulePath)
@@ -74,7 +74,7 @@ func TestMigrateResource_RewritesPackageDeclarations(t *testing.T) {
 // The mapping lists files not every project has (a resource generated without
 // tests, for instance); a missing one is not an error.
 func TestMigrateResource_SkipsAbsentFilesSilently(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := featurize.Resource{Name: "Ghost", Snake: "ghost", Plural: "Ghosts"}
 
 	moved, patched, err := migrateResource(r, fixtureModulePath)
@@ -87,7 +87,7 @@ func TestMigrateResource_SkipsAbsentFilesSilently(t *testing.T) {
 // layered file that will not parse must abort the migration rather than write
 // a half-transformed tree.
 func TestMigrateResource_ReportsATransformFailure(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	// Corrupt one mapped file so featurize cannot parse it.
@@ -104,7 +104,7 @@ func TestMigrateResource_ReportsATransformFailure(t *testing.T) {
 // testutil/mocks and stays there, but its qualifiers must follow the resource
 // into the feature package.
 func TestMigrateResource_TransformsMocks(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	mockPath := filepath.Join("testutil", "mocks", "user_service_mock.go")
@@ -135,7 +135,7 @@ var _ svcInterfaces.UserServiceInterface = (*UserServiceMock)(nil)
 // app/dtos/aliases.go becomes app/shared/dtos/aliases.go so the per-resource
 // dtos files can move into their features without colliding.
 func TestApplySharedRelocations_MovesAliasesFile(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.True(t, fileExistsInFixture(t, "app/dtos/aliases.go"),
 		"the scaffold must ship the shared aliases file")
 
@@ -152,7 +152,7 @@ func TestApplySharedRelocations_MovesAliasesFile(t *testing.T) {
 }
 
 func TestApplySharedRelocations_NoOpWhenAbsent(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.Remove("app/dtos/aliases.go"))
 
 	moved, err := applySharedRelocations()
@@ -162,7 +162,7 @@ func TestApplySharedRelocations_NoOpWhenAbsent(t *testing.T) {
 
 // TestApplySharedRelocationsReverse_MovesItBack pins the inverse.
 func TestApplySharedRelocationsReverse_MovesItBack(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := applySharedRelocations()
 	require.NoError(t, err)
@@ -177,7 +177,7 @@ func TestApplySharedRelocationsReverse_MovesItBack(t *testing.T) {
 }
 
 func TestApplySharedRelocationsReverse_NoOpWhenAbsent(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	moved, err := applySharedRelocationsReverse()
 	require.NoError(t, err)
@@ -190,7 +190,7 @@ func TestApplySharedRelocationsReverse_NoOpWhenAbsent(t *testing.T) {
 // the password generator is only consumed by the user feature, so it moves
 // with it rather than staying in the shared services package.
 func TestRelocatePasswordGenerator_FollowsTheUserFeature(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	const layered = "app/services/password_generator.go"
 	require.True(t, fileExistsInFixture(t, layered))
 
@@ -213,7 +213,7 @@ func TestRelocatePasswordGenerator_FollowsTheUserFeature(t *testing.T) {
 // TestRelocatePasswordGenerator_NoUserFeatureIsANoOp covers the guard: with no
 // user resource there is nothing for the generator to follow.
 func TestRelocatePasswordGenerator_NoUserFeatureIsANoOp(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	moved, err := relocatePasswordGenerator(fixtureModulePath,
 		[]featurize.Resource{{Name: "Order", Snake: "order", Plural: "Orders"}})
@@ -225,7 +225,7 @@ func TestRelocatePasswordGenerator_NoUserFeatureIsANoOp(t *testing.T) {
 
 // TestRevertPasswordGenerator_MovesItBack pins the inverse.
 func TestRevertPasswordGenerator_MovesItBack(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestRevertPasswordGenerator_MovesItBack(t *testing.T) {
 }
 
 func TestRevertPasswordGenerator_NoOpWhenAbsent(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	moved, err := revertPasswordGenerator()
 	require.NoError(t, err)
@@ -255,7 +255,7 @@ func TestRevertPasswordGenerator_NoOpWhenAbsent(t *testing.T) {
 // wire / index-routes / core-providers rewrite. These four files reference
 // every resource, so they are patched rather than moved.
 func TestApplyCrossCuttingPatches_RewritesTheSharedFiles(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	patched, err := applyCrossCuttingPatches(fixtureModulePath, []featurize.Resource{userResourceFixture()})
 	require.NoError(t, err)
@@ -269,7 +269,7 @@ func TestApplyCrossCuttingPatches_RewritesTheSharedFiles(t *testing.T) {
 // TestApplyCrossCuttingPatches_ReportsATransformFailure covers the error
 // return when one of the shared files will not parse.
 func TestApplyCrossCuttingPatches_ReportsATransformFailure(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("app/di/container.go",
 		[]byte("package di\n\nfunc Broken( {\n"), 0o644))
 
@@ -280,7 +280,7 @@ func TestApplyCrossCuttingPatches_ReportsATransformFailure(t *testing.T) {
 
 // TestApplyCrossCuttingPatchesReverse_RewritesTheSharedFiles pins the inverse.
 func TestApplyCrossCuttingPatchesReverse_RewritesTheSharedFiles(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	resources := []featurize.Resource{userResourceFixture()}
 
 	_, err := applyCrossCuttingPatches(fixtureModulePath, resources)
@@ -296,7 +296,7 @@ func TestApplyCrossCuttingPatchesReverse_RewritesTheSharedFiles(t *testing.T) {
 }
 
 func TestApplyCrossCuttingPatchesReverse_ReportsATransformFailure(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("app/di/container.go",
 		[]byte("package di\n\nfunc Broken( {\n"), 0o644))
 
@@ -311,7 +311,7 @@ func TestApplyCrossCuttingPatchesReverse_ReportsATransformFailure(t *testing.T) 
 // prune. A layered directory that still holds a file belongs to code the
 // refactor did not touch and must survive.
 func TestPruneEmptyLayeredDirs_RemovesOnlyEmptyDirectories(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	_, _, err := migrateResource(r, fixtureModulePath)
@@ -330,7 +330,7 @@ func TestPruneEmptyLayeredDirs_RemovesOnlyEmptyDirectories(t *testing.T) {
 // TestPruneEmptyFeatureDirs_RemovesOnlyEmptyDirectories covers the reverse
 // prune.
 func TestPruneEmptyFeatureDirs_RemovesOnlyEmptyDirectories(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	_, _, err := migrateResource(r, fixtureModulePath)
@@ -354,7 +354,7 @@ func TestPruneEmptyFeatureDirs_RemovesOnlyEmptyDirectories(t *testing.T) {
 // moved the files but left this key stale would make every later generator
 // write to the wrong place.
 func TestFlipLayoutInConfig_WritesTheFeatureValue(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	require.NoError(t, flipLayoutInConfig())
 
@@ -365,7 +365,7 @@ func TestFlipLayoutInConfig_WritesTheFeatureValue(t *testing.T) {
 
 // TestFlipLayoutInConfigReverse_WritesTheLayeredValue pins the inverse.
 func TestFlipLayoutInConfigReverse_WritesTheLayeredValue(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	require.NoError(t, flipLayoutInConfig())
 	require.NoError(t, flipLayoutInConfigReverse())
@@ -381,7 +381,7 @@ func TestFlipLayoutInConfigReverse_WritesTheLayeredValue(t *testing.T) {
 // most for a refactor a developer might run and then undo: after a full
 // forward-and-back cycle every file is at the path it started from.
 func TestRefactor_ForwardThenBackRestoresEveryPath(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	before := map[string]bool{}
@@ -408,7 +408,7 @@ func TestRefactor_ForwardThenBackRestoresEveryPath(t *testing.T) {
 // TestRevertResource_SkipsAbsentFilesSilently covers the read-error continue on
 // the reverse side.
 func TestRevertResource_SkipsAbsentFilesSilently(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	moved, patched, err := revertResource(
 		featurize.Resource{Name: "Ghost", Snake: "ghost", Plural: "Ghosts"}, fixtureModulePath)
@@ -419,7 +419,7 @@ func TestRevertResource_SkipsAbsentFilesSilently(t *testing.T) {
 
 // TestRevertResource_ReportsATransformFailure covers its error return.
 func TestRevertResource_ReportsATransformFailure(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	_, _, err := migrateResource(r, fixtureModulePath)
@@ -435,7 +435,7 @@ func TestRevertResource_ReportsATransformFailure(t *testing.T) {
 
 // TestRevertResource_TransformsMocks covers the reverse mocks loop.
 func TestRevertResource_TransformsMocks(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	mockPath := filepath.Join("testutil", "mocks", "user_repository_mock.go")
@@ -467,7 +467,7 @@ var _ userpkg.UserRepositoryInterface = (*UserRepositoryMock)(nil)
 // which nothing does today — it fails. Pinned so a future caller reordering
 // these steps gets a test failure instead of a confusing runtime error.
 func TestRelocatePasswordGenerator_NeedsTheFeatureDirToExist(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := relocatePasswordGenerator(fixtureModulePath, []featurize.Resource{userResourceFixture()})
 	require.Error(t, err, "without migrateResource having created app/user/, the write fails")

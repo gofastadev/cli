@@ -42,13 +42,10 @@ func TestPluralizeSimple(t *testing.T) {
 		"Day":      "Days",       // vowel + y — not "Daies"
 		"Address":  "Addresses",  // s
 		"Box":      "Boxes",      // x
-		// z takes "es" — the helper does not double the consonant, so this is
-		// "Quizes" rather than the English "Quizzes". Pinned as-is: the rule is
-		// deliberately simple and the scaffold does not need the exception.
-		"Quiz":  "Quizes",
-		"Batch": "Batches", // ch
-		"Dish":  "Dishes",  // sh
-		"Y":     "Ys",      // too short for the y rule
+		"Buzz":     "Buzzes",     // z
+		"Batch":    "Batches",    // ch
+		"Dish":     "Dishes",     // sh
+		"Y":        "Ys",         // too short for the y rule
 	}
 	for in, want := range cases {
 		t.Run(in, func(t *testing.T) {
@@ -69,14 +66,14 @@ func TestIsVowel(t *testing.T) {
 // --- readModulePath ---
 
 func TestReadModulePath(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	got, err := readModulePath()
 	require.NoError(t, err)
 	assert.Equal(t, fixtureModulePath, got)
 }
 
 func TestReadModulePath_NoGoMod(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.Remove("go.mod"))
 
 	_, err := readModulePath()
@@ -85,7 +82,7 @@ func TestReadModulePath_NoGoMod(t *testing.T) {
 }
 
 func TestReadModulePath_NoModuleDirective(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("go.mod", []byte("go 1.25.0\n"), 0o644))
 
 	_, err := readModulePath()
@@ -106,7 +103,7 @@ func TestRunGoCommand(t *testing.T) {
 // --- resolveRefactorResources (forward) ---
 
 func TestResolveRefactorResources_NamedResource(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	got, err := resolveRefactorResources([]string{"User"}, false)
 	require.NoError(t, err)
@@ -118,7 +115,7 @@ func TestResolveRefactorResources_NamedResource(t *testing.T) {
 // refactor must refuse a name with no model file rather than silently doing
 // nothing and reporting success.
 func TestResolveRefactorResources_UnknownResource(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := resolveRefactorResources([]string{"Ghost"}, false)
 	require.Error(t, err)
@@ -126,7 +123,7 @@ func TestResolveRefactorResources_UnknownResource(t *testing.T) {
 }
 
 func TestResolveRefactorResources_NoArgsWithoutAll(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := resolveRefactorResources(nil, false)
 	require.Error(t, err)
@@ -134,7 +131,7 @@ func TestResolveRefactorResources_NoArgsWithoutAll(t *testing.T) {
 }
 
 func TestResolveRefactorResources_AllDiscoversFromModels(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("app/models/purchase_order.model.go",
 		[]byte("package models\n\ntype PurchaseOrder struct{}\n"), 0o644))
 
@@ -154,7 +151,7 @@ func TestResolveRefactorResources_AllDiscoversFromModels(t *testing.T) {
 // TestDiscoverResourcesFromModels_IgnoresNonModelEntries covers the filter:
 // only <snake>.model.go files name a resource.
 func TestDiscoverResourcesFromModels_IgnoresNonModelEntries(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("app/models/helpers.go", []byte("package models\n"), 0o644))
 	require.NoError(t, os.MkdirAll("app/models/subdir", 0o755))
 
@@ -167,7 +164,7 @@ func TestDiscoverResourcesFromModels_IgnoresNonModelEntries(t *testing.T) {
 }
 
 func TestDiscoverResourcesFromModels_EmptyDir(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	entries, err := os.ReadDir("app/models")
 	require.NoError(t, err)
 	for _, e := range entries {
@@ -180,7 +177,7 @@ func TestDiscoverResourcesFromModels_EmptyDir(t *testing.T) {
 }
 
 func TestDiscoverResourcesFromModels_MissingDir(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.RemoveAll("app/models"))
 
 	_, err := discoverResourcesFromModels()
@@ -191,7 +188,7 @@ func TestDiscoverResourcesFromModels_MissingDir(t *testing.T) {
 // --- resolveLayeredRevertResources (reverse) ---
 
 func TestResolveLayeredRevertResources_NamedFeature(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
 
@@ -202,7 +199,7 @@ func TestResolveLayeredRevertResources_NamedFeature(t *testing.T) {
 }
 
 func TestResolveLayeredRevertResources_UnknownFeature(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := resolveLayeredRevertResources([]string{"Ghost"}, false)
 	require.Error(t, err)
@@ -210,7 +207,7 @@ func TestResolveLayeredRevertResources_UnknownFeature(t *testing.T) {
 }
 
 func TestResolveLayeredRevertResources_NoArgsWithoutAll(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := resolveLayeredRevertResources(nil, false)
 	require.Error(t, err)
@@ -218,7 +215,7 @@ func TestResolveLayeredRevertResources_NoArgsWithoutAll(t *testing.T) {
 }
 
 func TestResolveLayeredRevertResources_AllDiscoversFeatures(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
 
@@ -232,7 +229,7 @@ func TestResolveLayeredRevertResources_AllDiscoversFeatures(t *testing.T) {
 // the service.go heuristic: a directory under app/ is only a feature if it
 // holds a service.go and is not a known shared concern.
 func TestDiscoverFeatureResources_SkipsSharedDirs(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
 
@@ -255,7 +252,7 @@ func TestDiscoverFeatureResources_SkipsSharedDirs(t *testing.T) {
 }
 
 func TestDiscoverFeatureResources_NoFeatures(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	_, err := discoverFeatureResources()
 	require.Error(t, err)
@@ -263,7 +260,7 @@ func TestDiscoverFeatureResources_NoFeatures(t *testing.T) {
 }
 
 func TestDiscoverFeatureResources_MissingAppDir(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.RemoveAll("app"))
 
 	_, err := discoverFeatureResources()
@@ -274,7 +271,7 @@ func TestDiscoverFeatureResources_MissingAppDir(t *testing.T) {
 // --- eligibility guards ---
 
 func TestRequireLayeredProject(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	assert.NoError(t, requireLayeredProject(), "a freshly scaffolded layered project is eligible")
 
 	require.NoError(t, flipLayoutInConfig())
@@ -284,7 +281,7 @@ func TestRequireLayeredProject(t *testing.T) {
 }
 
 func TestRequireLayeredProject_NoModelsDir(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.RemoveAll("app/models"))
 
 	err := requireLayeredProject()
@@ -293,7 +290,7 @@ func TestRequireLayeredProject_NoModelsDir(t *testing.T) {
 }
 
 func TestRequireFeatureProject(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 
 	err := requireFeatureProject()
 	require.Error(t, err, "a layered project has nothing to unwind")

@@ -16,10 +16,11 @@ import (
 // source files, so a write or remove that fails silently loses code. Each
 // branch must surface an error naming the path that failed.
 //
-// Errors are induced by path collision rather than permissions — a regular
-// file where a directory must be (ENOTDIR), or a directory where a file must
-// be (EISDIR). Both are deterministic and behave identically whether the suite
-// runs as root or not, which chmod-based tricks do not.
+// Errors are induced by path collision wherever possible — a regular file
+// where a directory must be (ENOTDIR), or a directory where a file must be
+// (EISDIR). Both are deterministic and behave the same as root or not, which
+// chmod-based tricks do not. Two tests near the bottom cannot use that trick
+// and fall back to permissions; they carry a root guard and say why.
 
 // blockPath replaces the given path with a regular file, so any attempt to
 // treat it as a directory fails with ENOTDIR.
@@ -41,7 +42,7 @@ func occupyWithDir(t *testing.T, path string) {
 // --- migrateResource ---
 
 func TestMigrateResource_MkdirFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	// app/user must become a directory; a regular file there blocks it.
 	blockPath(t, "app/user")
 
@@ -51,7 +52,7 @@ func TestMigrateResource_MkdirFailureIsReported(t *testing.T) {
 }
 
 func TestMigrateResource_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	// The first mapped file for `user` is app/user/dtos.go; a directory there
 	// makes the write fail while the parent MkdirAll still succeeds.
 	occupyWithDir(t, "app/user/dtos.go")
@@ -64,7 +65,7 @@ func TestMigrateResource_WriteFailureIsReported(t *testing.T) {
 // --- revertResource ---
 
 func TestRevertResource_MkdirFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 	_, _, err := migrateResource(r, fixtureModulePath)
 	require.NoError(t, err)
@@ -78,7 +79,7 @@ func TestRevertResource_MkdirFailureIsReported(t *testing.T) {
 }
 
 func TestRevertResource_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 	_, _, err := migrateResource(r, fixtureModulePath)
 	require.NoError(t, err)
@@ -91,7 +92,7 @@ func TestRevertResource_WriteFailureIsReported(t *testing.T) {
 }
 
 func TestRevertResource_MockWriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	r := userResourceFixture()
 
 	mockPath := filepath.Join("testutil", "mocks", "user_service_mock.go")
@@ -106,7 +107,7 @@ func TestRevertResource_MockWriteFailureIsReported(t *testing.T) {
 // --- applySharedRelocations ---
 
 func TestApplySharedRelocations_MkdirFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	blockPath(t, "app/shared")
 
 	_, err := applySharedRelocations()
@@ -115,7 +116,7 @@ func TestApplySharedRelocations_MkdirFailureIsReported(t *testing.T) {
 }
 
 func TestApplySharedRelocations_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	occupyWithDir(t, "app/shared/dtos/aliases.go")
 
 	_, err := applySharedRelocations()
@@ -124,7 +125,7 @@ func TestApplySharedRelocations_WriteFailureIsReported(t *testing.T) {
 }
 
 func TestApplySharedRelocationsReverse_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	_, err := applySharedRelocations()
 	require.NoError(t, err)
 
@@ -138,7 +139,7 @@ func TestApplySharedRelocationsReverse_WriteFailureIsReported(t *testing.T) {
 // --- password generator ---
 
 func TestRevertPasswordGenerator_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
 	_, err = relocatePasswordGenerator(fixtureModulePath, []featurize.Resource{userResourceFixture()})
@@ -152,7 +153,7 @@ func TestRevertPasswordGenerator_WriteFailureIsReported(t *testing.T) {
 }
 
 func TestRevertPasswordGenerator_TransformFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.MkdirAll("app/user", 0o755))
 	require.NoError(t, os.WriteFile("app/user/password_generator.go",
 		[]byte("package user\n\nfunc Broken( {\n"), 0o644))
@@ -163,9 +164,31 @@ func TestRevertPasswordGenerator_TransformFailureIsReported(t *testing.T) {
 
 // --- cross-cutting patches ---
 
+// These two need a readable-but-unwritable file: applyCrossCuttingPatches
+// reads each target first and SKIPS anything it cannot read, so the
+// directory-in-place trick used above never reaches the write. Permissions are
+// the only way in, which means skipping under root — root ignores the mode
+// bits and the write would succeed.
+
+func requireNonRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses the file mode this test depends on")
+	}
+}
+
+// makeReadOnly leaves the file readable so the read succeeds, then removes
+// write permission so os.WriteFile fails.
+func makeReadOnly(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.Chmod(path, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o644) })
+}
+
 func TestApplyCrossCuttingPatches_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
-	occupyWithDir(t, "app/di/container.go")
+	requireNonRoot(t)
+	inRenderedProject(t)
+	makeReadOnly(t, "app/di/container.go")
 
 	_, err := applyCrossCuttingPatches(fixtureModulePath, []featurize.Resource{userResourceFixture()})
 	require.Error(t, err)
@@ -173,12 +196,13 @@ func TestApplyCrossCuttingPatches_WriteFailureIsReported(t *testing.T) {
 }
 
 func TestApplyCrossCuttingPatchesReverse_WriteFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	requireNonRoot(t)
+	inRenderedProject(t)
 	resources := []featurize.Resource{userResourceFixture()}
 	_, err := applyCrossCuttingPatches(fixtureModulePath, resources)
 	require.NoError(t, err)
 
-	occupyWithDir(t, "app/di/container.go")
+	makeReadOnly(t, "app/di/container.go")
 
 	_, err = applyCrossCuttingPatchesReverse(fixtureModulePath, resources)
 	require.Error(t, err)
@@ -187,14 +211,14 @@ func TestApplyCrossCuttingPatchesReverse_WriteFailureIsReported(t *testing.T) {
 // --- config flip ---
 
 func TestFlipLayoutInConfig_ReadFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.Remove("config.yaml"))
 
 	require.Error(t, flipLayoutInConfig())
 }
 
 func TestFlipLayoutInConfigReverse_ReadFailureIsReported(t *testing.T) {
-	inRenderedProject(t, "layered")
+	inRenderedProject(t)
 	require.NoError(t, os.Remove("config.yaml"))
 
 	require.Error(t, flipLayoutInConfigReverse())

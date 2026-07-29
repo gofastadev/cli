@@ -32,11 +32,15 @@ import (
 // fixtureModulePath is the module path every rendered fixture declares.
 const fixtureModulePath = "example.com/fixtureapp"
 
-// renderSkeleton writes the embedded skeleton into dir using the given layout,
-// mirroring runNew's walk: dotfile renames, .tmpl rendering, and the
-// GraphQL-only skip list.
-func renderSkeleton(t *testing.T, dir, layout string, graphQL bool) {
+// renderSkeleton writes the embedded skeleton into dir, mirroring runNew's
+// walk: dotfile renames, .tmpl rendering, and the GraphQL-only skip list.
+//
+// It renders the layered, non-GraphQL variant — the only shape the refactor
+// tests need, since the refactor's job is to turn exactly that into a feature
+// project. Add the knobs back when a test needs a different one.
+func renderSkeleton(t *testing.T, dir string) {
 	t.Helper()
+	const layout, graphQL = "layered", false
 
 	data := ProjectData{
 		ProjectName:      "Fixtureapp",
@@ -114,16 +118,15 @@ func renderSkeleton(t *testing.T, dir, layout string, graphQL bool) {
 // inRenderedProject renders a skeleton into a temp dir and chdirs into it for
 // the duration of the test. The refactor functions all operate on paths
 // relative to the working directory, so this is how they are addressed.
-func inRenderedProject(t *testing.T, layout string) string {
+func inRenderedProject(t *testing.T) {
 	t.Helper()
 	dir := t.TempDir()
-	renderSkeleton(t, dir, layout, false)
+	renderSkeleton(t, dir)
 
 	orig, err := os.Getwd()
 	require.NoError(t, err)
 	require.NoError(t, os.Chdir(dir))
 	t.Cleanup(func() { _ = os.Chdir(orig) })
-	return dir
 }
 
 // userResourceFixture is the resource every scaffold ships with, and therefore

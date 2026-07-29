@@ -37,7 +37,12 @@ func stubGoCommands(t *testing.T, err error) *[][]string {
 // setRefactorFlagsWithAll is setRefactorFlags with control over --all. The
 // shared helper hardcodes all=true, which makes the orchestrators ignore their
 // positional argument — these tests need both paths.
-func setRefactorFlagsWithAll(t *testing.T, dryRun, force, all bool) {
+//
+// --force is always on here: every test in this file runs inside a temp dir
+// that is not a git repo, so the dirty-tree guard is irrelevant to what they
+// exercise. refactor_test.go covers that guard directly, in both directions.
+func setRefactorFlagsWithAll(t *testing.T, dryRun, all bool) {
+	const force = true
 	t.Helper()
 	b := func(v bool) string {
 		if v {
@@ -63,8 +68,8 @@ func setRefactorFlagsWithAll(t *testing.T, dryRun, force, all bool) {
 // happy path: after it returns, the project is in feature shape on disk and
 // config.yaml says so.
 func TestRunRefactorFeature_MigratesTheWholeProject(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false /*dry-run*/, true /*force*/, false /*all*/)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false /*dry-run*/, false /*all*/)
 	calls := stubGoCommands(t, nil)
 
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
@@ -93,8 +98,8 @@ func TestRunRefactorFeature_MigratesTheWholeProject(t *testing.T) {
 // TestRunRefactorFeature_AllMigratesEveryResource covers the --all path
 // through the orchestrator.
 func TestRunRefactorFeature_AllMigratesEveryResource(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, true)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, true)
 	stubGoCommands(t, nil)
 
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
@@ -104,8 +109,8 @@ func TestRunRefactorFeature_AllMigratesEveryResource(t *testing.T) {
 // TestRunRefactorFeature_WireFailureAborts covers the abort path. The message
 // has to point at recovery, because the tree is already half-rewritten.
 func TestRunRefactorFeature_WireFailureAborts(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, errors.New("wire blew up"))
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
@@ -118,8 +123,8 @@ func TestRunRefactorFeature_WireFailureAborts(t *testing.T) {
 // TestRunRefactorFeature_BuildFailureAborts covers the second abort: wire
 // succeeds, the build does not.
 func TestRunRefactorFeature_BuildFailureAborts(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 
 	orig := runGoCommandFn
 	t.Cleanup(func() { runGoCommandFn = orig })
@@ -139,8 +144,8 @@ func TestRunRefactorFeature_BuildFailureAborts(t *testing.T) {
 // generated wire_gen.go still imports layered packages, and wire needs every
 // file in the package to compile before it will regenerate.
 func TestRunRefactorFeature_RemovesStaleWireGen(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, nil)
 
 	require.NoError(t, os.MkdirAll("app/di", 0o755))
@@ -155,8 +160,8 @@ func TestRunRefactorFeature_RemovesStaleWireGen(t *testing.T) {
 // TestRunRefactorFeature_UnknownResourceFails covers the resolution error
 // surfacing through the orchestrator.
 func TestRunRefactorFeature_UnknownResourceFails(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, nil)
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"Ghost"})
@@ -169,8 +174,8 @@ func TestRunRefactorFeature_UnknownResourceFails(t *testing.T) {
 // TestRunRefactorLayered_UnwindsTheWholeProject is the reverse orchestrator's
 // happy path, run on a project that was migrated forward first.
 func TestRunRefactorLayered_UnwindsTheWholeProject(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	calls := stubGoCommands(t, nil)
 
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
@@ -192,8 +197,8 @@ func TestRunRefactorLayered_UnwindsTheWholeProject(t *testing.T) {
 }
 
 func TestRunRefactorLayered_AllUnwindsEveryFeature(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, true)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, true)
 	stubGoCommands(t, nil)
 
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
@@ -205,12 +210,12 @@ func TestRunRefactorLayered_AllUnwindsEveryFeature(t *testing.T) {
 // TestRunRefactorLayered_DryRunPlansWithoutWriting mirrors the forward
 // dry-run: a plan is printed and nothing on disk changes.
 func TestRunRefactorLayered_DryRunPlansWithoutWriting(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, nil)
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
 
-	setRefactorFlagsWithAll(t, true /*dry-run*/, true /*force*/, false /*all*/)
+	setRefactorFlagsWithAll(t, true /*dry-run*/, false /*all*/)
 	before := snapshotTree(t)
 	out := captureStdout(t, func() {
 		require.NoError(t, runRefactorLayered(refactorLayeredCmd, []string{"User"}))
@@ -222,8 +227,8 @@ func TestRunRefactorLayered_DryRunPlansWithoutWriting(t *testing.T) {
 }
 
 func TestRunRefactorLayered_WireFailureAborts(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, nil)
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
 
@@ -234,8 +239,8 @@ func TestRunRefactorLayered_WireFailureAborts(t *testing.T) {
 }
 
 func TestRunRefactorLayered_UnknownFeatureFails(t *testing.T) {
-	inRenderedProject(t, "layered")
-	setRefactorFlagsWithAll(t, false, true, false)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
 	stubGoCommands(t, nil)
 	require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
 
