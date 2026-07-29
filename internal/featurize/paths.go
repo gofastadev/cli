@@ -23,9 +23,16 @@ type PathPair struct {
 //     `dtos`, but the import path callers use becomes
 //     `<mod>/app/shared/dtos` — featurize handles that rewrite on the
 //     caller side via rewriteDtosImportPath).
+//   - app/dtos/generated-types.dtos.go → app/shared/dtos/ — gqlgen's
+//     generated models file (GraphQL projects only; absent in REST-only
+//     projects, and relocation callers stat-gate each pair). Package
+//     stays `dtos`; its only intra-project references are same-package,
+//     so it moves without rewriting. gqlgen.yml's model.filename is
+//     rewritten in step with this move (see gqlgenconfig.go).
 func SharedRelocations() []PathPair {
 	return []PathPair{
 		{Layered: "app/dtos/aliases.go", Feature: "app/shared/dtos/aliases.go"},
+		{Layered: "app/dtos/generated-types.dtos.go", Feature: "app/shared/dtos/generated-types.dtos.go"},
 	}
 }
 
@@ -101,6 +108,7 @@ func ReversePerResourceMapping(snake string) []struct {
 func SharedRelocationsReverse() []PathPair {
 	return []PathPair{
 		{Layered: "app/shared/dtos/aliases.go", Feature: "app/dtos/aliases.go"},
+		{Layered: "app/shared/dtos/generated-types.dtos.go", Feature: "app/dtos/generated-types.dtos.go"},
 		// Field naming reuses PathPair's Layered/Feature slots — Layered
 		// here is "the source path during reverse" (i.e. the feature
 		// location); Feature is "the destination" (i.e. the layered

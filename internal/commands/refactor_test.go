@@ -2033,3 +2033,205 @@ func setRefactorFlagsWithoutForce(t *testing.T) {
 		_ = refactorLayeredCmd.Flags().Set("force", "false")
 	})
 }
+
+// ---------- GraphQL phase ----------
+//
+// A GraphQL project's resolver files never move, but their imports and
+// selectors must follow the migrated symbols, gqlgen.yml must follow
+// the dtos relocation, and gqlgen must be re-run between the config
+// flip and wire. These tests render the --graphql skeleton variant.
+
+// migratedGraphQLProject renders a GraphQL project and migrates it
+// forward, leaving the caller inside a feature-layout GraphQL tree.
+func migratedGraphQLProject(t *testing.T) {
+	t.Helper()
+	inRenderedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	stubGoCommands(t, nil)
+	require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
+}
+
+func TestRunRefactorFeature_GraphQLProjectPatchesResolverFiles(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	calls := stubGoCommands(t, nil)
+
+	require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
+
+	// user.resolvers.go: per-resource symbols re-qualified, services
+	// import gone, shared dtos import flipped. The file did NOT move.
+	resolvers := readFixtureFile(t, "app/graphql/resolvers/user.resolvers.go")
+	assert.Contains(t, resolvers, "userpkg.TCreateUserDto")
+	assert.Contains(t, resolvers, "userpkg.ErrUserNotFound")
+	assert.Contains(t, resolvers, "dtos.TPaginationObjectDto",
+		"shared aliases keep the dtos qualifier")
+	assert.Contains(t, resolvers, fixtureModulePath+"/app/shared/dtos")
+	assert.NotContains(t, resolvers, `"`+fixtureModulePath+`/app/services"`)
+
+	// resolver.go: the DI struct follows the service interface.
+	resolverStruct := readFixtureFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Contains(t, resolverStruct, "userpkg.UserServiceInterface")
+	assert.NotContains(t, resolverStruct, "svcInterfaces")
+
+	// gql_filters.go: generated dtos type keeps its qualifier, the
+	// domain filter follows the feature package.
+	filters := readFixtureFile(t, "app/graphql/resolvers/gql_filters.go")
+	assert.Contains(t, filters, "dtos.UserFiltersDto")
+	assert.Contains(t, filters, "userpkg.ListUsersFilter")
+
+	// gqlgen.yml rewritten: model path + autobind expansion.
+	gqlgenYaml := readFixtureFile(t, "gqlgen.yml")
+	assert.Contains(t, gqlgenYaml, "app/shared/dtos/generated-types.dtos.go")
+	assert.Contains(t, gqlgenYaml, `- "`+fixtureModulePath+`/app/shared/dtos"`)
+	assert.Contains(t, gqlgenYaml, `- "`+fixtureModulePath+`/app/user"`)
+	assert.NotContains(t, gqlgenYaml, `- "`+fixtureModulePath+`/app/dtos"`)
+
+	// The generated models file relocated with the shared dtos.
+	assert.True(t, fileExistsInFixture(t, "app/shared/dtos/generated-types.dtos.go"))
+	assert.False(t, fileExistsInFixture(t, "app/dtos/generated-types.dtos.go"))
+
+	// The stale exec file is deleted before gqlgen reruns.
+	assert.False(t, fileExistsInFixture(t, "app/generated.go"))
+
+	// Pipeline order: gqlgen → wire → build.
+	require.Len(t, *calls, 3)
+	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, (*calls)[0])
+	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, (*calls)[1])
+	assert.Equal(t, []string{"build", "./..."}, (*calls)[2])
+}
+
+func TestRunRefactorFeature_GraphQLGqlgenFailureAborts(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	orig := runGoCommandFn
+	t.Cleanup(func() { runGoCommandFn = orig })
+	runGoCommandFn = func(args ...string) error {
+		if len(args) > 1 && args[1] == "gqlgen" {
+			return errors.New("gqlgen blew up")
+		}
+		return nil
+	}
+
+	err := runRefactorFeature(refactorFeatureCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gqlgen generation failed")
+	assert.Contains(t, err.Error(), "git restore")
+}
+
+func TestApplyGraphQLPatches_SkipNoticeForRestOnlyResource(t *testing.T) {
+	inRenderedGraphQLProject(t)
+
+	invoice := featurize.Resource{Name: "Invoice", Snake: "invoice", Plural: "Invoices"}
+	patched, skipped, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture(), invoice})
+	require.NoError(t, err)
+
+	// Every resolver file plus gqlgen.yml is patched.
+	assert.Contains(t, patched, "app/graphql/resolvers/user.resolvers.go")
+	assert.Contains(t, patched, "app/graphql/resolvers/resolver.go")
+	assert.Contains(t, patched, "gqlgen.yml")
+	// Invoice has no resolver file — visible skip, not an error.
+	assert.Equal(t, []string{"app/graphql/resolvers/invoice.resolvers.go"}, skipped)
+}
+
+func TestApplyGraphQLPatches_RestOnlyProjectIsNoop(t *testing.T) {
+	inRenderedProject(t) // REST-only: no app/graphql/, no gqlgen.yml
+	assert.False(t, hasGraphQLArtifacts())
+
+	patched, skipped, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.Empty(t, patched)
+	// The skip list reports the missing resolver, but the orchestrator
+	// never calls this function for REST-only projects (hasGraphQLArtifacts
+	// gates the phase).
+	assert.NotEmpty(t, skipped)
+}
+
+func TestRunRefactorFeature_RestOnlyProjectNeverRunsGqlgen(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	calls := stubGoCommands(t, nil)
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorFeature(refactorFeatureCmd, []string{"User"}))
+	})
+
+	for _, c := range *calls {
+		assert.NotContains(t, c, "gqlgen", "REST-only refactor must not invoke gqlgen")
+	}
+	assert.NotContains(t, out, "GraphQL", "REST-only refactor must not emit GraphQL output")
+}
+
+func TestRunRefactorFeature_GraphQLDryRunListsPlan(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, true /*dry-run*/, true)
+
+	before := snapshotTree(t)
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorFeature(refactorFeatureCmd, nil))
+	})
+	after := snapshotTree(t)
+
+	assert.Contains(t, out, "patch: app/graphql/resolvers/user.resolvers.go")
+	assert.Contains(t, out, "patch: app/graphql/resolvers/resolver.go")
+	assert.Contains(t, out, "rewrite: gqlgen.yml")
+	assert.Contains(t, out, "Would run: go tool gqlgen generate")
+	// The generated-types move is part of the shared relocations.
+	assert.Contains(t, out, "app/dtos/generated-types.dtos.go → app/shared/dtos/generated-types.dtos.go")
+	assert.Equal(t, before, after, "dry-run modified the working tree")
+}
+
+func TestRunRefactorLayered_GraphQLRoundTripRestoresLayeredShape(t *testing.T) {
+	migratedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	calls := stubGoCommands(t, nil)
+
+	require.NoError(t, runRefactorLayered(refactorLayeredCmd, nil))
+
+	// Resolver files back to the layered shape.
+	resolvers := readFixtureFile(t, "app/graphql/resolvers/user.resolvers.go")
+	assert.Contains(t, resolvers, "services.ErrUserNotFound")
+	assert.Contains(t, resolvers, "dtos.TCreateUserDto")
+	assert.Contains(t, resolvers, `"`+fixtureModulePath+`/app/dtos"`)
+	assert.NotContains(t, resolvers, "userpkg")
+	assert.NotContains(t, resolvers, "app/shared/dtos")
+
+	resolverStruct := readFixtureFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Contains(t, resolverStruct, "svcInterfaces.UserServiceInterface")
+
+	// gqlgen.yml restored byte-for-byte to the layered shape.
+	gqlgenYaml := readFixtureFile(t, "gqlgen.yml")
+	assert.Contains(t, gqlgenYaml, "filename: app/dtos/generated-types.dtos.go")
+	assert.Contains(t, gqlgenYaml, `- "`+fixtureModulePath+`/app/dtos"`)
+	assert.NotContains(t, gqlgenYaml, "shared/dtos")
+	assert.NotContains(t, gqlgenYaml, `- "`+fixtureModulePath+`/app/user"`)
+
+	// The generated models file moved back.
+	assert.True(t, fileExistsInFixture(t, "app/dtos/generated-types.dtos.go"))
+	assert.False(t, fileExistsInFixture(t, "app/shared/dtos/generated-types.dtos.go"))
+
+	// Reverse pipeline order matches forward: gqlgen → wire → build.
+	require.Len(t, *calls, 3)
+	assert.Equal(t, []string{"tool", "gqlgen", "generate"}, (*calls)[0])
+	assert.Equal(t, []string{"tool", "wire", "./app/di/"}, (*calls)[1])
+	assert.Equal(t, []string{"build", "./..."}, (*calls)[2])
+}
+
+func TestWarnPartialGraphQLMigration(t *testing.T) {
+	inRenderedGraphQLProject(t)
+
+	all := []featurize.Resource{userResourceFixture(), {Name: "Invoice", Snake: "invoice", Plural: "Invoices"}}
+	discover := func() ([]featurize.Resource, error) { return all, nil }
+
+	out := captureStdout(t, func() {
+		warnPartialGraphQLMigration(all[:1], discover)
+	})
+	assert.Contains(t, out, "migrate all resources together")
+
+	out = captureStdout(t, func() {
+		warnPartialGraphQLMigration(all, discover)
+	})
+	assert.NotContains(t, out, "migrate all resources together",
+		"full-scope migrations must not warn")
+}

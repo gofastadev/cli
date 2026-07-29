@@ -445,3 +445,22 @@ func Check(in dtos.TPaginationInputDto) time.Time { return time.Now() }
 	assert.NotContains(t, out, "app/shared/dtos")
 	assert.Contains(t, out, `"time"`, "unrelated imports in the block must survive")
 }
+
+// TestBuildReverseSymbolMap_DtosEntriesMatchSharedList pins the
+// extraction of the per-resource dtos symbol list: buildReverseSymbolMap
+// must map to the dtos package exactly the names that
+// perResourceDtoSymbolNames returns — the same list the GraphQL
+// transforms consume. If either side gains a symbol the other misses,
+// forward and reverse migrations would disagree about where it lives.
+func TestBuildReverseSymbolMap_DtosEntriesMatchSharedList(t *testing.T) {
+	r := userResource()
+	symMap := buildReverseSymbolMap(r)
+
+	var dtosEntries []string
+	for name, pkg := range symMap {
+		if pkg.alias == "dtos" {
+			dtosEntries = append(dtosEntries, name)
+		}
+	}
+	assert.ElementsMatch(t, perResourceDtoSymbolNames(r), dtosEntries)
+}

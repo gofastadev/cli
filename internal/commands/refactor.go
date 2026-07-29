@@ -44,9 +44,12 @@ type refactorResult struct {
 	Resources    []string `json:"resources"`
 	FilesMoved   []string `json:"files_moved"`
 	FilesPatched []string `json:"files_patched"`
-	DryRun       bool     `json:"dry_run"`
-	Success      bool     `json:"success"`
-	Error        string   `json:"error,omitempty"`
+	// GraphQLSkipped lists per-resource resolver files that don't exist
+	// (REST-only resources inside a GraphQL project — legal, skipped).
+	GraphQLSkipped []string `json:"graphql_skipped,omitempty"`
+	DryRun         bool     `json:"dry_run"`
+	Success        bool     `json:"success"`
+	Error          string   `json:"error,omitempty"`
 }
 
 var refactorCmd = &cobra.Command{
@@ -277,9 +280,12 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 		}
 		cliout.Info("Would patch: app/di/container.go, app/di/wire.go, app/rest/routes/index.routes.go, app/di/providers/core.go")
 		cliout.Info("Would patch testutil/mocks/<resource>_*.go for each resource")
+		dryRunGraphQLPlan(resources)
 		cliout.Info("Would update config.yaml: project.layout: layered → feature")
 		return nil
 	}
+
+	warnPartialGraphQLMigration(resources, discoverResourcesFromModels)
 
 	// Migrate each resource (file moves + per-file AST transforms). The
 	// build+wire verification runs once at the end, after the
@@ -322,6 +328,18 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	}
 	result.FilesPatched = append(result.FilesPatched, patched...)
 
+	// Re-qualify the GraphQL resolver files and rewrite gqlgen.yml.
+	// No-op for REST-only projects (no app/graphql/, no gqlgen.yml).
+	if hasGraphQLArtifacts() {
+		cliout.Step("🔌 Patching GraphQL files")
+		gqlPatched, gqlSkipped, gerr := applyGraphQLPatches(mod, resources)
+		result.FilesPatched = append(result.FilesPatched, gqlPatched...)
+		result.GraphQLSkipped = gqlSkipped
+		if gerr != nil {
+			return gerr
+		}
+	}
+
 	// Clean up the now-empty layered directories so the project tree
 	// matches the feature-layout doc shape.
 	cliout.Step("🧹 Cleaning empty layered directories")
@@ -330,6 +348,13 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	// Flip config.yaml.
 	cliout.Step("📝 Updating config.yaml")
 	if err := flipLayoutInConfig(); err != nil {
+		return err
+	}
+
+	// gqlgen runs BEFORE wire: the regenerated resolver scaffolding must
+	// exist before wire typechecks app/di (which imports the resolvers
+	// package), and both must be in place before the final go build.
+	if err := regenerateGqlgen(); err != nil {
 		return err
 	}
 
@@ -415,9 +440,12 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 		}
 		cliout.Info("Would patch: app/di/container.go, app/di/wire.go, app/rest/routes/index.routes.go, app/di/providers/core.go")
 		cliout.Info("Would patch testutil/mocks/<resource>_*.go for each resource")
+		dryRunGraphQLPlan(resources)
 		cliout.Info("Would update config.yaml: project.layout: feature → layered")
 		return nil
 	}
+
+	warnPartialGraphQLMigration(resources, discoverFeatureResources)
 
 	for _, r := range resources {
 		cliout.Header("🔧 Unwinding %s back to layered", r.Name)
@@ -453,6 +481,18 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 	}
 	result.FilesPatched = append(result.FilesPatched, patched...)
 
+	// Re-qualify the GraphQL resolver files and gqlgen.yml back to the
+	// layered shape. No-op for REST-only projects.
+	if hasGraphQLArtifacts() {
+		cliout.Step("🔌 Patching GraphQL files back to layered")
+		gqlPatched, gqlSkipped, gerr := applyGraphQLPatchesReverse(mod, resources)
+		result.FilesPatched = append(result.FilesPatched, gqlPatched...)
+		result.GraphQLSkipped = gqlSkipped
+		if gerr != nil {
+			return gerr
+		}
+	}
+
 	// Clean up empty feature directories.
 	cliout.Step("🧹 Cleaning empty feature directories")
 	pruneEmptyFeatureDirs(resources)
@@ -460,6 +500,12 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 	// Flip config.yaml: feature → layered.
 	cliout.Step("📝 Updating config.yaml")
 	if err := flipLayoutInConfigReverse(); err != nil {
+		return err
+	}
+
+	// gqlgen runs BEFORE wire — same ordering rationale as the forward
+	// direction (see runRefactorFeature).
+	if err := regenerateGqlgen(); err != nil {
 		return err
 	}
 
@@ -681,10 +727,12 @@ func applyCrossCuttingPatchesReverse(mod string, resources []featurize.Resource)
 		patched = append(patched, j.path)
 	}
 
+	// GraphQL resolver files are NOT in this list — they get the full
+	// selector re-qualification in applyGraphQLPatchesReverse, which
+	// includes the import-path flip.
 	dtosImportConsumers := []string{
 		"app/validators/app_validator.go",
 		"app/rest/controllers/validator.go",
-		"app/graphql/resolvers/user.resolvers.go",
 	}
 	for _, path := range dtosImportConsumers {
 		content, err := os.ReadFile(path)
@@ -998,11 +1046,12 @@ func applyCrossCuttingPatches(mod string, resources []featurize.Resource) ([]str
 	}
 
 	// Files that only need their `<mod>/app/dtos` import flipped to
-	// `<mod>/app/shared/dtos` — no other source rewrites.
+	// `<mod>/app/shared/dtos` — no other source rewrites. GraphQL
+	// resolver files are NOT in this list — they get the full selector
+	// re-qualification in applyGraphQLPatches, which includes the flip.
 	dtosImportConsumers := []string{
 		"app/validators/app_validator.go",
 		"app/rest/controllers/validator.go",
-		"app/graphql/resolvers/user.resolvers.go",
 	}
 	for _, path := range dtosImportConsumers {
 		content, err := os.ReadFile(path)
@@ -1020,6 +1069,191 @@ func applyCrossCuttingPatches(mod string, resources []featurize.Resource) ([]str
 	}
 
 	return patched, nil
+}
+
+// ---------- GraphQL phase ----------
+//
+// GraphQL files never move between layouts (app/graphql/ is shared —
+// gqlgen owns the resolver directory), but every resolver file's
+// imports and selectors must follow the symbols that moved, and
+// gqlgen.yml's autobind/model paths must follow the dtos relocation.
+
+// hasGraphQLArtifacts reports whether the project has GraphQL enabled:
+// a gqlgen.yml or an app/graphql/resolvers/ directory. REST-only
+// projects have neither, and the whole GraphQL phase is skipped.
+func hasGraphQLArtifacts() bool {
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		return true
+	}
+	if fi, err := os.Stat("app/graphql/resolvers"); err == nil && fi.IsDir() {
+		return true
+	}
+	return false
+}
+
+// discoverGraphQLResolverFiles returns every .go file under
+// app/graphql/resolvers/ (sorted by filepath.Glob). Empty for
+// REST-only projects. Discovery replaces the historical hardcoded
+// `user.resolvers.go` entry — every resolver file is patched, whatever
+// resource it belongs to.
+func discoverGraphQLResolverFiles() []string {
+	matches, _ := filepath.Glob("app/graphql/resolvers/*.go")
+	return matches
+}
+
+// missingResolverNotices returns the per-resource resolver files that
+// don't exist. A resource without a resolver is legal — REST-only
+// resources live in GraphQL projects — so this is a visible skip, not
+// an error. The notice exists because a silently-missing file is
+// exactly how the hardcoded user.resolvers.go bug went undetected.
+func missingResolverNotices(resources []featurize.Resource) []string {
+	var skipped []string
+	for _, r := range resources {
+		p := "app/graphql/resolvers/" + r.Snake + ".resolvers.go"
+		if _, err := os.Stat(p); err != nil {
+			skipped = append(skipped, p)
+		}
+	}
+	return skipped
+}
+
+// applyGraphQLPatches re-qualifies every resolver file for the feature
+// layout and rewrites gqlgen.yml. Returns the files patched and the
+// per-resource resolver files that were skipped because they don't
+// exist.
+//
+//nolint:dupl // structurally mirrors applyGraphQLPatchesReverse but every step uses the forward transformer — merging would obscure direction.
+func applyGraphQLPatches(mod string, resources []featurize.Resource) (patched, skipped []string, err error) {
+	for _, path := range discoverGraphQLResolverFiles() {
+		content, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
+		out, terr := featurize.TransformGraphQL(content, mod, resources)
+		if terr != nil {
+			return patched, skipped, fmt.Errorf("transform graphql %s: %w", path, terr)
+		}
+		if werr := os.WriteFile(path, out, 0o644); werr != nil {
+			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing "+path)
+		}
+		cliout.Path(path)
+		patched = append(patched, path)
+	}
+
+	skipped = missingResolverNotices(resources)
+	for _, p := range skipped {
+		cliout.Info("no resolver file at %s — skipped (REST-only resource)", p)
+	}
+
+	if content, rerr := os.ReadFile("gqlgen.yml"); rerr == nil {
+		out, terr := featurize.RewriteGqlgenConfig(content, mod, resources)
+		if terr != nil {
+			return patched, skipped, fmt.Errorf("rewrite gqlgen.yml: %w", terr)
+		}
+		if werr := os.WriteFile("gqlgen.yml", out, 0o644); werr != nil {
+			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing gqlgen.yml")
+		}
+		cliout.Path("gqlgen.yml")
+		patched = append(patched, "gqlgen.yml")
+	}
+
+	return patched, skipped, nil
+}
+
+// applyGraphQLPatchesReverse is the inverse of applyGraphQLPatches.
+//
+//nolint:dupl // structurally mirrors applyGraphQLPatches but every step uses the *Reverse transformer — merging would obscure direction.
+func applyGraphQLPatchesReverse(mod string, resources []featurize.Resource) (patched, skipped []string, err error) {
+	for _, path := range discoverGraphQLResolverFiles() {
+		content, rerr := os.ReadFile(path)
+		if rerr != nil {
+			continue
+		}
+		out, terr := featurize.TransformGraphQLReverse(content, mod, resources)
+		if terr != nil {
+			return patched, skipped, fmt.Errorf("transform graphql reverse %s: %w", path, terr)
+		}
+		if werr := os.WriteFile(path, out, 0o644); werr != nil {
+			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing "+path)
+		}
+		cliout.Path(path)
+		patched = append(patched, path)
+	}
+
+	skipped = missingResolverNotices(resources)
+	for _, p := range skipped {
+		cliout.Info("no resolver file at %s — skipped (REST-only resource)", p)
+	}
+
+	if content, rerr := os.ReadFile("gqlgen.yml"); rerr == nil {
+		out, terr := featurize.RewriteGqlgenConfigReverse(content, mod, resources)
+		if terr != nil {
+			return patched, skipped, fmt.Errorf("rewrite gqlgen.yml reverse: %w", terr)
+		}
+		if werr := os.WriteFile("gqlgen.yml", out, 0o644); werr != nil {
+			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing gqlgen.yml")
+		}
+		cliout.Path("gqlgen.yml")
+		patched = append(patched, "gqlgen.yml")
+	}
+
+	return patched, skipped, nil
+}
+
+// dryRunGraphQLPlan mirrors applyGraphQLPatches for --dry-run: lists
+// the resolver files that would be patched, the gqlgen.yml rewrite,
+// the per-resource skips, and the gqlgen regeneration step. Stat-gated
+// exactly like the real run; silent for REST-only projects.
+func dryRunGraphQLPlan(resources []featurize.Resource) {
+	if !hasGraphQLArtifacts() {
+		return
+	}
+	for _, f := range discoverGraphQLResolverFiles() {
+		cliout.Plainln("  patch: " + f)
+	}
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		cliout.Plainln("  rewrite: gqlgen.yml (autobind + model path)")
+	}
+	for _, p := range missingResolverNotices(resources) {
+		cliout.Info("no resolver file at %s — would skip (REST-only resource)", p)
+	}
+	cliout.Info("Would run: go tool gqlgen generate")
+}
+
+// warnPartialGraphQLMigration warns when a GraphQL project migrates a
+// subset of its resources. The dtos package splits during migration
+// (per-resource DTOs move, gqlgen.yml autobind follows), so resources
+// left behind may not compile against the relocated packages — the
+// final go build is the backstop, but the warning tells the user why
+// it failed before they hit it.
+func warnPartialGraphQLMigration(inScope []featurize.Resource, discoverAll func() ([]featurize.Resource, error)) {
+	if !hasGraphQLArtifacts() {
+		return
+	}
+	all, err := discoverAll()
+	if err != nil || len(inScope) >= len(all) {
+		return
+	}
+	cliout.Warn("GraphQL projects should migrate all resources together — " +
+		"remaining resources may not compile against the relocated dtos packages; consider --all")
+}
+
+// regenerateGqlgen deletes the stale generated exec file and re-runs
+// gqlgen, iff the project uses gqlgen. The stale app/generated.go
+// imports the pre-migration dtos package, so it must go before the
+// generator (and the final go build) runs. Same delete-and-regen
+// pattern as wire_gen.go.
+func regenerateGqlgen() error {
+	if _, err := os.Stat("gqlgen.yml"); err != nil {
+		return nil
+	}
+	cliout.Step("✓ Regenerating gqlgen")
+	_ = os.Remove("app/generated.go")
+	if err := runGoCommandFn("tool", "gqlgen", "generate"); err != nil {
+		return clierr.Wrap(clierr.CodeRefactorAborted, err,
+			"gqlgen generation failed — inspect the partial state and `git restore` to revert")
+	}
+	return nil
 }
 
 // flipLayoutInConfig rewrites `project: layout: layered` (or adds it

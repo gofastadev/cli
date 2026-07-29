@@ -48,7 +48,7 @@ func buildReverseSymbolMap(r Resource) map[string]reverseSymbolPackage {
 	controllers := reverseSymbolPackage{alias: "controllers", pathTPL: "/app/rest/controllers"}
 	dtos := reverseSymbolPackage{alias: "dtos", pathTPL: "/app/dtos"}
 
-	return map[string]reverseSymbolPackage{
+	out := map[string]reverseSymbolPackage{
 		// repository-interfaces
 		r.Name + "RepositoryInterface": repoInterfaces,
 		// repository impls
@@ -71,19 +71,14 @@ func buildReverseSymbolMap(r Resource) map[string]reverseSymbolPackage {
 		// controllers
 		r.Name + "Controller":                 controllers,
 		"New" + r.Name + "ControllerInstance": controllers,
-		// dtos (per-resource types — moved into feature, going back to dtos)
-		r.Name:                                 dtos, // the DTO User type
-		"T" + r.Name + "ResponseDto":           dtos,
-		"T" + r.Plural + "ResponseDto":         dtos,
-		"TCreate" + r.Name + "Dto":             dtos,
-		"TUpdate" + r.Name + "Dto":             dtos,
-		"TArchive" + r.Name + "Dto":            dtos,
-		"TFind" + r.Name + "ByIDDto":           dtos,
-		"T" + r.Name + "FiltersQueryParamsDto": dtos,
-		"TUpdate" + r.Name + "GraphQLInput":    dtos,
-		r.Name + "FromModel":                   dtos,
-		r.Plural + "FromModels":                dtos,
 	}
+	// dtos (per-resource types — moved into feature, going back to
+	// dtos). The name list is shared with the GraphQL transforms in
+	// graphql.go so the forward and reverse tables cannot drift.
+	for _, sym := range perResourceDtoSymbolNames(r) {
+		out[sym] = dtos
+	}
+	return out
 }
 
 // TransformPerResourceReverse migrates a single per-resource source

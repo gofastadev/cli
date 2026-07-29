@@ -671,12 +671,13 @@ const fixtureModulePath = "example.com/fixtureapp"
 // renderSkeleton writes the embedded skeleton into dir, mirroring runNew's
 // walk: dotfile renames, .tmpl rendering, and the GraphQL-only skip list.
 //
-// It renders the layered, non-GraphQL variant — the only shape the refactor
-// tests need, since the refactor's job is to turn exactly that into a feature
-// project. Add the knobs back when a test needs a different one.
-func renderSkeleton(t *testing.T, dir string) {
+// It renders the layered variant; graphQL toggles the GraphQL-only files
+// (app/graphql/, gqlgen.yml, app/di/providers/graphql.go) the same way
+// `gofasta new --graphql` does. The refactor's job is to turn exactly these
+// shapes into feature projects.
+func renderSkeleton(t *testing.T, dir string, graphQL bool) {
 	t.Helper()
-	const layout, graphQL = "layered", false
+	const layout = "layered"
 
 	data := ProjectData{
 		ProjectName:      "Fixtureapp",
@@ -775,6 +776,10 @@ var (
 	skeletonOnce sync.Once
 	skeletonDir  string
 	skeletonErr  error
+
+	gqlSkeletonOnce sync.Once
+	gqlSkeletonDir  string
+	gqlSkeletonErr  error
 )
 
 func renderedSkeletonOnce(t *testing.T) string {
@@ -786,11 +791,48 @@ func renderedSkeletonOnce(t *testing.T) string {
 			return
 		}
 		skeletonDir = dir
-		renderSkeleton(t, dir)
+		renderSkeleton(t, dir, false)
 	})
 	require.NoError(t, skeletonErr)
 	require.NotEmpty(t, skeletonDir)
 	return skeletonDir
+}
+
+func renderedGraphQLSkeletonOnce(t *testing.T) string {
+	t.Helper()
+	gqlSkeletonOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gofasta-gql-skeleton-*")
+		if err != nil {
+			gqlSkeletonErr = err
+			return
+		}
+		gqlSkeletonDir = dir
+		renderSkeleton(t, dir, true)
+	})
+	require.NoError(t, gqlSkeletonErr)
+	require.NotEmpty(t, gqlSkeletonDir)
+	return gqlSkeletonDir
+}
+
+// inRenderedGraphQLProject is inRenderedProject with GraphQL enabled.
+// gqlgen never runs in unit tests, so the two files it would generate
+// that the refactor touches are seeded by hand: the generated models
+// file (relocates to app/shared/dtos/) and the exec file (deleted
+// before gqlgen reruns).
+func inRenderedGraphQLProject(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	copyTree(t, renderedGraphQLSkeletonOnce(t), dir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app", "dtos", "generated-types.dtos.go"),
+		[]byte("package dtos\n\ntype UserFiltersDto struct {\n\tFields *TUserFiltersDtoFields\n}\n\ntype TUserFiltersDtoFields struct {\n\tEmail *string\n}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app", "generated.go"),
+		[]byte("package app\n\nimport _ \""+fixtureModulePath+"/app/dtos\"\n"), 0o644))
+
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
 }
 
 // copyTree copies the contents of src into dst, preserving file modes.

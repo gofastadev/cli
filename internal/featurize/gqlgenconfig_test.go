@@ -1,0 +1,114 @@
+package featurize
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+// gqlgenYamlSrc mirrors the skeleton's gqlgen.yml.tmpl rendered for
+// testMod — including the one-space autobind list indentation and the
+// comment lines the rewrite must preserve.
+func gqlgenYamlSrc() string {
+	return `# Where are all the schema files located? globs are supported eg  src/**/*.graphqls
+schema:
+  - app/graphql/schema/*.gql
+
+# Where should the generated server code go?
+exec:
+  filename: app/generated.go
+  package: app
+
+# Where should any generated models go?
+model:
+  filename: app/dtos/generated-types.dtos.go
+  package: dtos
+
+# Where should the resolver implementations go?
+resolver:
+  layout: follow-schema
+  dir: app/graphql/resolvers
+  package: resolvers
+  filename_template: "{name}.resolvers.go"
+
+# gqlgen will search for any type names in the schema in these go packages
+# if they match it will use them, otherwise it will generate them.
+autobind:
+ - "` + testMod + `/app/dtos"
+
+models:
+  ID:
+    model:
+      - github.com/99designs/gqlgen/graphql.UUID
+`
+}
+
+func TestRewriteGqlgenConfig_Forward(t *testing.T) {
+	out, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource(), orderResource()})
+	require.NoError(t, err)
+	s := string(out)
+
+	assert.Contains(t, s, "filename: app/shared/dtos/generated-types.dtos.go")
+	assert.NotContains(t, s, "filename: app/dtos/generated-types.dtos.go")
+	// The autobind entries keep the template's one-space indentation.
+	assert.Contains(t, s, "\n - \""+testMod+"/app/shared/dtos\"\n")
+	assert.Contains(t, s, "\n - \""+testMod+"/app/user\"\n")
+	assert.Contains(t, s, "\n - \""+testMod+"/app/order\"\n")
+	assert.NotContains(t, s, `- "`+testMod+`/app/dtos"`)
+	// The exec filename and comments are untouched.
+	assert.Contains(t, s, "filename: app/generated.go")
+	assert.Contains(t, s, "# Where should any generated models go?")
+	assert.Contains(t, s, `filename_template: "{name}.resolvers.go"`)
+}
+
+func TestRewriteGqlgenConfig_Idempotent(t *testing.T) {
+	resources := []Resource{userResource()}
+	once, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
+	require.NoError(t, err)
+	twice, err := RewriteGqlgenConfig(once, testMod, resources)
+	require.NoError(t, err)
+	assert.Equal(t, string(once), string(twice))
+}
+
+func TestRewriteGqlgenConfig_ReverseIsByteExactInverse(t *testing.T) {
+	resources := []Resource{userResource(), orderResource()}
+	forward, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
+	require.NoError(t, err)
+	back, err := RewriteGqlgenConfigReverse(forward, testMod, resources)
+	require.NoError(t, err)
+	assert.Equal(t, gqlgenYamlSrc(), string(back))
+}
+
+func TestRewriteGqlgenConfigReverse_Idempotent(t *testing.T) {
+	resources := []Resource{userResource()}
+	once, err := RewriteGqlgenConfigReverse([]byte(gqlgenYamlSrc()), testMod, resources)
+	require.NoError(t, err)
+	// A layered-shaped file reverses to itself.
+	assert.Equal(t, gqlgenYamlSrc(), string(once))
+}
+
+func TestEnsureGqlgenAutobind(t *testing.T) {
+	feature, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource()})
+	require.NoError(t, err)
+
+	// Insert a new resource entry after the shared anchor.
+	out, err := EnsureGqlgenAutobind(feature, testMod, "widget")
+	require.NoError(t, err)
+	s := string(out)
+	assert.Contains(t, s, " - \""+testMod+"/app/widget\"\n")
+	sharedIdx := strings.Index(s, testMod+"/app/shared/dtos")
+	widgetIdx := strings.Index(s, testMod+"/app/widget")
+	assert.Greater(t, widgetIdx, sharedIdx, "widget entry must come after the shared anchor")
+
+	// Already present → unchanged.
+	again, err := EnsureGqlgenAutobind(out, testMod, "widget")
+	require.NoError(t, err)
+	assert.Equal(t, s, string(again))
+
+	// Missing anchor (layered-shaped file) → unchanged.
+	unchanged, err := EnsureGqlgenAutobind([]byte(gqlgenYamlSrc()), testMod, "widget")
+	require.NoError(t, err)
+	assert.Equal(t, gqlgenYamlSrc(), string(unchanged))
+}

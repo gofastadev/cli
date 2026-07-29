@@ -35,11 +35,18 @@ func TestPerResourceMapping_AllPaths(t *testing.T) {
 
 func TestSharedRelocations(t *testing.T) {
 	got := SharedRelocations()
-	require.Len(t, got, 1)
+	require.Len(t, got, 2)
 	assert.Equal(t, PathPair{
 		Layered: "app/dtos/aliases.go",
 		Feature: "app/shared/dtos/aliases.go",
 	}, got[0])
+	// gqlgen's generated models file follows the shared dtos package.
+	// GraphQL projects only — relocation callers stat-gate each pair,
+	// so REST-only projects skip it.
+	assert.Equal(t, PathPair{
+		Layered: "app/dtos/generated-types.dtos.go",
+		Feature: "app/shared/dtos/generated-types.dtos.go",
+	}, got[1])
 }
 
 // TestSharedRelocationsReverse pins the inversion. Note the field naming is
@@ -48,9 +55,23 @@ func TestSharedRelocations(t *testing.T) {
 // location). Reading them the other way round would move the file backwards.
 func TestSharedRelocationsReverse(t *testing.T) {
 	got := SharedRelocationsReverse()
-	require.Len(t, got, 1)
+	require.Len(t, got, 2)
 	assert.Equal(t, "app/shared/dtos/aliases.go", got[0].Layered, "reverse source is the feature location")
 	assert.Equal(t, "app/dtos/aliases.go", got[0].Feature, "reverse destination is the layered location")
+	assert.Equal(t, "app/shared/dtos/generated-types.dtos.go", got[1].Layered, "reverse source is the feature location")
+	assert.Equal(t, "app/dtos/generated-types.dtos.go", got[1].Feature, "reverse destination is the layered location")
+}
+
+// TestSharedRelocations_Inverted pins forward/reverse symmetry for the
+// shared relocations, mirroring the per-resource inversion test below.
+func TestSharedRelocations_Inverted(t *testing.T) {
+	forward := SharedRelocations()
+	reverse := SharedRelocationsReverse()
+	require.Len(t, reverse, len(forward))
+	for i, f := range forward {
+		assert.Equal(t, f.Feature, reverse[i].Layered, "reverse[%d] source must be forward[%d] destination", i, i)
+		assert.Equal(t, f.Layered, reverse[i].Feature, "reverse[%d] destination must be forward[%d] source", i, i)
+	}
 }
 
 // TestPerResourceMapping_IsInvertedByReverseMapping is the property that
