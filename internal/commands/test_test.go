@@ -240,8 +240,6 @@ func TestPrintCoverageTotal_ShellError(t *testing.T) {
 	printCoverageTotal()
 }
 
-// --- dropLDWarnings ---------------------------------------------------------
-
 // TestDropLDWarnings_PassesThroughNormalOutput — any line that's
 // neither a build marker nor an LC_DYSYMTAB warning must round-trip
 // untouched. This is the no-op baseline for the filter.

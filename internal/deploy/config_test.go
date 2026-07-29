@@ -3,6 +3,7 @@ package deploy
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -245,4 +246,89 @@ func TestLoadDeployConfig_RejectsUnsafeAppName(t *testing.T) {
 	_, err = LoadDeployConfig(nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid app name")
+}
+
+func TestDeployConfig_Defaults(t *testing.T) {
+	cfg := &DeployConfig{}
+
+	// Apply the same defaults as LoadDeployConfig
+	if cfg.Method == "" {
+		cfg.Method = "docker"
+	}
+	if cfg.Port == 0 {
+		cfg.Port = 22
+	}
+	if cfg.Arch == "" {
+		cfg.Arch = "amd64"
+	}
+	if cfg.HealthPath == "" {
+		cfg.HealthPath = "/health"
+	}
+	if cfg.HealthTimeout == 0 {
+		cfg.HealthTimeout = 30
+	}
+	if cfg.KeepReleases == 0 {
+		cfg.KeepReleases = 3
+	}
+	if cfg.ServerPort == "" {
+		cfg.ServerPort = "8080"
+	}
+
+	assert.Equal(t, "docker", cfg.Method)
+	assert.Equal(t, 22, cfg.Port)
+	assert.Equal(t, "amd64", cfg.Arch)
+	assert.Equal(t, "/health", cfg.HealthPath)
+	assert.Equal(t, 30, cfg.HealthTimeout)
+	assert.Equal(t, 3, cfg.KeepReleases)
+	assert.Equal(t, "8080", cfg.ServerPort)
+}
+
+func TestDeployConfig_ReleasePath(t *testing.T) {
+	cfg := &DeployConfig{
+		Path:       "/opt/myapp",
+		ReleaseTag: "20260409-150000",
+	}
+	assert.Equal(t, "/opt/myapp/releases/20260409-150000", cfg.ReleasePath())
+}
+
+func TestDeployConfig_SharedPath(t *testing.T) {
+	cfg := &DeployConfig{Path: "/opt/myapp"}
+	assert.Equal(t, "/opt/myapp/shared", cfg.SharedPath())
+}
+
+func TestDeployConfig_CurrentPath(t *testing.T) {
+	cfg := &DeployConfig{Path: "/opt/myapp"}
+	assert.Equal(t, "/opt/myapp/current", cfg.CurrentPath())
+}
+
+func TestDeployConfig_MethodValidation(t *testing.T) {
+	tests := []struct {
+		method  string
+		isValid bool
+	}{
+		{"docker", true},
+		{"binary", true},
+		{"invalid", false},
+		{"", true}, // empty defaults to "docker"
+	}
+
+	for _, tt := range tests {
+		method := tt.method
+		if method == "" {
+			method = "docker"
+		}
+		valid := method == "docker" || method == "binary"
+		assert.Equal(t, tt.isValid, valid, "method %q validation", tt.method)
+	}
+}
+
+func TestDeployHelperProcess(t *testing.T) {
+	if os.Getenv("GOFASTA_WANT_DEPLOY_HELPER") != "1" {
+		return
+	}
+	if out := os.Getenv(fakeEnvStdout); out != "" {
+		os.Stdout.WriteString(out)
+	}
+	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
+	os.Exit(code)
 }

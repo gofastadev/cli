@@ -1,11 +1,57 @@
 package generate
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGenJob_MkdirAllError(t *testing.T) {
+	setupTempProject(t)
+	makeParentAFile(t, "app/jobs")
+	err := GenJob(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestGenJob_WriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based write denial")
+	}
+	setupTempProject(t)
+	mkReadOnlyLeaf(t, "app/jobs")
+	err := GenJob(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchJobRegistry_ReadError(t *testing.T) {
+	setupTempProject(t)
+	// No cmd/serve.go
+	err := PatchJobRegistry(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchJobConfig_ReadError(t *testing.T) {
+	setupTempProject(t)
+	// setupTempProject writes a config.yaml — remove it.
+	require.NoError(t, os.Remove("config.yaml"))
+	err := PatchJobConfig(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchJobConfig_SkipsAlreadyInConfig(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+	// Seed config.yaml with the exact active entry for this job name so
+	// the "already in config" skip branch fires.
+	writeTestFile(t, "config.yaml", "jobs:\n  - name: product\n    schedule: \"0 0 * * * *\"\n")
+	err := PatchJobConfig(d)
+	require.NoError(t, err)
+	// The skip branch does not modify the file.
+	content := readTestFile(t, "config.yaml")
+	assert.Contains(t, content, "- name: product")
+}
 
 func TestGenJob_CreatesFile(t *testing.T) {
 	setupTempProject(t)

@@ -1,398 +1,16 @@
 package ai
 
 import (
+	"bytes"
 	"encoding/json"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// sampleData is the standard InstallData used by tests — every agent's
-// templates render against it.
-func sampleData() InstallData {
-	return InstallData{
-		ProjectName:      "Myapp",
-		ProjectNameLower: "myapp",
-		ProjectNameUpper: "MYAPP",
-		ModulePath:       "github.com/acme/myapp",
-		CLIVersion:       "v0.0.0-test",
-	}
-}
-
-// claudeExpectedFiles is the canonical list of project-relative paths
-// `gofasta ai claude` writes. Centralized so both
-// TestInstall_Claude_CreatesExpectedFiles and the claude row of
-// TestInstall_PerAgentTreeShape stay in sync — adding a new template
-// file under templates/claude/ requires a single edit here.
-func claudeExpectedFiles() []string {
-	return []string{
-		"CLAUDE.md",
-		".claude/settings.json",
-		".claude/hooks/pre-commit.sh",
-		".claude/hooks/wire-reminder.sh",
-		".claude/hooks/migration-reminder.sh",
-		".claude/hooks/swagger-reminder.sh",
-		".claude/hooks/session-start.sh",
-		".claude/commands/verify.md",
-		".claude/commands/scaffold.md",
-		".claude/commands/inspect.md",
-		".claude/commands/status.md",
-		".claude/commands/health-check.md",
-		".claude/commands/routes.md",
-		".claude/commands/rebuild.md",
-		".claude/commands/migrate-explain.md",
-		".claude/commands/inspect-jobs.md",
-		".claude/commands/inspect-tasks.md",
-		".claude/commands/xrefs.md",
-		".claude/commands/impact.md",
-		".claude/commands/debug-slow.md",
-		".claude/commands/debug-error.md",
-		".claude/commands/n-plus-one.md",
-		".claude/commands/g-method.md",
-		".claude/commands/g-field.md",
-		".claude/commands/g-endpoint.md",
-		".claude/commands/g-middleware.md",
-		".claude/commands/g-repo-method.md",
-		".claude/commands/g-relation.md",
-		".claude/commands/g-rename.md",
-		".claude/commands/g-mock.md",
-		".claude/commands/seed-memory.md",
-		".claude/rules/conventions.md",
-		".claude/rules/overview.md",
-		".claude/rules/workflow.md",
-		".claude/rules/commands.md",
-		".claude/rules/debugging.md",
-		".claude/rules/docs-index.md",
-	}
-}
-
-// cursorExpectedFiles — see claudeExpectedFiles for the rationale.
-func cursorExpectedFiles() []string {
-	return []string{
-		".cursor/rules/conventions.mdc",
-		".cursor/rules/overview.mdc",
-		".cursor/rules/workflow.mdc",
-		".cursor/rules/commands.mdc",
-		".cursor/rules/debugging.mdc",
-		".cursor/rules/docs-index.mdc",
-		".cursor/commands/status.md",
-		".cursor/commands/health-check.md",
-		".cursor/commands/routes.md",
-		".cursor/commands/rebuild.md",
-		".cursor/commands/migrate-explain.md",
-		".cursor/commands/inspect-jobs.md",
-		".cursor/commands/inspect-tasks.md",
-		".cursor/commands/xrefs.md",
-		".cursor/commands/impact.md",
-		".cursor/commands/debug-slow.md",
-		".cursor/commands/debug-error.md",
-		".cursor/commands/n-plus-one.md",
-		".cursor/commands/g-method.md",
-		".cursor/commands/g-field.md",
-		".cursor/commands/g-endpoint.md",
-		".cursor/commands/g-middleware.md",
-		".cursor/commands/g-repo-method.md",
-		".cursor/commands/g-relation.md",
-		".cursor/commands/g-rename.md",
-		".cursor/commands/g-mock.md",
-		".cursor/commands/seed-memory.md",
-		".cursor/hooks.json",
-		".cursor/hooks/wire-reminder.sh",
-		".cursor/hooks/migration-reminder.sh",
-		".cursor/hooks/swagger-reminder.sh",
-		".cursor/hooks/session-start.sh",
-	}
-}
-
-// codexExpectedFiles — see claudeExpectedFiles for the rationale.
-func codexExpectedFiles() []string {
-	return []string{
-		"AGENTS.md",
-		".codex/config.toml",
-		".codex/hooks/wire-reminder.sh",
-		".codex/hooks/migration-reminder.sh",
-		".codex/hooks/swagger-reminder.sh",
-		".codex/hooks/session-start.sh",
-		".codex/docs/conventions.md",
-		".codex/docs/overview.md",
-		".codex/docs/workflow.md",
-		".codex/docs/commands.md",
-		".codex/docs/debugging.md",
-		".codex/docs/docs-index.md",
-		".codex/prompts/status.md",
-		".codex/prompts/health-check.md",
-		".codex/prompts/routes.md",
-		".codex/prompts/rebuild.md",
-		".codex/prompts/migrate-explain.md",
-		".codex/prompts/inspect-jobs.md",
-		".codex/prompts/inspect-tasks.md",
-		".codex/prompts/xrefs.md",
-		".codex/prompts/impact.md",
-		".codex/prompts/debug-slow.md",
-		".codex/prompts/debug-error.md",
-		".codex/prompts/n-plus-one.md",
-		".codex/prompts/g-method.md",
-		".codex/prompts/g-field.md",
-		".codex/prompts/g-endpoint.md",
-		".codex/prompts/g-middleware.md",
-		".codex/prompts/g-repo-method.md",
-		".codex/prompts/g-relation.md",
-		".codex/prompts/g-rename.md",
-		".codex/prompts/g-mock.md",
-		".codex/prompts/seed-memory.md",
-	}
-}
-
-// aiderExpectedFiles — no new files vs prior CLI versions (Aider
-// doesn't support custom slash commands or hooks; only content edits
-// applied). Listed here for symmetry.
-func aiderExpectedFiles() []string {
-	return []string{
-		"CONVENTIONS.md",
-		".aider.conf.yml",
-		".aider/docs/conventions.md",
-		".aider/docs/overview.md",
-		".aider/docs/workflow.md",
-		".aider/docs/commands.md",
-		".aider/docs/debugging.md",
-		".aider/docs/docs-index.md",
-	}
-}
-
-// windsurfExpectedFiles — see claudeExpectedFiles for the rationale.
-func windsurfExpectedFiles() []string {
-	return []string{
-		".windsurf/rules/conventions.md",
-		".windsurf/rules/overview.md",
-		".windsurf/rules/workflow.md",
-		".windsurf/rules/commands.md",
-		".windsurf/rules/debugging.md",
-		".windsurf/rules/docs-index.md",
-		".windsurf/workflows/status.md",
-		".windsurf/workflows/health-check.md",
-		".windsurf/workflows/routes.md",
-		".windsurf/workflows/rebuild.md",
-		".windsurf/workflows/migrate-explain.md",
-		".windsurf/workflows/inspect-jobs.md",
-		".windsurf/workflows/inspect-tasks.md",
-		".windsurf/workflows/xrefs.md",
-		".windsurf/workflows/impact.md",
-		".windsurf/workflows/debug-slow.md",
-		".windsurf/workflows/debug-error.md",
-		".windsurf/workflows/n-plus-one.md",
-		".windsurf/workflows/g-method.md",
-		".windsurf/workflows/g-field.md",
-		".windsurf/workflows/g-endpoint.md",
-		".windsurf/workflows/g-middleware.md",
-		".windsurf/workflows/g-repo-method.md",
-		".windsurf/workflows/g-relation.md",
-		".windsurf/workflows/g-rename.md",
-		".windsurf/workflows/g-mock.md",
-		".windsurf/workflows/seed-memory.md",
-		".windsurf/hooks.json",
-		".windsurf/hooks/wire-reminder.sh",
-		".windsurf/hooks/migration-reminder.sh",
-		".windsurf/hooks/swagger-reminder.sh",
-	}
-}
-
-func TestAgentByKey_ReturnsKnownAgent(t *testing.T) {
-	a := AgentByKey("claude")
-	require.NotNil(t, a)
-	assert.Equal(t, "Claude Code", a.Name)
-}
-
-func TestAgentByKey_NilForUnknown(t *testing.T) {
-	assert.Nil(t, AgentByKey("nonexistent-agent"))
-}
-
-// TestInstall_Claude_CreatesExpectedFiles exercises a full end-to-end
-// install of the claude templates into a temp directory.
-func TestInstall_Claude_CreatesExpectedFiles(t *testing.T) {
-	dir := t.TempDir()
-	agent := AgentByKey("claude")
-	require.NotNil(t, agent)
-
-	result, err := Install(agent, dir, sampleData(), InstallOptions{})
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Claude installs:
-	//   - CLAUDE.md root briefing
-	//   - .claude/settings.json + 5 hook scripts
-	//   - 24 slash commands (3 originals + 21 new diagnostic/analysis/
-	//     debug/generator/memory commands)
-	//   - six topic rules under .claude/rules/
-	expected := claudeExpectedFiles()
-	for _, rel := range expected {
-		path := filepath.Join(dir, rel)
-		info, err := os.Stat(path)
-		require.NoError(t, err, "expected %s to exist", rel)
-		assert.False(t, info.IsDir())
-	}
-
-	// Hook must be executable.
-	info, err := os.Stat(filepath.Join(dir, ".claude", "hooks", "pre-commit.sh"))
-	require.NoError(t, err)
-	assert.NotEqual(t, 0, int(info.Mode()&0o111),
-		"pre-commit.sh should be executable")
-
-	// Every file should be recorded as Created on a fresh install.
-	assert.Len(t, result.Created, len(expected))
-	assert.Empty(t, result.Skipped)
-	assert.Empty(t, result.Replaced)
-}
-
-// TestInstall_PerAgentTreeShape is a table-driven check that every
-// agent's template tree lands at the right paths and that each
-// install is fully isolated (no shared chunk directory, no rename of
-// pre-existing files). One row per supported agent; if a future agent
-// is added to the registry, add a row here.
-func TestInstall_PerAgentTreeShape(t *testing.T) {
-	cases := []struct {
-		key  string
-		want []string
-	}{
-		{key: "claude", want: claudeExpectedFiles()},
-		{key: "cursor", want: cursorExpectedFiles()},
-		{key: "codex", want: codexExpectedFiles()},
-		{key: "aider", want: aiderExpectedFiles()},
-		{key: "windsurf", want: windsurfExpectedFiles()},
-	}
-	for _, tc := range cases {
-		t.Run(tc.key, func(t *testing.T) {
-			dir := t.TempDir()
-			agent := AgentByKey(tc.key)
-			require.NotNil(t, agent, "registry must include %s", tc.key)
-			result, err := Install(agent, dir, sampleData(), InstallOptions{})
-			require.NoError(t, err)
-			require.NotNil(t, result)
-			for _, rel := range tc.want {
-				info, err := os.Stat(filepath.Join(dir, rel))
-				require.NoError(t, err, "%s install must produce %s", tc.key, rel)
-				assert.False(t, info.IsDir(), "%s should be a file, not a directory", rel)
-			}
-			assert.Len(t, result.Created, len(tc.want),
-				"every template file should land on disk on a fresh install")
-			// Windsurf has a hard 12 KB per-rule cap.
-			if tc.key == "windsurf" {
-				entries, _ := filepath.Glob(filepath.Join(dir, ".windsurf", "rules", "*.md"))
-				for _, f := range entries {
-					info, _ := os.Stat(f)
-					assert.LessOrEqual(t, info.Size(), int64(12000),
-						"windsurf rule %s must stay under 12 KB", filepath.Base(f))
-				}
-			}
-			// Codex has a 32 KiB hard cap on AGENTS.md.
-			if tc.key == "codex" {
-				info, _ := os.Stat(filepath.Join(dir, "AGENTS.md"))
-				assert.LessOrEqual(t, info.Size(), int64(32*1024),
-					"codex AGENTS.md must stay under 32 KiB")
-			}
-		})
-	}
-}
-
-// TestInstall_Idempotent — running the installer twice should mark every
-// file as Skipped the second time (byte-identical content).
-func TestInstall_Idempotent(t *testing.T) {
-	dir := t.TempDir()
-	agent := AgentByKey("claude")
-
-	_, err := Install(agent, dir, sampleData(), InstallOptions{})
-	require.NoError(t, err)
-
-	result2, err := Install(agent, dir, sampleData(), InstallOptions{})
-	require.NoError(t, err)
-	assert.Empty(t, result2.Created, "no new files on second run")
-	assert.NotEmpty(t, result2.Skipped, "every file should be skipped")
-}
-
-// TestInstall_ExistingDifferentFileBlocks — if the user has edited a
-// template-generated file, re-running without --force must halt with a
-// clierr.Error rather than silently overwrite.
-func TestInstall_ExistingDifferentFileBlocks(t *testing.T) {
-	dir := t.TempDir()
-	agent := AgentByKey("claude")
-
-	_, err := Install(agent, dir, sampleData(), InstallOptions{})
-	require.NoError(t, err)
-
-	// User-edited file — different content from the template.
-	settings := filepath.Join(dir, ".claude", "settings.json")
-	require.NoError(t, os.WriteFile(settings, []byte(`{"custom":true}`), 0o644))
-
-	_, err = Install(agent, dir, sampleData(), InstallOptions{})
-	require.Error(t, err, "second install without --force must refuse to overwrite")
-	structured, ok := clierr.As(err)
-	require.True(t, ok, "error should be a clierr.Error")
-	assert.Equal(t, string(clierr.CodeAIInstallFailed), structured.Code)
-}
-
-// TestInstall_ForceOverwrites — same scenario as above but with --force
-// succeeds and the new content is on disk.
-func TestInstall_ForceOverwrites(t *testing.T) {
-	dir := t.TempDir()
-	agent := AgentByKey("claude")
-
-	_, err := Install(agent, dir, sampleData(), InstallOptions{})
-	require.NoError(t, err)
-
-	settings := filepath.Join(dir, ".claude", "settings.json")
-	require.NoError(t, os.WriteFile(settings, []byte(`{"custom":true}`), 0o644))
-
-	result, err := Install(agent, dir, sampleData(), InstallOptions{Force: true})
-	require.NoError(t, err)
-	assert.NotEmpty(t, result.Replaced, "Replaced list should include the modified file")
-
-	current, err := os.ReadFile(settings)
-	require.NoError(t, err)
-	assert.NotContains(t, string(current), `"custom":true`,
-		"force install should have overwritten the user edit")
-}
-
-// TestInstall_DryRunWritesNothing — in dry-run mode, no files touch disk
-// and WouldReplace captures what would have changed.
-func TestInstall_DryRunWritesNothing(t *testing.T) {
-	dir := t.TempDir()
-	agent := AgentByKey("claude")
-
-	result, err := Install(agent, dir, sampleData(), InstallOptions{DryRun: true})
-	require.NoError(t, err)
-	assert.NotEmpty(t, result.Created, "dry-run should report what would be created")
-
-	// Disk should still be empty.
-	entries, err := os.ReadDir(dir)
-	require.NoError(t, err)
-	assert.Empty(t, entries, "dry-run must not write files")
-}
-
-// TestManifest_LoadSaveRoundtrip — manifest round-trips cleanly through
-// disk and InstallRecord data survives intact.
-func TestManifest_LoadSaveRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	m, err := LoadManifest(dir)
-	require.NoError(t, err)
-	assert.Empty(t, m.Installed, "fresh manifest should be empty")
-	assert.Equal(t, manifestSchemaVersion, m.Version)
-
-	m.RecordInstall("claude", "v0.5.0-test",
-		[]string{".claude/settings.json", ".claude/commands/verify.md"})
-	require.NoError(t, m.Save(dir))
-
-	m2, err := LoadManifest(dir)
-	require.NoError(t, err)
-	assert.Equal(t, "claude", m2.ActiveAgent)
-	rec, ok := m2.Installed["claude"]
-	require.True(t, ok)
-	assert.Equal(t, "v0.5.0-test", rec.CLIVersion)
-	assert.Equal(t, []string{".claude/settings.json", ".claude/commands/verify.md"}, rec.CreatedFiles)
-}
 
 // TestJoinShort covers both inline and "(+N more)" overflow branches.
 func TestJoinShort(t *testing.T) {
@@ -462,10 +80,6 @@ func TestStatusCmdRunE(t *testing.T) {
 	require.Error(t, err)
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// agentConflictError — every diff branch
-// ─────────────────────────────────────────────────────────────────────
-
 // TestAgentConflictError_DiffListsRemoveAndAdd — install a previous
 // agent, attempt to install another without --switch. The conflict
 // error must list the files the previous agent will remove and the
@@ -513,10 +127,6 @@ func TestAgentConflictError_NoDiff(t *testing.T) {
 	assert.Contains(t, err.Error(), "Re-run with `--switch`")
 	assert.Contains(t, err.Error(), "Synthetic")
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// switchUninstall — early-return + error branches
-// ─────────────────────────────────────────────────────────────────────
 
 // TestRunInstall_SwitchPrevAgentUnknown — manifest references an
 // unknown agent under --switch. switchUninstall clears ActiveAgent
@@ -649,10 +259,6 @@ func TestRunInstall_SwitchUninstallError(t *testing.T) {
 	require.Error(t, err)
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// agentOwnedFiles
-// ─────────────────────────────────────────────────────────────────────
-
 // TestAgentOwnedFiles_HappyPath — non-empty slice for an agent with
 // templates.
 func TestAgentOwnedFiles_HappyPath(t *testing.T) {
@@ -675,32 +281,12 @@ func TestAgentOwnedFiles_EmptyForAgentWithoutTemplates(t *testing.T) {
 	assert.Empty(t, files)
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// runInstall — Cmd.RunE help path
-// ─────────────────────────────────────────────────────────────────────
-
 // TestAiCmd_NoArgsShowsHelp — `gofasta ai` with no agent argument
 // prints help and exits 0 instead of erroring.
 func TestAiCmd_NoArgsShowsHelp(t *testing.T) {
 	_ = captureStdout(t, func() {
 		require.NoError(t, Cmd.RunE(Cmd, nil))
 	})
-}
-
-// TestTemplateFiles_WalkErrorPropagates — inject a non-IsNotExist
-// walk error via the fsWalkDir seam. TemplateFiles must surface it
-// so the callers (agentOwnedFiles, Install, expectedRenderings) hit
-// their error-return branches.
-func TestTemplateFiles_WalkErrorPropagates(t *testing.T) {
-	orig := fsWalkDir
-	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
-		return assertError("synthetic walk failure")
-	}
-	t.Cleanup(func() { fsWalkDir = orig })
-
-	_, err := TemplateFiles(AgentByKey("claude"))
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "synthetic walk failure")
 }
 
 // TestAgentOwnedFiles_WalkErrorPropagates — fsWalkDir failure
@@ -743,32 +329,365 @@ func TestRunInstall_AgentOwnedFilesError(t *testing.T) {
 	})
 }
 
-// TestInstall_TemplateFilesError — Install's first call site for
-// TemplateFiles. fsWalkDir failure on the very first call surfaces
-// as a CodeAIInstallFailed wrap.
-func TestInstall_TemplateFilesError(t *testing.T) {
-	orig := fsWalkDir
-	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
-		return assertError("synthetic walk failure")
+// TestPrintNextSteps_MentionsNewFamilies — calls printNextSteps for
+// each agent and asserts the output mentions the new families we
+// added (hooks for claude/codex, slash/workflow counts for
+// claude/cursor/windsurf). Catches future drift between the templates
+// and the post-install help text.
+func TestPrintNextSteps_MentionsNewFamilies(t *testing.T) {
+	cases := []struct {
+		agent string
+		wants []string
+	}{
+		{"claude", []string{"/status", "/g-method", "/seed-memory", "Hooks", "jq"}},
+		{"cursor", []string{"/status", "/g-method", ".cursor/commands", "Hooks", "afterFileEdit"}},
+		{"codex", []string{"Hooks", ".codex/hooks", "/hooks", "prompts", "symlink"}},
+		{"windsurf", []string{"/status", "/g-method", ".windsurf/workflows", "Hooks", "post_write_code"}},
 	}
-	t.Cleanup(func() { fsWalkDir = orig })
-
-	dir := t.TempDir()
-	_, err := Install(AgentByKey("claude"), dir, sampleData(), InstallOptions{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "could not enumerate templates")
+	for _, tc := range cases {
+		t.Run(tc.agent, func(t *testing.T) {
+			agent := AgentByKey(tc.agent)
+			require.NotNil(t, agent)
+			var buf bytes.Buffer
+			printNextSteps(&buf, agent)
+			out := buf.String()
+			for _, want := range tc.wants {
+				assert.Contains(t, out, want,
+					"printNextSteps(%s) should mention %q", tc.agent, want)
+			}
+		})
+	}
 }
 
-// TestExpectedRenderings_TemplateFilesError — expectedRenderings
-// swallows TemplateFiles errors (returns an empty map) per design;
-// this exercises that branch via the fsWalkDir seam.
-func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
-	orig := fsWalkDir
-	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
-		return assertError("synthetic walk failure")
-	}
-	t.Cleanup(func() { fsWalkDir = orig })
+func TestFindProjectRoot_AtRoot(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	got, err := findProjectRoot()
+	require.NoError(t, err)
+	// Resolve both paths to handle macOS /var/private symlink quirks.
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	wantResolved, _ := filepath.EvalSymlinks(dir)
+	assert.Equal(t, wantResolved, gotResolved)
+}
 
-	got := expectedRenderings(AgentByKey("claude"), sampleData())
-	assert.Empty(t, got)
+// TestFindProjectRoot_WalksUp — starting from a subdirectory still
+// finds the go.mod above.
+func TestFindProjectRoot_WalksUp(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	sub := filepath.Join(dir, "app", "models")
+	require.NoError(t, os.MkdirAll(sub, 0o755))
+	require.NoError(t, os.Chdir(sub))
+	got, err := findProjectRoot()
+	require.NoError(t, err)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	wantResolved, _ := filepath.EvalSymlinks(dir)
+	assert.Equal(t, wantResolved, gotResolved)
+}
+
+// TestFindProjectRoot_NotInsideModule — no go.mod anywhere →
+// CodeNotGofastaProject.
+func TestFindProjectRoot_NotInsideModule(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	_, err := findProjectRoot()
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "NOT_GOFASTA_PROJECT")
+}
+
+func TestBuildInstallData_HappyPath(t *testing.T) {
+	dir := scaffoldFakeProject(t, "github.com/acme/myapp")
+	data, err := buildInstallData(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "github.com/acme/myapp", data.ModulePath)
+	assert.Equal(t, "myapp", data.ProjectName)
+	assert.Equal(t, "myapp", data.ProjectNameLower)
+	assert.Equal(t, "MYAPP", data.ProjectNameUpper)
+	// Default when no version resolver is registered.
+	assert.Equal(t, "dev", data.CLIVersion)
+}
+
+func TestBuildInstallData_VersionResolver(t *testing.T) {
+	dir := scaffoldFakeProject(t, "github.com/acme/myapp")
+	SetVersionResolver(func() string { return "v1.2.3" })
+	t.Cleanup(func() { SetVersionResolver(func() string { return "" }) })
+	data, err := buildInstallData(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "v1.2.3", data.CLIVersion)
+}
+
+func TestBuildInstallData_MissingGoMod(t *testing.T) {
+	dir := t.TempDir()
+	_, err := buildInstallData(dir)
+	require.Error(t, err)
+}
+
+// TestSetVersionResolver_NilKeepsCurrent — passing nil must not wipe
+// the existing resolver (defensive against mistaken init order).
+func TestSetVersionResolver_NilKeepsCurrent(t *testing.T) {
+	SetVersionResolver(func() string { return "stable" })
+	SetVersionResolver(nil)
+	t.Cleanup(func() { SetVersionResolver(func() string { return "" }) })
+	assert.Equal(t, "stable", rootCmdVersion())
+}
+
+func TestRunList_WritesTable(t *testing.T) {
+	// runList emits via cliout.Print → os.Stdout. Verify by swapping
+	// stdout to a pipe for the duration of the call.
+	out := captureStdout(t, func() {
+		require.NoError(t, runList())
+	})
+	assert.Contains(t, out, "KEY")
+	for _, a := range Agents {
+		assert.Contains(t, out, a.Key)
+	}
+}
+
+func TestRunStatus_EmptyProject(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	out := captureStdout(t, func() {
+		require.NoError(t, runStatus())
+	})
+	assert.Contains(t, out, "No AI agents installed")
+}
+
+func TestRunStatus_WithInstalledManifest(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	m.RecordInstall("claude", "v1.0.0", []string{".claude/settings.json"})
+	require.NoError(t, m.Save(dir))
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runStatus())
+	})
+	assert.Contains(t, out, "claude")
+	assert.Contains(t, out, "v1.0.0")
+}
+
+func TestRunInstall_UnknownAgent(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	err := runInstall("nonexistent", false, false)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "UNKNOWN_AGENT")
+}
+
+func TestRunInstall_DryRunDoesNotWriteFiles(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	// Capture stdout so the result table doesn't pollute test output.
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", true, false))
+	})
+	// In dry-run mode the .claude directory should NOT exist.
+	_, err := os.Stat(filepath.Join(dir, ".claude"))
+	assert.True(t, os.IsNotExist(err), "claude dir should not exist after dry-run")
+	// The manifest should also not be updated.
+	m, _ := LoadManifest(dir)
+	assert.Empty(t, m.Installed)
+}
+
+func TestRunInstall_RealRunCreatesFiles(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	// Claude templates render into .claude/.
+	_, err := os.Stat(filepath.Join(dir, ".claude"))
+	require.NoError(t, err)
+	// Manifest recorded the install.
+	m, _ := LoadManifest(dir)
+	assert.Contains(t, m.Installed, "claude")
+}
+
+func TestRunInstall_IdempotentSecondRun(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	// Second run should succeed without --force — every file is
+	// byte-identical so Install records them as Skipped.
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	_ = dir
+}
+
+func TestPrintNextSteps_EachAgent(t *testing.T) {
+	for _, a := range Agents {
+		t.Run(a.Key, func(t *testing.T) {
+			var buf bytes.Buffer
+			printNextSteps(&buf, &a)
+			assert.Contains(t, buf.String(), "Next steps")
+		})
+	}
+}
+
+// TestRunInstall_FindProjectRootError — outside any Go module,
+// runInstall returns the error from findProjectRoot without trying
+// to install.
+func TestRunInstall_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	// t.TempDir is under /var which has no go.mod.
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+}
+
+// TestRunInstall_ManifestSaveError — after successful install+load,
+// Save fails because .gofasta is read-only.
+func TestRunInstall_ManifestSaveError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	gofastaDir := filepath.Join(dir, ".gofasta")
+	require.NoError(t, os.MkdirAll(gofastaDir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(gofastaDir, 0o755) })
+	_ = captureStdout(t, func() {
+		err := runInstall("claude", false, false)
+		require.Error(t, err)
+	})
+}
+
+// TestRunInstall_BuildInstallDataError — unreadable go.mod causes
+// buildInstallData to fail after findProjectRoot succeeded.
+func TestRunInstall_BuildInstallDataError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+}
+
+// TestRunStatus_FindProjectRootError — runStatus outside a Go module.
+func TestRunStatus_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := runStatus()
+	require.Error(t, err)
+}
+
+// TestFindProjectRoot_GetwdError — forces the os.Getwd branch via
+// the getwd seam.
+func TestFindProjectRoot_GetwdError(t *testing.T) {
+	orig := getwd
+	getwd = func() (string, error) { return "", assertError("boom") }
+	t.Cleanup(func() { getwd = orig })
+	_, err := findProjectRoot()
+	require.Error(t, err)
+}
+
+// TestRunInstall_InstallError — a conflicting destination file with
+// differing content triggers Install to return an error, which
+// runInstall propagates.
+func TestRunInstall_InstallError(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+	agent := AgentByKey("claude")
+	require.NotNil(t, agent)
+	files, err := TemplateFiles(agent)
+	require.NoError(t, err)
+	// Pre-populate the first destination with conflicting bytes.
+	dst := filepath.Join(dir, files[0].DestPath)
+	require.NoError(t, os.MkdirAll(filepath.Dir(dst), 0o755))
+	require.NoError(t, os.WriteFile(dst, []byte("conflict"), 0o644))
+	err = runInstall("claude", false, false)
+	require.Error(t, err)
+}
+
+// TestRunInstall_BlocksWhenOtherAgentActive — install codex first,
+// then attempt to install claude without --switch. Must error with
+// CodeAIAgentConflict and the error body should describe the diff.
+func TestRunInstall_BlocksWhenOtherAgentActive(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	t.Cleanup(func() { installSwitch = false })
+	err := runInstall("claude", false, false)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "AI_AGENT_CONFLICT")
+	assert.Contains(t, err.Error(), "currently installed")
+	assert.Contains(t, err.Error(), "--switch")
+}
+
+// TestRunInstall_SwitchReplacesActiveAgent — install aider, then
+// install claude with --switch. Verify the swap: aider files all gone,
+// claude files present, manifest.ActiveAgent == "claude".
+func TestRunInstall_SwitchReplacesActiveAgent(t *testing.T) {
+	dir := scaffoldFakeProject(t, "example.com/app")
+
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("aider", false, false))
+	})
+	// Aider installed: .aider.conf.yml exists.
+	_, err := os.Stat(filepath.Join(dir, ".aider.conf.yml"))
+	require.NoError(t, err)
+
+	// Now switch to claude.
+	installSwitch = true
+	t.Cleanup(func() { installSwitch = false })
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+
+	// Aider files removed; claude files installed.
+	_, err = os.Stat(filepath.Join(dir, ".aider.conf.yml"))
+	assert.True(t, os.IsNotExist(err), ".aider.conf.yml should be removed")
+	_, err = os.Stat(filepath.Join(dir, ".claude", "settings.json"))
+	require.NoError(t, err)
+
+	m, err := LoadManifest(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "claude", m.ActiveAgent)
+	_, present := m.Installed["aider"]
+	assert.False(t, present, "aider should be removed from manifest after switch")
+}
+
+// TestRunInstall_SameAgentReinstall — re-running the same agent does
+// NOT trigger the conflict guard (it's idempotent).
+func TestRunInstall_SameAgentReinstall(t *testing.T) {
+	scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("codex", false, false))
+	})
+}
+
+// TestRunUninstall_FindProjectRootError — outside any Go module.
+func TestRunUninstall_FindProjectRootError(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	err := runUninstall("claude", false)
+	require.Error(t, err)
+}
+
+// TestRunUninstall_BuildInstallDataError — go.mod unreadable so the
+// inner buildInstallData call inside runUninstall fails.
+func TestRunUninstall_BuildInstallDataError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod read denial")
+	}
+	dir := scaffoldFakeProject(t, "example.com/app")
+	_ = captureStdout(t, func() {
+		require.NoError(t, runInstall("claude", false, false))
+	})
+	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
+
+	err := runUninstall("claude", false)
+	require.Error(t, err)
 }

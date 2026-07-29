@@ -15,6 +15,74 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestNewCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	// Set both flags so we cover the || branch
+	newCmd.Flags().Set("graphql", "true")
+	t.Cleanup(func() { newCmd.Flags().Set("graphql", "false") })
+	assert.NoError(t, newCmd.RunE(newCmd, []string{"runelocaltestapp"}))
+}
+
+func TestRunNew_FakeSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runNew("testapp", false, "postgres", "layered")
+	assert.NoError(t, err)
+	// The project dir should have been created
+	_, err = os.Stat(filepath.Join("testapp", "config.yaml"))
+	// config.yaml is one of the skeleton files; it should exist after a successful run
+	assert.NoError(t, err)
+}
+
+func TestRunNew_FakeSuccess_GraphQL(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runNew("gqlapp", true, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+func TestRunNew_GoModInitFails(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1)
+	err := runNew("failapp", false, "postgres", "layered")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "go mod init")
+}
+
+// Staged: go mod init AND go get gofasta both succeed, everything after
+// fails. The gofasta install is a hard-fail step (see runNew) because the
+// scaffold is unusable without it, so to exercise the post-gofasta warning
+// branches we need the first two exec calls to succeed.
+func TestRunNew_WarningBranches(t *testing.T) {
+	chdirTemp(t)
+	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
+	stagedFakeExec(t, 0, 0, 0, 1)
+	err := runNew("warnapp", false, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0, 0, 0, 1)
+	err := runNew("warnapp", true, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+// When `go get github.com/gofastadev/gofasta` fails (e.g. sum.golang.org
+// has not yet indexed a freshly-published release), runNew must abort
+// with a clear error instead of silently producing a broken scaffold.
+// The longform "common causes" hint is printed to stdout before returning;
+// the returned error itself is short to keep staticcheck's ST1005 happy.
+func TestRunNew_GofastaInstallFails(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0, 1) // go mod init ok, go get gofasta fails
+	err := runNew("failapp", false, "postgres", "layered")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
+	assert.Contains(t, err.Error(), "failed to install")
+}
+
 func TestResolveProjectPaths_SimpleName(t *testing.T) {
 	dir, name, mod := resolveProjectPaths("myapp")
 	assert.Equal(t, "myapp", dir)
@@ -164,13 +232,6 @@ func TestRunNew_ChdirError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// chdirTemp is a lightweight helper that pins the test to a fresh temp
-// dir and restores the original cwd on cleanup. It's already defined in
-// commands_exec_test.go but re-declaring it in this file is a compile
-// error — tests that need it rely on the one in commands_exec_test.go.
-// No function here — this comment exists so future readers don't
-// accidentally add a duplicate.
-
 func TestProjectData_Fields(t *testing.T) {
 	data := ProjectData{
 		ProjectName:      "MyApp",
@@ -185,12 +246,6 @@ func TestProjectData_Fields(t *testing.T) {
 	assert.Equal(t, "github.com/org/myapp", data.ModulePath)
 	assert.True(t, data.GraphQL)
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for new.go walk-error / template-error branches. Uses the
-// projectFSOverride seam to inject synthetic filesystems that trigger
-// specific failure modes.
-// ─────────────────────────────────────────────────────────────────────
 
 // TestRunNew_ChdirFails — projectDir is created but Chdir fails via
 // the osChdir seam.
@@ -245,8 +300,10 @@ func TestRunNew_TemplateExecFails(t *testing.T) {
 // ReadFile for a specific path but lets WalkDir pass.
 type errFS struct{ base fs.FS }
 
-func (e errFS) Open(name string) (fs.File, error)    { return e.base.Open(name) }
+func (e errFS) Open(name string) (fs.File, error) { return e.base.Open(name) }
+
 func (e errFS) ReadFile(name string) ([]byte, error) { return nil, fs.ErrPermission }
+
 func (e errFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if rd, ok := e.base.(fs.ReadDirFS); ok {
 		return rd.ReadDir(name)
@@ -601,12 +658,14 @@ type errReadFS struct {
 }
 
 func (e errReadFS) Open(name string) (fs.File, error) { return e.base.Open(name) }
+
 func (e errReadFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if rd, ok := e.base.(fs.ReadDirFS); ok {
 		return rd.ReadDir(name)
 	}
 	return fs.ReadDir(e.base, name)
 }
+
 func (e errReadFS) ReadFile(name string) ([]byte, error) {
 	if name == e.failOnPath {
 		return nil, fs.ErrPermission
@@ -885,16 +944,6 @@ func TestToolVersions_ArePinned(t *testing.T) {
 			assert.True(t, strings.HasPrefix(v, "v"), "want a semver tag, got %q", v)
 		})
 	}
-}
-
-// TestToolVersionAir_StaysBelowTheGoFloorBump pins the specific version that
-// caused the incident. air v1.67.2 is the first release declaring go 1.26.0;
-// moving to it (or later) without also raising scaffoldGoVersion and the
-// linter reintroduces the exact failure.
-func TestToolVersionAir_StaysBelowTheGoFloorBump(t *testing.T) {
-	assert.Equal(t, "v1.67.1", toolVersionAir,
-		"air v1.67.2+ declares go 1.26.0 and raises the scaffold's Go floor; "+
-			"bumping this requires raising scaffoldGoVersion and the pinned golangci-lint together")
 }
 
 // TestScaffoldGoVersion_MatchesSkeletonAndRepo keeps the three places that

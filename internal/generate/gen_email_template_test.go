@@ -1,11 +1,29 @@
 package generate
 
 import (
+	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestGenEmailTemplate_MkdirAllError(t *testing.T) {
+	setupTempProject(t)
+	makeParentAFile(t, "templates/emails")
+	err := GenEmailTemplate(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestGenEmailTemplate_WriteFileError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based write denial")
+	}
+	setupTempProject(t)
+	mkReadOnlyLeaf(t, "templates/emails")
+	err := GenEmailTemplate(sampleScaffoldData())
+	assert.Error(t, err)
+}
 
 func TestGenEmailTemplate_CreatesFile(t *testing.T) {
 	setupTempProject(t)

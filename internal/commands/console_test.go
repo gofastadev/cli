@@ -3,11 +3,42 @@ package commands
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestConsoleCmd_RunE(t *testing.T) {
+	orig := execLookPath
+	execLookPath = func(name string) (string, error) { return "/fake/yaegi", nil }
+	t.Cleanup(func() { execLookPath = orig })
+	withFakeExec(t, 0)
+	assert.NoError(t, consoleCmd.RunE(consoleCmd, nil))
+}
+
+func TestRunConsole_YaegiNotFound(t *testing.T) {
+	orig := execLookPath
+	execLookPath = func(name string) (string, error) {
+		return "", os.ErrNotExist
+	}
+	t.Cleanup(func() { execLookPath = orig })
+
+	err := runConsole()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "yaegi")
+}
+
+func TestRunConsole_FakeSuccess(t *testing.T) {
+	orig := execLookPath
+	execLookPath = func(name string) (string, error) { return "/fake/yaegi", nil }
+	t.Cleanup(func() { execLookPath = orig })
+	withFakeExec(t, 0)
+
+	assert.NoError(t, runConsole())
+}
 
 func TestConsoleCmd_Registered(t *testing.T) {
 	found := false
@@ -53,4 +84,17 @@ func TestConsoleProcFn(t *testing.T) {
 	require.NoError(t, cmd.Start())
 	t.Cleanup(func() { _ = cmd.Wait() })
 	assert.NotNil(t, fn())
+}
+
+// TestConsole_JSONModeRefuses — console is a REPL; it must refuse with
+// CodeInteractiveOnly in JSON mode rather than launching yaegi (whose
+// interactive output would corrupt the JSON stream).
+func TestConsole_JSONModeRefuses(t *testing.T) {
+	withJSONMode(t)
+	err := runConsole()
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, string(clierr.CodeInteractiveOnly), ce.Code)
+	assert.Contains(t, strings.ToLower(ce.Message), "console")
 }

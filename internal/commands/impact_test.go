@@ -67,10 +67,3 @@ func TestImpactCmd_RunE_HappyPath(t *testing.T) {
 
 	require.NoError(t, impactCmd.RunE(impactCmd, []string{"x"}))
 }
-
-// errStub is a sentinel test error.
-var errStub = stubErr("stub error")
-
-type stubErr string
-
-func (s stubErr) Error() string { return string(s) }

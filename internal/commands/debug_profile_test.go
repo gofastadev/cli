@@ -219,3 +219,41 @@ func TestDebugProfileCmd_RunE(t *testing.T) {
 	resetAllDebugFlags()
 	require.NoError(t, debugProfileCmd.RunE(debugProfileCmd, []string{"heap"}))
 }
+
+func TestRunDebugProfile_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/heap": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("profile-bytes"))
+		},
+	})
+	withDebugAppURL(t, url)
+	debugProfileDuration = ""
+	debugProfileOutput = ""
+	require.NoError(t, runDebugProfile("heap"))
+}
+
+func TestRunDebugProfile_WritesFile(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/heap": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("profile-bytes"))
+		},
+	})
+	withDebugAppURL(t, url)
+	tmp := t.TempDir() + "/heap.pprof"
+	debugProfileOutput = tmp
+	t.Cleanup(func() { debugProfileOutput = "" })
+	require.NoError(t, runDebugProfile("heap"))
+}
+
+func TestRunDebugProfile_UnknownKind(t *testing.T) {
+	err := runDebugProfile("nonexistent")
+	require.Error(t, err)
+}
+
+func TestRunDebugProfile_BadDuration(t *testing.T) {
+	url := debugFixture(t, nil)
+	withDebugAppURL(t, url)
+	debugProfileDuration = "xyz"
+	t.Cleanup(func() { debugProfileDuration = "" })
+	require.Error(t, runDebugProfile("cpu"))
+}

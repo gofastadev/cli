@@ -9,6 +9,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRunDebugSQL_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleQueries()) },
+	})
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	require.NoError(t, runDebugSQL())
+}
+
+func TestRunDebugSQL_ErrorsOnlyFilter(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleQueries()) },
+	})
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	debugSQLErrorsOnly = true
+	t.Cleanup(resetSQLFlags)
+	require.NoError(t, runDebugSQL())
+}
+
+func TestRunDebugSQL_BadDuration(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedQuery{}) },
+	})
+	withDebugAppURL(t, url)
+	resetSQLFlags()
+	debugSQLSlowerThan = "xyz"
+	t.Cleanup(resetSQLFlags)
+	require.Error(t, runDebugSQL())
+}
+
 func resetSQLFlags() {
 	debugSQLTrace = ""
 	debugSQLSlowerThan = ""

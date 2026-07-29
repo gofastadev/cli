@@ -6,21 +6,9 @@ import (
 	"testing"
 
 	"github.com/dave/dst"
-	"github.com/dave/dst/decorator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// The applyOn* family is a hand-written dst walker: every statement and
-// expression kind needs its own case, and a missing one means selectors nested
-// in that construct are silently left un-rewritten. That failure is invisible
-// in a small test — the file still parses and still renders — so it only shows
-// up as a compile error in a user's project after the refactor has run.
-//
-// walkerKitchenSink therefore contains at least one instance of every node
-// kind the walker claims to handle, each with a `repoInterfaces.` selector
-// inside it. The assertion is simply that NO occurrence survives: any node
-// kind the walker fails to descend into leaves its selector behind.
 
 const walkerKitchenSink = `package services
 
@@ -224,20 +212,6 @@ func Build() Opts {
 		"a struct-literal field name must be left alone")
 }
 
-// Direct unit tests for the dst helpers in ast.go. Several of the branches
-// below cannot be reached through a parsed file — an import GenDecl holding a
-// non-ImportSpec, for instance, is not something the parser can produce — so
-// those trees are constructed by hand.
-
-func parseDST(t *testing.T, src string) *dst.File {
-	t.Helper()
-	file, err := decorator.NewDecorator(token.NewFileSet()).Parse(src)
-	require.NoError(t, err)
-	return file
-}
-
-// --- ensureImport ---
-
 // TestEnsureImport_NoExistingImportBlock covers the prepend path: a file with
 // no import declaration at all needs a whole GenDecl synthesized in front of
 // its existing declarations.
@@ -279,8 +253,6 @@ func TestEnsureImport_AlreadyPresentIsANoOp(t *testing.T) {
 	assert.Equal(t, before, len(file.Imports))
 }
 
-// --- importAlias ---
-
 func TestImportAlias(t *testing.T) {
 	cases := []struct {
 		name  string
@@ -307,8 +279,6 @@ func TestImportAlias(t *testing.T) {
 	}
 }
 
-// --- importAliasForPath ---
-
 func TestImportAliasForPath(t *testing.T) {
 	file := parseDST(t, `package user
 
@@ -322,8 +292,6 @@ import (
 	assert.Empty(t, importAliasForPath(file, "example.com/not/imported"),
 		"an absent import has no local name")
 }
-
-// --- dropImportPath ---
 
 // TestDropImportPath_LeavesNonImportSpecsAlone covers the defensive branch for
 // a spec that is not an ImportSpec. The parser cannot produce that shape, so
@@ -360,8 +328,6 @@ const X = 1
 	assert.Empty(t, file.Imports)
 }
 
-// --- aliasReferenced ---
-
 // TestAliasReferenced covers both non-Ident cases: a selector whose X is
 // itself a selector (a.b.c) and one whose X is a call result.
 func TestAliasReferenced(t *testing.T) {
@@ -378,8 +344,6 @@ func f() {
 	assert.True(t, aliasReferenced(file, "outer"),
 		"a nested selector's innermost X still counts as a reference")
 }
-
-// --- rewriteSelectors ---
 
 // TestRewriteSelectors covers the replacement shapes and the skip for a
 // selector whose X is not a bare identifier.
@@ -408,8 +372,6 @@ func f() {
 	assert.Contains(t, got, "build().Untouched")
 }
 
-// --- rewriteCallNames ---
-
 // TestRewriteCallNames covers callee rewriting, including a call whose Fun is
 // already a selector (must be skipped) and a replacement with no dot.
 func TestRewriteCallNames(t *testing.T) {
@@ -437,8 +399,6 @@ func f() {
 	assert.Contains(t, got, "NotInTheMap(r)", "a callee absent from the map is left alone")
 }
 
-// --- renderFile ---
-
 // TestRenderFile_FallsBackWhenGofmtFails covers the deliberate nilerr: an
 // unformattable render is returned as-is so the caller can still inspect it,
 // rather than failing the whole transform.
@@ -452,8 +412,6 @@ func TestRenderFile_FallsBackWhenGofmtFails(t *testing.T) {
 	assert.Contains(t, string(out), "package func",
 		"the unformatted bytes are returned so the caller can inspect them")
 }
-
-// --- applyOnExpr ---
 
 func TestApplyOnExpr_NilExpressionIsSafe(t *testing.T) {
 	var e dst.Expr

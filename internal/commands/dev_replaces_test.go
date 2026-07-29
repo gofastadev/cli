@@ -10,16 +10,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for dev_replaces.go.
-//
-// The parser handles a fixed subset of go.mod syntax (replace clauses,
-// single-line + block forms, comments). Each test pins one shape of
-// input that exercises a specific branch, plus a few cross-cutting
-// fixtures (mixed forms, real-world snippet) to guard against
-// regressions.
-// ─────────────────────────────────────────────────────────────────────
-
 // writeGoMod creates a go.mod at a temp path with the given content and
 // returns the path. Centralized so each test reads as one assert per
 // branch rather than three lines of setup.

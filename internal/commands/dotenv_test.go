@@ -181,8 +181,6 @@ func TestLoadDotEnv_UnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "open")
 }
 
-// ── mergeIntoDotEnv ───────────────────────────────────────────────────
-
 // TestMergeIntoDotEnv_ReplacesExistingKeyInPlace — an existing key in
 // the file has its value swapped on the SAME line. Surrounding
 // content (comments, ordering of unrelated keys, blank lines) is

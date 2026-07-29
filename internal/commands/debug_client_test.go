@@ -1,22 +1,16 @@
 package commands
 
 import (
-	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// ─────────────────────────────────────────────────────────────────────
-// Shared HTTP client + URL helpers used by every `gofasta debug`
-// subcommand. Covered here so individual command tests don't have to
-// re-verify the primitives.
-// ─────────────────────────────────────────────────────────────────────
 
 // TestGetJSON_DecodesBody — happy path: 200 + JSON body decodes into
 // the caller's struct.
@@ -181,9 +175,6 @@ func TestBytesReader_MultiRead(t *testing.T) {
 	assert.Equal(t, io.EOF, err)
 }
 
-// Compile-time assertion: bytesReader returns an io.Reader.
-var _ io.Reader = bytesReader(nil)
-
 // TestResolveAppURL_DefaultPort — with no override and no config, we
 // fall through configutil.GetPort which returns 8080.
 func TestResolveAppURL_DefaultPort(t *testing.T) {
@@ -192,60 +183,6 @@ func TestResolveAppURL_DefaultPort(t *testing.T) {
 	t.Cleanup(func() { debugAppURL = saved })
 	got := resolveAppURL()
 	assert.Contains(t, got, "http://localhost:")
-}
-
-// TestIntToStr — exercised here so the helper isn't orphaned if
-// callers go away.
-func TestIntToStr(t *testing.T) {
-	cases := map[int]string{
-		0:   "0",
-		9:   "9",
-		10:  "10",
-		123: "123",
-		-1:  "-1",
-		-42: "-42",
-	}
-	for in, want := range cases {
-		assert.Equal(t, want, intToStr(in), "input=%d", in)
-	}
-}
-
-// TestPadLevel_WidthFive — level strings right-padded to 5 chars so
-// the message column stays aligned across log records.
-func TestPadLevel_WidthFive(t *testing.T) {
-	assert.Equal(t, "INFO ", padLevel("INFO"))
-	assert.Equal(t, "WARN ", padLevel("WARN"))
-	assert.Equal(t, "ERROR", padLevel("ERROR"))
-	assert.Equal(t, "DEBUG", padLevel("DEBUG"))
-	// Already >= 5 — truncate to 5 so we never bloat the column.
-	assert.Equal(t, "LONGE", padLevel("LONGERLEVEL"))
-	// Empty → five spaces.
-	assert.Equal(t, "     ", padLevel(""))
-}
-
-// TestFormatAttrs_SortedKeys — attrs render as key=value, sorted so
-// output is deterministic across runs.
-func TestFormatAttrs_SortedKeys(t *testing.T) {
-	attrs := map[string]string{"b": "2", "a": "1", "c": "3"}
-	got := formatAttrs(attrs)
-	// Strip ANSI color codes for the assertion.
-	plain := stripANSI(got)
-	assert.Contains(t, plain, "a=1, b=2, c=3")
-}
-
-// TestFormatAttrs_Empty — empty map returns empty string (no
-// trailing braces / whitespace).
-func TestFormatAttrs_Empty(t *testing.T) {
-	assert.Equal(t, "", formatAttrs(nil))
-	assert.Equal(t, "", formatAttrs(map[string]string{}))
-}
-
-// TestNumToStr — recursive decimal stringifier for HTTP status codes.
-func TestNumToStr(t *testing.T) {
-	cases := map[int]string{0: "0", 5: "5", 10: "10", 200: "200", 404: "404", -7: "-7"}
-	for in, want := range cases {
-		assert.Equal(t, want, numToStr(in))
-	}
 }
 
 // TestRequireDevtools_Non2xx — /debug/health returns 500.
@@ -292,22 +229,36 @@ func TestPostJSON_NewRequestError(t *testing.T) {
 	require.Error(t, postJSON("\x7f://bad", "/x", map[string]int{}, &out))
 }
 
-// stripANSI removes any ESC-[…m escape sequence so tests don't have
-// to hardcode the color codes termcolor emits on TTY output.
-func stripANSI(s string) string {
-	var out bytes.Buffer
-	skip := false
-	for _, r := range s {
-		switch {
-		case skip:
-			if r == 'm' {
-				skip = false
-			}
-		case r == '\x1b':
-			skip = true
-		default:
-			out.WriteRune(r)
-		}
-	}
-	return out.String()
+// TestResolveAppURL_FromFlag — --app-url overrides config.yaml.
+func TestResolveAppURL_FromFlag(t *testing.T) {
+	debugAppURL = "http://10.0.0.1:9090"
+	t.Cleanup(func() { debugAppURL = "" })
+	assert.Equal(t, "http://10.0.0.1:9090", resolveAppURL())
+}
+
+// TestRequireDevtools_Enabled — probe succeeds → nil.
+func TestRequireDevtools_Enabled(t *testing.T) {
+	url := debugHealthFixture(t, "enabled")
+	assert.NoError(t, requireDevtools(url))
+}
+
+// TestRequireDevtools_StubReturnsCode — probe replies stub → error
+// with DEBUG_DEVTOOLS_OFF so agents branch on the code.
+func TestRequireDevtools_StubReturnsCode(t *testing.T) {
+	url := debugHealthFixture(t, "stub")
+	err := requireDevtools(url)
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.Contains(t, string(b), "DEBUG_DEVTOOLS_OFF")
+}
+
+// TestRequireDevtools_Unreachable — wrong URL → DEBUG_APP_UNREACHABLE.
+func TestRequireDevtools_Unreachable(t *testing.T) {
+	err := requireDevtools("http://127.0.0.1:1") // guaranteed-unused port
+	require.Error(t, err)
+	b, _ := json.Marshal(err)
+	assert.True(t,
+		strings.Contains(string(b), "DEBUG_APP_UNREACHABLE"),
+		"expected DEBUG_APP_UNREACHABLE, got %s", string(b),
+	)
 }

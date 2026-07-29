@@ -73,3 +73,28 @@ func TestDebugHarCmd_RunE(t *testing.T) {
 	resetAllDebugFlags()
 	require.NoError(t, debugHarCmd.RunE(debugHarCmd, nil))
 }
+
+func TestRunDebugHar_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedRequest{
+				{Method: "GET", Path: "/x", Status: 200},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugHarOutput = ""
+	require.NoError(t, runDebugHar())
+}
+
+func TestRunDebugHar_WritesFile(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedRequest{{Method: "GET", Path: "/x", Status: 200}})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugHarOutput = t.TempDir() + "/out.har"
+	t.Cleanup(func() { debugHarOutput = "" })
+	require.NoError(t, runDebugHar())
+}

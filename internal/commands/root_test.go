@@ -2,12 +2,367 @@ package commands
 
 import (
 	"bytes"
+	"html/template"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestShouldSkipBanner_NoBannerFlag(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = true
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	c := &cobra.Command{Use: "dev"}
+	assert.True(t, shouldSkipBanner(c))
+}
+
+func TestShouldSkipBanner_VersionFlag(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	c := &cobra.Command{Use: "gofasta"}
+	c.Flags().Bool("version", true, "")
+	_ = c.Flags().Set("version", "true")
+	assert.True(t, shouldSkipBanner(c))
+}
+
+func TestShouldSkipBanner_CompletionSubcommand(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := &cobra.Command{Use: "gofasta"}
+	completion := &cobra.Command{Use: "completion"}
+	root.AddCommand(completion)
+
+	assert.True(t, shouldSkipBanner(completion))
+}
+
+func TestShouldSkipBanner_NormalCommand(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := &cobra.Command{Use: "gofasta"}
+	dev := &cobra.Command{Use: "dev"}
+	root.AddCommand(dev)
+
+	assert.False(t, shouldSkipBanner(dev))
+}
+
+func TestRootCmd_PersistentPreRun_InvokesBanner(t *testing.T) {
+	// Swap bannerStream to a buffer we can read back.
+	origStream := bannerStream
+	var buf bytes.Buffer
+	bannerStream = &buf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	// Disable suppression; force "any" color (256) so output is deterministic.
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	// Reset --no-banner in case a prior test left it toggled.
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	// Invoke the PersistentPreRun directly on the `version` subcommand.
+	// (We don't use rootCmd.Execute because that would also Run the command.)
+	root := rootCmd
+	ver, _, err := root.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("version subcommand not registered: %v", err)
+	}
+	root.PersistentPreRun(ver, nil)
+
+	out := buf.String()
+	assert.Contains(t, out, "Gofasta")
+	assert.Contains(t, out, ansiCyan256)
+}
+
+func TestRootCmd_PersistentPreRun_SkipsCompletion(t *testing.T) {
+	origStream := bannerStream
+	var buf bytes.Buffer
+	bannerStream = &buf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := rootCmd
+	// Cobra auto-adds a `completion` subcommand; walk the tree to find it.
+	var completion *cobra.Command
+	for _, c := range root.Commands() {
+		if c.Name() == "completion" {
+			completion = c
+			break
+		}
+	}
+	if completion == nil {
+		t.Skip("cobra did not auto-register a completion subcommand in this version")
+	}
+
+	root.PersistentPreRun(completion, nil)
+	assert.Empty(t, strings.TrimSpace(buf.String()),
+		"banner must be suppressed for completion output")
+}
+
+// When a command is nested three levels deep (root → group → leaf), the
+// for-loop in shouldSkipBanner must walk up past the group to find the
+// top-level parent name. This exercises the loop body (lines 38-40 of root.go).
+func TestShouldSkipBanner_ThreeLevelTreeUnderCompletion(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := &cobra.Command{Use: "gofasta"}
+	completion := &cobra.Command{Use: "completion"}
+	bash := &cobra.Command{Use: "bash"}
+	completion.AddCommand(bash)
+	root.AddCommand(completion)
+
+	// bash is two levels deep under root; the walk must climb from bash → completion → root,
+	// find `completion` as the top-level name, and skip.
+	assert.True(t, shouldSkipBanner(bash),
+		"a leaf under `completion` should be recognized via tree walk")
+}
+
+// Same tree shape but under a normal command — must NOT skip.
+func TestShouldSkipBanner_ThreeLevelTreeUnderNormalCommand(t *testing.T) {
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := &cobra.Command{Use: "gofasta"}
+	deploy := &cobra.Command{Use: "deploy"}
+	logs := &cobra.Command{Use: "logs"}
+	deploy.AddCommand(logs)
+	root.AddCommand(deploy)
+
+	assert.False(t, shouldSkipBanner(logs),
+		"a leaf under a normal group should not trigger skip")
+}
+
+// When shouldSkipBanner returns true, PersistentPreRun must return without
+// invoking printBanner. Verify by toggling noBanner=true and checking
+// that the output stream stays empty.
+func TestRootCmd_PersistentPreRun_SkipBranch(t *testing.T) {
+	origStream := bannerStream
+	var buf bytes.Buffer
+	bannerStream = &buf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	origNoBanner := noBanner
+	noBanner = true // force shouldSkipBanner → true
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	root := rootCmd
+	ver, _, err := root.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("version subcommand not registered: %v", err)
+	}
+	root.PersistentPreRun(ver, nil)
+
+	assert.Empty(t, buf.String(),
+		"PersistentPreRun must not write anything when shouldSkipBanner is true")
+}
+
+// Happy path: runExecute returns nil → Execute returns without touching osExit.
+func TestExecute_Success(t *testing.T) {
+	// Capture any attempted exit so a stray osExit call fails the test loudly.
+	var exitCalled bool
+	origExit := osExit
+	osExit = func(int) { exitCalled = true }
+	t.Cleanup(func() { osExit = origExit })
+
+	// Ask for the built-in version flag so rootCmd.Execute() succeeds quickly
+	// without running any real subcommand logic.
+	rootCmd.SetArgs([]string{"--version"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	Execute("0.0.0-test")
+
+	assert.False(t, exitCalled, "success path must not call osExit")
+}
+
+// Error path: bogus subcommand → runExecute returns an error → Execute must
+// call osExit(1). The seam lets us observe the call without actually exiting.
+func TestExecute_ErrorCallsOsExit(t *testing.T) {
+	var exitCode int
+	var exitCalled bool
+	origExit := osExit
+	osExit = func(code int) {
+		exitCalled = true
+		exitCode = code
+	}
+	t.Cleanup(func() { osExit = origExit })
+
+	rootCmd.SetArgs([]string{"definitely-not-a-real-subcommand"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+
+	Execute("0.0.0-test")
+
+	assert.True(t, exitCalled, "error path must call osExit")
+	assert.Equal(t, 1, exitCode, "non-zero exit code on error")
+}
+
+// Bare `gofasta` with no subcommand and no args should hit the Run closure,
+// which calls cmd.Help(). Route output through a buffer to avoid touching
+// the real stderr/stdout.
+func TestRootCmd_RunInvokesHelp(t *testing.T) {
+	// Redirect banner to a buffer so we can observe it, and mute cobra's
+	// own help output by redirecting the command's output streams.
+	origStream := bannerStream
+	var bannerBuf bytes.Buffer
+	bannerStream = &bannerBuf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	var helpBuf bytes.Buffer
+	rootCmd.SetOut(&helpBuf)
+	rootCmd.SetErr(&helpBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	// Invoke Run directly on rootCmd — this hits the closure at root.go:66-68.
+	rootCmd.Run(rootCmd, nil)
+
+	// cmd.Help() calls the registered HelpFunc, which prints the banner first
+	// and then falls through to cobra's default help renderer that writes to
+	// the command's output writer.
+	assert.Contains(t, helpBuf.String(), "Usage:",
+		"cmd.Help() should render cobra's standard usage block")
+}
+
+// Call the HelpFunc closure directly to cover the `if !shouldSkipBanner`
+// branch and the `printBanner()` + `defaultHelpFn` calls inside it.
+func TestRootCmd_HelpFunc_ShowsBanner(t *testing.T) {
+	origStream := bannerStream
+	var bannerBuf bytes.Buffer
+	bannerStream = &bannerBuf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	var helpBuf bytes.Buffer
+	rootCmd.SetOut(&helpBuf)
+	rootCmd.SetErr(&helpBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	origNoBanner := noBanner
+	noBanner = false
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	// Invoke HelpFunc on the `version` subcommand — covers the closure body
+	// including the shouldSkipBanner check, printBanner, and defaultHelpFn.
+	ver, _, err := rootCmd.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("version subcommand not registered: %v", err)
+	}
+	rootCmd.HelpFunc()(ver, nil)
+
+	assert.Contains(t, bannerBuf.String(), "Gofasta",
+		"HelpFunc closure should invoke printBanner, which writes to bannerStream")
+	assert.Contains(t, helpBuf.String(), "Usage:",
+		"HelpFunc closure should delegate to defaultHelpFn, which writes Usage: to the command output")
+}
+
+// When shouldSkipBanner is true, the HelpFunc closure must still call
+// defaultHelpFn but NOT invoke printBanner.
+func TestRootCmd_HelpFunc_SkipsBannerWhenNoBanner(t *testing.T) {
+	origStream := bannerStream
+	var bannerBuf bytes.Buffer
+	bannerStream = &bannerBuf
+	t.Cleanup(func() { bannerStream = origStream })
+
+	var helpBuf bytes.Buffer
+	rootCmd.SetOut(&helpBuf)
+	rootCmd.SetErr(&helpBuf)
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	withBannerSuppressed(t, false)
+	withColorSupport(t, false, true)
+
+	origNoBanner := noBanner
+	noBanner = true // force skip
+	t.Cleanup(func() { noBanner = origNoBanner })
+
+	ver, _, err := rootCmd.Find([]string{"version"})
+	if err != nil {
+		t.Fatalf("version subcommand not registered: %v", err)
+	}
+	rootCmd.HelpFunc()(ver, nil)
+
+	assert.Empty(t, bannerBuf.String(),
+		"skip branch must not write to bannerStream")
+	assert.Contains(t, helpBuf.String(), "Usage:",
+		"help output must still be rendered even when banner is skipped")
+}
+
+// rootCmd.Run (the Run func that shows help + banner) is invoked when no subcommand is given.
+func TestRootCmd_Run_Help(t *testing.T) {
+	// rootCmd.SetArgs([]string{}) with no Execute call still goes through runExecute("")
+	rootCmd.SetArgs([]string{})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	assert.NoError(t, runExecute("test"))
+}
+
+func TestRunExecute_Help(t *testing.T) {
+	// With no subcommand, cobra runs the root Run func which calls printBanner + Help
+	rootCmd.SetArgs([]string{"version"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	assert.NoError(t, runExecute("0.0.0-test"))
+}
+
+func TestRunExecute_UnknownSubcommand(t *testing.T) {
+	rootCmd.SetArgs([]string{"definitely-not-a-cmd"})
+	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	assert.Error(t, runExecute("0.0.0-test"))
+}
+
+// TestHandleIndex_ExecuteError — the template loads but Execute
+// fails at runtime.
+func TestHandleIndex_ExecuteError(t *testing.T) {
+	orig := loadDashboardTemplateFn
+	// Build a real parseable template whose Execute errors at runtime.
+	tmpl, err := template.New("t").Parse(`{{call .NoSuchFunc}}`)
+	require.NoError(t, err)
+	loadDashboardTemplateFn = func() (*template.Template, error) { return tmpl, nil }
+	t.Cleanup(func() { loadDashboardTemplateFn = orig })
+	srv := &dashboardServer{}
+	rec := httptest.NewRecorder()
+	srv.handleIndex(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	assert.Equal(t, http.StatusInternalServerError, rec.Code)
+}
 
 func TestRootCmd_HasSubcommands(t *testing.T) {
 	cmds := rootCmd.Commands()
@@ -43,8 +398,6 @@ func TestExecute_UnknownCommand(t *testing.T) {
 func TestRootCmd_HasLongDescription(t *testing.T) {
 	assert.NotEmpty(t, rootCmd.Long)
 }
-
-// --- Grouped help output ---
 
 // runRootHelpWithGroups primes the root command with the auto-generated
 // help+completion commands, assigns groups, captures the custom help

@@ -9,6 +9,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGenMigration_MkdirError(t *testing.T) {
+	setupTempProject(t)
+	// db/migrations is created by setupTempProject. Replace it with a
+	// regular file so the .up.sql WriteTemplate call fails.
+	require.NoError(t, os.RemoveAll("db/migrations"))
+	require.NoError(t, os.WriteFile("db/migrations", []byte("x"), 0o644))
+	err := GenMigration(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
 func TestMigrationTemplates_Postgres(t *testing.T) {
 	up, down := migrationTemplates("postgres")
 	assert.Equal(t, templates.MigUpPostgres, up)

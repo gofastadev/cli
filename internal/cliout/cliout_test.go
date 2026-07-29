@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 // capture redirects os.Stdout and os.Stderr to in-memory buffers for the
@@ -83,6 +85,7 @@ type errorWithMarshalJSON struct {
 }
 
 func (e *errorWithMarshalJSON) Error() string { return e.Msg }
+
 func (e *errorWithMarshalJSON) MarshalJSON() ([]byte, error) {
 	return json.Marshal(map[string]string{"code": e.Code, "message": e.Msg})
 }
@@ -125,4 +128,15 @@ func TestJSONFlag_Toggles(t *testing.T) {
 	if !JSON() {
 		t.Error("JSON() should be true after SetJSONMode(true)")
 	}
+}
+
+// TestStep_JSONModeWritesToStderr — the regression driver for the
+// "--json must keep stdout clean" promise. Step (and every progress
+// helper) routes to stderr in JSON mode so an agent piping stdout to
+// jq doesn't see human-readable chatter mixed with the JSON document.
+func TestStep_JSONModeWritesToStderr(t *testing.T) {
+	withJSONMode(t)
+	out, errOut := withStdouterr(t, func() { Step("hello %s", "world") })
+	assert.Empty(t, out, "JSON mode must not touch stdout")
+	assert.Contains(t, errOut, "hello world")
 }

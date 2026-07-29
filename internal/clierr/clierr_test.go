@@ -4,32 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
-
-func TestNew_PopulatesHintAndDocsFromRegistry(t *testing.T) {
-	e := New(CodeWireMissingProvider, "undefined: NewThingProvider")
-	if e.Code != string(CodeWireMissingProvider) {
-		t.Errorf("Code = %q, want %q", e.Code, CodeWireMissingProvider)
-	}
-	if e.Hint == "" {
-		t.Error("Hint is empty — registry lookup did not populate it")
-	}
-	if e.Docs == "" {
-		t.Error("Docs is empty — registry lookup did not populate it")
-	}
-}
-
-func TestNew_UnknownCodeStillUsable(t *testing.T) {
-	// Unregistered codes must not panic; they simply produce an error
-	// without a hint or docs URL.
-	e := New(Code("UNREGISTERED_CODE"), "something happened")
-	if e.Hint != "" || e.Docs != "" {
-		t.Errorf("expected empty hint/docs for unregistered code, got %+v", e)
-	}
-	if e.Message != "something happened" {
-		t.Errorf("Message lost: %q", e.Message)
-	}
-}
 
 func TestError_StringWithoutCause(t *testing.T) {
 	e := New(CodeConfigInvalid, "bad value for database.driver")
@@ -116,20 +93,56 @@ func TestAs_ReturnsTrueForWrapped(t *testing.T) {
 	}
 }
 
-// TestRegistry_EveryCodeHasAHint guards against adding a code constant
-// and forgetting to register its hint. If a registered code has an empty
-// hint, the test fails — that's a contract with agents/CI.
-func TestRegistry_EveryCodeHasAHint(t *testing.T) {
-	for code, entry := range registry {
-		if entry.Hint == "" && code != CodeInternal {
-			t.Errorf("code %q has no Hint — add one to registry in codes.go", code)
-		}
-	}
-}
-
 func TestNewf_FormatsMessage(t *testing.T) {
 	e := Newf(CodeInvalidName, "name %q is not a valid module path", "My App")
 	if e.Message != `name "My App" is not a valid module path` {
 		t.Errorf("Message = %q", e.Message)
 	}
+}
+
+// TestError_Nil — nil receiver returns empty string rather than
+// panicking. Defensive branch that error-chain traversal relies on.
+func TestError_Nil(t *testing.T) {
+	var e *Error
+	assert.Empty(t, e.Error())
+}
+
+// TestError_WithoutCause — a structured error with no wrapped
+// cause renders just the message.
+func TestError_WithoutCause(t *testing.T) {
+	e := New(CodeInternal, "boom")
+	assert.Equal(t, "boom", e.Error())
+}
+
+// TestError_WithCause — renders "message: cause".
+func TestError_WithCause(t *testing.T) {
+	e := Wrap(CodeInternal, errors.New("underlying"), "wrapper")
+	assert.Equal(t, "wrapper: underlying", e.Error())
+}
+
+// TestUnwrap_Nil — nil receiver returns nil.
+func TestUnwrap_Nil(t *testing.T) {
+	var e *Error
+	assert.Nil(t, e.Unwrap())
+}
+
+// TestUnwrap_NoCause — structured error without cause → nil.
+func TestUnwrap_NoCause(t *testing.T) {
+	e := New(CodeInternal, "x")
+	assert.Nil(t, e.Unwrap())
+}
+
+// TestUnwrap_WithCause — structured error wrapping a sentinel; the
+// sentinel is recoverable via errors.Is.
+func TestUnwrap_WithCause(t *testing.T) {
+	sentinel := errors.New("sentinel")
+	e := Wrap(CodeInternal, sentinel, "wrapper")
+	assert.True(t, errors.Is(e, sentinel))
+}
+
+// TestWrapf_FormatsMessage — Wrapf renders the format arguments into
+// the message field.
+func TestWrapf_FormatsMessage(t *testing.T) {
+	e := Wrapf(CodeInternal, errors.New("c"), "count=%d", 42)
+	assert.Equal(t, "count=42: c", e.Error())
 }

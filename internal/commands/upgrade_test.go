@@ -17,6 +17,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUpgradeCmd_RunE(t *testing.T) {
+	swapHTTP(t, func(url string) (*http.Response, error) { return nil, errDummy })
+	err := upgradeCmd.RunE(upgradeCmd, nil)
+	assert.Error(t, err)
+}
+
+// withFakeExecVersion is withFakeExec with a scripted --version response.
+//
+//nolint:unparam // exitCode kept symmetrical with fakeExecCommandWithVersion for future use.
+func withFakeExecVersion(t *testing.T, exitCode int, version string) {
+	t.Helper()
+	orig := execCommand
+	execCommand = fakeExecCommandWithVersion(exitCode, version)
+	t.Cleanup(func() { execCommand = orig })
+}
+
 // serveUpgradeAssets returns an httptest server that serves binBytes for
 // asset downloads and a goreleaser-style checksums.txt matching those
 // bytes, so upgradeViaBinary's SHA-256 verification passes. The checksum
@@ -68,7 +84,8 @@ func TestEmitUpgradeResult_TextNoOp(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read(_ []byte) (int, error) { return 0, fmt.Errorf("simulated read error") }
-func (errReader) Close() error               { return nil }
+
+func (errReader) Close() error { return nil }
 
 // swapHTTP replaces httpGet and restores at cleanup.
 func swapHTTP(t *testing.T, fn func(url string) (*http.Response, error)) {
@@ -93,8 +110,6 @@ func swapDownloadURL(t *testing.T, fmtStr string) {
 	githubDownloadURLFmt = fmtStr
 	t.Cleanup(func() { githubDownloadURLFmt = orig })
 }
-
-// --- fetchLatestVersion ---
 
 func TestFetchLatestVersion_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -152,8 +167,6 @@ func TestFetchLatestVersion_HTTPError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- isGoInstall ---
-
 func TestIsGoInstall(t *testing.T) {
 	t.Setenv("GOPATH", "/my/go")
 	assert.True(t, isGoInstall("/my/go/bin/gofasta"))
@@ -166,16 +179,12 @@ func TestIsGoInstall_DefaultGopath(t *testing.T) {
 	assert.True(t, isGoInstall(home+"/go/bin/gofasta"))
 }
 
-// --- normalizeVersion ---
-
 func TestNormalizeVersion(t *testing.T) {
 	assert.Equal(t, "1.2.3", normalizeVersion("v1.2.3"))
 	assert.Equal(t, "1.2.3", normalizeVersion("1.2.3"))
 	assert.Equal(t, "", normalizeVersion(""))
 	assert.Equal(t, "0.1.3-0.20260411-abcdef", normalizeVersion("v0.1.3-0.20260411-abcdef"))
 }
-
-// --- goInstallTargetPath ---
 
 func TestGoInstallTargetPath_GOBIN(t *testing.T) {
 	t.Setenv("GOBIN", "/custom/gobin")
@@ -214,8 +223,6 @@ func TestGoInstallTargetPath_HomeError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- readBinaryVersion ---
-
 func TestReadBinaryVersion_Success(t *testing.T) {
 	withFakeExecVersion(t, 0, "v1.2.3")
 	v, err := readBinaryVersion("/fake/gofasta")
@@ -228,8 +235,6 @@ func TestReadBinaryVersion_ExecError(t *testing.T) {
 	_, err := readBinaryVersion("/fake/gofasta")
 	assert.Error(t, err)
 }
-
-// --- upgradeViaGoInstall ---
 
 func TestUpgradeViaGoInstall_Success(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
@@ -292,8 +297,6 @@ func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
 	// warning rather than failing. Assert no error.
 	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
-
-// --- upgradeViaBinary ---
 
 func TestUpgradeViaBinary_Success(t *testing.T) {
 	srv := serveUpgradeAssets(t, "fake-binary-bytes")
@@ -425,8 +428,6 @@ func TestUpgradeViaBinary_RenameFallback(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- replaceViaCopy ---
-
 func TestReplaceViaCopy_Success(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
 	dst := filepath.Join(t.TempDir(), "dst")
@@ -448,8 +449,6 @@ func TestReplaceViaCopy_DestUnwritable(t *testing.T) {
 	err := replaceViaCopy(src, "/nonexistent-dir/dst", "0.0.1", "v1.0.0")
 	assert.Error(t, err)
 }
-
-// --- runUpgrade ---
 
 func TestRunUpgrade_AlreadyUpToDate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -544,8 +543,6 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	assert.Error(t, err)
 	_ = strings.Contains // keep import
 }
-
-// --- checksum verification ---
 
 func TestParseChecksumsFile(t *testing.T) {
 	body := "abc123  gofasta-linux-amd64\ndef456  gofasta-darwin-arm64\n"

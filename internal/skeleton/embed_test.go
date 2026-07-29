@@ -1,12 +1,12 @@
 package skeleton
 
 import (
+	"html/template"
 	"io/fs"
 	"path"
 	"regexp"
 	"strings"
 	"testing"
-	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -176,22 +176,6 @@ func TestMigrationsFS_ClickHouseDocumentsLimitation(t *testing.T) {
 	assert.Contains(t, lower, "clickhouse does not support")
 	assert.Contains(t, lower, "application layer")
 }
-
-// gqlgen owns every `{name}.resolvers.go` file in the scaffold (gqlgen.yml →
-// resolver.layout: follow-schema). On each `go tool gqlgen generate` it
-// rewrites those files from the schema: bodies of recognized resolver METHODS
-// are preserved, and everything else — plain functions, package-level vars,
-// types — is relocated into a commented-out `/* ... */` block under a
-// "!!! WARNING !!!" banner.
-//
-// Three shared error helpers used to live in user.resolvers.go. `gofasta new
-// --graphql` runs gqlgen as part of scaffolding, so those helpers were
-// commented out before the developer ever saw the project, and it failed to
-// compile with "undefined: gqlError". They now live in gql_errors.go, which
-// gqlgen does not own.
-//
-// This test stops that from regressing without needing a scaffold or a network
-// round-trip: it reads the embedded templates directly.
 
 // funcDeclPattern matches any top-level func declaration and captures whether
 // it has a receiver.

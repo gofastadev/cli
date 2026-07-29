@@ -2,12 +2,110 @@ package commands
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDoctorCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, doctorCmd.RunE(doctorCmd, nil))
+}
+
+func TestRunDoctor_AllSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runDoctor()
+	// no config.yaml present, so only required + optional checks run; all succeed
+	assert.NoError(t, err)
+}
+
+func TestRunDoctor_AllFail(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1)
+	err := runDoctor()
+	assert.Error(t, err)
+}
+
+func TestRunDoctor_WithConfigYaml(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	err := runDoctor()
+	assert.NoError(t, err)
+}
+
+func TestRunDoctor_WithConfigYaml_MigrateFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	err := runDoctor()
+	assert.Error(t, err)
+}
+
+func TestCheckGoVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkGoVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckGoVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkGoVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckMigrateVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkMigrateVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckMigrateVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkMigrateVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckDockerVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkDockerVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckDockerVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkDockerVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckGoTool_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	fn := checkGoTool("air")
+	_, ok := fn()
+	assert.True(t, ok)
+}
+
+func TestCheckGoTool_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	fn := checkGoTool("air")
+	msg, ok := fn()
+	assert.False(t, ok)
+	assert.Contains(t, msg, "air-verse/air")
+}
+
+func TestPrintDoctorSection(t *testing.T) {
+	assert.NotPanics(t, func() {
+		printDoctorSection(io.Discard, "Required:", []doctorEntry{
+			{Name: "foo", Status: "ok", Message: "bar"},
+			{Name: "foo", Status: "fail", Message: "bar"},
+		})
+	})
+}
 
 func TestDoctorCmd_Registered(t *testing.T) {
 	found := false

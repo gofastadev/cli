@@ -10,6 +10,56 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestWriteTemplate_MkdirAllError(t *testing.T) {
+	setupTempProject(t)
+	// Make "output" a regular file so MkdirAll("output") inside
+	// WriteTemplate fails with ENOTDIR.
+	makeParentAFile(t, "output")
+	err := WriteTemplate("output/foo.go", "x", "package foo", sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestWriteTemplate_CreateError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based write denial")
+	}
+	setupTempProject(t)
+	// Create "output" as a read+execute-only directory. MkdirAll("output")
+	// sees it already exists and returns nil, then os.Create("output/foo.go")
+	// fails with EACCES.
+	require.NoError(t, os.Mkdir("output", 0o555))
+	t.Cleanup(func() { _ = os.Chmod("output", 0o755) })
+	err := WriteTemplate("output/foo.go", "x", "package foo", sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestWriteTemplate_DryRunRecordsButDoesNotWrite(t *testing.T) {
+	resetPlannerState(t)
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	d := ScaffoldData{Name: "Product", SnakeName: "product", ModulePath: "example.com/app"}
+	err := WriteTemplate("app/models/product.model.go", "model",
+		"package models\n\ntype {{.Name}} struct{}\n", d)
+	require.NoError(t, err)
+
+	// Disk must be untouched.
+	_, statErr := os.Stat("app/models/product.model.go")
+	assert.True(t, os.IsNotExist(statErr), "dry-run must not create files on disk")
+
+	// Plan must record exactly one create action.
+	plan := Plan()
+	require.Len(t, plan, 1)
+	assert.Equal(t, "create", plan[0].Kind)
+	assert.Equal(t, "app/models/product.model.go", plan[0].Path)
+	assert.Greater(t, plan[0].Size, 0)
+}
+
 func TestWriteTemplate_CreatesFile(t *testing.T) {
 	setupTempProject(t)
 	d := sampleScaffoldData()

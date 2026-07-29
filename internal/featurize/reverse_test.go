@@ -4,11 +4,91 @@
 package featurize
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestFixSharedDtosImportPathReverse(t *testing.T) {
+	src := `package validators
+
+import (
+	dtos "example.com/myapp/app/shared/dtos"
+)
+
+func f() { _ = dtos.TPaginationObjectDto{} }
+`
+	got, err := FixSharedDtosImportPathReverse([]byte(src), "example.com/myapp")
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	out := string(got)
+	if !strings.Contains(out, `"example.com/myapp/app/dtos"`) {
+		t.Errorf("import not flipped back to app/dtos:\n%s", out)
+	}
+	if strings.Contains(out, "app/shared/dtos") {
+		t.Errorf("shared/dtos import path still present:\n%s", out)
+	}
+}
+
+func TestTransformPerResourceReverse_Service(t *testing.T) {
+	// Feature-shaped service file (package user): cross-package repo
+	// interface reference is bare; same-package symbols stay bare.
+	src := `package user
+
+import (
+	"github.com/google/uuid"
+
+	"example.com/myapp/app/models"
+)
+
+type UserService struct {
+	repo  UserRepositoryInterface
+	pwGen PasswordGenerator
+}
+
+func NewUserService(repo UserRepositoryInterface, pwGen PasswordGenerator) *UserService {
+	return &UserService{repo: repo, pwGen: pwGen}
+}
+
+func (s *UserService) Get(ctx uuid.UUID) (*models.User, error) {
+	return nil, ErrUserNotFound
+}
+`
+	got, err := TransformPerResourceReverse([]byte(src),
+		LayeredDestination{Path: "app/services/user.service.go", PackageName: "services"},
+		Options{
+			ModulePath: "example.com/myapp",
+			Resource:   Resource{Name: "User", Snake: "user", Plural: "Users"},
+		})
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	out := string(got)
+	if !strings.Contains(out, "package services") {
+		t.Errorf("package decl not reverted to services:\n%s", out)
+	}
+	// Cross-package repo interface re-qualified.
+	if !strings.Contains(out, "repoInterfaces.UserRepositoryInterface") {
+		t.Errorf("UserRepositoryInterface not re-qualified to repoInterfaces:\n%s", out)
+	}
+	if !strings.Contains(out, `"example.com/myapp/app/repositories/interfaces"`) {
+		t.Errorf("repoInterfaces import not added:\n%s", out)
+	}
+	// Same-package service symbols stay bare.
+	if strings.Contains(out, "services.PasswordGenerator") {
+		t.Errorf("PasswordGenerator should stay bare in package services:\n%s", out)
+	}
+	if strings.Contains(out, "services.ErrUserNotFound") {
+		t.Errorf("ErrUserNotFound should stay bare in package services:\n%s", out)
+	}
+	// Model reference preserved.
+	if !strings.Contains(out, "models.User") {
+		t.Errorf("models.User reference should be preserved:\n%s", out)
+	}
+}
 
 // TestTransformPerResourceReverse_RenamesRegisterRoutes covers the routes
 // unwind. Forward renames <Name>Routes to RegisterRoutes so each feature

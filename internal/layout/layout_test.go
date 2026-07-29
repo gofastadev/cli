@@ -6,7 +6,114 @@
 
 package layout
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+)
+
+func TestFeature_SingleFiles(t *testing.T) {
+	lo := For(Feature)
+	cases := []struct{ name, got, want string }{
+		{"ContainerFile", lo.ContainerFile(), "app/di/container.go"},
+		{"WireFile", lo.WireFile(), "app/di/wire.go"},
+		{"RouteIndexFile", lo.RouteIndexFile(), "app/rest/routes/index.routes.go"},
+		{"ServeFile", lo.ServeFile(), "cmd/serve.go"},
+		{"ResolverFile", lo.ResolverFile(), "app/graphql/resolvers/resolver.go"},
+		{"RoutesDir", lo.RoutesDir(), filepath.Join("app", "rest", "routes")},
+		{"MigrationsDir", lo.MigrationsDir(), filepath.Join("db", "migrations")},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			assert.Equal(t, c.want, c.got)
+		})
+	}
+}
+
+func TestFeature_InterfaceDirs(t *testing.T) {
+	inProjectTree(t, map[string]string{
+		"app/user/repository_iface.go": "package user",
+		"app/order/service_iface.go":   "package order",
+		// No _iface.go: nothing to mock, so it must not be returned.
+		"app/report/report.go": "package report",
+		// Shared concerns are excluded even when they declare an iface file.
+		"app/shared/thing_iface.go": "package shared",
+	})
+
+	assert.ElementsMatch(t, []string{
+		filepath.Join("app", "order"),
+		filepath.Join("app", "user"),
+	}, For(Feature).InterfaceDirs())
+}
+
+func TestFeature_InterfaceDirs_EmptyProject(t *testing.T) {
+	inProjectTree(t, map[string]string{"go.mod": "module example.com/app\n"})
+	assert.Empty(t, For(Feature).InterfaceDirs())
+}
+
+// TestFeature_RouteFiles covers the two-source listing: the shared index plus
+// each resource's own routes.go, which is where the per-resource registrations
+// live once a project has been converted to the feature layout.
+func TestFeature_RouteFiles(t *testing.T) {
+	inProjectTree(t, map[string]string{
+		"app/rest/routes/index.routes.go": "package routes",
+		"app/user/routes.go":              "package user",
+		"app/order/routes.go":             "package order",
+		// A resource without routes contributes nothing.
+		"app/report/report.go": "package report",
+	})
+
+	assert.ElementsMatch(t, []string{
+		filepath.Join("app", "rest", "routes", "index.routes.go"),
+		filepath.Join("app", "order", "routes.go"),
+		filepath.Join("app", "user", "routes.go"),
+	}, For(Feature).RouteFiles())
+}
+
+func TestFeature_RouteFiles_NoIndex(t *testing.T) {
+	inProjectTree(t, map[string]string{"app/user/routes.go": "package user"})
+	assert.Equal(t, []string{filepath.Join("app", "user", "routes.go")}, For(Feature).RouteFiles())
+}
+
+func TestFeature_RouteFiles_EmptyProject(t *testing.T) {
+	inProjectTree(t, map[string]string{"go.mod": "module example.com/app\n"})
+	assert.Empty(t, For(Feature).RouteFiles())
+}
+
+func TestLayered_RouteFiles(t *testing.T) {
+	inProjectTree(t, map[string]string{
+		"app/rest/routes/user.routes.go":  "package routes",
+		"app/rest/routes/index.routes.go": "package routes",
+		"app/rest/routes/helpers.go":      "package routes",
+	})
+
+	assert.ElementsMatch(t, []string{
+		filepath.Join("app", "rest", "routes", "index.routes.go"),
+		filepath.Join("app", "rest", "routes", "user.routes.go"),
+	}, For(Layered).RouteFiles())
+}
+
+func TestLayered_RouteFiles_MissingDir(t *testing.T) {
+	inProjectTree(t, map[string]string{"go.mod": "module example.com/app\n"})
+	assert.Nil(t, For(Layered).RouteFiles())
+}
+
+// TestDetect_FallsBackToLayered covers the no-config path. Both branches
+// resolve to Layered on purpose — there is only a positive signal for layered
+// (app/models/), and an unrecognized shape must not route to a layout that
+// would not produce a working project.
+func TestDetect_FallsBackToLayered(t *testing.T) {
+	t.Run("layered signal present", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"app/models/user.model.go": "package models"})
+		assert.Equal(t, Layered, Detect().Kind())
+	})
+
+	t.Run("no signal at all", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"go.mod": "module example.com/app\n"})
+		assert.Equal(t, Layered, Detect().Kind())
+	})
+}
 
 func TestLayered_PerResourceFiles(t *testing.T) {
 	lo := For(Layered)

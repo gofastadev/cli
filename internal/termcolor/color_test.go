@@ -206,12 +206,6 @@ func TestDetect_NoColorBeatsForceColor(t *testing.T) {
 	assert.Equal(t, ModeNone, Detect())
 }
 
-// --- Exhaustive constant assertions ---
-//
-// These guard against accidental edits to the escape constants — the exact
-// bytes matter because users' terminals parse them. If someone changes a
-// constant, these tests force them to acknowledge it.
-
 func TestEscapeConstants(t *testing.T) {
 	assert.Equal(t, "\x1b[0m", Reset)
 	assert.Equal(t, "\x1b[1m", Bold)
@@ -223,8 +217,6 @@ func TestEscapeConstants(t *testing.T) {
 	assert.Equal(t, "\x1b[38;2;0;173;216m", BrandTrueColor)
 	assert.Equal(t, "\x1b[38;5;38m", Brand256)
 }
-
-// --- Semantic wrapper exhaustive tests (disabled mode) ---
 
 func TestSemanticWrappers_Disabled(t *testing.T) {
 	restore := SetModeForTest(ModeNone)
@@ -243,8 +235,6 @@ func TestSemanticWrappers_Disabled(t *testing.T) {
 	}
 }
 
-// --- Empty-string handling ---
-
 func TestC_EmptyString(t *testing.T) {
 	restore := SetModeForTest(ModeTrueColor)
 	defer restore()
@@ -259,8 +249,6 @@ func TestCBrand_EmptyString(t *testing.T) {
 	assert.Equal(t, BrandTrueColor+Reset, CBrand(""))
 }
 
-// --- Enabled() agreement with Detect() ---
-
 func TestEnabled_AgreesWithDetect(t *testing.T) {
 	for _, m := range []Mode{ModeNone, Mode256, ModeTrueColor} {
 		restore := SetModeForTest(m)
@@ -268,8 +256,6 @@ func TestEnabled_AgreesWithDetect(t *testing.T) {
 		restore()
 	}
 }
-
-// --- SetModeForTest restore semantics ---
 
 func TestSetModeForTest_NestedRestore(t *testing.T) {
 	// Nest two overrides and make sure restore unwinds in LIFO order.
@@ -288,17 +274,10 @@ func TestSetModeForTest_NestedRestore(t *testing.T) {
 	assert.Equal(t, ModeNone, Detect())
 }
 
-// --- Out variable swap ---
-
 func TestOut_Default(t *testing.T) {
 	// Sanity: the package-level default points at os.Stdout.
 	assert.Equal(t, io.Writer(os.Stdout), Out)
 }
-
-// The decorated builders are string-returning siblings of the Print* helpers.
-// They are what CLI code is allowed to use (cliout does the writing), so each
-// one is pinned here in both color modes: the icon vocabulary and indentation
-// must survive with color off, since that is what CI logs and piped output see.
 
 func TestBuilders_UndecoratedWithColorDisabled(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")

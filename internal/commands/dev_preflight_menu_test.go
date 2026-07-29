@@ -15,131 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Tests for dev_preflight_menu.go.
-//
-// The menu is driven via three package-level seams:
-//   - menuInputFn — stdin reader (replaced with bytes.NewReader)
-//   - menuOutputFn — stdout writer (replaced with bytes.Buffer)
-//   - menuIsTTYFn — TTY detector (boolean stub)
-//   - menuReprobeFn — re-probe after retry (canned results)
-//   - menuStartServicesFn / menuWaitHealthyFn — docker stubs
-//
-// Each test wires the subset of seams it exercises and restores via
-// t.Cleanup. The TTY seam defaults to true in every test so the menu
-// actually runs; one test explicitly flips it to false to verify the
-// non-TTY skip path.
-// ─────────────────────────────────────────────────────────────────────
-
-// ── Test scaffolding ─────────────────────────────────────────────────
-
-func pipeStdin(t *testing.T, lines ...string) {
-	t.Helper()
-	in := bytes.NewBufferString(strings.Join(lines, "\n") + "\n")
-	orig := menuInputFn
-	menuInputFn = func() io.Reader { return in }
-	t.Cleanup(func() { menuInputFn = orig })
-}
-
-func captureMenuOutput(t *testing.T) *bytes.Buffer {
-	t.Helper()
-	out := &bytes.Buffer{}
-	orig := menuOutputFn
-	menuOutputFn = func() io.Writer { return out }
-	t.Cleanup(func() { menuOutputFn = orig })
-	return out
-}
-
-func forceTTY(t *testing.T, isTTY bool) {
-	t.Helper()
-	orig := menuIsTTYFn
-	menuIsTTYFn = func() bool { return isTTY }
-	t.Cleanup(func() { menuIsTTYFn = orig })
-}
-
-func stubReprobe(t *testing.T, results []probeResult) {
-	t.Helper()
-	orig := menuReprobeFn
-	menuReprobeFn = func() []probeResult { return results }
-	t.Cleanup(func() { menuReprobeFn = orig })
-}
-
-func stubStartServices(t *testing.T, err error) {
-	t.Helper()
-	orig := menuStartServicesFn
-	menuStartServicesFn = func(_ []string) error { return err }
-	t.Cleanup(func() { menuStartServicesFn = orig })
-}
-
-func stubWaitHealthy(t *testing.T, err error) {
-	t.Helper()
-	orig := menuWaitHealthyFn
-	menuWaitHealthyFn = func(_ []string) error { return err }
-	t.Cleanup(func() { menuWaitHealthyFn = orig })
-}
-
-func stubComposeAvailable(t *testing.T, ok bool) {
-	t.Helper()
-	orig := composeAvailableFn
-	composeAvailableFn = func() bool { return ok }
-	t.Cleanup(func() { composeAvailableFn = orig })
-}
-
-// ── Top-level outcomes ───────────────────────────────────────────────
-
-// TestMenu_NonTTY_SkipsAndCancels — non-TTY environments skip the
-// menu entirely and return menuCancel after printing actionable text.
-// CI scripts get a deterministic exit code; humans without a terminal
-// get the same info they'd see in the prompt.
-func TestMenu_NonTTY_SkipsAndCancels(t *testing.T) {
-	forceTTY(t, false)
-	out := captureMenuOutput(t)
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "Non-interactive shell detected")
-	assert.Contains(t, out.String(), "database unreachable")
-}
-
-// TestMenu_Cancel — user picks [4]; menuCancel returned, no retries.
-func TestMenu_Cancel(t *testing.T) {
-	forceTTY(t, true)
-	_ = captureMenuOutput(t)
-	pipeStdin(t, "4")
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-}
-
-// TestMenu_RunWithoutDB — user picks [3]; menuRunWithoutDB returned.
-// The framework's degraded-mode ProvideDB makes this honest now
-// (in-memory SQLite stub keeps the app alive).
-func TestMenu_RunWithoutDB(t *testing.T) {
-	forceTTY(t, true)
-	_ = captureMenuOutput(t)
-	pipeStdin(t, "3")
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuRunWithoutDB, got)
-}
-
-// TestMenu_InvalidChoiceLoops — bogus input loops back to the menu.
-// We feed an invalid char first, then "4" to cancel. The output
-// should mention "invalid choice".
-func TestMenu_InvalidChoiceLoops(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "z", "4")
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "invalid choice")
-}
-
 // TestMenu_StdinClosed — EOF mid-read returns cancel and doesn't loop
 // forever.
 func TestMenu_StdinClosed(t *testing.T) {
@@ -153,8 +28,6 @@ func TestMenu_StdinClosed(t *testing.T) {
 	})
 	assert.Equal(t, menuCancel, got)
 }
-
-// ── Option [1] — Enter connection string ─────────────────────────────
 
 // TestMenu_EnterConnString_AppliesAndRecovers — the user provides a
 // valid URL; the override is applied, reprobe returns OK, menuOK
@@ -397,70 +270,6 @@ func TestDefaultPortForDriver(t *testing.T) {
 	}
 }
 
-// TestMenu_EnterConnString_EmptyInputLoops — blank line is rejected,
-// menu loops. Verifies the input-validation guard.
-func TestMenu_EnterConnString_EmptyInputLoops(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "1", "", "4")
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "empty input")
-}
-
-// TestMenu_EnterConnString_InvalidURL — typo'd URL fails to parse;
-// menu prints the validation error and loops.
-func TestMenu_EnterConnString_InvalidURL(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "1", "not-a-url", "4")
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "URL must include scheme")
-}
-
-// TestMenu_EnterConnString_ProbeStillFails — override applied but
-// reprobe still reports unreachable; menu loops back. User then
-// cancels via [4].
-func TestMenu_EnterConnString_ProbeStillFails(t *testing.T) {
-	forceTTY(t, true)
-	_ = captureMenuOutput(t)
-	pipeStdin(t, "1", "postgres://u:p@h:9/d", "4")
-	// menuActionEnterConnString sets the full database connection set —
-	// driver/host/port/user/password/name — under every prefix from
-	// configutil.EnvPrefixes(). Unsetting only HOST left PORT=9 (etc.)
-	// in the process env, where downstream tests like
-	// TestProbeDatabase_OK saw "localhost:9" instead of "localhost:5432"
-	// even when their config.yaml said otherwise.
-	t.Cleanup(func() {
-		_ = unsetenv("GOFASTA_DATABASE_DRIVER")
-		_ = unsetenv("GOFASTA_DATABASE_HOST")
-		_ = unsetenv("GOFASTA_DATABASE_PORT")
-		_ = unsetenv("GOFASTA_DATABASE_USER")
-		_ = unsetenv("GOFASTA_DATABASE_PASSWORD")
-		_ = unsetenv("GOFASTA_DATABASE_NAME")
-	})
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "h:9", Reason: "still refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-}
-
-// ── Option [2] — Start in Docker ─────────────────────────────────────
-
 // TestMenu_StartInDocker_HappyPath — docker is available, services
 // start, healthy, reprobe returns OK → menuOK.
 func TestMenu_StartInDocker_HappyPath(t *testing.T) {
@@ -480,83 +289,6 @@ func TestMenu_StartInDocker_HappyPath(t *testing.T) {
 	assert.Equal(t, menuOK, got)
 	assert.Contains(t, out.String(), "gofasta dev --services db")
 }
-
-// TestMenu_StartInDocker_DockerUnavailable — docker not on PATH;
-// the option fails with an install hint, menu loops.
-func TestMenu_StartInDocker_DockerUnavailable(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "2", "4")
-	stubComposeAvailable(t, false)
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "Docker")
-}
-
-// TestMenu_StartInDocker_StartFails — compose up fails; menu loops.
-func TestMenu_StartInDocker_StartFails(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "2", "4")
-	stubComposeAvailable(t, true)
-	stubStartServices(t, errors.New("pull failed"))
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "compose up")
-}
-
-// TestMenu_StartInDocker_HealthFails — services start but never go
-// healthy; menu loops.
-func TestMenu_StartInDocker_HealthFails(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "2", "4")
-	stubComposeAvailable(t, true)
-	stubStartServices(t, nil)
-	stubWaitHealthy(t, errors.New("timeout"))
-	stubReprobe(t, []probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "healthy")
-}
-
-// TestMenu_StartInDocker_NoFailingServices — option [2] errors
-// cleanly when the only failing dep doesn't map to a compose service
-// (e.g. user has hand-edited their config.yaml and probe reports
-// something we can't help with). The action surfaces the error, the
-// menu loops, and we drop to cancel.
-func TestMenu_StartInDocker_NoFailingServices(t *testing.T) {
-	forceTTY(t, true)
-	out := captureMenuOutput(t)
-	pipeStdin(t, "2", "4")
-	stubComposeAvailable(t, true)
-	// Reprobe keeps the same unknown-dep as unreachable so the menu
-	// stays in the failure loop until the user hits [4].
-	stubReprobe(t, []probeResult{
-		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	got, _ := runPreflightMenu([]probeResult{
-		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
-	})
-	assert.Equal(t, menuCancel, got)
-	assert.Contains(t, out.String(), "no failing services")
-}
-
-// ── Pure helpers ─────────────────────────────────────────────────────
 
 func TestPrintPreflightFailures_ThreeStates(t *testing.T) {
 	out := captureMenuOutput(t)
@@ -618,18 +350,6 @@ func TestMapFailingDepsToServices(t *testing.T) {
 // so the test bodies above read declaratively. They're the only os
 // calls in this file.
 func osGetenv(k string) string { return os.Getenv(k) }
-func unsetenv(k string) error  { return os.Unsetenv(k) }
-
-// Package-init snapshot of the menu seam defaults. Captured at package
-// load time so a test can invoke the *original* closures even after
-// other tests stub the vars away. (The coverage profile tracks the
-// lexical line/column of each closure body, so calling a fresh
-// stand-in with identical text does NOT cover the originals.)
-var (
-	initialMenuInputFn         = menuInputFn
-	initialMenuOutputFn        = menuOutputFn
-	initialMenuStartServicesFn = menuStartServicesFn
-)
 
 // mergeServices — `for _, s := range base { seen[s] = true }` body
 // requires a non-empty base slice to run; pass one along with an add
@@ -756,18 +476,6 @@ func TestPromptPersistConnString_MergeError(t *testing.T) {
 	err := promptPersistConnString(reader, map[string]string{"DATABASE_HOST": "x"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "write .env")
-}
-
-// menuInputFn / menuOutputFn / menuStartServicesFn default closures
-// — existing tests always stub these via the seams, so the default
-// implementations report uncovered. Invoke each through the
-// package-init snapshot above to exercise the original closure bodies.
-func TestMenuSeamDefaults(t *testing.T) {
-	assert.Equal(t, os.Stdin, initialMenuInputFn())
-	assert.Equal(t, os.Stdout, initialMenuOutputFn())
-
-	withFakeExec(t, 0)
-	require.NoError(t, initialMenuStartServicesFn([]string{"db"}))
 }
 
 // menuErrReader implements io.Reader and returns its configured error

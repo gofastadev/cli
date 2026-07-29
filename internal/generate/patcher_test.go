@@ -5,10 +5,50 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/gofastadev/cli/internal/layout"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestPatchContainer_ReadError(t *testing.T) {
+	setupTempProject(t)
+	// No app/di/container.go — ReadFile returns an error immediately.
+	err := PatchContainer(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchWireFile_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchWireFile(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchResolver_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchResolver(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchRouteConfig_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchRouteConfig(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchServeFile_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchServeFile(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestGenResolver_DelegatesToPatchResolver(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	// GenResolver calls PatchResolver, which reads app/graphql/resolvers/resolver.go.
+	// Without the file, it should return an error.
+	err := GenResolver(d)
+	assert.Error(t, err)
+}
 
 func TestPatchContainer_AddsFields(t *testing.T) {
 	setupTempProject(t)
@@ -278,12 +318,6 @@ func TestPatchServeFile_SkipsIfExists(t *testing.T) {
 	require.NoError(t, err)
 }
 
-// Marker-missing error branches — each patcher refuses to mutate a file
-// whose scaffold marker has been stripped. Seed a target file that's
-// otherwise well-formed but missing the marker comment the patcher
-// anchors on, then assert the patcher returns an actionable error
-// pointing at the missing marker.
-
 func TestPatchContainer_MarkerMissing(t *testing.T) {
 	setupTempProject(t)
 	d := sampleScaffoldData()
@@ -417,15 +451,6 @@ func TestPatchResolver_NoConstructor(t *testing.T) {
 	assert.Contains(t, err.Error(), "Resolver constructor body")
 }
 
-// featureScaffoldData is sampleScaffoldData switched to the feature layout.
-func featureScaffoldData() ScaffoldData {
-	d := sampleScaffoldData()
-	d.Layout = layout.For(layout.Feature)
-	return d
-}
-
-// --- PatchContainer ---
-
 const featureContainer = `package di
 
 import (
@@ -511,8 +536,6 @@ func TestPatchContainer_FeatureNoImportBlock(t *testing.T) {
 	assert.Contains(t, err.Error(), "could not locate import block close")
 }
 
-// --- PatchWireFile ---
-
 const featureWire = `//go:build wireinject
 
 package di
@@ -581,8 +604,6 @@ func TestPatchWireFile_FeatureNoImportBlock(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "could not locate import block close")
 }
-
-// --- PatchRouteConfig ---
 
 const featureRouteIndex = `package routes
 
@@ -671,4 +692,45 @@ func countSubstring(s, sub string) int {
 		}
 	}
 	return n
+}
+
+func TestPatchContainer_DryRunRecordsPatch(t *testing.T) {
+	resetPlannerState(t)
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+
+	// Minimal container.go that PatchContainer will accept.
+	require.NoError(t, os.MkdirAll("app/di", 0755))
+	container := `package di
+
+import (
+	svcInterfaces "example.com/app/app/services/interfaces"
+	"example.com/app/app/rest/controllers"
+)
+
+type Container struct {
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`
+	require.NoError(t, os.WriteFile("app/di/container.go", []byte(container), 0644))
+
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	d := ScaffoldData{Name: "Product", ModulePath: "example.com/app", IncludeController: true}
+	require.NoError(t, PatchContainer(d))
+
+	// File on disk must be unchanged.
+	after, err := os.ReadFile("app/di/container.go")
+	require.NoError(t, err)
+	assert.Equal(t, container, string(after), "dry-run must not modify files on disk")
+
+	plan := Plan()
+	require.Len(t, plan, 1)
+	assert.Equal(t, "patch", plan[0].Kind)
+	assert.Equal(t, "app/di/container.go", plan[0].Path)
+	assert.Contains(t, plan[0].Detail, "Product")
 }

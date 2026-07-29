@@ -4,13 +4,239 @@
 package featurize
 
 import (
+	"go/format"
 	"go/token"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/dave/dst"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// normalizeGo canonicalizes Go source with gofmt, then returns its
+// non-empty, trimmed lines sorted. Comparing two files by this form
+// makes the equivalence check robust to whitespace, import grouping,
+// and import ordering while still catching any missing/extra
+// declaration, reference, or import path.
+func normalizeGo(t *testing.T, src string) string {
+	t.Helper()
+	formatted, err := format.Source([]byte(src))
+	if err != nil {
+		t.Fatalf("gofmt failed on source:\n%s\nerror: %v", src, err)
+	}
+	var lines []string
+	for _, ln := range strings.Split(string(formatted), "\n") {
+		trimmed := strings.TrimSpace(ln)
+		if trimmed == "" {
+			continue
+		}
+		lines = append(lines, trimmed)
+	}
+	sort.Strings(lines)
+	return strings.Join(lines, "\n")
+}
+
+func TestTransformPerResource_RoundTrip_Service(t *testing.T) {
+	// Layered service file → forward (feature) → reverse (layered).
+	// The result must be equivalent to the original.
+	original := `package services
+
+import (
+	"github.com/google/uuid"
+
+	"example.com/myapp/app/models"
+	repoInterfaces "example.com/myapp/app/repositories/interfaces"
+)
+
+type UserService struct {
+	repo  repoInterfaces.UserRepositoryInterface
+	pwGen PasswordGenerator
+}
+
+func NewUserService(repo repoInterfaces.UserRepositoryInterface, pwGen PasswordGenerator) *UserService {
+	return &UserService{repo: repo, pwGen: pwGen}
+}
+
+func (s *UserService) Get(ctx uuid.UUID) (*models.User, error) {
+	return nil, ErrUserNotFound
+}
+`
+	resource := Resource{Name: "User", Snake: "user", Plural: "Users"}
+
+	forward, err := TransformPerResource([]byte(original), Options{
+		ModulePath: "example.com/myapp",
+		Resource:   resource,
+	})
+	if err != nil {
+		t.Fatalf("forward transform error: %v", err)
+	}
+	// Sanity: forward really produced feature layout.
+	if !strings.Contains(string(forward), "package user") {
+		t.Fatalf("forward did not produce package user:\n%s", forward)
+	}
+
+	reversed, err := TransformPerResourceReverse(forward,
+		LayeredDestination{Path: "app/services/user.service.go", PackageName: "services"},
+		Options{ModulePath: "example.com/myapp", Resource: resource})
+	if err != nil {
+		t.Fatalf("reverse transform error: %v", err)
+	}
+
+	if normalizeGo(t, original) != normalizeGo(t, string(reversed)) {
+		t.Errorf("round-trip not equivalent to original.\n--- original ---\n%s\n--- reversed ---\n%s", original, reversed)
+	}
+}
+
+func TestTransformPerResource_Model(t *testing.T) {
+	src := `package models
+
+import "github.com/gofastadev/gofasta/pkg/models"
+
+type User struct {
+	models.BaseModelImpl
+	FirstName string ` + "`gorm:\"not null\"`" + `
+}
+`
+	got, err := TransformPerResource([]byte(src), Options{
+		ModulePath: "example.com/myapp",
+		Resource:   Resource{Name: "User", Snake: "user", Plural: "Users"},
+	})
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	// package decl rewritten
+	if !strings.Contains(string(got), "package user\n") {
+		t.Errorf("package decl not rewritten:\n%s", got)
+	}
+	// framework BaseModelImpl preserved (it's an external `github.com/gofastadev/gofasta/pkg/models` reference)
+	if !strings.Contains(string(got), "models.BaseModelImpl") {
+		t.Errorf("framework reference models.BaseModelImpl was stripped — must be preserved:\n%s", got)
+	}
+}
+
+func TestTransformPerResource_Service(t *testing.T) {
+	src := `package services
+
+import (
+	"github.com/google/uuid"
+
+	"example.com/myapp/app/models"
+	repoInterfaces "example.com/myapp/app/repositories/interfaces"
+)
+
+type UserService struct {
+	repo  repoInterfaces.UserRepositoryInterface
+	pwGen PasswordGenerator
+}
+
+func NewUserService(repo repoInterfaces.UserRepositoryInterface, pwGen PasswordGenerator) *UserService {
+	return &UserService{repo: repo, pwGen: pwGen}
+}
+
+func (s *UserService) Get(ctx uuid.UUID) (*models.User, error) {
+	return nil, ErrUserNotFound
+}
+`
+	got, err := TransformPerResource([]byte(src), Options{
+		ModulePath: "example.com/myapp",
+		Resource:   Resource{Name: "User", Snake: "user", Plural: "Users"},
+	})
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	out := string(got)
+	if !strings.Contains(out, "package user") {
+		t.Errorf("package decl not rewritten:\n%s", out)
+	}
+	// Models intentionally stay in app/models/ — see featurize.go's
+	// `collapsablePaths` comment for the architectural reason.
+	if !strings.Contains(out, "models.User") {
+		t.Errorf("models.User reference should survive (model stays in app/models/):\n%s", out)
+	}
+	if strings.Contains(out, `repoInterfaces "example.com/myapp/app/repositories/interfaces"`) {
+		t.Errorf("repoInterfaces import not stripped:\n%s", out)
+	}
+	if strings.Contains(out, "repoInterfaces.UserRepositoryInterface") {
+		t.Errorf("repoInterfaces.UserRepositoryInterface was not collapsed:\n%s", out)
+	}
+	if !strings.Contains(out, `"github.com/google/uuid"`) {
+		t.Errorf("framework uuid import was stripped:\n%s", out)
+	}
+}
+
+func TestTransformPerResource_ExternalTestPackage(t *testing.T) {
+	// External test pattern: `package controllers_test` instead of
+	// `package controllers`. Must be rewritten to `package user_test`.
+	src := `package controllers_test
+
+import (
+	"testing"
+	"example.com/myapp/app/dtos"
+)
+
+func TestStub(t *testing.T) {
+	_ = dtos.User{}
+}
+`
+	got, err := TransformPerResource([]byte(src), Options{
+		ModulePath: "example.com/myapp",
+		Resource:   Resource{Name: "User", Snake: "user", Plural: "Users"},
+	})
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	out := string(got)
+	if !strings.Contains(out, "package user_test") {
+		t.Errorf("external test package not rewritten:\n%s", out)
+	}
+	// Per Option B: dtos.User (per-resource) collapses to bare User
+	// because per-resource DTOs move into the feature package. Only
+	// shared aliases (TPaginationObjectDto etc.) survive as `dtos.X`.
+	if strings.Contains(out, "dtos.User") {
+		t.Errorf("dtos.User should be collapsed to bare User in feature mode:\n%s", out)
+	}
+}
+
+func TestTransformPerResource_Routes(t *testing.T) {
+	// Per-resource routes file: keep as-is for now — the
+	// `func UserRoutes(...)` rename happens at the cross-cutting level
+	// (TransformIndexRoutes wires the call differently). Within the
+	// routes.go file itself, the function name stays UserRoutes for
+	// API compat with the existing codebase; renaming to RegisterRoutes
+	// is a future polish pass.
+	src := `package routes
+
+import (
+	"github.com/go-chi/chi/v5"
+	"github.com/gofastadev/gofasta/pkg/httputil"
+
+	"example.com/myapp/app/rest/controllers"
+)
+
+func UserRoutes(r chi.Router, uc *controllers.UserController) {
+	r.Get("/users", httputil.Handle(uc.ListUsers))
+}
+`
+	got, err := TransformPerResource([]byte(src), Options{
+		ModulePath: "example.com/myapp",
+		Resource:   Resource{Name: "User", Snake: "user", Plural: "Users"},
+	})
+	if err != nil {
+		t.Fatalf("transform error: %v", err)
+	}
+	out := string(got)
+	if !strings.Contains(out, "package user") {
+		t.Errorf("package not rewritten:\n%s", out)
+	}
+	if strings.Contains(out, "controllers.UserController") {
+		t.Errorf("controllers.UserController not collapsed:\n%s", out)
+	}
+	if !strings.Contains(out, "*UserController") {
+		t.Errorf("collapsed UserController reference missing:\n%s", out)
+	}
+}
 
 // TestFixDtosImportPath moves shared infra files onto the relocated dtos
 // package. These files (app_validator.go, resolver.go, ...) do not move
@@ -375,8 +601,6 @@ func importSpecFor(path string) *dst.ImportSpec {
 	return &dst.ImportSpec{Path: &dst.BasicLit{Kind: token.STRING, Value: `"` + path + `"`}}
 }
 
-// --- dropOrphanedImports ---
-
 // TestDropOrphanedImports_KeepsAReferencedImport covers the branch where the
 // candidate import is still in use: only an import with no remaining reference
 // may be removed, or the file stops compiling.
@@ -427,8 +651,6 @@ func TestDropOrphanedImports_LeavesNonImportSpecsAlone(t *testing.T) {
 		"the non-import spec must be preserved while the orphaned import goes")
 }
 
-// --- rewriteDtosImportPath ---
-
 // TestRewriteDtosImportPath_LeavesNonImportSpecsAlone covers the same guard in
 // the path-flipping walk.
 func TestRewriteDtosImportPath_LeavesNonImportSpecsAlone(t *testing.T) {
@@ -463,8 +685,6 @@ func dtosReferencingDecl() dst.Decl {
 	}
 }
 
-// --- dropCollapsableImports ---
-
 // TestDropCollapsableImports_LeavesNonImportSpecsAlone covers the guard in the
 // collapse pass.
 func TestDropCollapsableImports_LeavesNonImportSpecsAlone(t *testing.T) {
@@ -483,8 +703,6 @@ func TestDropCollapsableImports_LeavesNonImportSpecsAlone(t *testing.T) {
 	assert.Equal(t, []dst.Spec{keep, other}, gd.Specs,
 		"only the collapsable project import may be dropped")
 }
-
-// --- dropDuplicateErrorVars ---
 
 // TestDropDuplicateErrorVars_KeepsNonValueSpecs covers the spec-level guard,
 // and TestDropDuplicateErrorVars_KeepsOtherVars the name filter.
@@ -546,8 +764,6 @@ type Alias struct{ X int }
 	assert.Contains(t, string(out), "ErrUserNotDeletable",
 		"a struct type is not an interface — the heuristic must not fire")
 }
-
-// --- routes selector rename, non-external-test path ---
 
 // TestTransformPerResource_QualifiedRoutesCallInSamePackage covers the routes
 // rename for a file that is NOT an external test: a layered file importing

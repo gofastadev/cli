@@ -1,40 +1,20 @@
 package commands
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// debugHealthFixture spins up an httptest server that responds to
-// every /debug/* endpoint so the health command sees a complete
-// surface. The returned url is ready to pass as --app-url.
-func debugHealthFixture(t *testing.T, devtools string) string {
-	t.Helper()
-	handler := http.NewServeMux()
-	handler.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"devtools":"` + devtools + `"}`))
-	})
-	// Other endpoints respond 200 so the liveness matrix reflects
-	// reality under the devtools=enabled scenario.
-	for _, path := range []string{
-		"/debug/requests", "/debug/sql", "/debug/traces",
-		"/debug/logs", "/debug/errors", "/debug/cache",
-		"/debug/pprof/",
-	} {
-		handler.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
-			_, _ = w.Write([]byte("[]"))
-		})
+// TestNumToStr — recursive decimal stringifier for HTTP status codes.
+func TestNumToStr(t *testing.T) {
+	cases := map[int]string{0: "0", 5: "5", 10: "10", 200: "200", 404: "404", -7: "-7"}
+	for in, want := range cases {
+		assert.Equal(t, want, numToStr(in))
 	}
-	srv := httptest.NewServer(handler)
-	t.Cleanup(srv.Close)
-	return srv.URL
 }
 
 // TestRunDebugHealth_Enabled — happy path: devtools tag set, every
@@ -121,40 +101,6 @@ func TestRunDebugHealth_Unreachable(t *testing.T) {
 	assert.NotEmpty(t, report.Endpoints[0].Error)
 }
 
-// TestResolveAppURL_FromFlag — --app-url overrides config.yaml.
-func TestResolveAppURL_FromFlag(t *testing.T) {
-	debugAppURL = "http://10.0.0.1:9090"
-	t.Cleanup(func() { debugAppURL = "" })
-	assert.Equal(t, "http://10.0.0.1:9090", resolveAppURL())
-}
-
-// TestRequireDevtools_Enabled — probe succeeds → nil.
-func TestRequireDevtools_Enabled(t *testing.T) {
-	url := debugHealthFixture(t, "enabled")
-	assert.NoError(t, requireDevtools(url))
-}
-
-// TestRequireDevtools_StubReturnsCode — probe replies stub → error
-// with DEBUG_DEVTOOLS_OFF so agents branch on the code.
-func TestRequireDevtools_StubReturnsCode(t *testing.T) {
-	url := debugHealthFixture(t, "stub")
-	err := requireDevtools(url)
-	require.Error(t, err)
-	b, _ := json.Marshal(err)
-	assert.Contains(t, string(b), "DEBUG_DEVTOOLS_OFF")
-}
-
-// TestRequireDevtools_Unreachable — wrong URL → DEBUG_APP_UNREACHABLE.
-func TestRequireDevtools_Unreachable(t *testing.T) {
-	err := requireDevtools("http://127.0.0.1:1") // guaranteed-unused port
-	require.Error(t, err)
-	b, _ := json.Marshal(err)
-	assert.True(t,
-		strings.Contains(string(b), "DEBUG_APP_UNREACHABLE"),
-		"expected DEBUG_APP_UNREACHABLE, got %s", string(b),
-	)
-}
-
 // TestContainsSubstring_EdgeCases — needle longer than haystack,
 // empty haystack, exact match, substring match.
 func TestContainsSubstring_EdgeCases(t *testing.T) {
@@ -234,4 +180,32 @@ func TestRunDebugHealth_MixedEndpointStatuses(t *testing.T) {
 	})
 	withDebugAppURL(t, url)
 	_ = runDebugHealth()
+}
+
+// TestRunDebugHealth_End2End — exercises the full function including
+// the text renderer branch.
+func TestRunDebugHealth_End2End(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/sql":      func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/logs":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/errors":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":    func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) },
+	})
+	withDebugAppURL(t, url)
+	require.NoError(t, runDebugHealth())
+}
+
+// TestReadDevtoolsState_MissingKey — /debug/health responds 200 but
+// the JSON body doesn't include a `devtools` field. readDevtoolsState
+// returns "unreachable" as the fallback.
+func TestReadDevtoolsState_MissingKey(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/health": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"other":"field"}`))
+		},
+	})
+	assert.Equal(t, "unreachable", readDevtoolsState(srv.appURL))
 }

@@ -78,3 +78,38 @@ func TestDebugGoroutinesCmd_RunE(t *testing.T) {
 	resetAllDebugFlags()
 	require.NoError(t, debugGoroutinesCmd.RunE(debugGoroutinesCmd, nil))
 }
+
+func TestRunDebugGoroutines_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+	})
+	withDebugAppURL(t, url)
+	debugGoroutinesFilter = ""
+	debugGoroutinesMinCount = 0
+	require.NoError(t, runDebugGoroutines())
+}
+
+func TestRunDebugGoroutines_Filtered(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+	})
+	withDebugAppURL(t, url)
+	debugGoroutinesFilter = "sync"
+	debugGoroutinesMinCount = 5
+	t.Cleanup(func() { debugGoroutinesFilter = ""; debugGoroutinesMinCount = 0 })
+	require.NoError(t, runDebugGoroutines())
+}
+
+func TestRunDebugGoroutines_EndpointError(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+	})
+	withDebugAppURL(t, url)
+	require.Error(t, runDebugGoroutines())
+}

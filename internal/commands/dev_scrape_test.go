@@ -21,41 +21,6 @@ func closedServer() string {
 	return url
 }
 
-// TestAppendTag_NoExistingGOFLAGS — fresh env, no GOFLAGS set. Returns
-// a new GOFLAGS= value containing just the tag.
-func TestAppendTag_NoExistingGOFLAGS(t *testing.T) {
-	got := appendTag("", "devtools")
-	assert.Equal(t, "GOFLAGS=-tags=devtools", got)
-}
-
-// TestAppendTag_WithOtherFlags — existing GOFLAGS has non-tag flags;
-// we append a fresh -tags= fragment.
-func TestAppendTag_WithOtherFlags(t *testing.T) {
-	got := appendTag("-mod=mod", "devtools")
-	assert.Equal(t, "GOFLAGS=-mod=mod -tags=devtools", got)
-}
-
-// TestAppendTag_WithExistingTags — existing -tags=foo; we merge the new
-// tag in comma-separated form without duplication.
-func TestAppendTag_WithExistingTags(t *testing.T) {
-	got := appendTag("-tags=foo", "devtools")
-	assert.Equal(t, "GOFLAGS=-tags=foo,devtools", got)
-}
-
-// TestAppendTag_TagAlreadyPresent — idempotent when the target tag is
-// already present in the existing -tags= fragment.
-func TestAppendTag_TagAlreadyPresent(t *testing.T) {
-	got := appendTag("-tags=devtools,foo", "devtools")
-	assert.Equal(t, "GOFLAGS=-tags=devtools,foo", got)
-}
-
-// TestAppendTag_AcceptsFullPrefix — tolerant of a "GOFLAGS=" prefix on
-// the input string so callers don't have to strip it.
-func TestAppendTag_AcceptsFullPrefix(t *testing.T) {
-	got := appendTag("GOFLAGS=-mod=mod", "devtools")
-	assert.Equal(t, "GOFLAGS=-mod=mod -tags=devtools", got)
-}
-
 // TestSumCounterFamily — exact matches on a counter family name with
 // and without labels. Returns 0 for unknown families and ignores
 // similarly-prefixed families.
@@ -175,8 +140,6 @@ func TestScrapeRequestLog_404(t *testing.T) {
 	assert.Nil(t, scrapeRequestLog(srv.URL))
 }
 
-// ── Goroutine dump parser ─────────────────────────────────────────────
-
 // TestParseGoroutineDump_GroupsByTop — exercises the happy path: two
 // goroutines parked in the same top function get grouped; a third
 // goroutine in a different function lives in its own group.
@@ -259,8 +222,6 @@ func TestScrapeGoroutines_404(t *testing.T) {
 	assert.Zero(t, scrapeGoroutines(srv.URL).Total)
 }
 
-// ── N+1 detector ──────────────────────────────────────────────────────
-
 // TestNormalizeSQL — quoted strings, numeric literals, and
 // whitespace all collapse so two queries differing only in params
 // produce the same template.
@@ -315,45 +276,6 @@ func TestDetectNPlusOne_IgnoresQueriesWithoutTraceID(t *testing.T) {
 		{TraceID: "", SQL: "SELECT 3"},
 	}
 	assert.Empty(t, detectNPlusOne(queries))
-}
-
-// TestBuildHAR_RoundTripsCoreFields — produced HAR contains method,
-// path, status, and response body. Shape roughly matches the HAR 1.2
-// schema (has log.entries[].request/response).
-func TestBuildHAR_RoundTripsCoreFields(t *testing.T) {
-	reqs := []scrapedRequest{
-		{
-			Method:              "POST",
-			Path:                "/api/v1/users",
-			Status:              201,
-			DurationMS:          12,
-			Body:                `{"name":"Alice"}`,
-			ResponseBody:        `{"id":"u1"}`,
-			ResponseContentType: "application/json",
-		},
-	}
-	har := buildHAR(reqs)
-	assert.Equal(t, "1.2", har.Log.Version)
-	if assert.Len(t, har.Log.Entries, 1) {
-		e := har.Log.Entries[0]
-		assert.Equal(t, "POST", e.Request.Method)
-		assert.Equal(t, "/api/v1/users", e.Request.URL)
-		if assert.NotNil(t, e.Request.PostData) {
-			assert.Equal(t, `{"name":"Alice"}`, e.Request.PostData.Text)
-		}
-		assert.Equal(t, 201, e.Response.Status)
-		assert.Equal(t, "application/json", e.Response.Content.MimeType)
-		assert.Equal(t, `{"id":"u1"}`, e.Response.Content.Text)
-		assert.Equal(t, int64(12), e.Time)
-	}
-}
-
-// TestBuildHAR_EmptyRing — zero requests produces a valid-but-empty
-// HAR doc rather than nil, so the download is still a parseable JSON.
-func TestBuildHAR_EmptyRing(t *testing.T) {
-	har := buildHAR(nil)
-	assert.Equal(t, "1.2", har.Log.Version)
-	assert.Empty(t, har.Log.Entries)
 }
 
 // TestDetectNPlusOne_SortsByCountDesc — the worst offender renders
@@ -414,12 +336,6 @@ func TestDevtoolsAvailable_MalformedJSON(t *testing.T) {
 	defer srv.Close()
 	assert.False(t, devtoolsAvailable(srv.URL))
 }
-
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for dev_scrape.go branches the happy-path tests don't hit:
-// unreachable connections, non-2xx responses, and malformed
-// counter/histogram lines.
-// ─────────────────────────────────────────────────────────────────────
 
 // TestScrapeMetrics_Non2xx — non-2xx response returns zero-valued
 // snapshot with MetricsOK=false.

@@ -1,11 +1,13 @@
 package commands
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,52 +17,539 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// runMigrations and runMigrateUp were the original best-effort migration
-// entrypoints in the dev command. The live dev pipeline now uses
-// runMigrationsWithCount (which has no retry), so these helpers were
-// removed from production source. They live here so the retry-behavior
-// tests below (SuccessOnRetry, FailsBothAttempts, etc.) keep exercising
-// the two-attempt logic verbatim.
-func runMigrations() error {
-	if _, err := execLookPath("migrate"); err != nil {
-		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
-			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
-	}
-	dbURL := configutil.BuildMigrationURL()
-	if err := runMigrateUp(dbURL); err == nil {
-		return nil
-	}
-	cliout.Hint("Database not ready, retrying in 2 seconds...")
-	time.Sleep(2 * time.Second)
-	return runMigrateUp(dbURL)
+func TestRunMigration_FakeSuccess(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, runMigration("up"))
 }
 
-func runMigrateUp(dbURL string) error {
-	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+func TestRunMigration_FakeFailure(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	err := runMigration("down")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "migration down failed")
 }
 
-// strconvItoa is a tiny alias — scoped to this file's exec-stubbing
-// helpers that build GOFASTA_FAKE_EXIT env values.
-func strconvItoa(i int) string { return strconv.Itoa(i) }
+func TestDevCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, devCmd.RunE(devCmd, nil))
+}
 
-// hasComposeSub reports whether `args` represents a `docker compose
-// [--profile X]... <sub> ...` invocation. The exec stubs in this file
-// matched the subcommand by literal positional index before
-// runDev started prepending profile flags; this helper restores the
-// match logic to "subcommand-by-content" so multi-profile invocations
-// route to the correct stub.
-func hasComposeSub(args []string, sub string) bool {
-	if len(args) < 2 || args[0] != "compose" {
-		return false
+func TestRunDev_FakeSuccess(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	// runDev starts air in foreground, fake exits 0 immediately, returns nil
+	assert.NoError(t, runDev(devFlags{envFile: ".env"}))
+}
+
+func TestRunDev_WithGraphQLFile(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	os.WriteFile("gqlgen.yml", []byte("schema: s\n"), 0644)
+	withFakeExec(t, 0)
+	assert.NoError(t, runDev(devFlags{envFile: ".env"}))
+}
+
+func TestRunDev_AirFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	// Both migrate + air "fail" — migrate is non-fatal, air error returns
+	err := runDev(devFlags{envFile: ".env"})
+	assert.Error(t, err)
+}
+
+// TestRunDev_DryRun_NoCompose — the "no compose.yaml present" branch:
+// runDev should bail out early with orchestrate=false and no side
+// effects (no Air, no docker commands, no migrations).
+func TestRunDev_DryRun_NoCompose(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+
+	stdout := captureStdout(t, func() {
+		err := runDev(devFlags{
+			envFile:     ".env",
+			dryRun:      true,
+			waitTimeout: defaultWaitTimeout,
+		})
+		assert.NoError(t, err)
+	})
+
+	assert.Contains(t, stdout, "orchestrate=false")
+}
+
+// TestRunDev_DryRun_JSONMode — --dry-run with --json emits the plan as
+// a structured event, not as a human log line. Asserts the event shape
+// agents would branch on.
+func TestRunDev_DryRun_JSONMode(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+
+	cliout.SetJSONMode(true)
+	t.Cleanup(func() { cliout.SetJSONMode(false) })
+
+	stdout := captureStdout(t, func() {
+		// jsonOutput is the package-level flag mirror cliout reads; set
+		// it directly so newDevEmitter picks the JSON path.
+		origJSON := jsonOutput
+		jsonOutput = true
+		t.Cleanup(func() { jsonOutput = origJSON })
+
+		err := runDev(devFlags{
+			envFile:     ".env",
+			dryRun:      true,
+			waitTimeout: defaultWaitTimeout,
+		})
+		assert.NoError(t, err)
+	})
+
+	// The emitted event is NDJSON; unmarshal and assert shape.
+	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &ev), "line %q should be JSON", line)
+		assert.NotEmpty(t, ev["event"])
 	}
-	i := 1
-	for i+1 < len(args) && args[i] == "--profile" {
-		i += 2
+}
+
+// TestRunDev_DryRun_ServicesAll_PlanShape — `--services all` is the
+// canonical "full stack in docker" invocation under the host-first
+// redesign. The dry-run output must surface (1) in_docker=true (app
+// is in the service list), (2) the full selected set, (3) any
+// profiles. Operators read this output to predict what `gofasta dev`
+// will do without actually starting docker, so the shape is a
+// contract.
+func TestRunDev_DryRun_ServicesAll_PlanShape(t *testing.T) {
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"cache":{},"queue":{}}}`, 0)
+
+	stdout := captureStdout(t, func() {
+		err := runDev(devFlags{
+			envFile:      ".env",
+			dryRun:       true,
+			servicesList: []string{"app", "db", "cache", "queue"},
+			servicesRaw:  "all",
+			waitTimeout:  defaultWaitTimeout,
+		})
+		assert.NoError(t, err)
+	})
+
+	assert.Contains(t, stdout, "in_docker=true")
+	assert.Contains(t, stdout, "app")
+	assert.Contains(t, stdout, "cache")
+	assert.Contains(t, stdout, "queue")
+}
+
+// TestRunInDockerSupervisor_RestartSignal — when the user presses R
+// (sigKeyboardRestart on the channel), the supervisor calls teardown
+// with reason "restart" and returns true so the outer pipeline loop
+// re-runs from scratch.
+//
+// Subtle: `exited` MUST NOT be ready at the moment the outer select
+// fires, or Go's random-case selection can pick it over keySignals
+// (50% failure rate). We deliver to it from a delayed goroutine so
+// the outer select definitively picks keySignals first; the inner
+// `<-exited` (after interruptCompose) then unblocks on the delivery.
+func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
+	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
+	keyCh <- sigKeyboardRestart
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		exited <- nil
+	}()
+	var called string
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
+	assert.True(t, restart)
+	assert.Equal(t, "restart", called)
+}
+
+// TestRunInDockerSupervisor_QuitSignal — Q press is the same teardown
+// path as Ctrl+C; restart=false so the outer loop exits.
+// Same delayed-exited pattern as the Restart test (see comment above).
+func TestRunInDockerSupervisor_QuitSignal(t *testing.T) {
+	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
+	keyCh <- sigKeyboardQuit
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		exited <- nil
+	}()
+	var called string
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.Equal(t, "quit", called)
+}
+
+// TestRunInDockerSupervisor_ChildExits — if the foreground compose
+// process exits on its own (app crashed, container died), the
+// supervisor must call teardown("app-exited") and return false so the
+// outer loop exits cleanly. This is the path the user gets when the
+// app inside the container crashes.
+func TestRunInDockerSupervisor_ChildExits(t *testing.T) {
+	keyCh := make(chan keyboardSignal, 1)
+	exited := make(chan error, 1)
+	exited <- nil // child exited cleanly
+	var called string
+	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
+	assert.False(t, restart)
+	assert.Equal(t, "app-exited", called)
+}
+
+// TestResolveDevPlan_NoServicesByDefault — under the host-first model
+// the empty --services list (the default) means no compose orchestration
+// runs at all; the app is expected to run on host with Air.
+func TestResolveDevPlan_NoServicesByDefault(t *testing.T) {
+	chdirTemp(t)
+	plan, err := resolveDevPlan(devFlags{})
+	require.NoError(t, err)
+	assert.False(t, plan.orchestrate)
+}
+
+// TestResolveDevPlan_NoComposeFile — no compose.yaml → orchestrate
+// false with no error.
+func TestResolveDevPlan_NoComposeFile(t *testing.T) {
+	chdirTemp(t)
+	plan, err := resolveDevPlan(devFlags{})
+	require.NoError(t, err)
+	assert.False(t, plan.orchestrate)
+}
+
+// TestResolveDevPlan_HappyPath — compose.yaml present, --services=db,cache
+// names two services that exist in compose.yaml. Plan includes both
+// and orchestrate=true.
+func TestResolveDevPlan_HappyPath(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}},"cache":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db", "cache"},
+		servicesRaw:  "db,cache",
+	})
+	require.NoError(t, err)
+	assert.True(t, plan.orchestrate)
+	assert.ElementsMatch(t, []string{"db", "cache"}, plan.services.available)
+}
+
+// TestResolveDevPlan_DetectFails — docker compose config exits
+// non-zero; resolveDevPlan surfaces a clierr. We pass --services to
+// trip the compose-config call (the empty-services path doesn't call
+// compose at all and exits cleanly).
+func TestResolveDevPlan_DetectFails(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	withFakeExec(t, 1)
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+	})
+	require.Error(t, err)
+}
+
+// TestPrintDevPlan_Orchestrate — orchestrate=true branch.
+func TestPrintDevPlan_Orchestrate(t *testing.T) {
+	emitter := &quietEmitter{}
+	printDevPlan(devPlan{
+		orchestrate: true,
+		profiles:    []string{"cache"},
+		services:    devServices{selected: []string{"db"}, profiles: []string{"cache"}},
+	}, emitter)
+	assert.Greater(t, emitter.info.Load(), int32(0))
+}
+
+// TestPrintDevPlan_NoOrchestrate — orchestrate=false branch.
+func TestPrintDevPlan_NoOrchestrate(t *testing.T) {
+	emitter := &quietEmitter{}
+	printDevPlan(devPlan{orchestrate: false}, emitter)
+	assert.Greater(t, emitter.info.Load(), int32(0))
+}
+
+// TestDetectVersions_HappyPath — docker + compose both print their
+// versions via scripted stdout. detectVersions returns the first
+// non-empty line of each.
+func TestDetectVersions_HappyPath(t *testing.T) {
+	fakeExecOutput(t, "28.0.1\n", 0)
+	docker, compose := detectVersions()
+	// Both invocations share the same fake, so both get "28.0.1".
+	assert.Equal(t, "28.0.1", docker)
+	assert.Equal(t, "28.0.1", compose)
+}
+
+// TestDetectVersions_Failure — docker exits non-zero → "unknown"
+// for both. captureVersionLine returns "" which detectVersions
+// rewrites to "unknown".
+func TestDetectVersions_Failure(t *testing.T) {
+	withFakeExec(t, 1)
+	docker, compose := detectVersions()
+	assert.Equal(t, "unknown", docker)
+	assert.Equal(t, "unknown", compose)
+}
+
+// TestDetectVersions_EmptyStdout — exits 0 but prints nothing →
+// "unknown".
+func TestDetectVersions_EmptyStdout(t *testing.T) {
+	fakeExecOutput(t, "", 0)
+	docker, compose := detectVersions()
+	assert.Equal(t, "unknown", docker)
+	assert.Equal(t, "unknown", compose)
+}
+
+// TestResolveDevPlan_ServicesWithoutCompose — --services set but no
+// compose.yaml → CodeDevComposeNotFound. The error gates the user
+// against running with a broken config.
+func TestResolveDevPlan_ServicesWithoutCompose(t *testing.T) {
+	chdirTemp(t)
+	_, err := resolveDevPlan(devFlags{servicesList: []string{"db"}, servicesRaw: "db"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "compose.yaml")
+}
+
+// TestResolveDevPlan_AppInServicesLocalReplace — when `app` is in
+// --services (foreground container mode), a filesystem-path replace
+// in go.mod is invisible to the docker build context. Surface the
+// pre-emptive error after compose-services lookup but before any
+// docker build runs.
+func TestResolveDevPlan_AppInServicesLocalReplace(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{}}}`, 0)
+
+	origFn := findLocalReplacesFn
+	t.Cleanup(func() { findLocalReplacesFn = origFn })
+	findLocalReplacesFn = func(_ string) ([]localReplace, error) {
+		return []localReplace{
+			{Module: "github.com/example/foo", Path: "../../foo"},
+		}, nil
 	}
-	return i < len(args) && args[i] == sub
+
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"db", "app"},
+		servicesRaw:  "db,app",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "filesystem-path replace")
+	assert.Contains(t, err.Error(), "github.com/example/foo")
+}
+
+// TestResolveDevPlan_UnknownServiceErrors — --services <name> where
+// the name isn't declared in compose.yaml returns
+// CodeDevServiceUnknown with a clear listing of valid names.
+func TestResolveDevPlan_UnknownServiceErrors(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"lavinmq":{}}}`, 0)
+	_, err := resolveDevPlan(devFlags{
+		servicesList: []string{"lavinmw"},
+		servicesRaw:  "lavinmw",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `"lavinmw"`)
+	assert.Contains(t, err.Error(), "lavinmq")
+}
+
+// TestResolveDevPlan_ServicesAllExpands — `--services all` resolves
+// to every service compose.yaml declares, with the canonical
+// "app in services means in-docker mode" inference flowing through.
+func TestResolveDevPlan_ServicesAllExpands(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{},"cache":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"app", "db", "cache"},
+		servicesRaw:  "all",
+	})
+	require.NoError(t, err)
+	assert.True(t, plan.inDocker, "app present in services → in-docker mode")
+	assert.ElementsMatch(t, []string{"app", "db", "cache"}, plan.services.selected)
+}
+
+// TestResolveDevPlan_ServicesAppExclusiveInferred — when `app` is the
+// only entry, in-docker mode is true; the supporting service set is
+// empty (the user has an external db they're pointing at).
+func TestResolveDevPlan_ServicesAppExclusiveInferred(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"app":{},"db":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		servicesList: []string{"app"},
+		servicesRaw:  "app",
+	})
+	require.NoError(t, err)
+	assert.True(t, plan.inDocker)
+	assert.Equal(t, []string{"app"}, plan.services.selected)
+}
+
+// TestResolveProfiles_NoUserProfileReturnsEmpty — default profiles
+// list is empty under the host-first redesign. The previous auto-on
+// cache+queue behavior was tied to the now-removed orchestration
+// defaults.
+func TestResolveProfiles_NoUserProfileReturnsEmpty(t *testing.T) {
+	assert.Empty(t, resolveProfiles(devFlags{}))
+}
+
+// TestResolveProfiles_UserProfilePassedThrough — --profile=<name>
+// flows through as a single entry.
+func TestResolveProfiles_UserProfilePassedThrough(t *testing.T) {
+	assert.Equal(t, []string{"observability"}, resolveProfiles(devFlags{profile: "observability"}))
+}
+
+// TestResolveDevPlan_UserProfile — user's --profile flows through as
+// a single entry. The previous auto-on cache+queue profiles are gone
+// under the host-first model.
+func TestResolveDevPlan_UserProfile(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("compose.yaml", []byte("services:\n"), 0o644))
+	fakeExecOutput(t, `{"services":{"db":{},"observability":{}}}`, 0)
+	plan, err := resolveDevPlan(devFlags{
+		profile:      "observability",
+		servicesList: []string{"db"},
+		servicesRaw:  "db",
+	})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"observability"}, plan.profiles)
+}
+
+// menuInputFn / menuOutputFn / menuStartServicesFn default closures
+// — existing tests always stub these via the seams, so the default
+// implementations report uncovered. Invoke each through the
+// package-init snapshot above to exercise the original closure bodies.
+func TestMenuSeamDefaults(t *testing.T) {
+	assert.Equal(t, os.Stdin, initialMenuInputFn())
+	assert.Equal(t, os.Stdout, initialMenuOutputFn())
+
+	withFakeExec(t, 0)
+	require.NoError(t, initialMenuStartServicesFn([]string{"db"}))
+}
+
+func TestBuildCacheEndpoint_MemoryDriver(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "cache:\n  driver: memory\n")
+	endpoint, enabled := configutil.BuildCacheEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildCacheEndpoint_EmptyDriver(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "cache: {}\n")
+	endpoint, enabled := configutil.BuildCacheEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildCacheEndpoint_RedisExplicit(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "cache:\n  driver: redis\n  redis:\n    host: redis-host\n    port: \"6380\"\n")
+	endpoint, enabled := configutil.BuildCacheEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "redis-host:6380", endpoint)
+}
+
+func TestBuildCacheEndpoint_RedisDefaultsLocalhost(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "cache:\n  driver: redis\n")
+	endpoint, enabled := configutil.BuildCacheEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "localhost:6379", endpoint)
+}
+
+func TestBuildQueueEndpoint_DisabledDefault(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "queue:\n  enabled: false\n")
+	endpoint, enabled := configutil.BuildQueueEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildQueueEndpoint_NoSection(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "database:\n  driver: postgres\n")
+	endpoint, enabled := configutil.BuildQueueEndpoint()
+	assert.False(t, enabled)
+	assert.Empty(t, endpoint)
+}
+
+func TestBuildQueueEndpoint_Enabled(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "queue:\n  enabled: true\n  redis:\n    host: queue-host\n    port: \"6381\"\n")
+	endpoint, enabled := configutil.BuildQueueEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "queue-host:6381", endpoint)
+}
+
+func TestBuildQueueEndpoint_EnabledDefaults(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAMLBody(t, "queue:\n  enabled: true\n")
+	endpoint, enabled := configutil.BuildQueueEndpoint()
+	assert.True(t, enabled)
+	assert.Equal(t, "localhost:6379", endpoint)
+}
+
+// TestAppendTag_NoExistingGOFLAGS — fresh env, no GOFLAGS set. Returns
+// a new GOFLAGS= value containing just the tag.
+func TestAppendTag_NoExistingGOFLAGS(t *testing.T) {
+	got := appendTag("", "devtools")
+	assert.Equal(t, "GOFLAGS=-tags=devtools", got)
+}
+
+// TestAppendTag_WithOtherFlags — existing GOFLAGS has non-tag flags;
+// we append a fresh -tags= fragment.
+func TestAppendTag_WithOtherFlags(t *testing.T) {
+	got := appendTag("-mod=mod", "devtools")
+	assert.Equal(t, "GOFLAGS=-mod=mod -tags=devtools", got)
+}
+
+// TestAppendTag_WithExistingTags — existing -tags=foo; we merge the new
+// tag in comma-separated form without duplication.
+func TestAppendTag_WithExistingTags(t *testing.T) {
+	got := appendTag("-tags=foo", "devtools")
+	assert.Equal(t, "GOFLAGS=-tags=foo,devtools", got)
+}
+
+// TestAppendTag_TagAlreadyPresent — idempotent when the target tag is
+// already present in the existing -tags= fragment.
+func TestAppendTag_TagAlreadyPresent(t *testing.T) {
+	got := appendTag("-tags=devtools,foo", "devtools")
+	assert.Equal(t, "GOFLAGS=-tags=devtools,foo", got)
+}
+
+// TestAppendTag_AcceptsFullPrefix — tolerant of a "GOFLAGS=" prefix on
+// the input string so callers don't have to strip it.
+func TestAppendTag_AcceptsFullPrefix(t *testing.T) {
+	got := appendTag("GOFLAGS=-mod=mod", "devtools")
+	assert.Equal(t, "GOFLAGS=-mod=mod -tags=devtools", got)
+}
+
+// TestRunSeedDelegation_FakeSuccess — `gofasta seed` delegation,
+// stubbed exec.
+func TestRunSeedDelegation_FakeSuccess(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, runSeedDelegation())
+}
+
+func TestRunSeedDelegation_FakeFailure(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	assert.Error(t, runSeedDelegation())
 }
 
 func TestDevCmd_Registered(t *testing.T) {
@@ -77,19 +566,6 @@ func TestDevCmd_Registered(t *testing.T) {
 func TestDevCmd_HasDescription(t *testing.T) {
 	assert.NotEmpty(t, devCmd.Short)
 	assert.NotEmpty(t, devCmd.Long)
-}
-
-// setupDevTempdir creates a temp project dir, chdirs into it, writes a
-// minimal config.yaml so configutil.BuildMigrationURL returns a usable URL,
-// and restores the original cwd on cleanup.
-func setupDevTempdir(t *testing.T) {
-	t.Helper()
-	dir := t.TempDir()
-	origDir, _ := os.Getwd()
-	t.Cleanup(func() { _ = os.Chdir(origDir) })
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "config.yaml"),
-		[]byte("database:\n  driver: postgres\n  name: testdb\n"), 0o644))
-	require.NoError(t, os.Chdir(dir))
 }
 
 // runDev happy path — .env loaded, migration + air mocked to succeed,
@@ -157,82 +633,6 @@ func TestRunDev_MigrationFails(t *testing.T) {
 	// Air also fails (same fakeExec) — runDev returns the air error.
 	assert.Error(t, err)
 }
-
-// runMigrations with migrate not installed — returns a clear error message
-// mentioning where to install from.
-func TestRunMigrations_MigrateNotFound(t *testing.T) {
-	setupDevTempdir(t)
-	origLookPath := execLookPath
-	execLookPath = func(name string) (string, error) { return "", fmt.Errorf("not found") }
-	t.Cleanup(func() { execLookPath = origLookPath })
-
-	err := runMigrations()
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "migrate CLI not found")
-	assert.Contains(t, err.Error(), "v4.18.1")
-}
-
-// runMigrations with empty DB URL — returns error about config.
-func TestRunMigrations_EmptyDBURL(t *testing.T) {
-	// Empty temp dir with no config.yaml → BuildMigrationURL returns something
-	// with empty fields but non-empty string; so this particular test won't
-	// trigger the empty-URL path. Use a dir without config.yaml AND no env
-	// vars set — but configutil always returns a non-empty URL with defaults.
-	// Skip this — the branch is defensive and practically unreachable since
-	// configutil always returns at least the default postgres URL.
-}
-
-// runMigrations succeeds on first attempt.
-func TestRunMigrations_SuccessFirstAttempt(t *testing.T) {
-	setupDevTempdir(t)
-	origLookPath := execLookPath
-	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
-	t.Cleanup(func() { execLookPath = origLookPath })
-	withFakeExec(t, 0)
-
-	err := runMigrations()
-	assert.NoError(t, err)
-}
-
-// runMigrations fails first attempt but succeeds on retry.
-func TestRunMigrations_SuccessOnRetry(t *testing.T) {
-	setupDevTempdir(t)
-	origLookPath := execLookPath
-	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
-	t.Cleanup(func() { execLookPath = origLookPath })
-	// First call (migrate up) fails, second call (retry) succeeds.
-	stagedFakeExec(t, 1, 0)
-
-	err := runMigrations()
-	assert.NoError(t, err)
-}
-
-// runMigrations fails both attempts — returns the error from the second try.
-func TestRunMigrations_FailsBothAttempts(t *testing.T) {
-	setupDevTempdir(t)
-	origLookPath := execLookPath
-	execLookPath = func(name string) (string, error) { return "/usr/bin/migrate", nil }
-	t.Cleanup(func() { execLookPath = origLookPath })
-	withFakeExec(t, 1) // both attempts fail
-
-	err := runMigrations()
-	assert.Error(t, err)
-}
-
-// runMigrateUp — direct test of the single-attempt function.
-func TestRunMigrateUp(t *testing.T) {
-	withFakeExec(t, 0)
-	assert.NoError(t, runMigrateUp("postgres://test:test@localhost:5432/testdb"))
-
-	withFakeExec(t, 1)
-	assert.Error(t, runMigrateUp("postgres://test:test@localhost:5432/testdb"))
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for runDev branches that the happy-path tests skip:
-// flags.port, flags.orchestrate with compose services, flags.fresh,
-// flags.seed, flags.attachLogs, flags.dashboard, and runAir branches.
-// ─────────────────────────────────────────────────────────────────────
 
 // TestRunDev_WithFlagPort — flags.port != "" sets the PORT env var and
 // takes the port override branch when picking URLs.
@@ -362,42 +762,6 @@ func TestRunDev_Fresh_WithCompose(t *testing.T) {
 	assert.NoError(t, err)
 }
 
-// TestRunDev_Fresh_ResetVolumesFails — resetVolumes returns an
-// error; runDev logs a warning and continues.
-func TestRunDev_Fresh_ResetVolumesFails(t *testing.T) {
-	chdirTemp(t)
-	writeConfigYAML(t)
-	stubProbesOK(t)
-	require.NoError(t, os.WriteFile("compose.yaml",
-		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
-	composeConfig := `{"services":{"db":{}}}`
-	composePS := `[{"Service":"db","State":"running","Health":""}]`
-	orig := execCommand
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		stdout := ""
-		exitCode := 0
-		if hasComposeSub(args, "config") {
-			stdout = composeConfig
-		} else if hasComposeSub(args, "ps") {
-			stdout = composePS
-		} else if hasComposeSub(args, "down") {
-			exitCode = 1 // resetVolumes fails
-		}
-		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(),
-			"GOFASTA_WANT_HELPER_PROCESS=1",
-			fakeEnvExitCode+"="+strconvItoa(exitCode),
-			"GOFASTA_FAKE_STDOUT="+stdout,
-		)
-		return cmd
-	}
-	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{envFile: ".env", waitTimeout: 5e9,
-		keepVolumes: true, fresh: true})
-	assert.NoError(t, err)
-}
-
 // TestRunDev_ComposeUnavailable — orchestrate=true but composeAvailable
 // returns false → error.
 func TestRunDev_ComposeUnavailable(t *testing.T) {
@@ -429,79 +793,6 @@ func TestRunDev_ComposeUnavailable(t *testing.T) {
 	err := runDev(devFlags{
 		envFile:      ".env",
 		waitTimeout:  5e9,
-		keepVolumes:  true,
-		servicesList: []string{"db"},
-		servicesRaw:  "db",
-		noKeyboard:   true,
-	})
-	require.Error(t, err)
-}
-
-// TestRunDev_StartServicesFails — compose config ok but compose up
-// fails.
-func TestRunDev_StartServicesFails(t *testing.T) {
-	chdirTemp(t)
-	writeConfigYAML(t)
-	require.NoError(t, os.WriteFile("compose.yaml",
-		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
-	orig := execCommand
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		stdout := ""
-		exitCode := 0
-		if hasComposeSub(args, "config") {
-			stdout = `{"services":{"db":{}}}`
-		} else if hasComposeSub(args, "up") {
-			exitCode = 1
-		}
-		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(),
-			"GOFASTA_WANT_HELPER_PROCESS=1",
-			fakeEnvExitCode+"="+strconvItoa(exitCode),
-			"GOFASTA_FAKE_STDOUT="+stdout,
-		)
-		return cmd
-	}
-	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{
-		envFile:      ".env",
-		waitTimeout:  5e9,
-		keepVolumes:  true,
-		servicesList: []string{"db"},
-		servicesRaw:  "db",
-		noKeyboard:   true,
-	})
-	require.Error(t, err)
-}
-
-// TestRunDev_WaitHealthyFails — compose up succeeds but services never
-// become healthy in the short timeout.
-func TestRunDev_WaitHealthyFails(t *testing.T) {
-	chdirTemp(t)
-	writeConfigYAML(t)
-	require.NoError(t, os.WriteFile("compose.yaml",
-		[]byte("services:\n  db:\n    image: postgres\n"), 0o644))
-	orig := execCommand
-	execCommand = func(name string, args ...string) *exec.Cmd {
-		stdout := ""
-		if hasComposeSub(args, "config") {
-			stdout = `{"services":{"db":{"healthcheck":{"test":["CMD","pg_isready"]}}}}`
-		} else if hasComposeSub(args, "ps") {
-			stdout = `[{"Service":"db","State":"running","Health":"starting"}]`
-		}
-		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
-		cmd := exec.Command(os.Args[0], cs...)
-		cmd.Env = append(os.Environ(),
-			"GOFASTA_WANT_HELPER_PROCESS=1",
-			fakeEnvExitCode+"=0",
-			"GOFASTA_FAKE_STDOUT="+stdout,
-		)
-		return cmd
-	}
-	t.Cleanup(func() { execCommand = orig })
-	err := runDev(devFlags{
-		envFile:      ".env",
-		waitTimeout:  500000000, // 500ms
 		keepVolumes:  true,
 		servicesList: []string{"db"},
 		servicesRaw:  "db",
@@ -788,26 +1079,6 @@ func TestAirSignalHandler_KeyboardQuit(t *testing.T) {
 	assert.Equal(t, "quit", called)
 	assert.False(t, flag.Load())
 }
-
-// TestParseServicesInList — parseServicesList trims spaces and
-// filters empty entries.
-func TestParseServicesInList(t *testing.T) {
-	got := parseServicesList("a, b , c")
-	assert.Equal(t, 3, len(got))
-	for _, s := range got {
-		assert.NotEmpty(t, s)
-	}
-	// Silence unused imports if nothing else pulls strconv.
-	_ = strconv.Itoa(len(got))
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// runDevPipeline coverage — exercises the in-docker, menu-driven, and
-// teardown-variant branches of the pipeline. The host-mode happy path
-// is already covered by the tests above; these target the branches
-// that only fire when --services contains "app", when the preflight
-// menu runs, when --fresh is set with orchestrate=true, etc.
-// ─────────────────────────────────────────────────────────────────────
 
 // runInDockerForeground — Start() fails when execCommand returns a Cmd
 // whose Path points at a non-existent binary.

@@ -7,10 +7,31 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The path tables are the source of truth consumed by three callers —
-// `gofasta new --layout=feature`, the refactor command, and the transform
-// engines. A wrong entry silently writes a file to the wrong place, so these
-// tests pin the tables rather than merely exercising them.
+func TestPerResourceMapping_AllPaths(t *testing.T) {
+	pairs := PerResourceMapping("user")
+	wantCount := 15 // models + validators stay in shared layered dirs; dtos collapse into feature per Option B
+	if len(pairs) != wantCount {
+		t.Errorf("PerResourceMapping returned %d pairs, want %d", len(pairs), wantCount)
+	}
+	expectedFeaturePaths := []string{
+		"app/user/service.go",
+		"app/user/service_iface.go",
+		"app/user/controller.go",
+		"app/user/routes.go",
+		"app/user/wire.go",
+		"app/user/errors.go",
+		"app/user/repository_iface.go",
+	}
+	got := make(map[string]bool)
+	for _, p := range pairs {
+		got[p.Feature] = true
+	}
+	for _, want := range expectedFeaturePaths {
+		if !got[want] {
+			t.Errorf("PerResourceMapping missing feature path: %s", want)
+		}
+	}
+}
 
 func TestSharedRelocations(t *testing.T) {
 	got := SharedRelocations()
