@@ -108,6 +108,19 @@ func TestRefactorPreflight_AlreadyMigratedResourceWarns(t *testing.T) {
 	assert.Contains(t, warns[0].Message, "already in feature layout")
 }
 
+// TestRefactorPreflight_AlreadyLayeredResourceWarnsOnReverse is the
+// mirror case: assessing the reverse direction on a layered resource.
+func TestRefactorPreflight_AlreadyLayeredResourceWarnsOnReverse(t *testing.T) {
+	inRenderedProject(t) // User fully layered
+
+	pf := refactorPreflight(preflightToLayered)
+
+	assert.Empty(t, findingsFor(pf.Blockers, "layout-state"))
+	warns := findingsFor(pf.Warnings, "layout-state")
+	require.Len(t, warns, 1)
+	assert.Contains(t, warns[0].Message, "already in layered layout")
+}
+
 func TestRefactorPreflight_GitRepoSilencesNoGit(t *testing.T) {
 	inRenderedProject(t)
 	gitInitOrSkip(t)
@@ -232,12 +245,14 @@ func TestRefactorPreflight_GqlgenCustomizationsWarn(t *testing.T) {
 		"# federation:", "federation:", 1)
 	custom = strings.Replace(custom,
 		"dir: app/graphql/resolvers", "dir: internal/resolvers", 1)
+	custom = strings.Replace(custom,
+		`filename_template: "{name}.resolvers.go"`, `filename_template: "{name}_gen.go"`, 1)
 	require.NoError(t, os.WriteFile("gqlgen.yml", []byte(custom), 0o644))
 
 	pf := refactorPreflight(preflightToFeature)
 
 	warns := findingsFor(pf.Warnings, "gqlgen-custom")
-	require.Len(t, warns, 2)
+	require.Len(t, warns, 3)
 }
 
 func TestRefactorPreflight_MissingGeneratorMarkerWarns(t *testing.T) {

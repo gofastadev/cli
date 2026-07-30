@@ -895,11 +895,7 @@ func featurizeFile(outputPath string, content []byte, mod string, resources []fe
 	// the `go tool gqlgen generate` step of `new` emits code that
 	// compiles against the feature layout.
 	if outputPath == "gqlgen.yml" {
-		out, terr := featurize.RewriteGqlgenConfig(content, mod, resources)
-		if terr != nil {
-			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
-		}
-		return outputPath, out, nil
+		return outputPath, featurize.RewriteGqlgenConfig(content, mod, resources), nil
 	}
 
 	// Shared infra files that stay in their layered location but

@@ -277,3 +277,43 @@ func TestRunDoctor_RefactorEligibilityClean(t *testing.T) {
 	})
 	assert.Contains(t, out, "eligible for `gofasta refactor feature`")
 }
+
+// TestRunDoctor_RefactorEligibilityFeatureLayout: a feature-layout
+// project assesses the reverse direction.
+func TestRunDoctor_RefactorEligibilityFeatureLayout(t *testing.T) {
+	migratedProject(t) // flips config.yaml to layout: feature
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "gofasta refactor layered")
+}
+
+// TestRunDoctor_RefactorEligibilityLayoutFallback: a project whose
+// config.yaml pre-dates the project.layout key still gets assessed —
+// app/models/ is the layered signal, same fallback as refactor status.
+func TestRunDoctor_RefactorEligibilityLayoutFallback(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("config.yaml", []byte("server:\n  port: \"8080\"\n"), 0o644))
+	require.NoError(t, os.MkdirAll("app/models", 0o755))
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "gofasta refactor feature")
+}
+
+// TestRunDoctor_RefactorEligibilityWarningsListed: preflight warnings
+// render as info entries (GraphQL projects always carry the
+// generated-hand-edits note).
+func TestRunDoctor_RefactorEligibilityWarningsListed(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "[generated-hand-edits]")
+}

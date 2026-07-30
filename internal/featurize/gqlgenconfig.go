@@ -51,7 +51,7 @@ func listEntryIndent(line string) string {
 // Idempotent: running it twice produces the same bytes as running it
 // once. Everything not targeted (comments, indentation, the exec /
 // resolver / models sections) is preserved verbatim.
-func RewriteGqlgenConfig(src []byte, mod string, resources []Resource) ([]byte, error) {
+func RewriteGqlgenConfig(src []byte, mod string, resources []Resource) []byte {
 	lines := strings.Split(string(src), "\n")
 	out := make([]string, 0, len(lines)+len(resources))
 
@@ -102,14 +102,14 @@ func RewriteGqlgenConfig(src []byte, mod string, resources []Resource) ([]byte, 
 		out = append(out, line)
 	}
 
-	return []byte(strings.Join(out, "\n")), nil
+	return []byte(strings.Join(out, "\n"))
 }
 
 // RewriteGqlgenConfigReverse rewrites gqlgen.yml from the feature shape
 // back to layered — the exact inverse of RewriteGqlgenConfig: the
 // model.filename flips back, the shared dtos autobind entry becomes
 // app/dtos again, and every per-resource autobind entry is removed.
-func RewriteGqlgenConfigReverse(src []byte, mod string, resources []Resource) ([]byte, error) {
+func RewriteGqlgenConfigReverse(src []byte, mod string, resources []Resource) []byte {
 	perResource := map[string]bool{}
 	for _, r := range resources {
 		perResource[`- "`+mod+`/app/`+r.Snake+`"`] = true
@@ -135,7 +135,7 @@ func RewriteGqlgenConfigReverse(src []byte, mod string, resources []Resource) ([
 		out = append(out, line)
 	}
 
-	return []byte(strings.Join(out, "\n")), nil
+	return []byte(strings.Join(out, "\n"))
 }
 
 // EnsureGqlgenAutobind inserts `- "<mod>/app/<snake>"` into the
@@ -146,12 +146,12 @@ func RewriteGqlgenConfigReverse(src []byte, mod string, resources []Resource) ([
 // No-op (returns src unchanged) when the entry is already present or
 // when the shared-dtos anchor is missing — callers detect "nothing
 // changed" by comparing the returned bytes with the input.
-func EnsureGqlgenAutobind(src []byte, mod, snake string) ([]byte, error) {
+func EnsureGqlgenAutobind(src []byte, mod, snake string) []byte {
 	entry := `- "` + mod + `/app/` + snake + `"`
 	lines := strings.Split(string(src), "\n")
 	for _, line := range lines {
 		if strings.TrimSpace(line) == entry {
-			return src, nil
+			return src
 		}
 	}
 
@@ -166,7 +166,7 @@ func EnsureGqlgenAutobind(src []byte, mod, snake string) ([]byte, error) {
 		}
 	}
 	if !inserted {
-		return src, nil
+		return src
 	}
-	return []byte(strings.Join(out, "\n")), nil
+	return []byte(strings.Join(out, "\n"))
 }

@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // gqlgenYamlSrc mirrors the skeleton's gqlgen.yml.tmpl rendered for
@@ -46,9 +45,7 @@ models:
 }
 
 func TestRewriteGqlgenConfig_Forward(t *testing.T) {
-	out, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource(), orderResource()})
-	require.NoError(t, err)
-	s := string(out)
+	s := string(RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource(), orderResource()}))
 
 	assert.Contains(t, s, "filename: app/shared/dtos/generated-types.dtos.go")
 	assert.NotContains(t, s, "filename: app/dtos/generated-types.dtos.go")
@@ -65,37 +62,30 @@ func TestRewriteGqlgenConfig_Forward(t *testing.T) {
 
 func TestRewriteGqlgenConfig_Idempotent(t *testing.T) {
 	resources := []Resource{userResource()}
-	once, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
-	require.NoError(t, err)
-	twice, err := RewriteGqlgenConfig(once, testMod, resources)
-	require.NoError(t, err)
+	once := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
+	twice := RewriteGqlgenConfig(once, testMod, resources)
 	assert.Equal(t, string(once), string(twice))
 }
 
 func TestRewriteGqlgenConfig_ReverseIsByteExactInverse(t *testing.T) {
 	resources := []Resource{userResource(), orderResource()}
-	forward, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
-	require.NoError(t, err)
-	back, err := RewriteGqlgenConfigReverse(forward, testMod, resources)
-	require.NoError(t, err)
+	forward := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, resources)
+	back := RewriteGqlgenConfigReverse(forward, testMod, resources)
 	assert.Equal(t, gqlgenYamlSrc(), string(back))
 }
 
 func TestRewriteGqlgenConfigReverse_Idempotent(t *testing.T) {
 	resources := []Resource{userResource()}
-	once, err := RewriteGqlgenConfigReverse([]byte(gqlgenYamlSrc()), testMod, resources)
-	require.NoError(t, err)
+	once := RewriteGqlgenConfigReverse([]byte(gqlgenYamlSrc()), testMod, resources)
 	// A layered-shaped file reverses to itself.
 	assert.Equal(t, gqlgenYamlSrc(), string(once))
 }
 
 func TestEnsureGqlgenAutobind(t *testing.T) {
-	feature, err := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource()})
-	require.NoError(t, err)
+	feature := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource()})
 
 	// Insert a new resource entry after the shared anchor.
-	out, err := EnsureGqlgenAutobind(feature, testMod, "widget")
-	require.NoError(t, err)
+	out := EnsureGqlgenAutobind(feature, testMod, "widget")
 	s := string(out)
 	assert.Contains(t, s, " - \""+testMod+"/app/widget\"\n")
 	sharedIdx := strings.Index(s, testMod+"/app/shared/dtos")
@@ -103,12 +93,10 @@ func TestEnsureGqlgenAutobind(t *testing.T) {
 	assert.Greater(t, widgetIdx, sharedIdx, "widget entry must come after the shared anchor")
 
 	// Already present → unchanged.
-	again, err := EnsureGqlgenAutobind(out, testMod, "widget")
-	require.NoError(t, err)
+	again := EnsureGqlgenAutobind(out, testMod, "widget")
 	assert.Equal(t, s, string(again))
 
 	// Missing anchor (layered-shaped file) → unchanged.
-	unchanged, err := EnsureGqlgenAutobind([]byte(gqlgenYamlSrc()), testMod, "widget")
-	require.NoError(t, err)
+	unchanged := EnsureGqlgenAutobind([]byte(gqlgenYamlSrc()), testMod, "widget")
 	assert.Equal(t, gqlgenYamlSrc(), string(unchanged))
 }

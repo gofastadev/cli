@@ -1252,10 +1252,7 @@ func applyGraphQLPatches(mod string, resources []featurize.Resource) (patched, s
 	}
 
 	if content, rerr := os.ReadFile("gqlgen.yml"); rerr == nil {
-		out, terr := featurize.RewriteGqlgenConfig(content, mod, resources)
-		if terr != nil {
-			return patched, skipped, fmt.Errorf("rewrite gqlgen.yml: %w", terr)
-		}
+		out := featurize.RewriteGqlgenConfig(content, mod, resources)
 		if werr := os.WriteFile("gqlgen.yml", out, 0o644); werr != nil {
 			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing gqlgen.yml")
 		}
@@ -1292,10 +1289,7 @@ func applyGraphQLPatchesReverse(mod string, resources []featurize.Resource) (pat
 	}
 
 	if content, rerr := os.ReadFile("gqlgen.yml"); rerr == nil {
-		out, terr := featurize.RewriteGqlgenConfigReverse(content, mod, resources)
-		if terr != nil {
-			return patched, skipped, fmt.Errorf("rewrite gqlgen.yml reverse: %w", terr)
-		}
+		out := featurize.RewriteGqlgenConfigReverse(content, mod, resources)
 		if werr := os.WriteFile("gqlgen.yml", out, 0o644); werr != nil {
 			return patched, skipped, clierr.Wrap(clierr.CodeFileIO, werr, "writing gqlgen.yml")
 		}

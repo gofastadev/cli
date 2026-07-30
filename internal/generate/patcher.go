@@ -221,10 +221,7 @@ func PatchGqlgenAutobind(d ScaffoldData) error {
 	if err != nil {
 		return err
 	}
-	out, err := featurize.EnsureGqlgenAutobind(content, d.ModulePath, d.SnakeName)
-	if err != nil {
-		return err
-	}
+	out := featurize.EnsureGqlgenAutobind(content, d.ModulePath, d.SnakeName)
 	if bytes.Equal(out, content) {
 		cliout.Skip(path, "autobind already covers app/"+d.SnakeName)
 		return nil
