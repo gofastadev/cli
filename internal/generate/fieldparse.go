@@ -11,7 +11,11 @@ func ParseFields(args []string) []Field {
 			continue
 		}
 		f := Field{
-			Name:      toPascalCase(parts[0]),
+			// fieldPascalCase (not toPascalCase) so "owner_id" becomes
+			// OwnerID — the generated project's revive lint rejects
+			// OwnerId. JSON/snake names keep the plain conversions
+			// ("ownerId" / "owner_id").
+			Name:      fieldPascalCase(parts[0]),
 			JSONName:  toCamelCase(parts[0]),
 			SnakeName: toSnakeCase(parts[0]),
 		}

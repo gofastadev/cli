@@ -81,3 +81,14 @@ func TestParseFields_CaseConversion(t *testing.T) {
 	assert.Equal(t, "productName", fields[0].JSONName)
 	assert.Equal(t, "product_name", fields[0].SnakeName)
 }
+
+// TestParseFields_InitialismFieldNames — revive's var-naming in the
+// generated project rejects OwnerId; the parser must emit OwnerID
+// while json/snake names keep the plain conversions.
+func TestParseFields_InitialismFieldNames(t *testing.T) {
+	fields := ParseFields([]string{"owner_id:uuid"})
+	require.Len(t, fields, 1)
+	require.Equal(t, "OwnerID", fields[0].Name)
+	require.Equal(t, "ownerId", fields[0].JSONName)
+	require.Equal(t, "owner_id", fields[0].SnakeName)
+}

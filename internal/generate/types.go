@@ -83,6 +83,18 @@ func (s ScaffoldData) HasTimeField() bool {
 	return false
 }
 
+// HasUUIDField is HasTimeField's twin for `uuid.UUID` fields — gates
+// the github.com/google/uuid import in templates that don't otherwise
+// import it (model, inputs).
+func (s ScaffoldData) HasUUIDField() bool {
+	for _, f := range s.Fields {
+		if f.GoType == "uuid.UUID" {
+			return true
+		}
+	}
+	return false
+}
+
 // L returns the layout for this scaffold operation, defaulting to
 // layered when ScaffoldData was constructed without one. Production
 // callers go through BuildScaffoldData which always sets Layout; this

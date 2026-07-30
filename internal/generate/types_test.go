@@ -52,6 +52,18 @@ func TestField_SampleLiteral(t *testing.T) {
 	}
 }
 
+func TestScaffoldData_HasUUIDField(t *testing.T) {
+	withUUID := ScaffoldData{Fields: []Field{
+		{Name: "OwnerID", GoType: "uuid.UUID"},
+	}}
+	assert.True(t, withUUID.HasUUIDField())
+
+	withoutUUID := ScaffoldData{Fields: []Field{
+		{Name: "Name", GoType: "string"},
+	}}
+	assert.False(t, withoutUUID.HasUUIDField())
+}
+
 func TestScaffoldData_HasTimeField(t *testing.T) {
 	withTime := ScaffoldData{Fields: []Field{
 		{Name: "Name", GoType: "string"},

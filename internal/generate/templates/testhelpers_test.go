@@ -47,6 +47,16 @@ func (s testScaffoldData) HasTimeField() bool {
 	return false
 }
 
+// HasUUIDField mirrors ScaffoldData.HasUUIDField.
+func (s testScaffoldData) HasUUIDField() bool {
+	for _, f := range s.Fields {
+		if f.GoType == "uuid.UUID" {
+			return true
+		}
+	}
+	return false
+}
+
 type testField struct {
 	Name      string
 	JSONName  string

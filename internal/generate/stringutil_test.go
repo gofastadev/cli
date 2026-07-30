@@ -90,3 +90,19 @@ func TestPluralize(t *testing.T) {
 		})
 	}
 }
+
+func TestFieldPascalCase_Initialisms(t *testing.T) {
+	cases := map[string]string{
+		"owner_id":   "OwnerID",
+		"id":         "ID",
+		"api_key":    "APIKey",
+		"avatar_url": "AvatarURL",
+		"name":       "Name",
+		"unit_price": "UnitPrice",
+		"uuid":       "UUID",
+		"http_code":  "HTTPCode",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, fieldPascalCase(in), "fieldPascalCase(%q)", in)
+	}
+}
