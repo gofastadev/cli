@@ -129,6 +129,40 @@ func (d TUpdate{{.Name}}Dto) ToPatch() services.Update{{.Name}}Patch {
 	}
 }
 
+// TUpdate{{.Name}}GraphQLInput is the GraphQL-only counterpart to
+// TUpdate{{.Name}}Dto. GraphQL has no HTTP headers and no URL paths, so
+// the id + recordVersion that REST carries in ` + "`PUT /{{.PluralLower}}/{id}`" + ` +
+// ` + "`If-Match: \"<v>\"`" + ` live inside the input object instead. Two
+// distinct types (rather than reusing TUpdate{{.Name}}Dto) keep the REST
+// shape strict — the JSON body for a REST PUT must not include id or
+// recordVersion.
+//
+// gqlgen's autobind picks this type up automatically because its name
+// matches the schema's ` + "`input TUpdate{{.Name}}GraphQLInput`" + ` — no
+// models block in gqlgen.yml needed.
+type TUpdate{{.Name}}GraphQLInput struct {
+	ID            uuid.UUID ` + "`" + `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification={{.PluralSnake}}"` + "`" + `
+	RecordVersion int       ` + "`" + `json:"recordVersion" validate:"required,min=1"` + "`" + `
+{{- range .Fields}}
+	{{.Name}} *{{.GoType}} ` + "`" + `json:"{{.JSONName}},omitempty"` + "`" + `
+{{- end}}
+	IsActive    *bool ` + "`" + `json:"isActive,omitempty"` + "`" + `
+	IsDeletable *bool ` + "`" + `json:"isDeletable,omitempty"` + "`" + `
+}
+
+// ToPatch translates the GraphQL input into the typed domain patch the
+// service consumes. Symmetric with TUpdate{{.Name}}Dto.ToPatch so both
+// resolver paths converge on services.Update{{.Name}}Patch.
+func (d TUpdate{{.Name}}GraphQLInput) ToPatch() services.Update{{.Name}}Patch {
+	return services.Update{{.Name}}Patch{
+{{- range .Fields}}
+		{{.Name}}: d.{{.Name}},
+{{- end}}
+		IsActive:    d.IsActive,
+		IsDeletable: d.IsDeletable,
+	}
+}
+
 // TFind{{.Name}}ByIDDto is the input for the get-by-id endpoint.
 type TFind{{.Name}}ByIDDto struct {
 	ID uuid.UUID ` + "`" + `json:"id" validate:"uuid4_valid,does_record_exist_by_id_for_verification={{.PluralSnake}}"` + "`" + `

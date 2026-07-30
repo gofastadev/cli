@@ -96,6 +96,9 @@ func (featureLayout) WireFile() string       { return "app/di/wire.go" }
 func (featureLayout) RouteIndexFile() string { return "app/rest/routes/index.routes.go" }
 func (featureLayout) ServeFile() string      { return "cmd/serve.go" }
 func (featureLayout) ResolverFile() string   { return "app/graphql/resolvers/resolver.go" }
+func (featureLayout) ResolverResourceFile(snake string) string {
+	return "app/graphql/resolvers/" + snake + ".resolvers.go"
+}
 
 // InterfaceDirs returns the per-feature directories `g mock --all` should
 // walk. In the feature layout each resource keeps its interfaces alongside

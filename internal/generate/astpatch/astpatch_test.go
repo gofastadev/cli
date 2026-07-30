@@ -3,6 +3,7 @@ package astpatch
 import (
 	"bytes"
 	"errors"
+	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
@@ -29,13 +30,11 @@ func TestParse_SyntaxError(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestRender_RestoreErrorOnUnformattableButValid(t *testing.T) {
-	// We can't easily make decorator.Fprint fail with a valid dst.File,
-	// so we exercise the format.Source error path instead: render a
-	// file with deliberately broken-after-restore source. Construct a
-	// dst.File with an empty Name to force the restorer to produce
-	// invalid output that format.Source rejects but bytes are still
-	// returned (no error).
+func TestRender_FormatErrorFailsLoudly(t *testing.T) {
+	// A dst.File with an empty package name restores to invalid Go that
+	// format.Source rejects. Render must surface that as an error —
+	// returning unformatted bytes here would let a generator write
+	// invalid Go back into the user's file.
 	bad := &File{
 		Path: "x.go",
 		Dst: &dst.File{
@@ -43,11 +42,12 @@ func TestRender_RestoreErrorOnUnformattableButValid(t *testing.T) {
 			Decls: nil,
 		},
 	}
-	body, err := Render(bad)
-	// Render returns the unformatted bytes on format error — never the
-	// error itself.
-	require.NoError(t, err)
-	require.NotNil(t, body)
+	_, err := Render(bad)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodeASTPatchFailed), ce.Code)
+	require.Contains(t, ce.Error(), "gofmt of patched x.go")
 }
 
 func TestFindInterface_NotATypeDecl(t *testing.T) {
@@ -256,6 +256,26 @@ func TestEnsureImport_NoExistingImports_AddsNewBlock(t *testing.T) {
 	f, err := Parse(path)
 	require.NoError(t, err)
 	require.True(t, EnsureImport(f, "fmt"))
+}
+
+func TestEnsureImport_SingleLineImportGainsParens(t *testing.T) {
+	// Regression: appending to a single-line `import "context"` decl
+	// without setting Lparen/Rparen rendered `import "context" "fmt"`,
+	// which is invalid Go (and Render then failed).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "x.go")
+	require.NoError(t, os.WriteFile(path,
+		[]byte("package x\n\nimport \"context\"\n\nvar _ = context.Background\n"), 0o644))
+	f, err := Parse(path)
+	require.NoError(t, err)
+	require.True(t, EnsureImport(f, "fmt"))
+
+	body, err := Render(f)
+	require.NoError(t, err)
+	_, perr := parser.ParseFile(token.NewFileSet(), "x.go", body, 0)
+	require.NoError(t, perr, "patched file must remain valid Go:\n%s", body)
+	require.Contains(t, string(body), "import (")
+	require.Contains(t, string(body), "\"fmt\"")
 }
 
 func TestRender_RestorerError(t *testing.T) {

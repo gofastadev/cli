@@ -41,3 +41,20 @@ func Detect() Layout {
 	}
 	return For(Layered)
 }
+
+// HasGraphQLArtifacts reports whether the project rooted at the current
+// working directory has GraphQL enabled: a gqlgen.yml or an
+// app/graphql/resolvers/ directory. REST-only projects have neither.
+//
+// Shared by `gofasta refactor` (to decide whether the GraphQL phase
+// applies) and the generators (to default --graphql on/off from
+// project state rather than requiring the flag on every command).
+func HasGraphQLArtifacts() bool {
+	if _, err := os.Stat("gqlgen.yml"); err == nil {
+		return true
+	}
+	if fi, err := os.Stat("app/graphql/resolvers"); err == nil && fi.IsDir() {
+		return true
+	}
+	return false
+}

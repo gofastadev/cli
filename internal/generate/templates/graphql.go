@@ -29,34 +29,40 @@ type T{{.PluralName}}ResponseDto {
 }
 
 extend type Query {
-  findAll{{.PluralName}}(filters: T{{.Name}}FiltersInput!): T{{.PluralName}}ResponseDto!
-  find{{.Name}}ById(input: TFind{{.Name}}ByIdInput!): {{.Name}}!
+  findAll{{.PluralName}}(filters: T{{.Name}}FiltersQueryParamsDto!): T{{.PluralName}}ResponseDto!
+  find{{.Name}}ById(input: TFind{{.Name}}ByIdDto!): {{.Name}}!
 }
 
 extend type Mutation {
-  create{{.Name}}(input: TCreate{{.Name}}Input!): {{.Name}}!
-  update{{.Name}}(input: TUpdate{{.Name}}Input!): {{.Name}}!
+  create{{.Name}}(input: TCreate{{.Name}}Dto!): {{.Name}}!
+  update{{.Name}}(input: TUpdate{{.Name}}GraphQLInput!): {{.Name}}!
   # archive returns the soft-deleted record (matches REST's 200 + body
   # response). Idempotent: a second archive of the same id returns a
   # NOT_FOUND gqlerror.
-  archive{{.Name}}(input: TArchive{{.Name}}Input!): {{.Name}}!
+  archive{{.Name}}(input: TArchive{{.Name}}Dto!): {{.Name}}!
 }
 
-input TFind{{.Name}}ByIdInput {
+# Input names deliberately match the hand-written DTO type names so
+# gqlgen's autobind reuses those structs (validate tags + ToCreateInput
+# / ToPatch / ToFilter helpers) instead of minting helperless models.
+# gqlgen's name mangling binds TFind{{.Name}}ByIdDto to the Go type
+# TFind{{.Name}}ByIDDto (Id → ID initialism), same as the skeleton's
+# user schema.
+input TFind{{.Name}}ByIdDto {
   id: ID!
 }
 
-input TArchive{{.Name}}Input {
+input TArchive{{.Name}}Dto {
   id: ID!
 }
 
-input TCreate{{.Name}}Input {
+input TCreate{{.Name}}Dto {
 {{- range .Fields}}
   {{.JSONName}}: {{.GQLType}}!
 {{- end}}
 }
 
-input TUpdate{{.Name}}Input {
+input TUpdate{{.Name}}GraphQLInput {
   id: ID!
   recordVersion: Int!
 {{- range .Fields}}
@@ -66,7 +72,7 @@ input TUpdate{{.Name}}Input {
   isDeletable: Boolean
 }
 
-input T{{.Name}}FiltersInput {
+input T{{.Name}}FiltersQueryParamsDto {
 {{- range .Fields}}
   {{.JSONName}}: {{.GQLType}}
 {{- end}}

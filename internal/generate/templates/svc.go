@@ -98,8 +98,9 @@ func (s *{{.Name}}Service) Create(ctx context.Context, in Create{{.Name}}Input) 
 	defer span.End()
 
 	entity := &models.{{.Name}}{
-		// TODO: Map input fields to model fields
-		// e.g. FieldName: in.FieldName,
+{{- range .Fields}}
+		{{.Name}}: in.{{.Name}},
+{{- end}}
 	}
 	if err := s.repo.Create(ctx, entity); err != nil {
 		span.RecordError(err)

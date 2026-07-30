@@ -128,24 +128,26 @@ func TestCollectFileImports_AliasedImport(t *testing.T) {
 	require.Equal(t, 0, len(targets))
 }
 
-func TestBuildInterfaceTarget_SkipsEmbeddedInterface(t *testing.T) {
+// TestBuildInterfaceTarget_EmbeddedInterfaceFailsLoudly — silently
+// skipping an embed used to emit a mock that doesn't satisfy the
+// interface; the generator now refuses with MOCK_GEN_FAILED.
+func TestBuildInterfaceTarget_EmbeddedInterfaceFailsLoudly(t *testing.T) {
 	tmp := t.TempDir()
 	path := filepath.Join(tmp, "x.go")
 	require.NoError(t, os.WriteFile(path, []byte(`package x
 type Inner interface{ A() }
 type Outer interface {
-	Inner    // embedded — must skip
+	Inner    // embedded — unsupported
 	B() error
 }
 `), 0o644))
-	targets, err := scanFileForInterfaces(path)
-	require.NoError(t, err)
-	for _, tg := range targets {
-		if tg.Name == "Outer" {
-			require.Equal(t, 1, len(tg.Methods))
-			require.Equal(t, "B", tg.Methods[0].Name)
-		}
-	}
+	_, err := scanFileForInterfaces(path)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodeMockGenFailed), ce.Code)
+	require.Contains(t, ce.Error(), "embed")
+	require.Contains(t, ce.Error(), "Outer")
 }
 
 func TestFlattenFuncFieldList_UnnamedParam(t *testing.T) {

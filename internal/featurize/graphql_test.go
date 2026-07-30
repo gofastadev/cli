@@ -5,9 +5,12 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	texttemplate "text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
 func orderResource() Resource {
@@ -347,4 +350,76 @@ func TestTransformGraphQL_ParseError(t *testing.T) {
 	_, err = TransformGraphQLReverse(broken, testMod, []Resource{orderResource()})
 	require.Error(t, err)
 	assert.True(t, strings.Contains(err.Error(), "parse"))
+}
+
+// resolverTmplData is the minimal mirror of generate.ScaffoldData the
+// Resolvers template consults. Defined locally because featurize must
+// not import internal/generate (generate imports featurize).
+type resolverTmplData struct {
+	Name        string
+	LowerName   string
+	SnakeName   string
+	PluralName  string
+	PluralLower string
+	ModulePath  string
+	Feature     bool
+}
+
+type resolverTmplLayout struct{ feature bool }
+
+func (l resolverTmplLayout) IsFeature() bool { return l.feature }
+
+func (d resolverTmplData) L() resolverTmplLayout { return resolverTmplLayout{d.Feature} }
+
+func renderResolversTemplate(t *testing.T, feature bool) []byte {
+	t.Helper()
+	parsed, err := texttemplate.New("resolvers").Parse(templates.Resolvers)
+	require.NoError(t, err)
+	var buf strings.Builder
+	require.NoError(t, parsed.Execute(&buf, resolverTmplData{
+		Name:        "Order",
+		LowerName:   "order",
+		SnakeName:   "order",
+		PluralName:  "Orders",
+		PluralLower: "orders",
+		ModulePath:  testMod,
+		Feature:     feature,
+	}))
+	return []byte(buf.String())
+}
+
+// TestTransformGraphQL_GeneratedResolversTemplateFixpoint pins the
+// contract between the resolver generator template and this package's
+// transforms: the template's layered render must forward-transform into
+// exactly its feature render (and back), i.e. every symbol the template
+// emits stays inside the forward/reverse swap tables. If a template
+// edit introduces a symbol outside perResourceDtoSymbolNames /
+// perResourceServiceSymbolNames / sharedDtoSymbols, this test fails.
+func TestTransformGraphQL_GeneratedResolversTemplateFixpoint(t *testing.T) {
+	layered := renderResolversTemplate(t, false)
+	feature := renderResolversTemplate(t, true)
+	res := []Resource{orderResource()}
+
+	layeredFmt, err := format.Source(layered)
+	require.NoError(t, err, "layered render must be gofmt-clean:\n%s", layered)
+	featureFmt, err := format.Source(feature)
+	require.NoError(t, err, "feature render must be gofmt-clean:\n%s", feature)
+
+	t.Run("forward: layered render becomes the feature render", func(t *testing.T) {
+		forward, err := TransformGraphQL(layeredFmt, testMod, res)
+		require.NoError(t, err)
+		wantBody, wantImports := stripImportBlock(t, string(featureFmt))
+		gotBody, gotImports := stripImportBlock(t, string(forward))
+		assert.Equal(t, wantBody, gotBody)
+		assert.Equal(t, wantImports, gotImports)
+	})
+
+	t.Run("reverse: feature render becomes the layered render", func(t *testing.T) {
+		back, err := TransformGraphQLReverse(featureFmt, testMod, res)
+		require.NoError(t, err)
+		wantBody, wantImports := stripImportBlock(t, string(layeredFmt))
+		gotBody, gotImports := stripImportBlock(t, string(back))
+		assert.Equal(t, wantBody, gotBody)
+		assert.Equal(t, wantImports, gotImports)
+	})
 }

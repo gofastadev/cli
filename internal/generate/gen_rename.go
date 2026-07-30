@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/layout"
@@ -173,7 +172,3 @@ func applyRenameRules(body []byte, rules []renameSubst) []byte {
 // pluralize and toSnakeCase / toCamelCase live in scaffold_data.go's
 // neighbors. Adding small wrappers here would shadow them, so we leave
 // the call sites to use the package-level helpers directly.
-
-// toCamelCaseSafe is unused — placeholder to avoid an import-needed
-// rebuild when the package's other helpers haven't yet been wired in.
-var _ = strings.ToLower

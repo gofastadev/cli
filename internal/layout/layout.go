@@ -115,6 +115,13 @@ type Layout interface {
 	ServeFile() string
 	ResolverFile() string
 
+	// ResolverResourceFile returns the per-resource resolver file
+	// gqlgen owns via its follow-schema layout. Identical in both
+	// layouts — gqlgen generates every {name}.resolvers.go into
+	// app/graphql/resolvers/, so splitting the files across feature
+	// packages would fight the generator.
+	ResolverResourceFile(snake string) string
+
 	// ----- Directories scanned by tooling -----
 
 	// InterfaceDirs returns the directories `gofasta g mock --all` walks

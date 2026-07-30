@@ -68,9 +68,10 @@ func Render(f *File) ([]byte, error) {
 	}
 	formatted, err := format.Source(buf.Bytes())
 	if err != nil {
-		// Return unformatted bytes — caller still gets working output,
-		// even if a downstream gofmt step will surface the issue.
-		return buf.Bytes(), nil
+		// A gofmt failure here means the patched tree renders to invalid
+		// Go — writing it back would corrupt the user's file, so fail
+		// loudly instead of handing unformatted bytes to the caller.
+		return nil, clierr.Wrap(clierr.CodeASTPatchFailed, err, "gofmt of patched "+f.Path)
 	}
 	return formatted, nil
 }
@@ -294,6 +295,10 @@ func EnsureImport(f *File, importPath string) bool {
 			continue
 		}
 		gd.Specs = append(gd.Specs, newImport)
+		// A single-line `import "x"` decl has no parens; appending a
+		// second spec without them renders invalid Go.
+		gd.Lparen = true
+		gd.Rparen = true
 		f.Dst.Imports = append(f.Dst.Imports, newImport)
 		return true
 	}

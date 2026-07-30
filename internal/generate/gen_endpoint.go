@@ -30,11 +30,12 @@ type EndpointData struct {
 	HTTPMethod  string // "GET" | "POST" | "PUT" | "DELETE" | "PATCH"
 	Path        string // chi-style path with optional placeholders, e.g. "/orders/{id}/archive"
 	HandlerName string // PascalCase ("ArchiveOrder"). Auto-derived when empty.
-	WithService bool   // also append a matching method to the service interface
+	WithService bool   // also append a matching method to the service interface + impl
 
-	ControllerFile string
-	RoutesFile     string
-	ServiceFile    string
+	ControllerFile  string
+	RoutesFile      string
+	ServiceFile     string // the interface file
+	ServiceImplFile string // the impl file gaining the stub
 }
 
 // GenEndpoint is the entry point invoked by the Cobra command.
@@ -48,6 +49,11 @@ func GenEndpoint(d EndpointData) error {
 	}
 	if err := ensureExists(d.RoutesFile); err != nil {
 		return err
+	}
+	if d.WithService {
+		if err := ensureExists(d.ServiceImplFile); err != nil {
+			return err
+		}
 	}
 	if err := patchEndpointController(d); err != nil {
 		return err
@@ -112,7 +118,11 @@ func patchEndpointRoutes(d EndpointData) error {
 }
 
 // patchEndpointService extends the resource's service interface with a
-// matching method declaration. No-op if the method already exists.
+// matching method declaration AND appends a stub implementation to the
+// service struct. Patching only the interface would break compilation:
+// the service (and every generated mock) would stop satisfying it.
+// Each half is skipped independently when already present, so a
+// half-applied earlier run heals instead of erroring.
 func patchEndpointService(d EndpointData) error {
 	sf, err := astpatch.Parse(d.ServiceFile)
 	if err != nil {
@@ -122,16 +132,45 @@ func patchEndpointService(d EndpointData) error {
 	if err != nil {
 		return err
 	}
-	if astpatch.InterfaceHasMethod(iface, d.HandlerName) {
-		return nil
+	if !astpatch.InterfaceHasMethod(iface, d.HandlerName) {
+		astpatch.EnsureImport(sf, "context")
+		if err := astpatch.AppendInterfaceMethod(iface,
+			fmt.Sprintf("%s(ctx context.Context) error", d.HandlerName)); err != nil {
+			return err
+		}
+		if err := writeBackOrRecord(sf,
+			fmt.Sprintf("add %s to %sServiceInterface", d.HandlerName, d.Resource)); err != nil {
+			return err
+		}
 	}
-	astpatch.EnsureImport(sf, "context")
-	if err := astpatch.AppendInterfaceMethod(iface,
-		fmt.Sprintf("%s(ctx context.Context) error", d.HandlerName)); err != nil {
+	return patchEndpointServiceImpl(d)
+}
+
+// patchEndpointServiceImpl appends the "not implemented" stub to the
+// service struct — same stub shape `g method` produces, same exported
+// receiver the scaffold declares.
+func patchEndpointServiceImpl(d EndpointData) error {
+	implStruct := d.Resource + "Service"
+	implFile, err := astpatch.Parse(d.ServiceImplFile)
+	if err != nil {
 		return err
 	}
-	return writeBackOrRecord(sf,
-		fmt.Sprintf("add %s to %sServiceInterface", d.HandlerName, d.Resource))
+	if _, err := astpatch.FindFunc(implFile, implStruct, d.HandlerName); err == nil {
+		return nil
+	}
+	astpatch.EnsureImport(implFile, "context")
+	astpatch.EnsureImport(implFile, "fmt")
+	stub := buildMethodImplStub(MethodData{
+		MethodName:     d.HandlerName,
+		InterfaceName:  d.Resource + "ServiceInterface",
+		ImplStructName: implStruct,
+		Returns:        []string{"error"},
+	})
+	if err := astpatchAppendFuncDeclFn(implFile, stub); err != nil {
+		return err
+	}
+	return writeBackOrRecord(implFile,
+		fmt.Sprintf("add %s impl stub to %s", d.HandlerName, implStruct))
 }
 
 func endpointDataDefaults(d EndpointData) EndpointData {
@@ -141,7 +180,7 @@ func endpointDataDefaults(d EndpointData) EndpointData {
 	if d.HandlerName == "" {
 		d.HandlerName = deriveHandlerName(d.HTTPMethod, d.Path, d.Resource)
 	}
-	if d.ControllerFile == "" || d.RoutesFile == "" || d.ServiceFile == "" {
+	if d.ControllerFile == "" || d.RoutesFile == "" || d.ServiceFile == "" || d.ServiceImplFile == "" {
 		lo := layout.Detect()
 		if d.ControllerFile == "" {
 			d.ControllerFile = lo.ControllerFile(d.Snake)
@@ -151,6 +190,9 @@ func endpointDataDefaults(d EndpointData) EndpointData {
 		}
 		if d.ServiceFile == "" {
 			d.ServiceFile = lo.SvcIfaceFile(d.Snake)
+		}
+		if d.ServiceImplFile == "" {
+			d.ServiceImplFile = lo.SvcImplFile(d.Snake)
 		}
 	}
 	return d
@@ -228,9 +270,25 @@ func deriveHandlerName(httpMethod, path, resource string) string {
 
 // buildEndpointHandlerStub emits the controller method body. We use the
 // same shape every scaffold-generated handler uses: signature
-// (w http.ResponseWriter, r *http.Request) error, no business logic.
+// (w http.ResponseWriter, r *http.Request) error, consumed by
+// httputil.Handle in the routes file.
+//
+// With --with-service (the default) the handler delegates to the
+// service method this same command declared, so the endpoint is live
+// end-to-end the moment the service stub is filled in. Without a
+// service method there is nothing to call — the body stays a TODO for
+// the developer.
 func buildEndpointHandlerStub(d EndpointData, controllerType string) string {
 	receiver := "c"
+	body := `	// TODO: implement
+	return nil`
+	if d.WithService {
+		body = fmt.Sprintf(`	if err := %s.svc.%s(r.Context()); err != nil {
+		return err
+	}
+	w.WriteHeader(http.StatusNoContent)
+	return nil`, receiver, d.HandlerName)
+	}
 	return fmt.Sprintf(`// %s handles %s %s.
 //
 // @Summary  %s
@@ -239,13 +297,12 @@ func buildEndpointHandlerStub(d EndpointData, controllerType string) string {
 // @Produce  json
 // @Router   %s [%s]
 func (%s *%s) %s(w http.ResponseWriter, r *http.Request) error {
-	// TODO: implement
-	return nil
+%s
 }`,
 		d.HandlerName, d.HTTPMethod, d.Path,
 		d.HandlerName, strings.ToLower(toSnakeCase(d.Resource)),
 		d.Path, strings.ToLower(d.HTTPMethod),
-		receiver, controllerType, d.HandlerName)
+		receiver, controllerType, d.HandlerName, body)
 }
 
 // endpointRouteRegistered tells whether a route registration for the

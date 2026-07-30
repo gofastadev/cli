@@ -21,6 +21,7 @@ func TestFeature_SingleFiles(t *testing.T) {
 		{"RouteIndexFile", lo.RouteIndexFile(), "app/rest/routes/index.routes.go"},
 		{"ServeFile", lo.ServeFile(), "cmd/serve.go"},
 		{"ResolverFile", lo.ResolverFile(), "app/graphql/resolvers/resolver.go"},
+		{"ResolverResourceFile", lo.ResolverResourceFile("order"), "app/graphql/resolvers/order.resolvers.go"},
 		{"RoutesDir", lo.RoutesDir(), filepath.Join("app", "rest", "routes")},
 		{"MigrationsDir", lo.MigrationsDir(), filepath.Join("db", "migrations")},
 	}
@@ -165,6 +166,7 @@ func TestLayered_SingleFiles(t *testing.T) {
 		{"RouteIndexFile", lo.RouteIndexFile(), "app/rest/routes/index.routes.go"},
 		{"ServeFile", lo.ServeFile(), "cmd/serve.go"},
 		{"ResolverFile", lo.ResolverFile(), "app/graphql/resolvers/resolver.go"},
+		{"ResolverResourceFile", lo.ResolverResourceFile("order"), "app/graphql/resolvers/order.resolvers.go"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

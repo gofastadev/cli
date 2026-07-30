@@ -74,7 +74,7 @@ integration: build
 	@# job (cron), task (async queue handler). If one of these breaks
 	@# compilation or lint, scaffold's preflight below catches it.
 	cd /tmp/gofasta-integration-test && \
-		$(CURDIR)/bin/gofasta g scaffold Product name:string price:float description:text active:bool && \
+		$(CURDIR)/bin/gofasta g scaffold Product name:string price:float description:text active:bool owner_id:uuid released_at:time && \
 		$(CURDIR)/bin/gofasta g job cleanup-tokens "0 0 0 * * *" && \
 		$(CURDIR)/bin/gofasta g task send-welcome
 	cd /tmp/gofasta-integration-test && make preflight
@@ -98,6 +98,20 @@ integration: build
 	@# non-GraphQL variant, nothing caught it.
 	rm -rf /tmp/gofasta-integration-test-gql
 	./bin/gofasta new /tmp/gofasta-integration-test-gql --graphql
+	@# Scaffold a resource inside the GraphQL project WITHOUT --graphql:
+	@# gqlgen.yml auto-detection must kick in and produce the schema
+	@# fragment + fully-implemented resolver file. The project's own
+	@# preflight then compiles the resolvers and runs the generated
+	@# tests — a panic("not implemented") stub or a broken binding
+	@# fails right here.
+	cd /tmp/gofasta-integration-test-gql && \
+		$(CURDIR)/bin/gofasta g scaffold Order title:string qty:int
+	@# The resolver file must exist and must not contain gqlgen's stock
+	@# panic stubs.
+	@if ! test -f /tmp/gofasta-integration-test-gql/app/graphql/resolvers/order.resolvers.go; then \
+		echo "integration: order.resolvers.go was not generated"; exit 1; fi
+	@if grep -q "not implemented" /tmp/gofasta-integration-test-gql/app/graphql/resolvers/order.resolvers.go; then \
+		echo "integration: order.resolvers.go contains unimplemented stubs"; exit 1; fi
 	cd /tmp/gofasta-integration-test-gql && make preflight
 
 ## Remove build artifacts

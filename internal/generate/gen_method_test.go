@@ -2,6 +2,8 @@ package generate
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -152,7 +154,41 @@ func TestGenMethod_AppendsToInterfaceAndImpl(t *testing.T) {
 
 	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(impl), "func (s *orderService) Archive(ctx context.Context) error")
+	// Default receiver matches the scaffold's exported `type OrderService`.
+	require.Contains(t, string(impl), "func (s *OrderService) Archive(ctx context.Context) error")
+	require.Contains(t, string(impl), "\"fmt\"")
+	// The patched file must remain valid Go (single-line import gained
+	// a second spec — the astpatch parenthesization regression).
+	_, perr := parser.ParseFile(token.NewFileSet(), "order.service.go", impl, 0)
+	require.NoError(t, perr, "patched impl must parse:\n%s", impl)
+}
+
+// TestGenMethod_ArgTypeImports — uuid/time args must pull their imports
+// into BOTH the interface and impl files.
+func TestGenMethod_ArgTypeImports(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Reschedule",
+		Args: []Field{
+			{Name: "OwnerID", GoType: "uuid.UUID"},
+			{Name: "DueAt", GoType: "time.Time"},
+		},
+	}))
+
+	for _, rel := range []string{
+		filepath.Join("app", "services", "interfaces", "order_service.go"),
+		filepath.Join("app", "services", "order.service.go"),
+	} {
+		body, err := os.ReadFile(filepath.Join(tmp, rel))
+		require.NoError(t, err)
+		require.Contains(t, string(body), "\"github.com/google/uuid\"", rel)
+		require.Contains(t, string(body), "\"time\"", rel)
+		_, perr := parser.ParseFile(token.NewFileSet(), rel, body, 0)
+		require.NoError(t, perr, "%s must parse:\n%s", rel, body)
+	}
 }
 
 func TestGenMethod_IdempotencyCheck(t *testing.T) {
@@ -218,4 +254,71 @@ func TestGenMethod_DryRunRecordsPatchesOnly(t *testing.T) {
 	// Disk must be unchanged in dry-run mode.
 	body, _ := os.ReadFile(filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"))
 	require.NotContains(t, string(body), "DryArchive")
+}
+
+func TestZeroValueFor(t *testing.T) {
+	cases := map[string]string{
+		"*models.Order":   "nil",
+		"[]*models.Order": "nil",
+		"map[string]int":  "nil",
+		"chan int":        "nil",
+		"func(int) error": "nil",
+		"any":             "nil",
+		"error":           "nil",
+		"interface{}":     "nil",
+		"string":          `""`,
+		"bool":            "false",
+		"int":             "0",
+		"int64":           "0",
+		"float64":         "0",
+		"uuid.UUID":       "uuid.Nil",
+		"time.Time":       "time.Time{}",
+		"models.Order":    "models.Order{}",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, zeroValueFor(in), "zeroValueFor(%q)", in)
+	}
+}
+
+// TestGenMethod_ReturnsTuple — --returns "*models.Order, error" shape:
+// tuple signature on the interface, zero-value + fmt.Errorf stub body.
+func TestGenMethod_ReturnsTuple(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Reprice",
+		Returns:    []string{"*models.Order", "error"},
+	}))
+
+	iface, err := os.ReadFile(filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(iface), "Reprice(ctx context.Context) (*models.Order, error)")
+
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(impl), "func (s *OrderService) Reprice(ctx context.Context) (*models.Order, error)")
+	require.Contains(t, string(impl), `return nil, fmt.Errorf("OrderServiceInterface.Reprice: not implemented")`)
+}
+
+// TestGenMethod_ReturnsWithoutError — a non-error result list gets pure
+// zero values and must NOT force the fmt import.
+func TestGenMethod_ReturnsWithoutError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "PendingCount",
+		Returns:    []string{"int"},
+	}))
+
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(impl), "func (s *OrderService) PendingCount(ctx context.Context) int {")
+	require.Contains(t, string(impl), "return 0")
+	require.NotContains(t, string(impl), "\"fmt\"")
+	_, perr := parser.ParseFile(token.NewFileSet(), "order.service.go", impl, 0)
+	require.NoError(t, perr, "patched impl must parse:\n%s", impl)
 }

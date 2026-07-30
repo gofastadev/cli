@@ -35,6 +35,7 @@ import (
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/featurize"
+	"github.com/gofastadev/cli/internal/layout"
 	"github.com/spf13/cobra"
 )
 
@@ -1184,17 +1185,11 @@ func applyCrossCuttingPatches(mod string, resources []featurize.Resource) ([]str
 // imports and selectors must follow the symbols that moved, and
 // gqlgen.yml's autobind/model paths must follow the dtos relocation.
 
-// hasGraphQLArtifacts reports whether the project has GraphQL enabled:
-// a gqlgen.yml or an app/graphql/resolvers/ directory. REST-only
-// projects have neither, and the whole GraphQL phase is skipped.
+// hasGraphQLArtifacts reports whether the project has GraphQL enabled.
+// Thin delegate over the shared layout.HasGraphQLArtifacts so refactor
+// and the generators agree on what "GraphQL project" means.
 func hasGraphQLArtifacts() bool {
-	if _, err := os.Stat("gqlgen.yml"); err == nil {
-		return true
-	}
-	if fi, err := os.Stat("app/graphql/resolvers"); err == nil && fi.IsDir() {
-		return true
-	}
-	return false
+	return layout.HasGraphQLArtifacts()
 }
 
 // discoverGraphQLResolverFiles returns every .go file under

@@ -34,3 +34,27 @@ func TestDetect_ConfigIsAuthoritative(t *testing.T) {
 		})
 	}
 }
+
+// TestHasGraphQLArtifacts pins the project-state signal the generators
+// and refactor share to decide whether GraphQL applies.
+func TestHasGraphQLArtifacts(t *testing.T) {
+	t.Run("gqlgen.yml is sufficient", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"gqlgen.yml": "schema:\n"})
+		assert.True(t, HasGraphQLArtifacts())
+	})
+
+	t.Run("resolvers directory is sufficient", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"app/graphql/resolvers/": ""})
+		assert.True(t, HasGraphQLArtifacts())
+	})
+
+	t.Run("a resolvers FILE is not a directory signal", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"app/graphql/resolvers": "not a dir"})
+		assert.False(t, HasGraphQLArtifacts())
+	})
+
+	t.Run("REST-only project has neither", func(t *testing.T) {
+		inProjectTree(t, map[string]string{"app/models/user.model.go": "package models"})
+		assert.False(t, HasGraphQLArtifacts())
+	})
+}

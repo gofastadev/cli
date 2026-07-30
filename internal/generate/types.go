@@ -1,6 +1,10 @@
 package generate
 
-import "github.com/gofastadev/cli/internal/layout"
+import (
+	"strings"
+
+	"github.com/gofastadev/cli/internal/layout"
+)
 
 // Field represents a single field in a resource (parsed from "name:type" CLI args).
 type Field struct {
@@ -17,6 +21,35 @@ type Field struct {
 	SQLTypeSQLite     string
 	SQLTypeSQLServer  string
 	SQLTypeClickHouse string
+}
+
+// SampleLiteral returns a Go literal suitable as a test-fixture value
+// for this field's type. Used by the generated test templates so
+// fixtures exercise real column values instead of leaving a TODO.
+// uuid/time literals assume the rendering template already imports
+// github.com/google/uuid and time (repotest and svctest both do).
+func (f Field) SampleLiteral() string {
+	switch f.GoType {
+	case "string":
+		// `text` and `string` share GoType; the GORM tag is the only
+		// marker that distinguishes them (see fieldparse.go).
+		if strings.Contains(f.GormType, "type:text") {
+			return `"sample text"`
+		}
+		return `"sample-` + f.SnakeName + `"`
+	case "int":
+		return "1"
+	case "float64":
+		return "1.5"
+	case "bool":
+		return "true"
+	case "uuid.UUID":
+		return "uuid.New()"
+	case "time.Time":
+		return "time.Now().UTC()"
+	default:
+		return `""`
+	}
 }
 
 // ScaffoldData holds all computed names and fields for template rendering.

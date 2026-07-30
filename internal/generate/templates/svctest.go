@@ -69,6 +69,38 @@ func (m *mock{{.Name}}Repository) SoftDeleteIfDeletable(ctx context.Context, id 
 	return args.Get(0).(*models.{{.Name}}), args.Error(1)
 }
 
+// Test{{.Name}}Service_Create covers the input→model field mapping and
+// the infra-wrap branch.
+func Test{{.Name}}Service_Create(t *testing.T) {
+	t.Run("happy path maps every input field onto the model", func(t *testing.T) {
+		repo := &mock{{.Name}}Repository{}
+		svc := services.New{{.Name}}Service(repo)
+		in := services.Create{{.Name}}Input{
+{{- range .Fields}}
+			{{.Name}}: {{.SampleLiteral}},
+{{- end}}
+		}
+		repo.On("Create", mock.Anything, mock.Anything).Return(nil)
+
+		got, err := svc.Create(context.Background(), in)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+{{- range .Fields}}
+		assert.Equal(t, in.{{.Name}}, got.{{.Name}})
+{{- end}}
+	})
+
+	t.Run("infrastructure error is wrapped", func(t *testing.T) {
+		repo := &mock{{.Name}}Repository{}
+		svc := services.New{{.Name}}Service(repo)
+		repo.On("Create", mock.Anything, mock.Anything).Return(errors.New("connection refused"))
+
+		_, err := svc.Create(context.Background(), services.Create{{.Name}}Input{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "{{.Name}}Service.Create")
+	})
+}
+
 // Test{{.Name}}Service_Get covers the three branches of Get:
 // happy path, ErrRecordNotFound → Err{{.Name}}NotFound, infra wrap.
 func Test{{.Name}}Service_Get(t *testing.T) {

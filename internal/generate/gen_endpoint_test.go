@@ -97,12 +97,59 @@ func TestPatchEndpointService_AlreadyHasMethodIsNoop(t *testing.T) {
 		Path: "/orders/{id}/archive", WithService: true,
 	}))
 	// Direct call to patchEndpointService with the same method should
-	// no-op (InterfaceHasMethod returns true).
+	// no-op on both halves (InterfaceHasMethod + FindFunc hit).
 	require.NoError(t, patchEndpointService(EndpointData{
-		Resource:    "Order",
-		HandlerName: "ArchiveOrder",
-		ServiceFile: filepath.Join("app", "services", "interfaces", "order_service.go"),
+		Resource:        "Order",
+		HandlerName:     "ArchiveOrder",
+		ServiceFile:     filepath.Join("app", "services", "interfaces", "order_service.go"),
+		ServiceImplFile: filepath.Join("app", "services", "order.service.go"),
 	}))
+}
+
+// TestGenEndpoint_WithServicePatchesImplAndHandler — the compile-safety
+// contract: --with-service must leave the service satisfying its
+// interface (impl stub added) and the handler delegating to it.
+func TestGenEndpoint_WithServicePatchesImplAndHandler(t *testing.T) {
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenEndpoint(EndpointData{
+		Resource: "Order", HTTPMethod: "POST",
+		Path: "/orders/{id}/archive", WithService: true,
+	}))
+
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(impl), "func (s *OrderService) ArchiveOrder(ctx context.Context) error")
+	require.Contains(t, string(impl), `fmt.Errorf("OrderServiceInterface.ArchiveOrder: not implemented")`)
+
+	ctrl, err := os.ReadFile(filepath.Join(tmp, "app", "rest", "controllers", "order.controller.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(ctrl), "if err := c.svc.ArchiveOrder(r.Context()); err != nil {")
+	require.Contains(t, string(ctrl), "w.WriteHeader(http.StatusNoContent)")
+	require.NotContains(t, string(ctrl), "TODO: implement")
+}
+
+// TestGenEndpoint_NoServiceKeepsTODOHandler — without a service method
+// there is nothing to call; the handler body stays a TODO.
+func TestGenEndpoint_NoServiceKeepsTODOHandler(t *testing.T) {
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenEndpoint(EndpointData{
+		Resource: "Order", HTTPMethod: "POST",
+		Path: "/orders/{id}/refund", WithService: false,
+	}))
+
+	ctrl, err := os.ReadFile(filepath.Join(tmp, "app", "rest", "controllers", "order.controller.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(ctrl), "TODO: implement")
+	require.NotContains(t, string(ctrl), "c.svc.RefundOrder")
+
+	// And the service files stay untouched.
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.NotContains(t, string(impl), "RefundOrder")
 }
 
 func TestDeriveHandlerName_EdgeCases(t *testing.T) {

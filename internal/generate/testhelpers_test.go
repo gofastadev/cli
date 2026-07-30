@@ -102,6 +102,14 @@ type OrderServiceInterface interface {
 	List(ctx context.Context) error
 }
 `)
+	mustWriteFile(t, filepath.Join(tmp, "app", "services", "order.service.go"), `package services
+
+import "context"
+
+type OrderService struct{}
+
+func (s *OrderService) List(ctx context.Context) error { return nil }
+`)
 	return tmp
 }
 
@@ -166,13 +174,16 @@ type OrderServiceInterface interface {
 
 	implDir := filepath.Join(tmp, "app", "services")
 	require.NoError(t, os.MkdirAll(implDir, 0o755))
+	// Mirrors the real scaffold shape: exported struct (templates/svc.go
+	// declares `type <Name>Service`), single-line import so the astpatch
+	// parenthesization path is exercised when GenMethod adds "fmt".
 	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.service.go"), []byte(`package services
 
 import "context"
 
-type orderService struct{}
+type OrderService struct{}
 
-func (s *orderService) Create(ctx context.Context, name string) error {
+func (s *OrderService) Create(ctx context.Context, name string) error {
 	return nil
 }
 `), 0o644))
@@ -264,14 +275,15 @@ type OrderRepositoryInterface interface {
 
 	implDir := filepath.Join(tmp, "app", "repositories")
 	require.NoError(t, os.MkdirAll(implDir, 0o755))
+	// Exported struct name mirrors templates/repo.go's `type <Name>Repository`.
 	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.repository.go"),
 		[]byte(`package repositories
 
 import "context"
 
-type orderRepository struct{}
+type OrderRepository struct{}
 
-func (r *orderRepository) Create(ctx context.Context, name string) error {
+func (r *OrderRepository) Create(ctx context.Context, name string) error {
 	return nil
 }
 `), 0o644))

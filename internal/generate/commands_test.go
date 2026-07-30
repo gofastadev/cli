@@ -1,6 +1,7 @@
 package generate
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +17,38 @@ import (
 func TestMethodCmd_RunE_HappyPath(t *testing.T) {
 	tmp := setupScaffoldedResource(t)
 	chdirTest(t, tmp)
+	fakeExecOK(t) // AutoVerify shells `go build ./...`
 	methodDryRun = false
 	require.NoError(t, methodCmd.RunE(methodCmd, []string{"Order", "Archive"}))
+}
+
+func TestMethodCmd_RunE_VerifyFailure(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	orig := execCommand
+	execCommand = fakeExec(1)
+	t.Cleanup(func() { execCommand = orig })
+	methodDryRun = false
+	err := methodCmd.RunE(methodCmd, []string{"Order", "BrokenBuild"})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodeGoBuildFailed), ce.Code)
+}
+
+func TestMethodCmd_RunE_NoVerifySkipsBuild(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		t.Fatalf("execCommand must not run with --no-verify (got %s %v)", name, args)
+		return nil
+	}
+	t.Cleanup(func() { execCommand = orig })
+	methodDryRun = false
+	methodNoVerify = true
+	t.Cleanup(func() { methodNoVerify = false })
+	require.NoError(t, methodCmd.RunE(methodCmd, []string{"Order", "SkippedVerify"}))
 }
 
 func TestMethodCmd_RunE_DryRun(t *testing.T) {
@@ -65,6 +96,7 @@ func TestFieldCmd_RunE_DryRunError(t *testing.T) {
 func TestEndpointCmd_RunE_HappyPath(t *testing.T) {
 	tmp := setupEndpointResource(t)
 	chdirTest(t, tmp)
+	fakeExecOK(t) // AutoVerify shells `go build ./...`
 	endpointDryRun = false
 	endpointNoService = false
 	require.NoError(t, endpointCmd.RunE(endpointCmd,
@@ -92,6 +124,7 @@ func TestEndpointCmd_RunE_DryRunError(t *testing.T) {
 func TestRepoMethodCmd_RunE_HappyPath(t *testing.T) {
 	tmp := setupScaffoldedRepo(t)
 	chdirTest(t, tmp)
+	fakeExecOK(t) // AutoVerify shells `go build ./...`
 	repoMethodDryRun = false
 	require.NoError(t, repoMethodCmd.RunE(repoMethodCmd, []string{"Order", "Archive"}))
 }
@@ -437,12 +470,33 @@ func TestWireCmd_RunE(t *testing.T) {
 	assert.NoError(t, WireCmd.RunE(WireCmd, nil))
 }
 
-// hasGraphQLFlag branches
-func TestHasGraphQLFlag(t *testing.T) {
-	assert.False(t, hasGraphQLFlag(scaffoldCmd))
-	scaffoldCmd.Flags().Set("gql", "true")
-	assert.True(t, hasGraphQLFlag(scaffoldCmd))
-	scaffoldCmd.Flags().Set("gql", "false")
+// resolveGraphQLFlag precedence: --no-graphql > --graphql/--gql >
+// project-state auto-detection.
+func TestResolveGraphQLFlag(t *testing.T) {
+	setupTempProject(t) // hermetic cwd — no gqlgen.yml unless a case writes one
+
+	t.Run("defaults off in a REST-only project", func(t *testing.T) {
+		assert.False(t, resolveGraphQLFlag(scaffoldCmd))
+	})
+
+	t.Run("gql shorthand forces on", func(t *testing.T) {
+		scaffoldCmd.Flags().Set("gql", "true")
+		defer scaffoldCmd.Flags().Set("gql", "false")
+		assert.True(t, resolveGraphQLFlag(scaffoldCmd))
+	})
+
+	t.Run("auto-detects from gqlgen.yml", func(t *testing.T) {
+		writeTestFile(t, "gqlgen.yml", "schema:\n  - app/graphql/schema/*.gql\n")
+		assert.True(t, resolveGraphQLFlag(scaffoldCmd))
+	})
+
+	t.Run("no-graphql wins over auto-detection and --graphql", func(t *testing.T) {
+		scaffoldCmd.Flags().Set("graphql", "true")
+		scaffoldCmd.Flags().Set("no-graphql", "true")
+		defer scaffoldCmd.Flags().Set("graphql", "false")
+		defer scaffoldCmd.Flags().Set("no-graphql", "false")
+		assert.False(t, resolveGraphQLFlag(scaffoldCmd))
+	})
 }
 
 // hasSwaggerFlag branches
@@ -629,10 +683,9 @@ func TestControllerSteps_GraphQL(t *testing.T) {
 	assert.Contains(t, labels, "GraphQL schema")
 }
 
-func TestHasGraphQLFlag_False(t *testing.T) {
-	cmd := scaffoldCmd
-	// Reset flags for test
-	assert.False(t, hasGraphQLFlag(cmd))
+func TestResolveGraphQLFlag_False(t *testing.T) {
+	setupTempProject(t)
+	assert.False(t, resolveGraphQLFlag(scaffoldCmd))
 }
 
 func TestBuildFromArgs(t *testing.T) {
@@ -752,4 +805,13 @@ func TestPrintPlanResult_JSONMode(t *testing.T) {
 	t.Cleanup(func() { cliout.SetJSONMode(false) })
 	cmd := &cobra.Command{Use: "g"}
 	assert.NotPanics(t, func() { printPlanResult(cmd) })
+}
+
+func TestParseReturnsFlag(t *testing.T) {
+	assert.Nil(t, parseReturnsFlag(""))
+	assert.Nil(t, parseReturnsFlag("  "))
+	assert.Equal(t, []string{"error"}, parseReturnsFlag("error"))
+	assert.Equal(t, []string{"*models.Order", "error"}, parseReturnsFlag("*models.Order, error"))
+	assert.Equal(t, []string{"[]*models.Order", "int64", "error"},
+		parseReturnsFlag(" []*models.Order ,int64,  error "))
 }

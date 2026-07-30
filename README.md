@@ -28,13 +28,14 @@ go install github.com/gofastadev/cli/cmd/gofasta@latest
 
 Compiles the CLI from source using your local Go toolchain and drops the `gofasta` binary into `$GOBIN` (or `$GOPATH/bin` if `GOBIN` is unset — usually `~/go/bin`).
 
-**Option B — Pre-built binary via shell script (no Go toolchain needed):**
+**Option B — Pre-built binary (no Go toolchain needed):**
+
+Download the archive for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) (macOS and Linux, `amd64` and `arm64`), then unpack it onto your `PATH`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
+tar -xzf gofasta_*_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz
+sudo install -m 0755 gofasta /usr/local/bin/gofasta
 ```
-
-Downloads the latest pre-built binary for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) and installs it to `/usr/local/bin/gofasta`. Works on macOS and Linux for both `amd64` and `arm64`. The script detects your shell and prints exact `export PATH=…` instructions if the install directory isn't already on your `$PATH`.
 
 Verify the installation:
 
@@ -460,8 +461,6 @@ cli/
 │   └── skeleton/                  # Embedded project templates
 │       ├── embed.go              # //go:embed all:project
 │       └── project/              # ~78 files that become a new project
-├── dist/                          # CLI distribution files
-│   └── install.sh                # curl-pipe-sh installer
 ├── go.mod
 └── README.md
 ```

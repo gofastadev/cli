@@ -105,6 +105,9 @@ func (layeredLayout) WireFile() string       { return "app/di/wire.go" }
 func (layeredLayout) RouteIndexFile() string { return "app/rest/routes/index.routes.go" }
 func (layeredLayout) ServeFile() string      { return "cmd/serve.go" }
 func (layeredLayout) ResolverFile() string   { return "app/graphql/resolvers/resolver.go" }
+func (layeredLayout) ResolverResourceFile(snake string) string {
+	return "app/graphql/resolvers/" + snake + ".resolvers.go"
+}
 
 func (layeredLayout) InterfaceDirs() []string {
 	return []string{

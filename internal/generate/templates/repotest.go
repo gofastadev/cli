@@ -38,7 +38,9 @@ func setup{{.Name}}RepoTest(t *testing.T) (*gorm.DB, *repositories.{{.Name}}Repo
 func make{{.Name}}(t *testing.T, db *gorm.DB) *models.{{.Name}} {
 	t.Helper()
 	e := &models.{{.Name}}{
-		// TODO: populate any non-null fields specific to {{.Name}}
+{{- range .Fields}}
+		{{.Name}}: {{.SampleLiteral}},
+{{- end}}
 	}
 	require.NoError(t, db.Create(e).Error)
 	return e
@@ -218,7 +220,7 @@ func Test{{.Name}}Repository_SoftDeleteIfDeletable_NotFound(t *testing.T) {
 func Test{{.Name}}Repository_List_PaginationAndSort(t *testing.T) {
 	db, repo := setup{{.Name}}RepoTest(t)
 	for i := 0; i < 4; i++ {
-		require.NoError(t, db.Create(&models.{{.Name}}{}).Error)
+		make{{.Name}}(t, db)
 		time.Sleep(2 * time.Millisecond) // deterministic created_at order
 	}
 

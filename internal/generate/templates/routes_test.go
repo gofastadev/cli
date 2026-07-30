@@ -21,6 +21,9 @@ func TestAllTemplatesAreParseable(t *testing.T) {
 		"Routes":        Routes,
 		"WireProvider":  WireProvider,
 		"GraphQL":       GraphQL,
+		"SvcTest":       SvcTest,
+		"RepoTest":      RepoTest,
+		"Resolvers":     Resolvers,
 	}
 	for name, tmpl := range templates {
 		t.Run(name, func(t *testing.T) {
@@ -43,6 +46,9 @@ func TestAllTemplatesRenderWithSampleData(t *testing.T) {
 		"Routes":        Routes,
 		"WireProvider":  WireProvider,
 		"GraphQL":       GraphQL,
+		"SvcTest":       SvcTest,
+		"RepoTest":      RepoTest,
+		"Resolvers":     Resolvers,
 	}
 	for name, tmpl := range templates {
 		t.Run(name, func(t *testing.T) {

@@ -230,7 +230,11 @@ func scanFileForInterfaces(path string) ([]interfaceTarget, error) {
 			if !ok {
 				continue
 			}
-			out = append(out, buildInterfaceTarget(ts.Name.Name, path, f.Name.Name, fileImports, it))
+			target, err := buildInterfaceTarget(ts.Name.Name, path, f.Name.Name, fileImports, it)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, target)
 		}
 	}
 	return out, nil
@@ -254,9 +258,11 @@ func collectFileImports(f *ast.File) []MockImport {
 }
 
 // buildInterfaceTarget converts one parsed interface type into an
-// interfaceTarget, walking its method list and skipping embedded
-// interfaces (the initial release supports flat interfaces only).
-func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport, it *ast.InterfaceType) interfaceTarget {
+// interfaceTarget, walking its method list. Embedded interfaces are
+// not supported: silently skipping them used to emit a mock that
+// doesn't satisfy the interface — a compile error in the user's tests
+// with no hint where it came from — so we fail loudly instead.
+func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport, it *ast.InterfaceType) (interfaceTarget, error) {
 	t := interfaceTarget{
 		Name:       name,
 		SourcePath: sourcePath,
@@ -266,12 +272,13 @@ func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport
 	for _, fld := range it.Methods.List {
 		ft, ok := fld.Type.(*ast.FuncType)
 		if !ok || len(fld.Names) == 0 {
-			// Embedded interfaces — skip for now.
-			continue
+			return interfaceTarget{}, clierr.Newf(clierr.CodeMockGenFailed,
+				"interface %s embeds another interface — embedded interfaces are not supported yet; flatten the embedded methods into %s or write this mock by hand",
+				name, name)
 		}
 		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft, pkgName))
 	}
-	return t
+	return t, nil
 }
 
 // buildMockMethod produces one MockMethod from a method's FuncType,

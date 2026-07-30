@@ -11,8 +11,6 @@
 package generate
 
 import (
-	"strings"
-
 	"github.com/gofastadev/cli/internal/layout"
 )
 
@@ -28,8 +26,11 @@ func GenRepoMethod(d MethodData) error {
 	if d.InterfaceName == "" {
 		d.InterfaceName = d.Resource + "RepositoryInterface"
 	}
+	// The scaffold declares the exported `type <Name>Repository struct`
+	// (templates/repo.go) — the stub's receiver must match it or the
+	// patched file doesn't compile.
 	if d.ImplStructName == "" {
-		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Repository"
+		d.ImplStructName = d.Resource + "Repository"
 	}
 	if d.InterfaceFile == "" || d.ImplFile == "" {
 		lo := layout.Detect()
