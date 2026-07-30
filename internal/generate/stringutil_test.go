@@ -16,7 +16,7 @@ func TestToPascalCase(t *testing.T) {
 		{"product-name", "ProductName"},
 		{"", ""},
 		{"already", "Already"},
-		{"UPPER", "UPPER"},
+		{"UPPER", "Upper"},
 		{"a", "A"},
 		{"multi_word_name", "MultiWordName"},
 		{"kebab-case-name", "KebabCaseName"},
@@ -57,7 +57,7 @@ func TestToSnakeCase(t *testing.T) {
 		{"product", "product"},
 		{"", ""},
 		{"A", "a"},
-		{"ABTest", "a_b_test"},
+		{"ABTest", "ab_test"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {

@@ -156,7 +156,7 @@ func TestDeriveHandlerName_EdgeCases(t *testing.T) {
 	cases := []struct {
 		method, path, want string
 	}{
-		{"POST", "/orders", "OrdersOrder"},  // single-segment POST → action = "orders"
+		{"POST", "/orders", "CreateOrder"},  // single-segment POST → method fallback per the doc contract
 		{"GET", "/orders", "ListOrder"},     // collection GET
 		{"GET", "/orders/{id}", "GetOrder"}, // item GET
 		{"PUT", "/orders/{id}", "UpdateOrder"},

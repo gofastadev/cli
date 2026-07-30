@@ -47,3 +47,26 @@ func TestGenEmailTemplate_SkipsExisting(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "original", readTestFile(t, "templates/emails/product.html"))
 }
+
+// TestGenEmailTemplate_DryRunRecordsAndSkipsDisk — the generator goes
+// through the planner chokepoint: in dry-run mode it records the create
+// and writes nothing (it previously bypassed the planner entirely).
+func TestGenEmailTemplate_DryRunRecordsAndSkipsDisk(t *testing.T) {
+	setupTempProject(t)
+	resetPlannerState(t)
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	d := sampleScaffoldData()
+	require.NoError(t, GenEmailTemplate(d))
+
+	actions := Plan()
+	require.Len(t, actions, 1)
+	require.Equal(t, "create", actions[0].Kind)
+	require.Equal(t, "templates/emails/product.html", actions[0].Path)
+
+	_, err := os.Stat("templates/emails/product.html")
+	require.True(t, os.IsNotExist(err), "dry-run must not write to disk")
+	_, err = os.Stat("templates/emails")
+	require.True(t, os.IsNotExist(err), "dry-run must not create directories")
+}

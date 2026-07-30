@@ -767,7 +767,9 @@ func TestGeneratorCommands_RejectInvalidResourceName(t *testing.T) {
 					setupTempProject(t)
 					err := cmd.RunE(cmd, []string{bad})
 					require.Error(t, err, "generator %q accepted invalid name %q", name, bad)
-					assert.Contains(t, err.Error(), "invalid name")
+					// Resource commands say "invalid resource name",
+					// the lenient ones say "invalid name".
+					assert.Regexp(t, `invalid (resource )?name`, err.Error())
 				})
 			}
 		})

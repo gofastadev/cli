@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/stretchr/testify/assert"
@@ -841,17 +843,56 @@ func TestIsSignaledExit_NilProcessState(t *testing.T) {
 	assert.False(t, got)
 }
 
-// TestRunAir_SignaledExit — force isSignaledExit to return true so
-// runAir returns nil despite the exec error.
+// TestRunAir_SignaledExit — a child that dies BY a signal (real wait
+// status, no stubbing: GOFASTA_FAKE_SIGNAL makes the helper SIGINT
+// itself) is a clean shutdown, not a pipeline failure. The previous
+// version of this test stubbed isSignaledExit to true while the fake
+// child exited normally — a state combination (Exited() && Signaled())
+// that cannot occur in production, which is exactly how the dead
+// classification branch stayed green.
 func TestRunAir_SignaledExit(t *testing.T) {
 	chdirTemp(t)
-	orig := isSignaledExit
-	isSignaledExit = func(_ *os.ProcessState) bool { return true }
-	t.Cleanup(func() { isSignaledExit = orig })
-	withFakeExec(t, 1) // exec fails with exit 1
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cs := append([]string{"-test.run=TestHelperProcess", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_WANT_HELPER_PROCESS=1",
+			"GOFASTA_FAKE_SIGNAL=1",
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+	stubProbesOK(t)
+
 	_, err := runAir(devFlags{}, func(string) {}, nil)
-	// isSignaledExit returns true → runAir returns nil.
-	assert.NoError(t, err)
+	assert.NoError(t, err, "a signal-terminated Air must be a clean shutdown")
+}
+
+// TestRunAir_UserStoppedExitIsClean — Air trapping SIGINT and calling
+// exit(1) itself (Exited()==true, Signaled()==false) is ALSO clean
+// when the stop was user-initiated: the keyboard 'q' path records
+// userStopped before signaling the child.
+func TestRunAir_UserStoppedExitIsClean(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1) // child exits 1, not signaled
+	keyCh := make(chan keyboardSignal, 1)
+	keyCh <- sigKeyboardQuit
+	_, err := runAir(devFlags{}, func(string) {}, keyCh)
+	assert.NoError(t, err, "user-initiated quit must be a clean shutdown even when Air exits non-zero")
+}
+
+// TestRunAir_RealFailureStillErrors — a child that dies on its own
+// with a non-zero exit (no signal, no user action) keeps erroring,
+// now under the accurate DEV_AIR_EXIT code.
+func TestRunAir_RealFailureStillErrors(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1)
+	_, err := runAir(devFlags{}, func(string) {}, nil)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, string(clierr.CodeDevAirExit), ce.Code)
 }
 
 // TestRunDev_NoTeardownSkips — flags.noTeardown=true → teardown
@@ -1034,7 +1075,7 @@ func TestAirSignalHandler_NilProcess(t *testing.T) {
 	airCmd := exec.Command("true")
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{}, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -1047,7 +1088,7 @@ func TestAirSignalHandler_WithProcess(t *testing.T) {
 	t.Cleanup(func() { _ = airCmd.Wait() })
 	var called string
 	sigChan <- os.Interrupt
-	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{})
+	airSignalHandler(sigChan, nil, make(chan struct{}), airCmd, func(r string) { called = r }, &atomicBool{}, &atomicBool{})
 	assert.Equal(t, "interrupted", called)
 }
 
@@ -1061,7 +1102,7 @@ func TestAirSignalHandler_KeyboardRestart(t *testing.T) {
 	var called string
 	flag := &atomicBool{}
 	keyCh <- sigKeyboardRestart
-	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag, &atomicBool{})
 	assert.Equal(t, "restart", called)
 	assert.True(t, flag.Load())
 }
@@ -1075,7 +1116,7 @@ func TestAirSignalHandler_KeyboardQuit(t *testing.T) {
 	var called string
 	flag := &atomicBool{}
 	keyCh <- sigKeyboardQuit
-	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag)
+	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd, func(r string) { called = r }, flag, &atomicBool{})
 	assert.Equal(t, "quit", called)
 	assert.False(t, flag.Load())
 }
@@ -1164,7 +1205,7 @@ func TestAirSignalHandler_DoneBranch(t *testing.T) {
 
 	called := ""
 	flag := &atomicBool{}
-	airSignalHandler(sigChan, keyCh, done, nil, func(r string) { called = r }, flag)
+	airSignalHandler(sigChan, keyCh, done, nil, func(r string) { called = r }, flag, &atomicBool{})
 	assert.Empty(t, called, "done branch must not call teardown")
 	assert.False(t, flag.Load(), "restart flag must remain false")
 }
@@ -1182,7 +1223,7 @@ func TestAirSignalHandler_KeyboardRestartWithRunningCmd(t *testing.T) {
 	called := ""
 	keyCh <- sigKeyboardRestart
 	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd,
-		func(r string) { called = r }, flag)
+		func(r string) { called = r }, flag, &atomicBool{})
 	assert.Equal(t, "restart", called)
 	assert.True(t, flag.Load())
 }
@@ -1200,7 +1241,7 @@ func TestAirSignalHandler_KeyboardQuitWithRunningCmd(t *testing.T) {
 	called := ""
 	keyCh <- sigKeyboardQuit
 	airSignalHandler(sigChan, keyCh, make(chan struct{}), airCmd,
-		func(r string) { called = r }, flag)
+		func(r string) { called = r }, flag, &atomicBool{})
 	assert.Equal(t, "quit", called)
 	assert.False(t, flag.Load())
 }

@@ -1,81 +1,48 @@
+// stringutil.go — thin delegates over internal/naming, the single
+// source of truth for name derivation. Kept as package-local function
+// names so the many call sites across the generators read naturally.
 package generate
 
-import "strings"
+import (
+	"strings"
 
-func toPascalCase(s string) string {
+	"github.com/gofastadev/cli/internal/naming"
+)
+
+// toPascalCase converts any accepted input shape to initialism-aware
+// PascalCase: "api_key" → "APIKey". Resources and fields share the same
+// conversion so `g rename`, `g relation`, and the scaffold agree on
+// every derived identifier.
+func toPascalCase(s string) string { return naming.Pascal(s) }
+
+// fieldPascalCase is an alias of toPascalCase retained for call sites
+// that read better with the field-specific name.
+func fieldPascalCase(s string) string { return naming.Pascal(s) }
+
+// toSnakeCase is the initialism-aware inverse: "APIKey" → "api_key",
+// "OwnerID" → "owner_id". Also normalizes kebab-case ("send-email" →
+// "send_email") so generated file names are consistent.
+func toSnakeCase(s string) string { return naming.Snake(s) }
+
+// toCamelCase is the PLAIN camel form used for JSON tag names and
+// generated parameter names: "owner_id" → "ownerId" (not "ownerID").
+// Deliberately not initialism-aware — the wire format's key style is
+// lowerCamel with plain word capitalization, and changing it would
+// change every generated API's JSON contract.
+func toCamelCase(s string) string {
 	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
 	for i, p := range parts {
 		if p != "" {
 			parts[i] = strings.ToUpper(p[:1]) + p[1:]
 		}
 	}
-	return strings.Join(parts, "")
+	joined := strings.Join(parts, "")
+	if joined == "" {
+		return joined
+	}
+	return strings.ToLower(joined[:1]) + joined[1:]
 }
 
-// commonInitialisms maps lowercase name segments to their Go-idiomatic
-// all-caps form. Mirrors revive's var-naming list for the segments that
-// plausibly appear in column names — the generated project's own lint
-// (revive) rejects `OwnerId`, so the generator must emit `OwnerID`.
-var commonInitialisms = map[string]string{
-	"api": "API", "cpu": "CPU", "db": "DB", "dns": "DNS", "eof": "EOF",
-	"guid": "GUID", "html": "HTML", "http": "HTTP", "https": "HTTPS",
-	"id": "ID", "ip": "IP", "json": "JSON", "ram": "RAM", "sku": "SKU",
-	"sql": "SQL", "ssh": "SSH", "tcp": "TCP", "tls": "TLS", "ttl": "TTL",
-	"udp": "UDP", "ui": "UI", "uid": "UID", "uri": "URI", "url": "URL",
-	"utf8": "UTF8", "uuid": "UUID", "vm": "VM", "xml": "XML",
-}
-
-// fieldPascalCase is toPascalCase with initialism awareness, used for
-// struct-field names parsed from `name:type` definitions:
-// "owner_id" → "OwnerID", "api_key" → "APIKey", "name" → "Name".
-func fieldPascalCase(s string) string {
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
-	for i, p := range parts {
-		if p == "" {
-			continue
-		}
-		if up, ok := commonInitialisms[strings.ToLower(p)]; ok {
-			parts[i] = up
-			continue
-		}
-		parts[i] = strings.ToUpper(p[:1]) + p[1:]
-	}
-	return strings.Join(parts, "")
-}
-
-func toCamelCase(s string) string {
-	p := toPascalCase(s)
-	if p == "" {
-		return p
-	}
-	return strings.ToLower(p[:1]) + p[1:]
-}
-
-func toSnakeCase(s string) string {
-	var result []byte
-	for i, c := range s {
-		if c >= 'A' && c <= 'Z' {
-			if i > 0 {
-				result = append(result, '_')
-			}
-			result = append(result, byte(c+32))
-		} else {
-			result = append(result, byte(c))
-		}
-	}
-	return string(result)
-}
-
-func pluralize(s string) string {
-	if strings.HasSuffix(s, "s") || strings.HasSuffix(s, "x") || strings.HasSuffix(s, "z") ||
-		strings.HasSuffix(s, "ch") || strings.HasSuffix(s, "sh") {
-		return s + "es"
-	}
-	if strings.HasSuffix(s, "y") && len(s) > 1 {
-		c := s[len(s)-2]
-		if c != 'a' && c != 'e' && c != 'i' && c != 'o' && c != 'u' {
-			return s[:len(s)-1] + "ies"
-		}
-	}
-	return s + "s"
-}
+// pluralize returns the English plural, initialism-aware at the tail
+// (API → APIs, never APIes).
+func pluralize(s string) string { return naming.Pluralize(s) }

@@ -18,6 +18,7 @@ import (
 
 type Resolver struct {
 	UserService svcInterfaces.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 // NewResolver creates a new resolver.

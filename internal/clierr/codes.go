@@ -98,6 +98,7 @@ const (
 	CodeDevServiceUnhealthy  Code = "DEV_SERVICE_UNHEALTHY"
 	CodeDevMigrationFailed   Code = "DEV_MIGRATION_FAILED"
 	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
+	CodeDevAirExit           Code = "DEV_AIR_EXIT"
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
 	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
@@ -398,6 +399,10 @@ var registry = map[Code]meta{
 	},
 	CodeDevAirNotInstalled: {
 		Hint: "Air is not registered on the project toolchain; run `go get github.com/air-verse/air@latest && go mod edit -tool github.com/air-verse/air`",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
+	CodeDevAirExit: {
+		Hint: "the Air hot-reload process exited with an error that wasn't a user-initiated shutdown — scroll up for Air's own output (usually a compile error in the project or a broken air.toml)",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
 	CodeDevPortInUse: {

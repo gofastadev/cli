@@ -174,18 +174,17 @@ func dtoVariants(d FieldData) []string {
 }
 
 // writeFieldMigrations emits the .up.sql and .down.sql files for adding
-// (and dropping) the column.
+// (and dropping) the column. Directory creation happens inside the
+// writeOrRecordCreate chokepoint so `--dry-run` leaves the filesystem
+// untouched (a bare MkdirAll here used to materialize db/migrations/
+// even in preview mode).
 func writeFieldMigrations(d FieldData) error {
-	if err := os.MkdirAll(d.MigrationDir, 0o755); err != nil {
-		return clierr.Wrap(clierr.CodeFileIO, err, "mkdir "+d.MigrationDir)
-	}
 	upName := fmt.Sprintf("%s_add_%s_to_%s.up.sql",
 		d.MigrationVer, d.Field.SnakeName, d.PluralSnake)
 	downName := fmt.Sprintf("%s_add_%s_to_%s.down.sql",
 		d.MigrationVer, d.Field.SnakeName, d.PluralSnake)
 
-	upBody := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s;\n",
-		d.PluralSnake, d.Field.SnakeName, d.Field.SQLType)
+	upBody := fieldAlterAddSQL(d.DBDriver, d.PluralSnake, d.Field)
 	downBody := fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s;\n",
 		d.PluralSnake, d.Field.SnakeName)
 
@@ -193,6 +192,43 @@ func writeFieldMigrations(d FieldData) error {
 		return err
 	}
 	return writeOrRecordCreate(filepath.Join(d.MigrationDir, downName), []byte(downBody))
+}
+
+// fieldAlterAddSQL builds the driver-correct ADD-column statement.
+// Two portability fixes over the previous one-liner:
+//
+//   - T-SQL has no COLUMN keyword in ALTER TABLE ... ADD — the previous
+//     form failed on every SQL Server project.
+//   - A NOT NULL column without a DEFAULT cannot be added to a table
+//     that already has rows (Postgres 23502, SQLite "Cannot add a NOT
+//     NULL column..."). Scalar types gain a zero-value DEFAULT; bool
+//     and time types already carry one from the type table.
+func fieldAlterAddSQL(driver, table string, f Field) string {
+	sqlType := f.SQLType
+	if strings.Contains(sqlType, "NOT NULL") && !strings.Contains(sqlType, "DEFAULT") {
+		if def := sqlZeroDefault(f.GoType); def != "" {
+			sqlType += " DEFAULT " + def
+		}
+	}
+	if driver == "sqlserver" {
+		return fmt.Sprintf("ALTER TABLE %s ADD %s %s;\n", table, f.SnakeName, sqlType)
+	}
+	return fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s;\n", table, f.SnakeName, sqlType)
+}
+
+// sqlZeroDefault maps a Go field type to the SQL literal used as the
+// zero-value DEFAULT for newly added NOT NULL columns.
+func sqlZeroDefault(goType string) string {
+	switch goType {
+	case "string":
+		return "''"
+	case "int", "float64":
+		return "0"
+	case "uuid.UUID":
+		return "'00000000-0000-0000-0000-000000000000'"
+	default:
+		return ""
+	}
 }
 
 // buildModelFieldDecl renders one model struct field line including

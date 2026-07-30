@@ -216,7 +216,7 @@ func TestRunRoutes_FeatureLayoutUsesLayoutRouteFiles(t *testing.T) {
 	// which is what layout.Detect() reads.
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 
 	out := captureStdout(t, func() {
 		require.NoError(t, runRoutes())
@@ -230,7 +230,7 @@ func TestRunRoutes_FeatureLayoutUsesLayoutRouteFiles(t *testing.T) {
 // layout resolves to nothing — an empty listing rather than an error.
 func TestRunRoutes_FeatureLayoutWithNoRouteFiles(t *testing.T) {
 	inRenderedProject(t)
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 	require.NoError(t, os.RemoveAll("app/rest/routes"))
 
 	assert.NoError(t, runRoutes(),

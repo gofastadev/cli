@@ -295,7 +295,8 @@ func repairForceTo(target int, dbURL, migrationsDir string) error {
 		"-database", dbURL,
 		"force", strconv.Itoa(target),
 	)
-	cmd.Stdout = os.Stdout
+	// Child output must not interleave with the JSON envelope on stdout.
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 
 	if runErr := cmd.Run(); runErr != nil {

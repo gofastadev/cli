@@ -12,7 +12,9 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
@@ -614,6 +616,16 @@ func TestHelperProcess(t *testing.T) {
 	// `docker compose config` / `docker compose ps` emit.
 	if stdout := os.Getenv("GOFASTA_FAKE_STDOUT"); stdout != "" {
 		fmt.Fprint(os.Stdout, stdout)
+	}
+	// GOFASTA_FAKE_SIGNAL makes the child die BY a signal instead of
+	// exiting — the only way a parent's ProcessState reports
+	// Signaled()==true. Used to test runAir's signaled-shutdown
+	// classification against real wait-status semantics rather than a
+	// stubbed isSignaledExit.
+	if os.Getenv("GOFASTA_FAKE_SIGNAL") == "1" {
+		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+		// Give the signal time to be delivered; unreachable normally.
+		time.Sleep(5 * time.Second)
 	}
 	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
 	os.Exit(code)

@@ -174,6 +174,12 @@ func patchEndpointServiceImpl(d EndpointData) error {
 }
 
 func endpointDataDefaults(d EndpointData) EndpointData {
+	// Normalize the method ONCE so every downstream consumer — name
+	// derivation, chi verb mapping, swagger annotations, route
+	// idempotency regex — sees the same spelling. Previously `post` and
+	// `POST` took different branches in deriveHandlerName and produced
+	// different handler names.
+	d.HTTPMethod = strings.ToUpper(d.HTTPMethod)
 	if d.Snake == "" && d.Resource != "" {
 		d.Snake = toSnakeCase(d.Resource)
 	}
@@ -240,8 +246,12 @@ func deriveHandlerName(httpMethod, path, resource string) string {
 		if strings.HasPrefix(s, "{") {
 			continue
 		}
-		// First non-placeholder from the end is our verb.
-		if i > 0 || (httpMethod == "POST" && len(segs) == 1) {
+		// First non-placeholder from the end is our verb — but only
+		// when it isn't the resource's own collection segment. A
+		// single-segment path ("POST /orders") has no action segment,
+		// so it falls through to the method-based fallback below
+		// (POST → Create, not the nonsense "OrdersOrder").
+		if i > 0 {
 			action = s
 		}
 		break

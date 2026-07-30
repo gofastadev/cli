@@ -437,3 +437,43 @@ func TestGenField_FieldAlreadyExists(t *testing.T) {
 	require.True(t, errors.As(err, &ce))
 	require.Equal(t, string(clierr.CodeFieldAlreadyExists), ce.Code)
 }
+
+// TestFieldAlterAddSQL_DriverForms — T-SQL has no COLUMN keyword, and
+// NOT NULL columns gain a zero-value DEFAULT so the migration applies
+// to populated tables.
+func TestFieldAlterAddSQL_DriverForms(t *testing.T) {
+	f := Field{SnakeName: "sku", GoType: "string", SQLType: "VARCHAR(255) NOT NULL"}
+
+	pg := fieldAlterAddSQL("postgres", "orders", f)
+	require.Equal(t, "ALTER TABLE orders ADD COLUMN sku VARCHAR(255) NOT NULL DEFAULT '';\n", pg)
+
+	ms := fieldAlterAddSQL("sqlserver", "orders", Field{SnakeName: "qty", GoType: "int", SQLType: "INT NOT NULL"})
+	require.Equal(t, "ALTER TABLE orders ADD qty INT NOT NULL DEFAULT 0;\n", ms)
+
+	// A type that already carries a DEFAULT is left untouched.
+	b := fieldAlterAddSQL("postgres", "orders", Field{SnakeName: "ok", GoType: "bool", SQLType: "BOOLEAN NOT NULL DEFAULT false"})
+	require.Equal(t, "ALTER TABLE orders ADD COLUMN ok BOOLEAN NOT NULL DEFAULT false;\n", b)
+
+	u := fieldAlterAddSQL("mysql", "orders", Field{SnakeName: "owner_id", GoType: "uuid.UUID", SQLType: "CHAR(36) NOT NULL"})
+	require.Contains(t, u, "DEFAULT '00000000-0000-0000-0000-000000000000'")
+}
+
+// TestGenField_DryRunCreatesNoDirectories — the MkdirAll that used to
+// run before the planner chokepoint materialized db/migrations/ even
+// in preview mode.
+func TestGenField_DryRunCreatesNoDirectories(t *testing.T) {
+	tmp := setupModelOnlyProject(t)
+	chdirTest(t, tmp)
+	require.NoError(t, os.RemoveAll(filepath.Join(tmp, "db")))
+	resetPlannerState(t)
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	require.NoError(t, GenField(FieldData{Resource: "Order", Field: Field{
+		Name: "Notes", JSONName: "notes", SnakeName: "notes", GoType: "string",
+		GormType: `gorm:"not null"`, SQLType: "VARCHAR(255) NOT NULL",
+	}}))
+
+	_, err := os.Stat(filepath.Join(tmp, "db", "migrations"))
+	require.True(t, os.IsNotExist(err), "dry-run must not create db/migrations/")
+}

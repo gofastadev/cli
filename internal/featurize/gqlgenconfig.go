@@ -4,7 +4,7 @@
 // The file is comment-heavy and hand-edited by users, so a YAML
 // round-trip (which would drop comments and re-indent) is off the
 // table too. Instead the rewrite is anchored line edits — the same
-// approach refactor's flipLayoutInConfig takes for config.yaml — which
+// approach refactor's setProjectLayout takes for config.yaml — which
 // preserves every byte it doesn't explicitly target and therefore
 // round-trips exactly.
 //

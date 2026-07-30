@@ -181,6 +181,7 @@ import (
 
 type Resolver struct {
 	UserService svcInterfaces.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 // NewResolver creates a new resolver.
@@ -206,6 +207,7 @@ func TestPatchResolver_SkipsIfExists(t *testing.T) {
 
 type Resolver struct {
 	ProductService svcInterfaces.ProductServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 func NewResolver(productService svcInterfaces.ProductServiceInterface) *Resolver {
@@ -225,6 +227,7 @@ func TestPatchResolver_ErrorNoSignature(t *testing.T) {
 	resolverContent := `package resolvers
 
 type Resolver struct {
+	// gofasta:scaffold:resolver-fields
 }
 
 func CreateResolver() *Resolver {
@@ -444,7 +447,7 @@ func TestPatchResolver_NoConstructor(t *testing.T) {
 	path := filepath.Join(dir, "resolver.go")
 	require.NoError(t, os.WriteFile(path, []byte(
 		"package resolvers\n"+
-			"type Resolver struct{}\n\n"+
+			"type Resolver struct {\n\t// gofasta:scaffold:resolver-fields\n}\n\n"+
 			"// NewResolver\n"+
 			"func NewResolver() *Resolver { /* no return &Resolver here */ }\n"), 0o644))
 	err := PatchResolver(sampleScaffoldData())
@@ -757,6 +760,7 @@ import (
 
 type Resolver struct {
 	UserService userpkg.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
 	Validator   *validators.AppValidator
 }
 
@@ -793,6 +797,7 @@ import (
 
 type Resolver struct {
 	OtherService productpkg.OtherServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 // NewResolver creates a new resolver.
@@ -854,4 +859,100 @@ func TestPatchGqlgenAutobind_ReadError(t *testing.T) {
 	// Feature layout but no gqlgen.yml → the read error surfaces (the
 	// step only runs for --graphql scaffolds, where the file exists).
 	require.Error(t, PatchGqlgenAutobind(d))
+}
+
+// TestPatchContainer_PrefixCollisionStillPatches — the regression the
+// identifierPresent helper exists for: a container already wired for
+// SubProduct must NOT satisfy the idempotency check for Product
+// (Contains("SubProductService", "ProductService") is true; the word-
+// boundary match is not).
+func TestPatchContainer_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData() // Name: Product
+
+	writeTestFile(t, "app/di/container.go", `package di
+
+type Container struct {
+	SubProductRepo       repoInterfaces.SubProductRepositoryInterface
+	SubProductService    svcInterfaces.SubProductServiceInterface
+	SubProductController *controllers.SubProductController
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`)
+
+	require.NoError(t, PatchContainer(d))
+	content := readTestFile(t, "app/di/container.go")
+	require.Regexp(t, `\bProductService\s+svcInterfaces\.ProductServiceInterface`, content,
+		"Product must be wired even though SubProduct contains its name")
+}
+
+// TestPatchResolver_PrefixCollisionStillPatches — same contract for the
+// resolver struct.
+func TestPatchResolver_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", `package resolvers
+
+type Resolver struct {
+	SubProductService svcInterfaces.SubProductServiceInterface
+	// gofasta:scaffold:resolver-fields
+	Validator         *validators.AppValidator
+}
+
+// NewResolver creates a new Resolver.
+func NewResolver(subProductService svcInterfaces.SubProductServiceInterface, validator *validators.AppValidator) *Resolver {
+	return &Resolver{SubProductService: subProductService, Validator: validator}
+}
+`)
+
+	require.NoError(t, PatchResolver(d))
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	require.Regexp(t, `\bProductService\s+svcInterfaces\.ProductServiceInterface`, content)
+}
+
+// TestPatchRouteConfig_PrefixCollisionStillPatches and the serve.go
+// twin: an existing SubProductController must not skip Product.
+func TestPatchRouteConfig_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "app/rest/routes/index.routes.go", `package routes
+
+type RouteConfig struct {
+	SubProductController *controllers.SubProductController
+	// gofasta:scaffold:route-config-fields
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) {
+	SubProductRoutes(api, config.SubProductController)
+	// gofasta:scaffold:route-registrations
+}
+`)
+
+	require.NoError(t, PatchRouteConfig(d))
+	content := readTestFile(t, "app/rest/routes/index.routes.go")
+	require.Regexp(t, `\bProductController\s+\*controllers\.ProductController`, content)
+	require.Contains(t, content, "ProductRoutes(api, config.ProductController)")
+}
+
+func TestPatchServeFile_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "cmd/serve.go", `package cmd
+
+func run() {
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		SubProductController: container.SubProductController,
+		// gofasta:scaffold:routeconfig-init
+	})
+}
+`)
+
+	require.NoError(t, PatchServeFile(d))
+	content := readTestFile(t, "cmd/serve.go")
+	require.Regexp(t, `\bProductController:\s+container\.ProductController,`, content)
 }

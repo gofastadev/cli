@@ -36,6 +36,7 @@ import (
 	"github.com/gofastadev/cli/internal/commands/configutil"
 	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/gofastadev/cli/internal/layout"
+	"github.com/gofastadev/cli/internal/naming"
 	"github.com/spf13/cobra"
 )
 
@@ -439,12 +440,6 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	cliout.Step("🧹 Cleaning empty layered directories")
 	pruneEmptyLayeredDirs()
 
-	// Flip config.yaml.
-	cliout.Step("📝 Updating config.yaml")
-	if err := flipLayoutInConfig(); err != nil {
-		return err
-	}
-
 	// Wire goes FIRST so the stale wire_gen.go (which still references
 	// layered imports like app/repositories) is regenerated against the
 	// new layout. Then go build can verify the whole tree.
@@ -468,6 +463,16 @@ func runRefactorFeature(cmd *cobra.Command, args []string) (resultErr error) {
 	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"go build failed after migration — inspect the partial state and `git restore` to revert")
+	}
+
+	// Flip config.yaml LAST, only after wire + gqlgen + build all
+	// succeeded. Flipping before verification meant an aborted
+	// migration left `layout: feature` on a half-migrated tree, so
+	// every subsequent `gofasta g` emitted into feature paths that
+	// didn't exist yet.
+	cliout.Step("📝 Updating config.yaml")
+	if err := setProjectLayout("feature"); err != nil {
+		return err
 	}
 
 	cliout.Success("Migration complete — project is now feature-package layout")
@@ -603,12 +608,6 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 	cliout.Step("🧹 Cleaning empty feature directories")
 	pruneEmptyFeatureDirs(resources)
 
-	// Flip config.yaml: feature → layered.
-	cliout.Step("📝 Updating config.yaml")
-	if err := flipLayoutInConfigReverse(); err != nil {
-		return err
-	}
-
 	cliout.Step("✓ Regenerating Wire")
 	_ = os.Remove("app/di/wire_gen.go")
 	if err := runGoCommandFn("tool", "wire", "./app/di/"); err != nil {
@@ -626,6 +625,12 @@ func runRefactorLayered(cmd *cobra.Command, args []string) (resultErr error) {
 	if err := runGoCommandFn("build", "./..."); err != nil {
 		return clierr.Wrap(clierr.CodeRefactorAborted, err,
 			"go build failed after unwind — inspect the partial state and `git restore` to revert")
+	}
+
+	// Flip config.yaml LAST — same rationale as the forward direction.
+	cliout.Step("📝 Updating config.yaml")
+	if err := setProjectLayout("layered"); err != nil {
+		return err
 	}
 
 	cliout.Success("Unwind complete — project is back to layered layout")
@@ -653,9 +658,18 @@ func resolveLayeredRevertResources(args []string, allFlag bool) ([]featurize.Res
 		return nil, clierr.New(clierr.CodeInvalidName,
 			"specify a resource name (e.g. `gofasta refactor layered User`) or use --all")
 	}
-	pascal := args[0]
-	snake := toSnakeCaseSimple(pascal)
-	plural := pluralizeSimple(pascal)
+	// Normalize the positional arg the same way --all discovery does —
+	// `gofasta refactor layered user` and `... User` must behave
+	// identically. Name is used as a Go identifier prefix throughout the
+	// featurize transforms, so an un-normalized lowercase name silently
+	// missed every rename and left the tree half-migrated.
+	if !naming.IsResourceName(args[0]) {
+		return nil, clierr.Newf(clierr.CodeInvalidName,
+			"invalid resource name %q: must start with a letter and contain only letters, digits, and underscores", args[0])
+	}
+	pascal := naming.Pascal(args[0])
+	snake := naming.Snake(pascal)
+	plural := naming.Pluralize(pascal)
 	if _, err := os.Stat("app/" + snake); err != nil {
 		return nil, clierr.Newf(clierr.CodeRefactorResourceNotFound,
 			"feature %q not found (expected app/%s/)", pascal, snake)
@@ -690,9 +704,9 @@ func discoverFeatureResources() ([]featurize.Resource, error) {
 		if _, err := os.Stat(filepath.Join("app", name, "service.go")); err != nil {
 			continue
 		}
-		pascal := toPascalCaseSimple(name)
+		pascal := naming.Pascal(name)
 		out = append(out, featurize.Resource{
-			Name: pascal, Snake: name, Plural: pluralizeSimple(pascal),
+			Name: pascal, Snake: name, Plural: naming.Pluralize(pascal),
 		})
 	}
 	if len(out) == 0 {
@@ -874,17 +888,60 @@ func pruneEmptyFeatureDirs(resources []featurize.Resource) {
 	}
 }
 
-// flipLayoutInConfigReverse rewrites project.layout: feature →
-// project.layout: layered in config.yaml.
-func flipLayoutInConfigReverse() error {
+// setProjectLayout upserts `project.layout: <value>` in config.yaml.
+// Line-based surgery scoped to the top-level `project:` block — the
+// previous string-Replace approach matched "layout: layered" ANYWHERE
+// in the file (comments, other sections), silently no-oped on quoted
+// values (`layout: "feature"` reads fine through koanf but never
+// matched the raw replace), and its fallback prepended a SECOND
+// `project:` key, making the whole config unparseable.
+func setProjectLayout(value string) error {
 	const path = "config.yaml"
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return clierr.Wrap(clierr.CodeFileIO, err, "reading "+path)
 	}
-	s := string(content)
-	s = strings.Replace(s, "layout: feature", "layout: layered", 1)
-	return os.WriteFile(path, []byte(s), 0o644)
+	lines := strings.Split(string(content), "\n")
+
+	projectIdx := -1
+	for i, line := range lines {
+		if strings.TrimRight(line, " \t") == "project:" {
+			projectIdx = i
+			break
+		}
+	}
+
+	if projectIdx == -1 {
+		// No project block at all — prepend a fresh one. Safe from
+		// duplication because we just proved none exists.
+		updated := "project:\n  layout: " + value + "\n\n" + string(content)
+		return os.WriteFile(path, []byte(updated), 0o644)
+	}
+
+	// Walk the project block (indented lines following `project:`) and
+	// rewrite the layout key wherever it appears, whatever its quoting.
+	for i := projectIdx + 1; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+		indented := strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
+		if trimmed != "" && !indented && !strings.HasPrefix(trimmed, "#") {
+			// Left the project block without finding a layout key —
+			// insert one right after `project:`.
+			lines = append(lines[:projectIdx+1],
+				append([]string{"  layout: " + value}, lines[projectIdx+1:]...)...)
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+		}
+		if strings.HasPrefix(trimmed, "layout:") {
+			indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
+			lines[i] = indent + "layout: " + value
+			return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
+		}
+	}
+
+	// project: was the last block and had no layout key.
+	lines = append(lines[:projectIdx+1],
+		append([]string{"  layout: " + value}, lines[projectIdx+1:]...)...)
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0o644)
 }
 
 // requireLayeredProject errors out if the project isn't currently in
@@ -930,9 +987,15 @@ func resolveRefactorResources(args []string, allFlag bool) ([]featurize.Resource
 		return nil, clierr.New(clierr.CodeInvalidName,
 			"specify a resource name (e.g. `gofasta refactor feature-package User`) or use --all")
 	}
-	pascal := args[0]
-	snake := toSnakeCaseSimple(pascal)
-	plural := pluralizeSimple(pascal)
+	// Normalize + validate like resolveLayeredRevertResources — the
+	// featurize transforms use Name as a Go identifier prefix.
+	if !naming.IsResourceName(args[0]) {
+		return nil, clierr.Newf(clierr.CodeInvalidName,
+			"invalid resource name %q: must start with a letter and contain only letters, digits, and underscores", args[0])
+	}
+	pascal := naming.Pascal(args[0])
+	snake := naming.Snake(pascal)
+	plural := naming.Pluralize(pascal)
 	// Verify the layered model file exists for this resource.
 	modelPath := fmt.Sprintf("app/models/%s.model.go", snake)
 	if _, err := os.Stat(modelPath); err != nil {
@@ -968,8 +1031,8 @@ func discoverResourcesFromModels() ([]featurize.Resource, error) {
 			continue
 		}
 		snake := strings.TrimSuffix(e.Name(), ".model.go")
-		pascal := toPascalCaseSimple(snake)
-		plural := pluralizeSimple(pascal)
+		pascal := naming.Pascal(snake)
+		plural := naming.Pluralize(pascal)
 		out = append(out, featurize.Resource{Name: pascal, Snake: snake, Plural: plural})
 	}
 	if len(out) == 0 {
@@ -1358,27 +1421,6 @@ func regenerateGqlgen() error {
 	return nil
 }
 
-// flipLayoutInConfig rewrites `project: layout: layered` (or adds it
-// if missing) to `project: layout: feature` in config.yaml.
-func flipLayoutInConfig() error {
-	const path = "config.yaml"
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return clierr.Wrap(clierr.CodeFileIO, err, "reading "+path)
-	}
-	s := string(content)
-	switch {
-	case strings.Contains(s, "layout: layered"):
-		s = strings.Replace(s, "layout: layered", "layout: feature", 1)
-	case strings.Contains(s, "layout: feature"):
-		// already correct
-	default:
-		// No project block — prepend one.
-		s = "project:\n  layout: feature\n\n" + s
-	}
-	return os.WriteFile(path, []byte(s), 0o644)
-}
-
 // runGoCommand invokes `go <args>` in the current working directory,
 // streaming output to stdout/stderr.
 // runGoCommandFn is the seam the refactor orchestrators call instead of
@@ -1390,7 +1432,8 @@ var runGoCommandFn = runGoCommand
 
 func runGoCommand(args ...string) error {
 	cmd := exec.Command("go", args...)
-	cmd.Stdout = os.Stdout
+	// go tool wire / go build output must not pollute the --json stream.
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -1409,65 +1452,4 @@ func readModulePath() (string, error) {
 		}
 	}
 	return "", clierr.New(clierr.CodeNotGofastaProject, "go.mod has no module directive")
-}
-
-// toSnakeCaseSimple is a minimal PascalCase → snake_case for the
-// refactor command's resource-name resolution. Mirrors the convention
-// the scaffold uses: word boundaries on capital letters.
-func toSnakeCaseSimple(s string) string {
-	var b strings.Builder
-	for i, r := range s {
-		if i > 0 && r >= 'A' && r <= 'Z' {
-			b.WriteByte('_')
-		}
-		if r >= 'A' && r <= 'Z' {
-			r += 'a' - 'A'
-		}
-		b.WriteRune(r)
-	}
-	return b.String()
-}
-
-// toPascalCaseSimple converts snake_case (or dash-case) → PascalCase.
-// Mirrors internal/generate/stringutil.go's toPascalCase — it splits on
-// BOTH '_' and '-' so `gofasta refactor` and `gofasta g scaffold`
-// produce identical PascalCase for dash-containing names. Kept as a
-// local copy rather than a shared package to avoid a cross-package
-// dependency for two tiny helpers.
-func toPascalCaseSimple(s string) string {
-	// FieldsFunc never returns empty strings, so every part has a first byte.
-	parts := strings.FieldsFunc(s, func(r rune) bool { return r == '_' || r == '-' })
-	var b strings.Builder
-	for _, p := range parts {
-		first := p[0]
-		if first >= 'a' && first <= 'z' {
-			first -= 'a' - 'A'
-		}
-		b.WriteByte(first)
-		b.WriteString(p[1:])
-	}
-	return b.String()
-}
-
-// pluralizeSimple appends "s" to a PascalCase name. Sufficient for
-// most English plurals the scaffold targets; complex rules (woman →
-// women) aren't supported and aren't needed for the refactor flow.
-func pluralizeSimple(s string) string {
-	switch {
-	case strings.HasSuffix(s, "y") && len(s) > 1 && !isVowel(rune(s[len(s)-2])):
-		return s[:len(s)-1] + "ies"
-	case strings.HasSuffix(s, "s"), strings.HasSuffix(s, "x"), strings.HasSuffix(s, "z"),
-		strings.HasSuffix(s, "ch"), strings.HasSuffix(s, "sh"):
-		return s + "es"
-	default:
-		return s + "s"
-	}
-}
-
-func isVowel(r rune) bool {
-	switch r {
-	case 'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U':
-		return true
-	}
-	return false
 }

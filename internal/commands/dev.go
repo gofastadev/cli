@@ -259,12 +259,14 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// `--keep-volumes=false` upgrades the teardown from `stop` (preserve
 	// containers + volumes) to `down -v` (destroy both). The default keeps
 	// volumes so the next `gofasta dev` reuses the primed database.
-	var teardownDone bool
+	// teardownDone is atomic because runTeardown is invoked from both
+	// the pipeline's deferred cleanup and the signal-handler goroutine.
+	var teardownDone atomicBool
 	runTeardown := func(reason string) {
-		if teardownDone || flags.noTeardown {
+		if teardownDone.Load() || flags.noTeardown {
 			return
 		}
-		teardownDone = true
+		teardownDone.Store(true)
 		if plan.orchestrate && len(plan.services.selected) > 0 {
 			var err error
 			var mode string
@@ -466,7 +468,7 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 // up`'s own (unused) stdin handling.
 func runInDockerForeground(teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
 	cmd := execCommand("docker", "compose", "up", appServiceName)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	// cmd.Stdin intentionally left nil — see function doc.
 
@@ -720,7 +722,7 @@ func runMigrationsWithCount() (int, error) {
 // binary with the `seed` subcommand.
 func runSeedDelegation() error {
 	cmd := execCommand("go", "run", "./app/main", "seed")
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -776,7 +778,7 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	}
 
 	airCmd := execCommand("go", args...)
-	airCmd.Stdout = os.Stdout
+	airCmd.Stdout = cliout.Out()
 	airCmd.Stderr = os.Stderr
 	// Deliberately do NOT pipe os.Stdin to Air. The keyboard listener
 	// in dev_keyboard.go owns stdin (in raw mode) for r/q/h shortcuts,
@@ -822,16 +824,26 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	handlerDone := make(chan struct{})
 
 	// restartFlag is set by the signal-handler goroutine when the
-	// caller pressed R. Read by the post-Run block to decide whether
-	// to return restart=true and let the outer loop re-run the
-	// pipeline.
-	var restartFlag atomicBool
+	// caller pressed R; userStopped is set on EVERY user-initiated stop
+	// (Ctrl+C, q, R). Read by the post-Wait block to classify Air's
+	// non-zero exit.
+	var restartFlag, userStopped atomicBool
+
+	// Start BEFORE spawning the handler so airCmd.Process is populated
+	// when the handler can first observe it — spawning the handler
+	// earlier raced its airCmd.Process reads against Start's write
+	// (visible with a fast Ctrl+C or a pre-buffered keypress). A Start
+	// failure is the genuine "air isn't runnable" case.
+	if err := airCmd.Start(); err != nil {
+		return false, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+			"failed to start air")
+	}
 	go func() {
 		defer close(handlerDone)
-		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
+		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag, &userStopped)
 	}()
 
-	err := airCmd.Run()
+	err := airCmd.Wait()
 	// Air has exited. Either a signal was received (handler is mid-
 	// teardown) or Air died naturally (handler is blocked in select).
 	// Close `done` so a still-blocked handler can exit cleanly via its
@@ -841,15 +853,19 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	close(done)
 	<-handlerDone
 	restart := restartFlag.Load()
-	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
-	// exit as a successful shutdown rather than a pipeline failure.
-	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
-		if isSignaledExit(airCmd.ProcessState) {
-			return restart, nil
-		}
+	// A non-zero exit after an intentional stop is a clean shutdown,
+	// not a failure. Two signals identify it: the handler recorded a
+	// user-initiated stop (Ctrl+C / q / R — covers Air trapping SIGINT
+	// and calling exit(1) itself), or the process died BY a signal.
+	// Note the previous guard required Exited() && Signaled(), which
+	// are mutually exclusive on Unix — the clean-exit branch was
+	// unreachable and every Ctrl+C exited non-zero with a bogus
+	// DEV_AIR_NOT_INSTALLED error.
+	if err != nil && (userStopped.Load() || isSignaledExit(airCmd.ProcessState)) {
+		return restart, nil
 	}
 	if err != nil {
-		return restart, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+		return restart, clierr.Wrap(clierr.CodeDevAirExit, err,
 			"air exited with error")
 	}
 	return restart, nil
@@ -889,6 +905,7 @@ func airSignalHandler(
 	airCmd *exec.Cmd,
 	teardown func(string),
 	restartFlag *atomicBool,
+	userStopped *atomicBool,
 ) {
 	select {
 	case <-done:
@@ -898,11 +915,13 @@ func airSignalHandler(
 		// OS signal channel.
 		return
 	case <-sigChan:
+		userStopped.Store(true)
 		if airCmd.Process != nil {
 			_ = airCmd.Process.Signal(os.Interrupt)
 		}
 		teardown("interrupted")
 	case sig := <-keySignals:
+		userStopped.Store(true)
 		if sig == sigKeyboardRestart {
 			restartFlag.Store(true)
 			if airCmd.Process != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/cliout"
@@ -28,7 +29,24 @@ func GeneratorMarkers() map[string][]string {
 		"app/di/wire.go":                  {wireProvidersMarker},
 		"app/rest/routes/index.routes.go": {routeConfigFieldsMarker, routeRegistrationsMarker},
 		"cmd/serve.go":                    {routeConfigInitMarker},
+		// Only present in GraphQL projects; the preflight checker skips
+		// files that don't exist.
+		"app/graphql/resolvers/resolver.go": {resolverFieldsMarker},
 	}
+}
+
+// identifierPresent reports whether ident occurs as a COMPLETE
+// identifier (or dotted reference) in src. The patchers use it for
+// idempotency instead of strings.Contains, whose substring semantics
+// false-skipped a new resource whose name is contained in an existing
+// one — after scaffolding SubOrder, Contains(s, "OrderService") is true
+// and a subsequent `g scaffold Order` silently skipped every wiring
+// patch while PatchWireFile still added the provider set, breaking
+// `go tool wire`. Word boundaries make "OrderService" match only
+// itself, never "SubOrderService" or "OrderServiceV2".
+func identifierPresent(src, ident string) bool {
+	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(ident) + `\b`)
+	return re.MatchString(src)
 }
 
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
@@ -43,7 +61,7 @@ func PatchContainer(d ScaffoldData) error {
 	}
 	s := string(content)
 
-	if strings.Contains(s, d.Name+"Service ") {
+	if identifierPresent(s, d.Name+"Service") {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -124,7 +142,7 @@ func PatchWireFile(d ScaffoldData) error {
 		providerRef = fmt.Sprintf("providers.%sSet", d.Name)
 	}
 
-	if strings.Contains(s, providerRef) {
+	if identifierPresent(s, providerRef) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -138,6 +156,11 @@ func PatchWireFile(d ScaffoldData) error {
 		describePatch("add "+providerRef+" to wire.Build"),
 		[]byte(s))
 }
+
+// resolverFieldsMarker pins the line `gofasta g scaffold` inserts new
+// service fields above in the Resolver struct. Keep in sync with
+// resolver.go.tmpl.
+const resolverFieldsMarker = "// gofasta:scaffold:resolver-fields"
 
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
 // The service-interface qualifier depends on the project layout — in
@@ -153,7 +176,7 @@ func PatchResolver(d ScaffoldData) error {
 	s := string(content)
 
 	fieldName := d.Name + "Service"
-	if strings.Contains(s, fieldName) {
+	if identifierPresent(s, fieldName) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -175,9 +198,15 @@ func PatchResolver(d ScaffoldData) error {
 	}
 	ifaceType := fmt.Sprintf("%s.%sServiceInterface", qualifier, d.Name)
 
-	// Add field to Resolver struct
+	// Add field to Resolver struct, anchored on the scaffold marker —
+	// the previous anchor ("}\n\n// NewResolver") depended on the doc
+	// comment's exact first word and blank-line shape, which one
+	// hand-edit silently broke.
+	if !strings.Contains(s, resolverFieldsMarker) {
+		return fmt.Errorf("%s is missing the %q marker — the scaffold template is out of sync with the patcher; restore the marker comment to enable code generation", path, resolverFieldsMarker)
+	}
 	fieldLine := fmt.Sprintf("\t%s %s\n", fieldName, ifaceType)
-	s = strings.Replace(s, "}\n\n// NewResolver", fieldLine+"}\n\n// NewResolver", 1)
+	s = strings.Replace(s, "\t"+resolverFieldsMarker, fieldLine+"\t"+resolverFieldsMarker, 1)
 
 	// Update NewResolver signature
 	paramName := d.LowerName + "Service"
@@ -241,7 +270,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 	s := string(content)
 
 	controllerField := d.Name + "Controller"
-	if strings.Contains(s, controllerField) {
+	if identifierPresent(s, controllerField) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -308,7 +337,7 @@ func PatchServeFile(d ScaffoldData) error {
 	s := string(content)
 
 	controllerField := d.Name + "Controller"
-	if strings.Contains(s, controllerField) {
+	if identifierPresent(s, controllerField) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}

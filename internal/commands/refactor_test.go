@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gofastadev/cli/internal/featurize"
+	"github.com/gofastadev/cli/internal/naming"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -202,12 +203,14 @@ func TestRunRefactorLayered_RejectsLayeredProject(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "not in feature-package layout")
 }
 
-func TestToPascalCaseSimple_SplitsUnderscoreAndDash(t *testing.T) {
-	// Mirrors internal/generate/stringutil.go's toPascalCase so
-	// `gofasta refactor` and `gofasta g scaffold` agree on names.
-	assert.Equal(t, "OrderItem", toPascalCaseSimple("order_item"))
-	assert.Equal(t, "OrderItem", toPascalCaseSimple("order-item"))
-	assert.Equal(t, "ApiKeyToken", toPascalCaseSimple("api-key_token"))
+func TestRefactorNaming_SharesGeneratorConventions(t *testing.T) {
+	// The refactor command now derives names through internal/naming —
+	// the same package the generators use — so `gofasta refactor` and
+	// `gofasta g scaffold` agree on every derived identifier, including
+	// initialisms (APIKey, not ApiKey).
+	assert.Equal(t, "OrderItem", naming.Pascal("order_item"))
+	assert.Equal(t, "OrderItem", naming.Pascal("order-item"))
+	assert.Equal(t, "APIKeyToken", naming.Pascal("api-key_token"))
 }
 
 // TestMigrateResource_MovesEveryMappedFile is the core of the forward
@@ -538,7 +541,7 @@ func TestPruneEmptyFeatureDirs_RemovesOnlyEmptyDirectories(t *testing.T) {
 func TestFlipLayoutInConfig_WritesTheFeatureValue(t *testing.T) {
 	inRenderedProject(t)
 
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 
 	cfg := readFixtureFile(t, "config.yaml")
 	assert.Contains(t, cfg, "layout: feature")
@@ -549,8 +552,8 @@ func TestFlipLayoutInConfig_WritesTheFeatureValue(t *testing.T) {
 func TestFlipLayoutInConfigReverse_WritesTheLayeredValue(t *testing.T) {
 	inRenderedProject(t)
 
-	require.NoError(t, flipLayoutInConfig())
-	require.NoError(t, flipLayoutInConfigReverse())
+	require.NoError(t, setProjectLayout("feature"))
+	require.NoError(t, setProjectLayout("layered"))
 
 	cfg := readFixtureFile(t, "config.yaml")
 	assert.Contains(t, cfg, "layout: layered")
@@ -652,53 +655,6 @@ func TestRelocatePasswordGenerator_NeedsTheFeatureDirToExist(t *testing.T) {
 	_, err := relocatePasswordGenerator(fixtureModulePath, []featurize.Resource{userResourceFixture()})
 	require.Error(t, err, "without migrateResource having created app/user/, the write fails")
 	assert.Contains(t, err.Error(), "writing app/user/password_generator.go")
-}
-
-func TestToSnakeCaseSimple(t *testing.T) {
-	cases := map[string]string{
-		"User":          "user",
-		"PurchaseOrder": "purchase_order",
-		"HTTPServer":    "h_t_t_p_server",
-		"already_snake": "already_snake",
-		"A":             "a",
-		"":              "",
-	}
-	for in, want := range cases {
-		t.Run(in, func(t *testing.T) {
-			assert.Equal(t, want, toSnakeCaseSimple(in))
-		})
-	}
-}
-
-// TestPluralizeSimple covers each arm of the pluralization switch. The plural
-// lands in generated type names (ListUsersFilter), so a wrong form produces
-// code that does not match what the generators emit.
-func TestPluralizeSimple(t *testing.T) {
-	cases := map[string]string{
-		"User":     "Users",
-		"Category": "Categories", // consonant + y
-		"Day":      "Days",       // vowel + y — not "Daies"
-		"Address":  "Addresses",  // s
-		"Box":      "Boxes",      // x
-		"Buzz":     "Buzzes",     // z
-		"Batch":    "Batches",    // ch
-		"Dish":     "Dishes",     // sh
-		"Y":        "Ys",         // too short for the y rule
-	}
-	for in, want := range cases {
-		t.Run(in, func(t *testing.T) {
-			assert.Equal(t, want, pluralizeSimple(in))
-		})
-	}
-}
-
-func TestIsVowel(t *testing.T) {
-	for _, r := range []rune{'a', 'e', 'i', 'o', 'u', 'A', 'E', 'I', 'O', 'U'} {
-		assert.True(t, isVowel(r), "%c must be a vowel", r)
-	}
-	for _, r := range []rune{'b', 'y', 'Z', '1', '_'} {
-		assert.False(t, isVowel(r), "%c must not be a vowel", r)
-	}
 }
 
 func TestReadModulePath(t *testing.T) {
@@ -902,7 +858,7 @@ func TestRequireLayeredProject(t *testing.T) {
 	inRenderedProject(t)
 	assert.NoError(t, requireLayeredProject(), "a freshly scaffolded layered project is eligible")
 
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 	err := requireLayeredProject()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already feature-package")
@@ -924,7 +880,7 @@ func TestRequireFeatureProject(t *testing.T) {
 	require.Error(t, err, "a layered project has nothing to unwind")
 	assert.Contains(t, err.Error(), "not in feature-package layout")
 
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 	assert.NoError(t, requireFeatureProject())
 }
 
@@ -1261,14 +1217,14 @@ func TestFlipLayoutInConfig_ReadFailureIsReported(t *testing.T) {
 	inRenderedProject(t)
 	require.NoError(t, os.Remove("config.yaml"))
 
-	require.Error(t, flipLayoutInConfig())
+	require.Error(t, setProjectLayout("feature"))
 }
 
 func TestFlipLayoutInConfigReverse_ReadFailureIsReported(t *testing.T) {
 	inRenderedProject(t)
 	require.NoError(t, os.Remove("config.yaml"))
 
-	require.Error(t, flipLayoutInConfigReverse())
+	require.Error(t, setProjectLayout("layered"))
 }
 
 func TestMigrateResource_RemoveFailureIsReported(t *testing.T) {
@@ -1405,7 +1361,7 @@ func TestRunRefactorStatus_FeatureProjectTextOutput(t *testing.T) {
 	inRenderedProject(t)
 	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
 	require.NoError(t, err)
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 
 	out := captureStdout(t, func() {
 		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
@@ -1432,7 +1388,7 @@ func TestRunRefactorStatus_LayeredByFilesystemSignal(t *testing.T) {
 func TestRunRefactorFeature_IneligibleProjectStops(t *testing.T) {
 	inRenderedProject(t)
 	setRefactorFlagsWithAll(t, false, false)
-	require.NoError(t, flipLayoutInConfig()) // already feature
+	require.NoError(t, setProjectLayout("feature")) // already feature
 
 	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
 	require.Error(t, err)
@@ -1631,9 +1587,9 @@ func TestApplyCrossCuttingPatchesReverse_TransformFailureIsReported(t *testing.T
 // key is already set to the target value.
 func TestFlipLayoutInConfig_AlreadyFeatureIsIdempotent(t *testing.T) {
 	inRenderedProject(t)
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 	assert.Contains(t, readFixtureFile(t, "config.yaml"), "layout: feature")
 }
 
@@ -1644,35 +1600,51 @@ func TestFlipLayoutInConfig_NoLayoutKeyAppendsOne(t *testing.T) {
 	inRenderedProject(t)
 	require.NoError(t, os.WriteFile("config.yaml", []byte("server:\n  port: \"8080\"\n"), 0o644))
 
-	require.NoError(t, flipLayoutInConfig())
+	require.NoError(t, setProjectLayout("feature"))
 	assert.Contains(t, readFixtureFile(t, "config.yaml"), "feature")
 }
 
-// TestFlipLayoutInConfigReverse_NoLayoutKeyIsANoOp documents an asymmetry
-// between the two directions.
-//
-// Forward PREPENDS a project block when config.yaml has no layout key, because
-// a project scaffolded before the key existed still needs flagging. Reverse is
-// a plain replace and leaves such a file untouched — which is correct in
-// context, since reverse only ever runs on a project that went forward and
-// therefore already carries the key.
-func TestFlipLayoutInConfigReverse_NoLayoutKeyIsANoOp(t *testing.T) {
+// TestSetProjectLayout_UpsertsInBothDirections — the flip used to be
+// asymmetric (forward prepended a block, reverse silently no-oped),
+// which left config.yaml claiming the WRONG layout after a reverse
+// migration on a file missing the key. setProjectLayout upserts in
+// both directions so the on-disk key always matches the tree.
+func TestSetProjectLayout_UpsertsInBothDirections(t *testing.T) {
 	inRenderedProject(t)
 	const noLayout = "server:\n  port: \"8080\"\n"
 	require.NoError(t, os.WriteFile("config.yaml", []byte(noLayout), 0o644))
 
-	require.NoError(t, flipLayoutInConfigReverse())
-	assert.Equal(t, noLayout, readFixtureFile(t, "config.yaml"),
-		"with no layout key there is nothing to flip back")
+	require.NoError(t, setProjectLayout("layered"))
+	got := readFixtureFile(t, "config.yaml")
+	assert.Contains(t, got, "project:")
+	assert.Contains(t, got, "layout: layered")
+	assert.Equal(t, 1, strings.Count(got, "project:"),
+		"upsert must never create a duplicate project block")
+}
+
+// TestSetProjectLayout_QuotedValueAndScoping — the old string-Replace
+// missed quoted values entirely and matched `layout:` lines outside
+// the project block.
+func TestSetProjectLayout_QuotedValueAndScoping(t *testing.T) {
+	inRenderedProject(t)
+	const in = "project:\n  layout: \"feature\"\n\nother:\n  layout: keep-me\n"
+	require.NoError(t, os.WriteFile("config.yaml", []byte(in), 0o644))
+
+	require.NoError(t, setProjectLayout("layered"))
+	got := readFixtureFile(t, "config.yaml")
+	assert.Contains(t, got, "layout: layered")
+	assert.NotContains(t, got, `"feature"`)
+	assert.Contains(t, got, "layout: keep-me", "layout keys outside the project block must be untouched")
+	assert.Equal(t, 1, strings.Count(got, "project:"))
 }
 
 // TestToPascalCaseSimple_SkipsEmptySegments covers the empty-part guard, which
 // a name with doubled or trailing separators produces.
-func TestToPascalCaseSimple_SkipsEmptySegments(t *testing.T) {
-	assert.Equal(t, "PurchaseOrder", toPascalCaseSimple("purchase__order"))
-	assert.Equal(t, "PurchaseOrder", toPascalCaseSimple("purchase-order-"))
-	assert.Equal(t, "PurchaseOrder", toPascalCaseSimple("-purchase_order"))
-	assert.Empty(t, toPascalCaseSimple("___"))
+func TestRefactorNaming_SkipsEmptySegments(t *testing.T) {
+	assert.Equal(t, "PurchaseOrder", naming.Pascal("purchase__order"))
+	assert.Equal(t, "PurchaseOrder", naming.Pascal("purchase-order-"))
+	assert.Equal(t, "PurchaseOrder", naming.Pascal("-purchase_order"))
+	assert.Empty(t, naming.Pascal("___"))
 }
 
 // TestPruneEmptyFeatureDirs_MissingDirIsSkipped covers the read-error arm: a

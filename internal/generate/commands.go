@@ -354,6 +354,18 @@ func buildFromArgs(args []string) (ScaffoldData, error) {
 	return BuildScaffoldData(args[0], ParseFields(args[1:])), nil
 }
 
+// buildResourceFromArgs is buildFromArgs with the STRICT resource-name
+// rule on args[0] (no hyphens — resources become Go package names and
+// feature-layout import aliases). The scaffold-family commands use
+// this; g job / g task / g email-template keep buildFromArgs so
+// kebab-case names like `cleanup-tokens` stay valid.
+func buildResourceFromArgs(args []string) (ScaffoldData, error) {
+	if err := validateResourceName(args[0]); err != nil {
+		return ScaffoldData{}, err
+	}
+	return buildFromArgs(args)
+}
+
 // resolveGraphQLFlag decides whether the GraphQL steps run for this
 // invocation. Precedence:
 //
@@ -431,7 +443,7 @@ logic in app/services/<name>.service.go.`,
 	Aliases: []string{"s"},
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -519,7 +531,7 @@ when you only need persistence scaffolding and will write the repository
 and service layers by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -540,7 +552,7 @@ Use this when you want persistence + data-access but plan to write your
 own service or expose the repository directly.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -567,7 +579,7 @@ file, resolver/autobind patches; --graphql (or --gql) forces them on
 elsewhere, --no-graphql skips them.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -594,7 +606,7 @@ facing shortcut and this subcommand is the explicit "up through controller"
 step.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -614,7 +626,7 @@ no model, repository, or wiring — useful when you already have a model
 and want DTOs for an RPC or GraphQL-only resource.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -649,7 +661,7 @@ patch index.routes.go — use this when you want custom wiring or you have
 already written the controller by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -666,7 +678,7 @@ GraphQL schema and want the resolver to gain access to a newly-created
 service without running full scaffolding.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -756,7 +768,7 @@ it, then regenerate the Wire injector. Useful when integrating hand-
 written services that were not created through ` + "`gofasta g service`" + `.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d, err := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
 		if err != nil {
 			return err
 		}
@@ -856,6 +868,12 @@ Examples:
   gofasta g method Order Reprice amount:float --returns "*models.Order, error"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[1]); err != nil {
+			return err
+		}
 		resource := args[0]
 		method := args[1]
 		fields := ParseFields(args[2:])
@@ -908,6 +926,9 @@ Examples:
   gofasta g field Order deleted_at:time --no-create --no-update`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
 		resource := args[0]
 		fieldArg := args[1]
 		fields := ParseFields([]string{fieldArg})
@@ -959,6 +980,9 @@ Use --dry-run to preview every patch (same {create, patch} JSON shape
 as g scaffold --dry-run).`,
 	Args: cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
 		d := EndpointData{
 			Resource:    toPascalCase(args[0]),
 			HTTPMethod:  args[1],
@@ -1005,6 +1029,12 @@ Examples:
   gofasta g repo-method Order ArchiveByID --dry-run`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[1]); err != nil {
+			return err
+		}
 		d := MethodData{
 			Resource:   toPascalCase(args[0]),
 			MethodName: toPascalCase(args[1]),
@@ -1094,6 +1124,12 @@ Examples:
   gofasta g relation User has_one Profile --dry-run`,
 	Args: cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[2]); err != nil {
+			return err
+		}
 		d := RelationData{
 			Resource: toPascalCase(args[0]),
 			Kind:     RelationKind(args[1]),
@@ -1139,6 +1175,12 @@ Examples:
   gofasta g rename Order.Total AmountCents --json   # plan as JSON for agents`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(strings.SplitN(args[0], ".", 2)[0]); err != nil {
+			return err
+		}
+		if err := validateIdentifier(args[1]); err != nil {
+			return err
+		}
 		// First arg has the form "Resource.OldField".
 		parts := strings.SplitN(args[0], ".", 2)
 		if len(parts) != 2 {
@@ -1196,6 +1238,11 @@ Get with nil-safe assertion). Pointer / slice / map / qualified-type
 returns are guarded so a nil return value doesn't panic the test.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if err := validateResourceName(args[0]); err != nil {
+				return err
+			}
+		}
 		name := ""
 		if len(args) == 1 {
 			name = args[0]
