@@ -168,6 +168,45 @@ func Test{{.Name}}Controller_Update_VersionConflict_412(t *testing.T) {
 	assert.Equal(t, http.StatusPreconditionFailed, rec.Code)
 }
 
+// Test{{.Name}}Controller_Update_NotFound_404 — a PUT on a missing id
+// maps to 404, not the 412 version-conflict path (retrying a 412 on a
+// row that doesn't exist could never succeed).
+func Test{{.Name}}Controller_Update_NotFound_404(t *testing.T) {
+	svc := &mock{{.Name}}Service{}
+	id := uuid.New()
+	svc.On("Update", mock.Anything, id, 7, mock.Anything).
+		Return(nil, services.Err{{.Name}}NotFound)
+
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", ` + "`" + `"7"` + "`" + `)
+	rec := httptest.NewRecorder()
+	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+// Test{{.Name}}Controller_Update_IfMatchStar_MatchAny — RFC 7232:
+// ` + "`" + `If-Match: *` + "`" + ` matches any current representation. The controller
+// passes the -1 match-any sentinel to the service instead of rejecting
+// the header as non-numeric.
+func Test{{.Name}}Controller_Update_IfMatchStar_MatchAny(t *testing.T) {
+	svc := &mock{{.Name}}Service{}
+	id := uuid.New()
+	updated := valid{{.Name}}Model(id)
+	updated.RecordVersion = 4
+	svc.On("Update", mock.Anything, id, -1, mock.Anything).Return(updated, nil)
+
+	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
+	req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/{{.PluralSnake}}/%s", id), bytes.NewBufferString("{}"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
+	rec := httptest.NewRecorder()
+	mount{{.Name}}Controller(c).ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, ` + "`" + `"4"` + "`" + `, rec.Header().Get("ETag"))
+}
+
 // Test{{.Name}}Controller_Update_MissingIfMatch_428 — RFC 6585 428
 // Precondition Required when If-Match is absent. Service must not be
 // called (asserted to guard against future regressions that skip the
@@ -273,7 +312,11 @@ func Test{{.Name}}Controller_Create_ServiceError_500(t *testing.T) {
 		Return(nil, errors.New("db down"))
 
 	c := controllers.New{{.Name}}ControllerInstance(svc, noop{{.Name}}Validator{})
-	body := ` + "`" + `{}` + "`" + `
+	// Every Create field is populated: the DTO's required fields are
+	// pointers, and ToCreateInput dereferences them after validation —
+	// an empty body would panic here because the noop validator lets
+	// it through.
+	body := ` + "`" + `{ {{- range $i, $f := .Fields}}{{if $i}}, {{end}}"{{$f.JSONName}}": {{$f.SampleJSON}}{{- end}} }` + "`" + `
 	req := httptest.NewRequest(http.MethodPost, "/{{.PluralSnake}}", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

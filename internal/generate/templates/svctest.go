@@ -7,7 +7,9 @@ package templates
 //
 // Covers:
 //   - Get: happy path, gorm.ErrRecordNotFound → ErrXNotFound, infra wrap
-//   - Update: happy path, RowsAffected==0 → ErrXVersionConflict, infra wrap
+//   - Update: happy path, RowsAffected==0 → ErrXVersionConflict,
+//     ErrRecordNotFound → ErrXNotFound, If-Match:* (-1) pass-through,
+//     infra wrap
 //   - Archive: happy path, RowsAffected==0 → ErrXNotDeletable, infra wrap
 var SvcTest = `package services_test
 
@@ -162,6 +164,29 @@ func Test{{.Name}}Service_Update(t *testing.T) {
 		_, err := svc.Update(context.Background(), id, 3, patch)
 		require.Error(t, err)
 		assert.True(t, errors.Is(err, services.Err{{.Name}}VersionConflict))
+	})
+
+	t.Run("gorm.ErrRecordNotFound becomes Err{{.Name}}NotFound", func(t *testing.T) {
+		repo := &mock{{.Name}}Repository{}
+		svc := services.New{{.Name}}Service(repo)
+		repo.On("UpdateIfVersionMatches", mock.Anything, id, 3, mock.Anything).
+			Return(nil, int64(0), gorm.ErrRecordNotFound)
+		_, err := svc.Update(context.Background(), id, 3, patch)
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, services.Err{{.Name}}NotFound),
+			"missing row must map to 404, not the 412 version-conflict path")
+	})
+
+	t.Run("If-Match:* sentinel (-1) is passed through to the repo", func(t *testing.T) {
+		repo := &mock{{.Name}}Repository{}
+		svc := services.New{{.Name}}Service(repo)
+		expected := &models.{{.Name}}{}
+		expected.ID = id
+		repo.On("UpdateIfVersionMatches", mock.Anything, id, -1, mock.Anything).
+			Return(expected, int64(1), nil)
+		got, err := svc.Update(context.Background(), id, -1, patch)
+		require.NoError(t, err)
+		assert.Same(t, expected, got)
 	})
 
 	t.Run("infrastructure error is wrapped", func(t *testing.T) {

@@ -52,6 +52,33 @@ func (f Field) SampleLiteral() string {
 	}
 }
 
+// SampleJSON returns a JSON literal for this field's type, used by the
+// generated controller tests to build request bodies that survive the
+// pointer-field Create DTO (a `{}` body would leave every required
+// pointer nil, and ToCreateInput's deref would panic once the noop
+// validator lets it through).
+func (f Field) SampleJSON() string {
+	switch f.GoType {
+	case "string":
+		if strings.Contains(f.GormType, "type:text") {
+			return `"sample text"`
+		}
+		return `"sample-` + f.SnakeName + `"`
+	case "int":
+		return "1"
+	case "float64":
+		return "1.5"
+	case "bool":
+		return "true"
+	case "uuid.UUID":
+		return `"123e4567-e89b-12d3-a456-426614174000"`
+	case "time.Time":
+		return `"2026-01-15T12:00:00Z"`
+	default:
+		return `""`
+	}
+}
+
 // ScaffoldData holds all computed names and fields for template rendering.
 type ScaffoldData struct {
 	Name              string // PascalCase: Product

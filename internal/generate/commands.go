@@ -350,8 +350,34 @@ func buildFromArgs(args []string) (ScaffoldData, error) {
 		if err := validateIdentifier(parts[0]); err != nil {
 			return ScaffoldData{}, err
 		}
+		if err := validateFieldNotBaseColumn(parts[0]); err != nil {
+			return ScaffoldData{}, err
+		}
 	}
 	return BuildScaffoldData(args[0], ParseFields(args[1:])), nil
+}
+
+// baseModelColumns are the columns models.BaseModelImpl already
+// provides (see gofasta/pkg/models/base.go — that struct is the source
+// of truth; keep this list in step with it). A user field with one of
+// these names would duplicate a struct field via the embedded base
+// (compile error or silent shadowing), duplicate the column in the
+// CREATE TABLE, and duplicate the JSON/GraphQL field.
+var baseModelColumns = map[string]bool{
+	"id": true, "created_at": true, "updated_at": true, "deleted_at": true,
+	"record_version": true, "is_active": true, "is_deletable": true,
+}
+
+// validateFieldNotBaseColumn rejects field names that collide with the
+// embedded BaseModelImpl columns, comparing on the snake form — the
+// column identity ("createdAt", "created_at", and "CreatedAt" all
+// collide with created_at).
+func validateFieldNotBaseColumn(name string) error {
+	if baseModelColumns[toSnakeCase(name)] {
+		return clierr.Newf(clierr.CodeInvalidName,
+			"field %q collides with a column models.BaseModelImpl already provides (id, created_at, updated_at, deleted_at, record_version, is_active, is_deletable) — every resource carries these automatically", name)
+	}
+	return nil
 }
 
 // buildResourceFromArgs is buildFromArgs with the STRICT resource-name
@@ -449,6 +475,10 @@ logic in app/services/<name>.service.go.`,
 		}
 		d.IncludeController = true
 		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
 
 		// Dry-run mode swaps disk writes for in-memory plan recording.
@@ -584,6 +614,10 @@ elsewhere, --no-graphql skips them.`,
 			return err
 		}
 		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		return RunSteps(d, serviceSteps(d))
 	},
 }
@@ -612,6 +646,10 @@ step.`,
 		}
 		d.IncludeController = true
 		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
 		return RunSteps(d, controllerSteps(d))
 	},
@@ -935,6 +973,9 @@ Examples:
 		if len(fields) == 0 {
 			return clierr.New(clierr.CodeInvalidName,
 				"field argument must be name:type (e.g. archive_reason:string)")
+		}
+		if err := validateFieldNotBaseColumn(fields[0].SnakeName); err != nil {
+			return err
 		}
 		d := FieldData{
 			Resource:     toPascalCase(resource),

@@ -14,6 +14,7 @@ var Repo = `package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -47,13 +48,25 @@ func New{{.Name}}Repository(db *gorm.DB) *{{.Name}}Repository {
 	return &{{.Name}}Repository{db: db}
 }
 
+// {{.LowerName}}FilterColumns is the allowlist of database columns list
+// queries may filter by. Filter keys are interpolated into WHERE
+// clauses as column names, so this list — like the sort allowlist in
+// the service — is the trust boundary between request input and SQL;
+// anything not listed is silently ignored.
+var {{.LowerName}}FilterColumns = []string{
+{{- range .Fields}}
+	"{{.SnakeName}}",
+{{- end}}
+	"is_active",
+}
+
 // List returns the paginated, sorted, filtered set of {{.PluralLower}}
 // rows along with the total count for pagination.
 func (r *{{.Name}}Repository) List(ctx context.Context, filter map[string]any, page, limit int, sort string) ([]*models.{{.Name}}, int64, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.List")
 	defer span.End()
 
-	query, err := utils.BuildQueryForAnyModel(r.db.WithContext(ctx).Model(&models.{{.Name}}{}), filter)
+	query, err := utils.BuildQueryForAnyModel(r.db.WithContext(ctx).Model(&models.{{.Name}}{}), filter, {{.LowerName}}FilterColumns)
 	if err != nil {
 		span.RecordError(err)
 		return nil, 0, fmt.Errorf("{{.Name}}Repository.List: build query: %w", err)
@@ -88,8 +101,9 @@ func (r *{{.Name}}Repository) FindByID(ctx context.Context, id uuid.UUID) (*mode
 	return &entity, nil
 }
 
-// Create inserts a new {{.Name}} row. The framework's BeforeCreate hook
-// on BaseModelImpl populates the UUID, timestamps, and defaults.
+// Create inserts a new {{.Name}} row. The gofasta library's
+// BeforeCreate hook on BaseModelImpl populates the UUID, timestamps,
+// and defaults.
 func (r *{{.Name}}Repository) Create(ctx context.Context, entity *models.{{.Name}}) error {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.Create")
 	defer span.End()
@@ -101,16 +115,26 @@ func (r *{{.Name}}Repository) Create(ctx context.Context, entity *models.{{.Name
 	return nil
 }
 
-// UpdateIfVersionMatches runs the optimistic-locking UPDATE with the
-// version check in the WHERE clause, then refetches the row in the
-// same transaction. The returned entity is exactly what THIS update
-// wrote — no other writer can race in between (snapshot semantics).
+// UpdateIfVersionMatches runs the optimistic-locking update as
+// read-classify-write inside one transaction (same shape as
+// SoftDeleteIfDeletable), then refetches the row so the returned
+// entity is exactly what THIS update wrote (snapshot semantics).
 //
-// On version mismatch the UPDATE writes 0 rows; we return (nil, 0,
-// nil) so the service can map to Err{{.Name}}VersionConflict.
+// Outcomes the service maps to distinct domain sentinels:
 //
-// On success record_version is bumped in the same UPDATE so the next
-// reader sees the new version.
+//   - row missing OR already soft-deleted → gorm.ErrRecordNotFound
+//     (→ Err{{.Name}}NotFound → 404). Previously the version predicate
+//     alone made "missing" indistinguishable from "stale", so PUT on a
+//     nonexistent id returned 412 with retry advice that could never
+//     succeed.
+//   - version mismatch → (nil, 0, nil) (→ Err{{.Name}}VersionConflict
+//     → 412).
+//   - success → updated entity, record_version bumped in the same
+//     UPDATE.
+//
+// expectedVersion == -1 means "match any version" — the RFC 7232
+// ` + "`If-Match: *`" + ` precondition. The version predicate is skipped but
+// the increment still applies (from the just-read current version).
 func (r *{{.Name}}Repository) UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.{{.Name}}, int64, error) {
 	ctx, span := otel.Tracer({{.LowerName}}RepositoryTracerName).Start(ctx, "{{.Name}}Repository.UpdateIfVersionMatches")
 	defer span.End()
@@ -118,9 +142,20 @@ func (r *{{.Name}}Repository) UpdateIfVersionMatches(ctx context.Context, id uui
 	var entity models.{{.Name}}
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		fields["record_version"] = expectedVersion + 1
+		var current models.{{.Name}}
+		if err := tx.Where("id = ?", id).First(&current).Error; err != nil {
+			return err // ErrRecordNotFound → caller maps to 404
+		}
+		version := expectedVersion
+		if version == -1 { // If-Match: * — accept whatever is current
+			version = current.RecordVersion
+		}
+		fields["record_version"] = version + 1
+		// Keep the version predicate in the UPDATE too: the read above
+		// classifies, the predicate guarantees no writer raced between
+		// the read and the write.
 		res := tx.Model(&models.{{.Name}}{}).
-			Where("id = ? AND record_version = ?", id, expectedVersion).
+			Where("id = ? AND record_version = ?", id, version).
 			Updates(fields)
 		if res.Error != nil {
 			return res.Error
@@ -133,6 +168,9 @@ func (r *{{.Name}}Repository) UpdateIfVersionMatches(ctx context.Context, id uui
 	})
 	if err != nil {
 		span.RecordError(err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, 0, err // unwrapped so the service's errors.Is stays cheap
+		}
 		return nil, 0, fmt.Errorf("{{.Name}}Repository.UpdateIfVersionMatches: %w", err)
 	}
 	if affected == 0 {

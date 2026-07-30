@@ -128,13 +128,18 @@ func (s *UserService) Create(ctx context.Context, in CreateUserInput) (*models.U
 // update wrote (snapshot semantics — no other writer can race in
 // between).
 //
-// Returns ErrUserVersionConflict when the expectedVersion no longer
-// matches the persisted value.
+// Returns ErrUserNotFound when no live row has that id, and
+// ErrUserVersionConflict when the row exists but expectedVersion no
+// longer matches the persisted value. Pass expectedVersion == -1 to
+// skip the version check (the `If-Match: *` match-any precondition).
 func (s *UserService) Update(ctx context.Context, id uuid.UUID, expectedVersion int, patch UpdateUserPatch) (*models.User, error) {
 	ctx, span := otel.Tracer(userServiceTracerName).Start(ctx, "UserService.Update")
 	defer span.End()
 
 	user, affected, err := s.repo.UpdateIfVersionMatches(ctx, id, expectedVersion, patch.AsMap())
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrUserNotFound
+	}
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("UserService.Update: %w", err)

@@ -114,13 +114,18 @@ func (s *{{.Name}}Service) Create(ctx context.Context, in Create{{.Name}}Input) 
 // inside the repo, so the returned entity is exactly what THIS update
 // wrote (snapshot semantics).
 //
-// Returns Err{{.Name}}VersionConflict when expectedVersion no longer
-// matches the persisted value.
+// Returns Err{{.Name}}NotFound when no live row has that id, and
+// Err{{.Name}}VersionConflict when the row exists but expectedVersion
+// no longer matches the persisted value. Pass expectedVersion == -1 to
+// skip the version check (the ` + "`If-Match: *`" + ` match-any precondition).
 func (s *{{.Name}}Service) Update(ctx context.Context, id uuid.UUID, expectedVersion int, patch Update{{.Name}}Patch) (*models.{{.Name}}, error) {
 	ctx, span := otel.Tracer({{.LowerName}}ServiceTracerName).Start(ctx, "{{.Name}}Service.Update")
 	defer span.End()
 
 	entity, affected, err := s.repo.UpdateIfVersionMatches(ctx, id, expectedVersion, patch.AsMap())
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, Err{{.Name}}NotFound
+	}
 	if err != nil {
 		span.RecordError(err)
 		return nil, fmt.Errorf("{{.Name}}Service.Update: %w", err)

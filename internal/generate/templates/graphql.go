@@ -56,9 +56,12 @@ input TArchive{{.Name}}Dto {
   id: ID!
 }
 
+# Create-input fields are nullable in SDL because the bound Go DTO uses
+# pointer fields (present-vs-absent semantics for required validation);
+# the validator enforces presence, mirroring the REST boundary.
 input TCreate{{.Name}}Dto {
 {{- range .Fields}}
-  {{.JSONName}}: {{.GQLType}}!
+  {{.JSONName}}: {{.GQLType}}
 {{- end}}
 }
 

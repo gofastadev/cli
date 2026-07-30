@@ -82,6 +82,13 @@ const (
 	toolVersionSwag        = "v1.16.6"
 	toolVersionHTTPSwagger = "v2.0.2"
 	toolVersionChi         = "v5.3.1"
+	// toolVersionGofasta pins the gofasta library release scaffolds are
+	// generated against — the version this CLI's templates were written
+	// for and its integration suite verified. Previously @latest, which
+	// meant a library release could change behavior under every new
+	// scaffold before the CLI had been tested against it. Bump in
+	// lockstep with library releases, then re-run `make integration`.
+	toolVersionGofasta = "v0.1.10"
 )
 
 // goDirectivePattern extracts the `go` directive from a go.mod file.
@@ -515,13 +522,13 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	// project is usable.
 	cliout.Blank()
 	cliout.Step("📦 Installing gofasta library...")
-	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
+	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@"+toolVersionGofasta); err != nil {
 		// Print the longform hint to the user then return a short,
 		// punctuation-clean error that satisfies ST1005.
 		cliout.Warn("gofasta library install failed. Common causes:")
 		cliout.Plainln("  • sum.golang.org hasn't yet indexed a freshly-published release")
 		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
-		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
+		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@" + toolVersionGofasta + "` inside the")
 		cliout.Plainln("      generated project to retry after the sum DB catches up.")
 		cliout.Plainln("  • your network blocks the Go module proxy or github.com.")
 		cliout.Plainln("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")

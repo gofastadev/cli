@@ -194,9 +194,15 @@ func (c *UserController) UpdateUser(w http.ResponseWriter, r *http.Request) erro
 		// (PreconditionRequired) — bubble it up unchanged.
 		return err
 	}
-	expectedVersion, err := strconv.Atoi(ifMatch)
-	if err != nil {
-		return apperrors.NewBadRequest(`If-Match must be a positive integer wrapped in quotes (e.g. "3")`, nil)
+	// RFC 7232: `If-Match: *` matches any current representation —
+	// skip the version precondition (-1 tells the service to accept
+	// whatever version is persisted).
+	expectedVersion := -1
+	if ifMatch != "*" {
+		expectedVersion, err = strconv.Atoi(ifMatch)
+		if err != nil {
+			return apperrors.NewBadRequest(`If-Match must be a positive integer wrapped in quotes (e.g. "3") or *`, nil)
+		}
 	}
 	in, err := httputil.DecodeJSON[dtos.TUpdateUserDto](r)
 	if err != nil {
