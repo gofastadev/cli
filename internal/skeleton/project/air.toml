@@ -23,7 +23,9 @@ tmp_dir = "tmp"
   include_dir = []
   include_ext = ["go", "tpl", "tmpl", "html"]
   include_file = []
-  kill_delay = "0s"
+  # Give the app time to finish in-flight requests and run its graceful
+  # shutdown (server.Shutdown) before Air escalates to SIGKILL.
+  kill_delay = "10s"
   log = "build-errors.log"
   poll = false
   poll_interval = 0
@@ -31,7 +33,9 @@ tmp_dir = "tmp"
   pre_cmd = []
   rerun = false
   rerun_delay = 500
-  send_interrupt = false
+  # SIGINT (not SIGKILL) on rebuild/stop so the app's graceful-shutdown
+  # path runs — matches what Ctrl+C in `gofasta dev` delivers.
+  send_interrupt = true
   stop_on_error = false
 
 [color]

@@ -12,7 +12,7 @@ services:
       - "${PORT:-8080}:8080"
     environment:
       # Container apps must bind to all interfaces so the published port is
-      # reachable from outside. The framework default is loopback (127.0.0.1)
+      # reachable from outside. The gofasta library's default is loopback (127.0.0.1)
       # to keep the macOS firewall quiet during local Air rebuilds; we
       # override it here so production containers actually serve traffic.
       - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
@@ -47,6 +47,21 @@ services:
 {{- end }}
       - {{.ProjectNameUpper}}_LOG_LEVEL=${{"{"}}{{.ProjectNameUpper}}_LOG_LEVEL:-info}
       - {{.ProjectNameUpper}}_LOG_FORMAT=${{"{"}}{{.ProjectNameUpper}}_LOG_FORMAT:-json}
+      # Secrets are NOT baked into the image (config.yaml ships them
+      # empty) — they must arrive via the deploy host's .env. `:?` makes
+      # compose fail fast with a clear message instead of starting an
+      # app that will refuse to serve.
+      - {{.ProjectNameUpper}}_AUTH_JWT_SECRET=${{"{"}}{{.ProjectNameUpper}}_AUTH_JWT_SECRET:?missing — set in the deploy host's .env}
+      - {{.ProjectNameUpper}}_SESSION_SECRET=${{"{"}}{{.ProjectNameUpper}}_SESSION_SECRET:?missing — set in the deploy host's .env}
+      # Sessions ride HTTPS in production — mark the cookie Secure.
+      - {{.ProjectNameUpper}}_SESSION_COOKIE_SECURE=${{"{"}}{{.ProjectNameUpper}}_SESSION_COOKIE_SECURE:-true}
+{{- if .GraphQL}}
+      # GraphQL production posture: no schema browser, no schema
+      # disclosure. config.yaml ships these dev-true; production flips
+      # them off at the environment layer.
+      - {{.ProjectNameUpper}}_GRAPHQL_PLAYGROUND_ENABLED=${{"{"}}{{.ProjectNameUpper}}_GRAPHQL_PLAYGROUND_ENABLED:-false}
+      - {{.ProjectNameUpper}}_GRAPHQL_INTROSPECTION_ENABLED=${{"{"}}{{.ProjectNameUpper}}_GRAPHQL_INTROSPECTION_ENABLED:-false}
+{{- end}}
       - {{.ProjectNameUpper}}_EMAIL_PROVIDER=${{"{"}}{{.ProjectNameUpper}}_EMAIL_PROVIDER:-smtp}
       - {{.ProjectNameUpper}}_EMAIL_FROM_NAME=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_NAME}
       - {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS}

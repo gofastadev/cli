@@ -44,8 +44,6 @@ type ProjectData struct {
 	GraphQL          bool   // true when --graphql flag is passed
 	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
 	Layout           string // "layered" | "feature"
-	JWTSecret        string // per-project random JWT signing secret
-	SessionSecret    string // per-project random session store secret
 }
 
 // scaffoldGoVersion is the Go language version every generated project
@@ -209,7 +207,8 @@ What the command does, in order:
   2. Runs ` + "`go mod init`" + ` with the resolved module path
   3. Renders every template file from the embedded skeleton, replacing
      {{.ModulePath}} / {{.ProjectNameLower}} / {{.ProjectNameUpper}}
-  4. Copies .env from the generated .env.example
+  4. Copies .env from the generated .env.example and injects freshly
+     generated JWT/session secrets (into the gitignored .env only)
   5. Runs ` + "`go get`" + ` for github.com/gofastadev/gofasta and the tool deps
      (Wire, Air, swag — and gqlgen if --graphql is set)
   6. Registers those tools via ` + "`go mod edit -tool`" + ` so ` + "`go tool wire`" + ` works
@@ -337,7 +336,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	}
 
 	if _, err := os.Stat(projectDir); err == nil {
-		return fmt.Errorf("directory %q already exists", projectDir)
+		return clierr.Newf(clierr.CodeProjectDirExists, "directory %q already exists", projectDir)
 	}
 
 	jwtSecret, err := randomSecret()
@@ -363,8 +362,6 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		GraphQL:          includeGraphQL,
 		DBDriver:         driver,
 		Layout:           layoutKind,
-		JWTSecret:        jwtSecret,
-		SessionSecret:    sessionSecret,
 	}
 
 	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
@@ -375,6 +372,21 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
+	// From here on WE created the directory, so a failure must not
+	// strand a half-rendered scaffold: the dir-exists check above would
+	// then block every retry with a directory the user never asked for.
+	// Registered before the chdir defer below (LIFO) so removal runs
+	// after the working directory has moved back out of projectDir.
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
+			cliout.Warn("Could not clean up partial project directory %s/: %v — remove it manually before retrying", projectDir, rmErr)
+			return
+		}
+		cliout.Info("Removed partial project directory %s/ — fix the cause above and re-run `gofasta new %s`", projectDir, projectName)
+	}()
 
 	// Change into the new directory
 	origDir, _ := os.Getwd()
@@ -505,9 +517,21 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		return fmt.Errorf("copying %s foundational migrations: %w", driver, err)
 	}
 
-	// Copy .env from .env.example
+	// Copy .env from .env.example, injecting the generated secrets into
+	// the copy only. The committed .env.example ships the assignments
+	// blank so no signing key ever reaches version control; .env is
+	// gitignored and is where the real values live (compose interpolates
+	// it, and `gofasta dev/serve/seed/migrate` load it before spawning).
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
-		_ = os.WriteFile(".env", envExample, 0o644)
+		envContent := string(envExample)
+		envContent = strings.Replace(envContent,
+			data.ProjectNameUpper+"_AUTH_JWT_SECRET=\n",
+			data.ProjectNameUpper+"_AUTH_JWT_SECRET="+jwtSecret+"\n", 1)
+		envContent = strings.Replace(envContent,
+			data.ProjectNameUpper+"_SESSION_SECRET=\n",
+			data.ProjectNameUpper+"_SESSION_SECRET="+sessionSecret+"\n", 1)
+		// 0600: the file now carries live signing keys.
+		_ = os.WriteFile(".env", []byte(envContent), 0o600)
 		cliout.Path(".env")
 	}
 
@@ -527,13 +551,11 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		// punctuation-clean error that satisfies ST1005.
 		cliout.Warn("gofasta library install failed. Common causes:")
 		cliout.Plainln("  • sum.golang.org hasn't yet indexed a freshly-published release")
-		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
-		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@" + toolVersionGofasta + "` inside the")
-		cliout.Plainln("      generated project to retry after the sum DB catches up.")
+		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`\n", projectName)
 		cliout.Plainln("  • your network blocks the Go module proxy or github.com.")
 		cliout.Plainln("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
 		cliout.Blank()
-		return fmt.Errorf("failed to install github.com/gofastadev/gofasta: %w", err)
+		return clierr.Wrap(clierr.CodeGofastaInstall, err, "failed to install github.com/gofastadev/gofasta")
 	}
 
 	// Install cobra for project commands
@@ -667,6 +689,19 @@ func printGetStarted(projectName string) {
 	for _, ln := range tasks {
 		cliout.Plain("  %-55s %s\n", termcolor.CBold(ln[0]), termcolor.CDim("# "+ln[1]))
 	}
+	cliout.Blank()
+
+	// --- Security posture ---------------------------------------------------
+	cliout.Header("Security — before exposing this API:")
+	cliout.Blank()
+	cliout.Warn("Scaffolded routes ship UNPROTECTED — every endpoint (including")
+	cliout.Warn("user create/update/delete) is publicly callable until you add auth:")
+	cliout.Blank()
+	cliout.Plain("  %-72s %s\n",
+		termcolor.CBold(`gofasta g middleware PUT /users/{id} 'auth.JWTAuth(jwtSvc), auth.RequireRole("admin")'`),
+		termcolor.CDim("# protect a route"))
+	cliout.Plain("  %s\n", termcolor.CDim("  RequireRole reads claims that JWTAuth extracts — always chain both, JWTAuth first."))
+	cliout.Plain("  %s\n", termcolor.CDim("  Auth guide: https://gofasta.dev/docs/guides/authentication"))
 	cliout.Blank()
 
 	// --- Make shortcuts (thin wrappers over the gofasta commands above) ---

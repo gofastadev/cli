@@ -69,11 +69,26 @@ database:
   max_open: 100
   max_life: 1h
 {{- end }}
+  # When the database is unreachable at boot: false (default) refuses to
+  # start — in production a half-alive process hides the outage; a crash
+  # loop makes it visible. true boots on an in-memory SQLite stub with
+  # DB-touching endpoints returning 5xx. `gofasta dev` sets the
+  # {{.ProjectNameUpper}}_DATABASE_DEGRADED_FALLBACK env override for its
+  # child when you pick "Run app without db", so local dev keeps that
+  # workflow either way.
+  degraded_fallback: false
 
 {{- if .GraphQL}}
 graphql:
   playground_route: /graphql-playground
   general_route: /graphql
+  # Dev-friendly defaults, disabled for production via env overrides in
+  # deployments/docker/compose.production.yaml. Introspection and the
+  # playground expose the full schema; the complexity limit caps
+  # adversarial deeply-nested queries.
+  playground_enabled: true
+  introspection_enabled: true
+  complexity_limit: 200
 {{- end}}
 
 log:
@@ -94,17 +109,22 @@ email:
   #   api_key: xkeysib-your-api-key
 
 auth:
-  # Randomly generated per project by `gofasta new`. Override in production
-  # via {{.ProjectNameUpper}}_AUTH_JWT_SECRET. The app refuses to boot if this
-  # is empty or the framework placeholder.
-  jwt_secret: "{{.JWTSecret}}"
+  # Intentionally empty here: config.yaml is committed to version control,
+  # so it must never carry a signing key. The real value lives in .env
+  # (gitignored) as {{.ProjectNameUpper}}_AUTH_JWT_SECRET — `gofasta new`
+  # generated a random one there. The app refuses to boot while this
+  # resolves to empty or a known placeholder.
+  jwt_secret: ""
   access_token_expiry: 15m
   refresh_token_expiry: 168h
   rbac_model: configs/rbac_model.conf
   rbac_policy: configs/rbac_policy.csv
 
 rate_limit:
-  enabled: false
+  # On by default: a public API with no rate limit is one curl loop away
+  # from a resource-exhaustion outage. 100 req/s per client is generous
+  # for development; tune the rate rather than switching this off.
+  enabled: true
   rate: "100-S"           # 100 requests per second
   store: memory           # memory or redis
 
@@ -168,12 +188,22 @@ encryption:
 
 session:
   driver: cookie          # cookie or filesystem
-  # Randomly generated per project by `gofasta new`. Override in production
-  # via {{.ProjectNameUpper}}_SESSION_SECRET. The app refuses to boot if this
-  # is empty or the framework placeholder.
-  secret: "{{.SessionSecret}}"
+  # Intentionally empty here: config.yaml is committed to version control,
+  # so it must never carry a signing key. The real value lives in .env
+  # (gitignored) as {{.ProjectNameUpper}}_SESSION_SECRET — `gofasta new`
+  # generated a random one there. The app refuses to boot while this
+  # resolves to empty or a known placeholder.
+  secret: ""
   session_name: {{.ProjectNameLower}}_session
   # filesystem_path: ./sessions
+  # Session cookie attributes. cookie_secure stays false here so plain-
+  # HTTP local development works; the production compose manifest sets
+  # {{.ProjectNameUpper}}_SESSION_COOKIE_SECURE=true. cookie_same_site
+  # accepts lax|strict|none (none requires cookie_secure: true).
+  cookie_secure: false
+  cookie_http_only: true
+  cookie_same_site: lax
+  cookie_max_age: 2592000  # seconds (30 days)
 
 observability:
   metrics_enabled: true
@@ -193,6 +223,10 @@ deploy:
   port: 22              # SSH port
   path: ""              # remote directory (default: /opt/{{.ProjectNameLower}})
   arch: amd64           # target architecture: amd64 or arm64
-  health_path: /health  # health check endpoint
+  # /health/ready (not /health) so the deploy gate checks REAL readiness:
+  # it verifies DB + cache connectivity and that the live DB driver
+  # matches config (catching a degraded-fallback boot). Plain /health
+  # answers 200 as soon as the process is up, even with a dead database.
+  health_path: /health/ready
   health_timeout: 30    # seconds to wait for health check
   keep_releases: 3      # number of old releases to keep for rollback

@@ -32,7 +32,7 @@ func gqlError(code, message string) *gqlerror.Error {
 	}
 }
 
-// validationGqlError translates the framework's validation result into
+// validationGqlError translates the gofasta library's validation result into
 // a GraphQL error with per-field details under `extensions.fields`.
 func validationGqlError(errs []*dtos.TCommonAPIErrorDto) *gqlerror.Error {
 	fields := make([]map[string]any, 0, len(errs))

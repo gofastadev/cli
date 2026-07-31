@@ -21,7 +21,11 @@ import (
 type MiddlewareData struct {
 	HTTPMethod string // "GET" | "POST" | ...
 	Path       string // chi-style path
-	Middleware string // expression: "auth.RequireRole(\"admin\")" or "middleware.Logger"
+	// Middleware is the literal Go expression spliced into .With(...).
+	// Role checks need the full chain: "auth.JWTAuth(jwtSvc),
+	// auth.RequireRole(\"admin\")" — RequireRole alone 401s every
+	// request because only JWTAuth puts claims into the context.
+	Middleware string
 	RoutesFile string // optional override; default scans every *.routes.go
 	RoutesDir  string // default app/rest/routes
 }
@@ -36,7 +40,7 @@ func GenMiddleware(d MiddlewareData) error {
 	d = middlewareDataDefaults(d)
 	if d.HTTPMethod == "" || d.Path == "" || d.Middleware == "" {
 		return clierr.New(clierr.CodeInvalidName,
-			"<METHOD> <path> <middleware> all required (e.g. POST /orders/{id}/archive auth.RequireRole(\"admin\"))")
+			"<METHOD> <path> <middleware> all required (e.g. POST /orders/{id}/archive 'auth.JWTAuth(jwtSvc), auth.RequireRole(\"admin\")')")
 	}
 
 	// Locate the routes file holding this route.

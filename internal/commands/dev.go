@@ -108,7 +108,7 @@ func init() {
 	f.StringVar(&devFlagValues.envFile, "env-file", ".env",
 		"path to the .env file to load before starting Air")
 	f.StringVar(&devFlagValues.port, "port", "",
-		"override the PORT env var passed to Air / the app binary")
+		"port the app binds (sets <PREFIX>_SERVER_PORT for the app plus PORT for compose port mappings)")
 	f.BoolVar(&devFlagValues.rebuild, "rebuild", false,
 		"force Air to do a rebuild cycle before first serve")
 	f.BoolVar(&devFlagValues.seed, "seed", false,
@@ -189,6 +189,12 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 		emitter.Info(fmt.Sprintf("loaded %d variables from %s", loaded, flags.envFile))
 	}
 	if flags.port != "" {
+		// The framework binds server.port, overridable ONLY via the
+		// project-prefixed env var — a bare PORT never reaches config.
+		// Set both: <PREFIX>_SERVER_PORT is what makes the app actually
+		// bind the requested port; PORT stays for compose interpolation
+		// (host-side port mappings) and the devtools replay helper.
+		_ = os.Setenv(configutil.ProjectEnvPrefix()+"SERVER_PORT", flags.port)
 		_ = os.Setenv("PORT", flags.port)
 	}
 
@@ -801,6 +807,17 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 		airCmd.Env = os.Environ()
 	}
 	airCmd.Env = append(airCmd.Env, appendTag(os.Getenv("GOFLAGS"), "devtools"))
+
+	// Menu option [3] "Run app without db" promises a degraded boot, but
+	// the scaffold's ProvideDB refuses to start without a database by
+	// default (database.degraded_fallback: false — production should
+	// crash-loop, not half-serve). The dev flow opts in explicitly for
+	// the child only, so the developer's choice at the menu and the
+	// app's behavior stay consistent without touching config.yaml.
+	if flags.noDB {
+		airCmd.Env = append(airCmd.Env,
+			configutil.ProjectEnvPrefix()+"DATABASE_DEGRADED_FALLBACK=true")
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

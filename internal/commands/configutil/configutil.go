@@ -3,6 +3,7 @@ package configutil
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 
@@ -61,17 +62,44 @@ func BuildMigrationURL() string {
 		sslmode = "disable"
 	}
 
+	// Credential escaping mirrors the gofasta library's
+	// config.BuildMigrateURL (pkg/config/database.go) — the CLI can't
+	// import the library, so the two implementations must be kept in
+	// lockstep by hand. url.UserPassword percent-escapes user/password,
+	// so a password containing @ : / % or a space survives the URL.
+	// mysql stays Sprintf: golang-migrate strips the scheme and hands
+	// the rest to go-sql-driver's ParseDSN, which allows any password
+	// character (and url.URL would mangle the tcp(host:port) form).
 	switch driver {
 	case "mysql":
 		return fmt.Sprintf("mysql://%s:%s@tcp(%s:%s)/%s", user, password, host, port, name)
 	case "sqlite":
-		return fmt.Sprintf("sqlite3://%s", name)
+		return "sqlite3://" + name
 	case "sqlserver":
-		return fmt.Sprintf("sqlserver://%s:%s@%s:%s?database=%s", user, password, host, port, name)
+		u := url.URL{
+			Scheme:   "sqlserver",
+			User:     url.UserPassword(user, password),
+			Host:     host + ":" + port,
+			RawQuery: "database=" + url.QueryEscape(name),
+		}
+		return u.String()
 	case "clickhouse":
-		return fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s", user, password, host, port, name)
+		u := url.URL{
+			Scheme: "clickhouse",
+			User:   url.UserPassword(user, password),
+			Host:   host + ":" + port,
+			Path:   "/" + name,
+		}
+		return u.String()
 	default:
-		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", user, password, host, port, name, sslmode)
+		u := url.URL{
+			Scheme:   "postgres",
+			User:     url.UserPassword(user, password),
+			Host:     host + ":" + port,
+			Path:     "/" + name,
+			RawQuery: "sslmode=" + url.QueryEscape(sslmode),
+		}
+		return u.String()
 	}
 }
 
@@ -111,8 +139,14 @@ func BuildDatabaseEndpoint() (endpoint string, enabled bool) {
 	return fmt.Sprintf("%s:%s", host, port), true
 }
 
-// GetPort reads the server port from config.yaml or env.
+// GetPort reads the server port the app will actually bind: the
+// project-prefixed override first (the only env var the framework's
+// config loader honors), then bare PORT (compose/devtools convention),
+// then config.yaml, then the scaffold default.
 func GetPort() string {
+	if p := os.Getenv(ProjectEnvPrefix() + "SERVER_PORT"); p != "" {
+		return p
+	}
 	if p := os.Getenv("PORT"); p != "" {
 		return p
 	}

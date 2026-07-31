@@ -1111,14 +1111,22 @@ chi handler chain to wrap it with the given middleware:
 
     r.Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
       →
-    r.With(auth.RequireRole("admin")).Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+    r.With(auth.JWTAuth(jwtService), auth.RequireRole("admin")).Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+
+IMPORTANT — role checks are a two-middleware chain: auth.RequireRole
+reads the JWT claims that auth.JWTAuth extracts into the request
+context. RequireRole WITHOUT JWTAuth in front of it rejects every
+request with 401, valid token or not. Always pass both, in that order.
+JWTAuth needs the *auth.JWTService — thread it into the route file
+(e.g. add a JWTService field to routes.RouteConfig and pass it to the
+per-resource route function).
 
 If the route already has a .With(...) chain, the new middleware is
 appended to the existing list (idempotent — re-running with a middleware
 already in the chain is a no-op).
 
 Examples:
-  gofasta g middleware POST /orders/{id}/archive auth.RequireRole("admin")
+  gofasta g middleware POST /orders/{id}/archive 'auth.JWTAuth(jwtService), auth.RequireRole("admin")'
   gofasta g middleware GET  /orders                middleware.Throttle(20)
   gofasta g middleware POST /orders --dry-run      middleware.Logger`,
 	Args: cobra.ExactArgs(3),

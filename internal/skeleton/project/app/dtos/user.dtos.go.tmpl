@@ -52,7 +52,7 @@ func UserFromModel(m *models.User) *User {
 
 // TUserResponseDto is the success-shape envelope for endpoints that
 // return a single user. Validation failures and other errors flow via
-// HTTP status codes (4xx) carrying the framework's apperrors envelope
+// HTTP status codes (4xx) carrying the gofasta library's apperrors envelope
 // — there is intentionally no `Errors` field here.
 type TUserResponseDto struct {
 	Data *User `json:"data,omitempty"`

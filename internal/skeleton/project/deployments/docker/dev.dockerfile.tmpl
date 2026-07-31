@@ -15,25 +15,30 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Inside a container the app must listen on all interfaces so the
-# published port is reachable from the host. The framework default is
+# published port is reachable from the host. The gofasta library's default is
 # loopback — fine on the host (skips macOS firewall popup during Air
 # rebuilds), wrong inside a container.
 ENV {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
 
 EXPOSE ${PORT:-8080}
 
+# Migration failures STOP the container (no `|| echo` swallow): the
+# migrate CLI exits 0 when there is nothing to apply, so the only
+# nonzero exits are real failures — a dirty version, a bad migration,
+# an unreachable DB — and hiding those boots an app against a schema
+# it doesn't expect.
 CMD ["sh", "-c", "\
     echo '==> Running migrations...' && \
 {{- if eq .DBDriver "sqlite" }}
-    migrate -database \"sqlite3://${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}.db}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"sqlite3://${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}.db}\" -path db/migrations up 2>&1 && \
 {{- else if eq .DBDriver "mysql" }}
-    migrate -database \"mysql://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@tcp(${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT})/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"mysql://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@tcp(${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT})/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 && \
 {{- else if eq .DBDriver "sqlserver" }}
-    migrate -database \"sqlserver://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}?database=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"sqlserver://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}?database=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 && \
 {{- else if eq .DBDriver "clickhouse" }}
-    migrate -database \"clickhouse://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"clickhouse://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}\" -path db/migrations up 2>&1 && \
 {{- else }}
-    migrate -database \"postgres://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}?sslmode=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}\" -path db/migrations up 2>&1 || echo '==> Migrations: nothing to apply' && \
+    migrate -database \"postgres://${{"{"}}{{.ProjectNameUpper}}_DATABASE_USER}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PASSWORD}@${{"{"}}{{.ProjectNameUpper}}_DATABASE_HOST}:${{"{"}}{{.ProjectNameUpper}}_DATABASE_PORT}/${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME}?sslmode=${{"{"}}{{.ProjectNameUpper}}_DATABASE_SSLMODE:-disable}\" -path db/migrations up 2>&1 && \
 {{- end }}
     echo '==> Starting dev server with hot reload...' && \
     echo '    REST:       http://localhost:'${PORT:-8080} && \

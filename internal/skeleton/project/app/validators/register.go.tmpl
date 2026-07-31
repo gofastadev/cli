@@ -41,7 +41,7 @@ func newValidator(db *gorm.DB) (*validator.Validate, ut.Translator, error) {
 		}
 	}
 
-	// COMMON VALIDATORS (from framework)
+	// COMMON VALIDATORS (from the gofasta library)
 	validators.RegisterCommonValidators(validate, db)
 
 	// USER VALIDATIONS

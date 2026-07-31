@@ -687,8 +687,6 @@ func renderSkeleton(t *testing.T, dir string, graphQL bool) {
 		GraphQL:          graphQL,
 		DBDriver:         "postgres",
 		Layout:           layout,
-		JWTSecret:        "fixture-jwt-secret",
-		SessionSecret:    "fixture-session-secret",
 	}
 
 	require.NoError(t, fs.WalkDir(skeleton.ProjectFS, "project", func(path string, d fs.DirEntry, err error) error {

@@ -157,8 +157,30 @@ Local development reads additional values from `.env` (copied from
 `.env.example` by `gofasta init`). Never commit `.env` — it's in
 `.gitignore`.
 
+**Secrets live in `.env` only.** `gofasta new` generated random
+`{{.ProjectNameUpper}}_AUTH_JWT_SECRET` / `{{.ProjectNameUpper}}_SESSION_SECRET`
+values there; the committed `config.yaml` deliberately ships them empty and
+the app refuses to boot until they resolve to real values. In production,
+set them on the deploy host (the compose manifests fail fast when missing).
+
 See the [configuration guide](https://gofasta.dev/docs/guides/configuration)
 for the full schema.
+
+## Security
+
+Scaffolded routes ship **unprotected** — every endpoint, including user
+create/update/delete, is publicly callable until you add auth middleware:
+
+```bash
+# Protect a route: JWTAuth extracts + verifies the token's claims,
+# RequireRole then checks them. RequireRole WITHOUT JWTAuth in front
+# rejects every request — always chain both, JWTAuth first.
+gofasta g middleware PUT /users/{id} 'auth.JWTAuth(jwtSvc), auth.RequireRole("admin")'
+```
+
+Rate limiting is enabled by default (`rate_limit` in `config.yaml`) —
+tune the rate rather than switching it off. See the
+[authentication guide](https://gofasta.dev/docs/guides/authentication).
 
 ## Testing
 

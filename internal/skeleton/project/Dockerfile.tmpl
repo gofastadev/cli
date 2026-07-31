@@ -32,9 +32,18 @@ COPY db/migrations /migrations
 COPY config.yaml /config.yaml
 COPY templates /templates
 
-ENV PORT=8080
+# Run as a non-root user: a compromised app process can't install
+# packages, rewrite the binary, or escalate inside the container. The
+# copied assets stay root-owned and world-readable, which is exactly
+# right — the app only reads them. Port 8080 needs no privileges.
+RUN addgroup -S app && adduser -S -G app app
+USER app
+
+# The production container listens on the fixed internal port 8080
+# (config.yaml's server.port default); compose maps the host port onto
+# it. No bare PORT env var — the app's config loader doesn't read one.
 # Container apps must listen on all interfaces so the published port is
-# reachable from outside the container. The framework default is 127.0.0.1
+# reachable from outside the container. The gofasta library's default is 127.0.0.1
 # (loopback) to avoid the macOS firewall prompt during local Air rebuilds;
 # inside a container that default would make the app unreachable, hence
 # this override.

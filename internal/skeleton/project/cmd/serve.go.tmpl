@@ -10,8 +10,12 @@ import (
 	"syscall"
 
 {{if .GraphQL}}	"github.com/99designs/gqlgen/graphql/handler"
+	"github.com/99designs/gqlgen/graphql/handler/extension"
+	"github.com/99designs/gqlgen/graphql/handler/lru"
+	"github.com/99designs/gqlgen/graphql/handler/transport"
 	"github.com/99designs/gqlgen/graphql/playground"
 	apperrors "github.com/gofastadev/gofasta/pkg/errors"
+	"github.com/vektah/gqlparser/v2/ast"
 {{end}}	"github.com/gofastadev/gofasta/pkg/health"
 	"github.com/gofastadev/gofasta/pkg/middleware"
 	"github.com/gofastadev/gofasta/pkg/observability"
@@ -49,7 +53,7 @@ func startServer() error {
 	logger := container.Logger
 
 	// Fail fast if security-critical secrets are still empty or set to the
-	// framework's development placeholder — never serve traffic with a
+	// gofasta library's development placeholder — never serve traffic with a
 	// publicly-known JWT/session signing key.
 	if err := cfg.ValidateSecrets(); err != nil {
 		return fmt.Errorf("refusing to start: %w", err)
@@ -73,15 +77,39 @@ func startServer() error {
 	go container.WebSocketHub.Run()
 
 {{- if .GraphQL}}
-	// Build GraphQL handler
-	graphqlHandler := handler.NewDefaultServer(app.NewExecutableSchema(app.Config{
+	// Build GraphQL handler with an explicit, config-gated posture
+	// instead of handler.NewDefaultServer. NewDefaultServer ships
+	// introspection unconditionally on and no complexity limit — fine
+	// for a playground, wrong as a production default. Each transport
+	// is declared explicitly; gqlgen's GET transport refuses mutations
+	// per the GraphQL-over-HTTP spec, so enabling it is safe.
+	graphqlHandler := handler.New(app.NewExecutableSchema(app.Config{
 		Resolvers: container.Resolver,
 	}))
+	graphqlHandler.AddTransport(transport.Options{})
+	graphqlHandler.AddTransport(transport.GET{})
+	graphqlHandler.AddTransport(transport.POST{})
+	graphqlHandler.AddTransport(transport.MultipartForm{})
+	graphqlHandler.SetQueryCache(lru.New[*ast.QueryDocument](1000))
+	graphqlHandler.Use(extension.AutomaticPersistedQuery{Cache: lru.New[string](100)})
+	if cfg.GraphQL.IntrospectionEnabled {
+		graphqlHandler.Use(extension.Introspection{})
+	}
+	if cfg.GraphQL.ComplexityLimit > 0 {
+		graphqlHandler.Use(extension.FixedComplexityLimit(cfg.GraphQL.ComplexityLimit))
+	}
 	graphqlHandler.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
 {{- end}}
 
 	// Build REST router
-	healthController := health.NewController(container.DB, container.CacheService)
+	// The driver-aware constructor makes /health/ready catch the
+	// degraded-fallback case: the in-memory SQLite stub ProvideDB
+	// substitutes when the real DB is unreachable reports driver
+	// "sqlite", which mismatches the configured driver and turns
+	// readiness into 503 — so a load balancer or `gofasta deploy`'s
+	// health gate (deploy.health_path: /health/ready) never routes
+	// traffic to a half-alive instance.
+	healthController := health.NewControllerForDriver(container.DB, container.CacheService, cfg.Database.Driver)
 	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
 		UserController: container.UserController,
 		// gofasta:scaffold:routeconfig-init — `gofasta g scaffold` inserts new <Name>Controller: container.<Name>Controller, lines above this. Don't remove the marker.
@@ -91,7 +119,12 @@ func startServer() error {
 
 	mux := http.NewServeMux()
 {{- if .GraphQL}}
-	mux.Handle(cfg.GraphQL.PlaygroundRoute, playground.Handler("GraphQL playground", cfg.GraphQL.GeneralRoute))
+	// The playground is config-gated (dev-true in config.yaml,
+	// env-false in the production compose manifest) — it's a schema
+	// browser and query console that has no place on a public API.
+	if cfg.GraphQL.PlaygroundEnabled {
+		mux.Handle(cfg.GraphQL.PlaygroundRoute, playground.Handler("GraphQL playground", cfg.GraphQL.GeneralRoute))
+	}
 	mux.Handle(cfg.GraphQL.GeneralRoute, graphqlHandler)
 {{- end}}
 
@@ -187,7 +220,7 @@ func buildMiddlewareChain(container *di.ServiceContainer) []middleware.Middlewar
 	middlewares := []middleware.Middleware{
 		middleware.RequestID(),
 		middleware.RequestLogging(logger),
-		// Devtools Recovery wraps the framework's Recovery: in devtools
+		// Devtools Recovery wraps the gofasta library's Recovery: in devtools
 		// builds it captures the panic + stack + request into the
 		// exceptions ring (surfaced on the dashboard); in production
 		// it delegates straight to pkg/middleware.Recovery so behavior
