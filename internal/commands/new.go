@@ -136,7 +136,7 @@ var randReadFn = rand.Read
 
 // randomSecret returns a cryptographically-random, URL-safe secret string.
 // Each `gofasta new` mints fresh JWT and session secrets so a generated
-// project is never seeded with the framework's publicly-known placeholder
+// project is never seeded with the gofasta library's publicly-known placeholder
 // (which pkg/config.ValidateSecrets rejects at boot).
 func randomSecret() (string, error) {
 	buf := make([]byte, 32)
@@ -355,7 +355,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 		// .env.example, CI workflows, and the generated LoadConfig wrapper. Shell variable names only allow
 		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
 		// otherwise a project named "my-app" would produce invalid env
-		// vars like "MY-APP_DATABASE_HOST" and the framework would never
+		// vars like "MY-APP_DATABASE_HOST" and the config loader would never
 		// read them.
 		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,

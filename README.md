@@ -98,6 +98,15 @@ Or with a full module path:
 gofasta new github.com/myorg/myapp
 ```
 
+Pick a database driver (default `postgres`) and a project layout
+(default `layered`) at scaffold time:
+
+```bash
+gofasta new myapp --driver mysql          # postgres | mysql | sqlite | sqlserver | clickhouse
+gofasta new myapp --layout feature        # layered | feature (per-resource packages)
+gofasta new myapp --graphql               # add a GraphQL API alongside REST
+```
+
 This creates a complete, ready-to-run project:
 
 ```
@@ -111,7 +120,7 @@ myapp/
 │   ├── rest/
 │   │   ├── controllers/    # HTTP handlers
 │   │   └── routes/         # Route definitions
-│   ├── graphql/
+│   ├── graphql/            # (--graphql only)
 │   │   ├── schema/         # GraphQL schema files (.gql)
 │   │   └── resolvers/      # GraphQL resolvers
 │   ├── validators/         # Input validation rules
@@ -129,10 +138,10 @@ myapp/
 ├── templates/emails/       # HTML email templates
 ├── locales/                # Translation files
 ├── config.yaml             # Application configuration
-├── compose.yaml            # Docker Compose (app + PostgreSQL)
+├── compose.yaml            # Docker Compose (app + your chosen database)
 ├── Dockerfile              # Production container image
 ├── Makefile                # Development shortcuts
-└── gqlgen.yml              # GraphQL code generation config
+└── gqlgen.yml              # GraphQL codegen config (--graphql only)
 ```
 
 The project imports `github.com/gofastadev/gofasta` as a library dependency. It does **not** contain any CLI or gofasta library internals — only your application code.
@@ -253,6 +262,22 @@ gofasta g migration Product name:string            # SQL files only
 gofasta g route Product                             # Route file only
 gofasta g provider Product                          # Wire provider only
 gofasta g resolver Product                          # Patch GraphQL resolver
+```
+
+### Modify Existing Resources
+
+The modify-aware generators patch code you already have (AST surgery,
+idempotent, `--dry-run` supported):
+
+```bash
+gofasta g field Product weight:float                # model + DTOs + inputs + allowlists + SDL + migration
+gofasta g method Product Recalculate                # service interface + impl stub
+gofasta g repo-method Product FindBySlug --returns "*models.Product, error"
+gofasta g endpoint Product POST /products/{id}/archive
+gofasta g middleware GET /products middleware.Throttle(20)
+gofasta g relation Order belongs_to Product         # association + FK migration
+gofasta g rename Product.Title Name                 # preview; --apply to write
+gofasta g mock --all                                # refresh testify mocks
 ```
 
 ### Background Jobs
@@ -418,6 +443,23 @@ $ gofasta --json g scaffold 2>&1 >/dev/null | jq .
   "docs": "https://gofasta.dev/docs/cli-reference/generate/scaffold"
 }
 ```
+
+## Command Index
+
+Grouped as `gofasta --help` prints them. Flag-level detail lives at
+[gofasta.dev/docs/cli-reference](https://gofasta.dev/docs/cli-reference).
+
+| Group | Commands |
+|---|---|
+| Project lifecycle | `new`, `init`, `doctor`, `upgrade`, `version`, `ai` (`list` / `status` / `uninstall`) |
+| Development workflow | `dev`, `serve`, `routes`, `swagger`, `wire`, `console`, `do`, `verify`, `status`, `config schema`, `debug` (18 subcommands: `requests`, `sql`, `traces`, `trace`, `logs`, `errors`, `last-error`, `last-slow-request`, `n-plus-one`, `explain`, `cache`, `goroutines`, `stack`, `profile`, `replay`, `har`, `health`, `watch`) |
+| Database | `migrate up` / `migrate down` / `migrate repair`, `seed`, `db reset` |
+| Code generation | `g scaffold`, `g model`, `g repository`, `g service`, `g controller`, `g dto`, `g migration`, `g route`, `g provider`, `g resolver`, `g job`, `g task`, `g email-template`, `g mock` — plus the modify-aware set: `g field`, `g method`, `g repo-method`, `g endpoint`, `g middleware`, `g relation`, `g rename` |
+| Deployment | `deploy`, `deploy setup`, `deploy status`, `deploy logs`, `deploy rollback` |
+| Introspection | `inspect`, `inspect-jobs`, `inspect-tasks`, `impact`, `xrefs`, `refactor` (`feature` / `layered` / `status`), `test` |
+| Shell | `completion` (bash / zsh / fish / powershell) |
+
+Global flags: `--json` (machine-parseable single-line JSON, banner suppressed) and `--no-banner` (also via `GOFASTA_NO_BANNER=1`).
 
 ## How It Works
 

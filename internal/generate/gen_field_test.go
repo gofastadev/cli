@@ -11,48 +11,219 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestGenField_PatchesDTOWhenPresent runs the full path through patchDTOFile
-// — present in the file at 0% coverage before this test landed.
-func TestGenField_PatchesDTOWhenPresent(t *testing.T) {
+// Real-shape fixtures mirroring the anchors templates/*.go emit for
+// resource Order. Referenced types are deliberately undefined —
+// astpatch parses, it never type-checks. Single quotes stand in for
+// backticks (Go raw strings can't contain them); fixtureSrc converts.
+const realDTOFixtureQ = `package dtos
+
+type Order struct {
+	ID    string 'json:"id"'
+	Title string 'json:"title"'
+}
+
+func OrderFromModel(m *Order) *Order {
+	out := &Order{
+		ID:    m.ID,
+		Title: m.Title,
+	}
+	return out
+}
+
+type TCreateOrderDto struct {
+	Title *string 'json:"title" validate:"required"'
+}
+
+func (d TCreateOrderDto) ToCreateInput() CreateOrderInput {
+	return CreateOrderInput{
+		Title: *d.Title,
+	}
+}
+
+type TUpdateOrderDto struct {
+	Title *string 'json:"title,omitempty"'
+}
+
+func (d TUpdateOrderDto) ToPatch() UpdateOrderPatch {
+	return UpdateOrderPatch{
+		Title: d.Title,
+	}
+}
+
+type TUpdateOrderGraphQLInput struct {
+	Title *string 'json:"title,omitempty"'
+}
+
+func (d TUpdateOrderGraphQLInput) ToPatch() UpdateOrderPatch {
+	return UpdateOrderPatch{
+		Title: d.Title,
+	}
+}
+
+type TOrderFiltersQueryParamsDto struct {
+	Title *string 'json:"title,omitempty" schema:"title"'
+}
+
+func (q TOrderFiltersQueryParamsDto) ToFilter() ListOrdersFilter {
+	f := ListOrdersFilter{
+		Title: q.Title,
+	}
+	return f
+}
+`
+
+const realInputsFixture = `package services
+
+type CreateOrderInput struct {
+	Title string
+}
+
+type UpdateOrderPatch struct {
+	Title *string
+}
+
+func (p UpdateOrderPatch) AsMap() map[string]any {
+	out := map[string]any{}
+	if p.Title != nil {
+		out["title"] = *p.Title
+	}
+	return out
+}
+
+type ListOrdersFilter struct {
+	Title *string
+}
+
+func (f ListOrdersFilter) AsRepoFilter() map[string]any {
+	out := map[string]any{}
+	if f.Title != nil {
+		out["title"] = *f.Title
+	}
+	return out
+}
+`
+
+const realSvcFixture = `package services
+
+var orderSortColumns = []string{
+	"id",
+	"created_at",
+	"title",
+}
+`
+
+const realRepoFixture = `package repositories
+
+var orderFilterColumns = []string{
+	"title",
+	"is_active",
+}
+`
+
+const realRepoTestFixture = `package repositories_test
+
+func makeOrder(t T, db D) *Order {
+	e := &Order{
+		Title: "sample-title",
+	}
+	return e
+}
+`
+
+const realSDLFixture = `type Order {
+  id: ID!
+  title: String!
+}
+
+input TCreateOrderDto {
+  title: String
+}
+
+input TUpdateOrderGraphQLInput {
+  title: String
+}
+
+input TOrderFiltersQueryParamsDto {
+  title: String
+}
+`
+
+func fixtureSrc(q string) string { return strings.ReplaceAll(q, "'", "`") }
+
+// setupFullOrderSurfaces lays every g-field surface down at its layered
+// path so GenField exercises the complete anchor set.
+func setupFullOrderSurfaces(t *testing.T, tmp string) {
+	t.Helper()
+	mustWriteFile(t, filepath.Join(tmp, "app", "dtos", "order.dtos.go"), fixtureSrc(realDTOFixtureQ))
+	mustWriteFile(t, filepath.Join(tmp, "app", "services", "order_inputs.go"), realInputsFixture)
+	mustWriteFile(t, filepath.Join(tmp, "app", "services", "order.service.go"), realSvcFixture)
+	mustWriteFile(t, filepath.Join(tmp, "app", "repositories", "order.repository.go"), realRepoFixture)
+	mustWriteFile(t, filepath.Join(tmp, "app", "repositories", "order.repository_test.go"), realRepoTestFixture)
+	mustWriteFile(t, filepath.Join(tmp, "app", "graphql", "schema", "order.gql"), realSDLFixture)
+}
+
+// TestGenField_PatchesEverySurface — the field lands on every anchor the
+// scaffold wires a field through: model, all five DTO shapes + their
+// mappers, both service inputs + guarded map stmts, the sort/filter
+// allowlists, the repo-test fixture, and all four SDL blocks. Running
+// GenField a second time must be a byte-identical no-op (idempotency).
+func TestGenField_PatchesEverySurface(t *testing.T) {
 	tmp := setupModelOnlyProject(t)
 	chdirTest(t, tmp)
+	setupFullOrderSurfaces(t, tmp)
 
-	// Add a DTOs file with all three variants so each branch of
-	// dtoVariants is exercised + every field actually gets appended.
-	mustWriteFile(t, filepath.Join(tmp, "app", "dtos", "order.dtos.go"), `package dtos
-
-type OrderCreateRequest struct{ Total int }
-type OrderUpdateRequest struct{ Total int }
-type OrderResponse struct{ Total int }
-`)
-
-	fields := ParseFields([]string{"archive_reason:string"})
-	require.NoError(t, GenField(FieldData{
+	data := FieldData{
 		Resource:     "Order",
-		Field:        fields[0],
+		Field:        ParseFields([]string{"reason:string"})[0],
 		WithDTO:      true,
 		WithCreate:   true,
 		WithUpdate:   true,
 		WithResponse: true,
-	}))
+	}
+	require.NoError(t, GenField(data))
 
-	dto, _ := os.ReadFile(filepath.Join(tmp, "app", "dtos", "order.dtos.go"))
-	// All three DTOs got the field.
-	require.Contains(t, string(dto), "OrderCreateRequest")
-	require.Contains(t, string(dto), "OrderUpdateRequest")
-	require.Contains(t, string(dto), "OrderResponse")
-	// And the field is present at least once.
-	require.Contains(t, string(dto), "ArchiveReason")
-}
+	read := func(rel string) string {
+		b, err := os.ReadFile(filepath.Join(tmp, rel))
+		require.NoError(t, err)
+		return string(b)
+	}
 
-func TestDtoVariants_Flags(t *testing.T) {
-	require.Empty(t, dtoVariants(FieldData{Resource: "X"}))
-	require.Equal(t, []string{"XCreateRequest"},
-		dtoVariants(FieldData{Resource: "X", WithCreate: true}))
-	require.Equal(t, []string{"XCreateRequest", "XUpdateRequest", "XResponse"},
-		dtoVariants(FieldData{
-			Resource: "X", WithCreate: true, WithUpdate: true, WithResponse: true,
-		}))
+	dto := read("app/dtos/order.dtos.go")
+	require.Contains(t, dto, "Reason string `json:\"reason\"`", "response DTO field")
+	require.Contains(t, dto, "Reason: m.Reason", "FromModel mapping")
+	require.Contains(t, dto, "Reason *string `json:\"reason\" validate:\"required\"`", "pointer create field")
+	require.Contains(t, dto, "Reason: *d.Reason", "ToCreateInput deref")
+	require.Contains(t, dto, "schema:\"reason\"", "filters schema tag")
+	require.Contains(t, dto, "Reason: q.Reason", "ToFilter mapping")
+
+	inputs := read("app/services/order_inputs.go")
+	require.Contains(t, inputs, "Reason string", "Create input field")
+	require.Contains(t, inputs, "Reason *string", "Update patch field")
+	require.Contains(t, inputs, "out[\"reason\"] = *p.Reason", "AsMap guarded stmt")
+	require.Contains(t, inputs, "out[\"reason\"] = *f.Reason", "AsRepoFilter guarded stmt")
+
+	require.Contains(t, read("app/services/order.service.go"), "\"reason\"", "sort allowlist")
+	require.Contains(t, read("app/repositories/order.repository.go"), "\"reason\"", "filter allowlist")
+	require.Contains(t, read("app/repositories/order.repository_test.go"), "Reason: \"sample-reason\"", "test fixture sample")
+
+	sdl := read("app/graphql/schema/order.gql")
+	require.Contains(t, sdl, "  reason: String!", "response SDL non-null")
+	require.Equal(t, 3, strings.Count(sdl, "  reason: String\n"), "create/update/filters SDL nullable")
+
+	// Idempotency: a second run must not duplicate anything.
+	before := map[string]string{}
+	for _, rel := range []string{
+		"app/dtos/order.dtos.go", "app/services/order_inputs.go",
+		"app/services/order.service.go", "app/repositories/order.repository.go",
+		"app/repositories/order.repository_test.go", "app/graphql/schema/order.gql",
+	} {
+		before[rel] = read(rel)
+	}
+	err := GenField(data)
+	require.Error(t, err, "model already has the field — CodeFieldAlreadyExists guards re-runs")
+	for rel, b := range before {
+		require.Equal(t, b, read(rel), "%s must be untouched on the guarded second run", rel)
+	}
 }
 
 func TestFileExistsHelper(t *testing.T) {
@@ -151,30 +322,27 @@ func TestGenField_UUIDImportAdded(t *testing.T) {
 	require.Contains(t, string(model), "uuid")
 }
 
-// TestGenField_PatchDTOFile_HappyPath — DTO file exists with the
-// expected variants; field is added to each.
-func TestGenField_PatchDTOFile_HappyPath(t *testing.T) {
+// TestGenField_ScopedFlags — disabling create/update leaves those
+// shapes untouched while response + filters still get the field.
+func TestGenField_ScopedFlags(t *testing.T) {
 	tmp := setupModelOnlyProject(t)
 	chdirTest(t, tmp)
-	dtos := filepath.Join(tmp, "app", "dtos")
-	require.NoError(t, os.MkdirAll(dtos, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dtos, "order.dtos.go"),
-		[]byte(`package dtos
-type OrderCreateRequest struct{ ExistingField string }
-type OrderUpdateRequest struct{ ExistingField string }
-type OrderResponse struct{ ExistingField string }
-`), 0o644))
+	setupFullOrderSurfaces(t, tmp)
 
 	require.NoError(t, GenField(FieldData{
 		Resource:     "Order",
 		Field:        ParseFields([]string{"reason:string"})[0],
 		WithDTO:      true,
-		WithCreate:   true,
-		WithUpdate:   true,
+		WithCreate:   false,
+		WithUpdate:   false,
 		WithResponse: true,
 	}))
-	dtosBody, _ := os.ReadFile(filepath.Join(dtos, "order.dtos.go"))
-	require.Contains(t, string(dtosBody), "Reason")
+	dto, err := os.ReadFile(filepath.Join(tmp, "app", "dtos", "order.dtos.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(dto), "Reason: m.Reason", "response mapper patched")
+	require.Contains(t, string(dto), "Reason: q.Reason", "filters mapper always patched")
+	require.NotContains(t, string(dto), "Reason: *d.Reason", "create mapper must stay untouched")
+	require.NotContains(t, string(dto), "Reason: d.Reason", "update mappers must stay untouched")
 }
 
 // TestPatchDTOFile_ParseError — DTO file has syntax error.
@@ -223,39 +391,47 @@ func TestReadDBDriverSafe_QuotedDriver(t *testing.T) {
 	require.Equal(t, "mysql", readDBDriverSafe())
 }
 
-// TestPatchDTOFile_MissingVariantContinues — DTO file has one of the
-// variants missing; the FindStruct error is caught and continue fires.
-func TestPatchDTOFile_MissingVariantContinues(t *testing.T) {
+// TestPatchDTOFile_MissingAnchorIsHardError — a DTO file that exists
+// without the scaffold anchors is a drifted file; silently skipping is
+// how fields used to vanish between the model and the API surface.
+func TestPatchDTOFile_MissingAnchorIsHardError(t *testing.T) {
 	tmp := t.TempDir()
 	dtosPath := filepath.Join(tmp, "x.dtos.go")
 	require.NoError(t, os.WriteFile(dtosPath,
-		[]byte("package dtos\ntype OrderCreateRequest struct{}\n"), 0o644))
+		[]byte("package dtos\ntype SomethingElse struct{}\n"), 0o644))
 	chdirTest(t, tmp)
-	// Request all three variants but only Create exists; Update/Response
-	// missing exercise the continue branch.
-	require.NoError(t, patchDTOFile(FieldData{
+	err := patchDTOFile(FieldData{
 		Resource: "Order", DTOFile: dtosPath,
 		Field:        ParseFields([]string{"reason:string"})[0],
+		WithResponse: true,
+	})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+	require.Contains(t, err.Error(), "drifted")
+}
+
+// TestPatchDTOFile_FieldAlreadyEverywhereIsNoOp — a field already
+// present on every anchor patches nothing and errors nothing.
+func TestPatchDTOFile_FieldAlreadyEverywhereIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	setupFullOrderSurfaces(t, tmp)
+	dtosPath := filepath.Join(tmp, "app", "dtos", "order.dtos.go")
+	before, err := os.ReadFile(dtosPath)
+	require.NoError(t, err)
+
+	require.NoError(t, patchDTOFile(FieldData{
+		Resource: "Order", DTOFile: dtosPath,
+		Field:        ParseFields([]string{"title:string"})[0],
 		WithCreate:   true,
 		WithUpdate:   true,
 		WithResponse: true,
 	}))
-}
-
-// TestPatchDTOFile_VariantAlreadyHasField — already-present field
-// exercises the `continue` branch (line 132-133).
-func TestPatchDTOFile_VariantAlreadyHasField(t *testing.T) {
-	tmp := t.TempDir()
-	dtosPath := filepath.Join(tmp, "x.dtos.go")
-	require.NoError(t, os.WriteFile(dtosPath, []byte(`package dtos
-type OrderCreateRequest struct{ Reason string }
-`), 0o644))
-	chdirTest(t, tmp)
-	require.NoError(t, patchDTOFile(FieldData{
-		Resource: "Order", DTOFile: dtosPath,
-		Field:      ParseFields([]string{"reason:string"})[0],
-		WithCreate: true,
-	}))
+	after, err := os.ReadFile(dtosPath)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
 }
 
 // TestGenField_ModelWriteBackError — make the model file readonly so
@@ -300,12 +476,11 @@ func TestPatchDTOFile_WriteBackError(t *testing.T) {
 		t.Skip("root bypasses chmod")
 	}
 	tmp := t.TempDir()
-	dtosPath := filepath.Join(tmp, "x.dtos.go")
-	require.NoError(t, os.WriteFile(dtosPath,
-		[]byte("package dtos\ntype OrderCreateRequest struct{}\n"), 0o644))
+	chdirTest(t, tmp)
+	setupFullOrderSurfaces(t, tmp)
+	dtosPath := filepath.Join(tmp, "app", "dtos", "order.dtos.go")
 	require.NoError(t, os.Chmod(dtosPath, 0o444))
 	t.Cleanup(func() { _ = os.Chmod(dtosPath, 0o644) })
-	chdirTest(t, t.TempDir())
 	err := patchDTOFile(FieldData{
 		Resource: "Order", DTOFile: dtosPath,
 		Field:      ParseFields([]string{"reason:string"})[0],
@@ -355,12 +530,11 @@ func TestGenField_AppendStructFieldError(t *testing.T) {
 // path (line 138-140).
 func TestPatchDTOFile_AppendStructFieldError(t *testing.T) {
 	tmp := t.TempDir()
-	dtosPath := filepath.Join(tmp, "x.dtos.go")
-	require.NoError(t, os.WriteFile(dtosPath,
-		[]byte("package dtos\ntype OrderCreateRequest struct{}\n"), 0o644))
 	chdirTest(t, tmp)
+	setupFullOrderSurfaces(t, tmp)
 	err := patchDTOFile(FieldData{
-		Resource: "Order", DTOFile: dtosPath,
+		Resource: "Order",
+		DTOFile:  filepath.Join(tmp, "app", "dtos", "order.dtos.go"),
 		Field: Field{
 			Name:     "Bad",
 			GoType:   "int }`bad",
@@ -375,10 +549,9 @@ func TestPatchDTOFile_AppendStructFieldError(t *testing.T) {
 // hasTimeType branch (line 144-146) in patchDTOFile.
 func TestPatchDTOFile_TimeImportAdded(t *testing.T) {
 	tmp := t.TempDir()
-	dtosPath := filepath.Join(tmp, "x.dtos.go")
-	require.NoError(t, os.WriteFile(dtosPath,
-		[]byte("package dtos\ntype OrderCreateRequest struct{}\n"), 0o644))
 	chdirTest(t, tmp)
+	setupFullOrderSurfaces(t, tmp)
+	dtosPath := filepath.Join(tmp, "app", "dtos", "order.dtos.go")
 	require.NoError(t, patchDTOFile(FieldData{
 		Resource: "Order", DTOFile: dtosPath,
 		Field:      ParseFields([]string{"shipped_at:time"})[0],
@@ -476,4 +649,53 @@ func TestGenField_DryRunCreatesNoDirectories(t *testing.T) {
 
 	_, err := os.Stat(filepath.Join(tmp, "db", "migrations"))
 	require.True(t, os.IsNotExist(err), "dry-run must not create db/migrations/")
+}
+
+// TestPatchSDLFile_MissingBlockIsHardError — a schema file that exists
+// without the scaffold's block headers is drift, not a skip.
+func TestPatchSDLFile_MissingBlockIsHardError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	schema := filepath.Join(tmp, "order.gql")
+	require.NoError(t, os.WriteFile(schema, []byte("type SomethingElse {\n  id: ID!\n}\n"), 0o644))
+
+	err := patchSDLFile(FieldData{
+		Resource: "Order", SchemaFile: schema,
+		Field:        ParseFields([]string{"reason:string"})[0],
+		WithResponse: true,
+	})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+}
+
+// TestPatchAllowlistVar_MissingVarIsHardError — an existing service
+// file without the allowlist var is drift.
+func TestPatchAllowlistVar_MissingVarIsHardError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	svc := filepath.Join(tmp, "order.service.go")
+	require.NoError(t, os.WriteFile(svc, []byte("package services\n"), 0o644))
+
+	err := patchAllowlistVar(svc, "orderSortColumns", "reason")
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+}
+
+// TestPatchRepoTestFixture_MissingBuilderIsSkip — repo test files are
+// user-owned after generation; no make<R> builder just means nothing
+// to extend, not an error.
+func TestPatchRepoTestFixture_MissingBuilderIsSkip(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	rt := filepath.Join(tmp, "order.repository_test.go")
+	require.NoError(t, os.WriteFile(rt, []byte("package repositories_test\n"), 0o644))
+
+	require.NoError(t, patchRepoTestFixture(FieldData{
+		Resource: "Order", RepoTestFile: rt,
+		Field: ParseFields([]string{"reason:string"})[0],
+	}))
 }

@@ -77,28 +77,7 @@ func startServer() error {
 	go container.WebSocketHub.Run()
 
 {{- if .GraphQL}}
-	// Build GraphQL handler with an explicit, config-gated posture
-	// instead of handler.NewDefaultServer. NewDefaultServer ships
-	// introspection unconditionally on and no complexity limit — fine
-	// for a playground, wrong as a production default. Each transport
-	// is declared explicitly; gqlgen's GET transport refuses mutations
-	// per the GraphQL-over-HTTP spec, so enabling it is safe.
-	graphqlHandler := handler.New(app.NewExecutableSchema(app.Config{
-		Resolvers: container.Resolver,
-	}))
-	graphqlHandler.AddTransport(transport.Options{})
-	graphqlHandler.AddTransport(transport.GET{})
-	graphqlHandler.AddTransport(transport.POST{})
-	graphqlHandler.AddTransport(transport.MultipartForm{})
-	graphqlHandler.SetQueryCache(lru.New[*ast.QueryDocument](1000))
-	graphqlHandler.Use(extension.AutomaticPersistedQuery{Cache: lru.New[string](100)})
-	if cfg.GraphQL.IntrospectionEnabled {
-		graphqlHandler.Use(extension.Introspection{})
-	}
-	if cfg.GraphQL.ComplexityLimit > 0 {
-		graphqlHandler.Use(extension.FixedComplexityLimit(cfg.GraphQL.ComplexityLimit))
-	}
-	graphqlHandler.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
+	graphqlHandler := buildGraphQLHandler(container)
 {{- end}}
 
 	// Build REST router
@@ -205,6 +184,36 @@ func startServer() error {
 	slog.Info("server stopped")
 	return nil
 }
+
+{{- if .GraphQL}}
+// buildGraphQLHandler builds the GraphQL server with an explicit,
+// config-gated posture instead of handler.NewDefaultServer.
+// NewDefaultServer ships introspection unconditionally on and no
+// complexity limit — fine for a playground, wrong as a production
+// default. Each transport is declared explicitly; gqlgen's GET
+// transport refuses mutations per the GraphQL-over-HTTP spec, so
+// enabling it is safe.
+func buildGraphQLHandler(container *di.ServiceContainer) *handler.Server {
+	cfg := container.Config
+	srv := handler.New(app.NewExecutableSchema(app.Config{
+		Resolvers: container.Resolver,
+	}))
+	srv.AddTransport(transport.Options{})
+	srv.AddTransport(transport.GET{})
+	srv.AddTransport(transport.POST{})
+	srv.AddTransport(transport.MultipartForm{})
+	srv.SetQueryCache(lru.New[*ast.QueryDocument](1000))
+	srv.Use(extension.AutomaticPersistedQuery{Cache: lru.New[string](100)})
+	if cfg.GraphQL.IntrospectionEnabled {
+		srv.Use(extension.Introspection{})
+	}
+	if cfg.GraphQL.ComplexityLimit > 0 {
+		srv.Use(extension.FixedComplexityLimit(cfg.GraphQL.ComplexityLimit))
+	}
+	srv.SetErrorPresenter(apperrors.GraphQLErrorPresenter)
+	return srv
+}
+{{- end}}
 
 // buildMiddlewareChain assembles the HTTP middleware stack in the order it
 // should run: request identity and logging outermost, then panic recovery,

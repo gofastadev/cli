@@ -244,7 +244,12 @@ jobs:
       - name: Exercise generators
         working-directory: /tmp/testproject
         run: |
-          /tmp/gofasta g scaffold Product name:string price:float description:text active:bool
+          # uuid + time fields ride the full-stack scaffold so the whole
+          # chain (model imports, DTO pointers, sample literals in the
+          # generated tests, per-driver SQL types) is exercised for the
+          # non-scalar types too — a uuid/time regression used to slip
+          # through because no CI resource carried one.
+          /tmp/gofasta g scaffold Product name:string price:float description:text active:bool owner_id:uuid released_at:time
           /tmp/gofasta g model Article title:string body:text published:bool
           /tmp/gofasta g repository Tag name:string slug:string
           /tmp/gofasta g service Cart total:float currency:string
@@ -253,6 +258,31 @@ jobs:
           /tmp/gofasta g email-template welcome
           /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
           /tmp/gofasta g task send-welcome
+
+      # Modify-aware generators — each patches EXISTING code via AST
+      # surgery rather than rendering fresh files, so their failure
+      # mode (silently patching nothing, mangling an anchor) is
+      # invisible to the render-only exercise above. Every one runs
+      # against the resources just scaffolded; `make preflight` below
+      # compiles + tests the result, so a bad patch fails this job.
+      - name: Exercise modify-aware generators
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta g field Product weight:float
+          grep -q '"weight"' app/services/product.service.go
+          grep -q '"weight"' app/repositories/product.repository.go
+          grep -q 'out\["weight"\]' app/services/product_inputs.go
+          /tmp/gofasta g method Product Recalculate
+          /tmp/gofasta g repo-method Product FindBySlug --returns "*models.Product, error"
+          /tmp/gofasta g endpoint Product POST /products/{id}/archive
+          # g middleware splices the expression verbatim; the import is
+          # the user's responsibility (same as hand-editing the chain).
+          # Add it the way a user would, then wrap the route.
+          /tmp/gofasta g middleware GET /products 'middleware.RequestID()'
+          sed -i 's#"github.com/gofastadev/gofasta/pkg/httputil"#"github.com/gofastadev/gofasta/pkg/httputil"\n\t"github.com/gofastadev/gofasta/pkg/middleware"#' app/rest/routes/product.routes.go
+          grep -q 'With(middleware.RequestID())' app/rest/routes/product.routes.go
+          /tmp/gofasta g relation Order belongs_to Product
+          /tmp/gofasta wire
 
       # Regenerate Wire + Swagger so the introspection step below sees
       # a clean tree. After the generator exercise above, new
@@ -397,3 +427,83 @@ jobs:
           /tmp/gofasta status
           /tmp/gofasta --json status > /tmp/status.json
           test -s /tmp/status.json
+
+  # ───────────────────────────────────────────────────────────────────
+  # GraphQL + refactor leg — postgres-only (the per-driver matrix above
+  # covers driver variance; this job covers two flows whose breakages
+  # are invisible to it):
+  #
+  #   1. `gofasta new --graphql` + scaffolding INSIDE a GraphQL project.
+  #      gqlgen rewrites resolver files from the schema and relocates
+  #      non-resolver declarations into commented-out blocks — a class
+  #      of breakage only a gql scaffold exercises. The APIKey + sku
+  #      resource is the initialism/name-mangling gate: gqlgen binds
+  #      SDL names to the generated Go types via autobind, and `sku` /
+  #      `APIKey` are exactly the identifiers its golint-style mangler
+  #      historically mishandles.
+  #   2. `gofasta refactor` layered→feature→layered round-trip on a
+  #      committed scaffold (the clean-tree precheck requires a commit).
+  #
+  # The generated projects' repository tests run testcontainers, so no
+  # job-level database service is needed — Docker on the runner is
+  # enough.
+  # ───────────────────────────────────────────────────────────────────
+  integration-gql-and-refactor:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out CLI repo
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.0"
+
+      - name: Build CLI
+        run: go build -o /tmp/gofasta ./cmd/gofasta/
+
+      - name: Install golang-migrate
+        run: go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+
+      - name: Scaffold GraphQL project
+        run: /tmp/gofasta new /tmp/gqlproject --graphql
+
+      # Scaffold WITHOUT --graphql: gqlgen.yml auto-detection must kick
+      # in and produce the schema fragment + fully-implemented resolver
+      # file (no panic("not implemented") stubs).
+      - name: Scaffold resources inside the GraphQL project
+        working-directory: /tmp/gqlproject
+        run: |
+          /tmp/gofasta g scaffold Order title:string qty:int
+          test -f app/graphql/resolvers/order.resolvers.go
+          ! grep -q "not implemented" app/graphql/resolvers/order.resolvers.go
+          # Initialism/mangling gate: APIKey + sku through the full gql chain.
+          /tmp/gofasta g scaffold APIKey sku:string active:bool
+          test -f app/graphql/resolvers/api_key.resolvers.go
+          ! grep -q "not implemented" app/graphql/resolvers/api_key.resolvers.go
+          grep -q "TCreateAPIKeyDto" app/dtos/api_key.dtos.go
+          grep -q "sku: String" app/graphql/schema/api_key.gql
+
+      - name: Preflight the GraphQL project
+        working-directory: /tmp/gqlproject
+        run: make preflight
+
+      - name: Scaffold feature-layout project
+        run: /tmp/gofasta new /tmp/featureproject --layout feature
+
+      - name: Refactor round-trip (feature → layered → feature)
+        working-directory: /tmp/featureproject
+        run: |
+          /tmp/gofasta g scaffold Product name:string price:float
+          # The refactor precheck requires a clean tree — commit first.
+          git add -A && git -c user.email=ci@gofasta.dev -c user.name=ci commit -m "scaffold" -q
+          /tmp/gofasta refactor layered --all
+          go build ./...
+          git add -A && git -c user.email=ci@gofasta.dev -c user.name=ci commit -m "layered" -q
+          /tmp/gofasta refactor feature --all
+          go build ./...
+
+      - name: Preflight the refactored project
+        working-directory: /tmp/featureproject
+        run: make preflight

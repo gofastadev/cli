@@ -20,6 +20,7 @@ import (
 	"go/format"
 	"go/token"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/dave/dst"
@@ -326,4 +327,193 @@ func receiverTypeName(expr dst.Expr) string {
 		}
 	}
 	return ""
+}
+
+// parseExprFragment parses exprSrc as a single Go expression by wrapping
+// it in a synthetic var declaration. Shared by the composite-literal
+// helpers below.
+func parseExprFragment(exprSrc string) (dst.Expr, error) {
+	wrapped := "package x\nvar _ = " + exprSrc + "\n"
+	dec := decorator.NewDecorator(nil)
+	df, err := dec.Parse([]byte(wrapped))
+	if err != nil {
+		return nil, clierr.Wrapf(clierr.CodeASTPatchFailed, err,
+			"parsing expression %q", strings.TrimSpace(exprSrc))
+	}
+	for _, decl := range df.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			if vs, ok := spec.(*dst.ValueSpec); ok && len(vs.Values) > 0 {
+				return vs.Values[0], nil
+			}
+		}
+	}
+	return nil, clierr.Newf(clierr.CodeASTPatchFailed,
+		"could not extract expression from %q", exprSrc)
+}
+
+// FindVarCompositeLit locates a package-level `var <name> = T{...}`
+// declaration and returns its composite literal. Powers the allowlist
+// patches (`<lower>SortColumns`, `<lower>FilterColumns`).
+func FindVarCompositeLit(f *File, name string) (*dst.CompositeLit, error) {
+	for _, decl := range f.Dst.Decls {
+		gd, ok := decl.(*dst.GenDecl)
+		if !ok || gd.Tok != token.VAR {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*dst.ValueSpec)
+			if !ok {
+				continue
+			}
+			for i, n := range vs.Names {
+				if n.Name != name || i >= len(vs.Values) {
+					continue
+				}
+				if cl, ok := vs.Values[i].(*dst.CompositeLit); ok {
+					return cl, nil
+				}
+			}
+		}
+	}
+	return nil, clierr.Newf(clierr.CodeASTPatchFailed,
+		"no composite-literal var %s in %s", name, f.Path)
+}
+
+// CompositeLitHasString reports whether lit contains the quoted string
+// element val (e.g. an allowlist already carrying "sku").
+func CompositeLitHasString(lit *dst.CompositeLit, val string) bool {
+	quoted := strconv.Quote(val)
+	for _, el := range lit.Elts {
+		if bl, ok := el.(*dst.BasicLit); ok && bl.Kind == token.STRING && bl.Value == quoted {
+			return true
+		}
+	}
+	return false
+}
+
+// AppendStringToCompositeLit appends the quoted string element val to
+// lit on its own line.
+func AppendStringToCompositeLit(lit *dst.CompositeLit, val string) {
+	el := &dst.BasicLit{Kind: token.STRING, Value: strconv.Quote(val)}
+	el.Decorations().Before = dst.NewLine
+	el.Decorations().After = dst.NewLine
+	lit.Elts = append(lit.Elts, el)
+}
+
+// FirstCompositeLitInFunc returns the first composite literal in fn's
+// body in source order. The scaffold's mapper functions (FromModel,
+// ToCreateInput, ToPatch, ToFilter, the test fixture builders) each
+// build exactly one struct literal, and it is the first composite in
+// the body — which makes "first" a stable anchor for field insertion.
+func FirstCompositeLitInFunc(fn *dst.FuncDecl) (*dst.CompositeLit, error) {
+	var found *dst.CompositeLit
+	dst.Inspect(fn.Body, func(n dst.Node) bool {
+		if found != nil {
+			return false
+		}
+		if cl, ok := n.(*dst.CompositeLit); ok {
+			found = cl
+			return false
+		}
+		return true
+	})
+	if found == nil {
+		return nil, clierr.Newf(clierr.CodeASTPatchFailed,
+			"no composite literal inside func %s", fn.Name.Name)
+	}
+	return found, nil
+}
+
+// CompositeLitHasKey reports whether lit already has a Key: value entry
+// for the given key identifier.
+func CompositeLitHasKey(lit *dst.CompositeLit, key string) bool {
+	for _, el := range lit.Elts {
+		kv, ok := el.(*dst.KeyValueExpr)
+		if !ok {
+			continue
+		}
+		if id, ok := kv.Key.(*dst.Ident); ok && id.Name == key {
+			return true
+		}
+	}
+	return false
+}
+
+// AppendKeyValueToCompositeLit parses exprSrc and appends `key: <expr>,`
+// to lit on its own line.
+func AppendKeyValueToCompositeLit(lit *dst.CompositeLit, key, exprSrc string) error {
+	val, err := parseExprFragment(exprSrc)
+	if err != nil {
+		return err
+	}
+	kv := &dst.KeyValueExpr{Key: dst.NewIdent(key), Value: val}
+	kv.Decorations().Before = dst.NewLine
+	kv.Decorations().After = dst.NewLine
+	lit.Elts = append(lit.Elts, kv)
+	return nil
+}
+
+// InsertStmtBeforeReturn parses stmtSrc (one or more statements) and
+// inserts them immediately before the LAST top-level return in fn's
+// body. Powers the AsMap / AsRepoFilter patches, whose shape is a run
+// of `if p.X != nil { out["x"] = *p.X }` blocks followed by
+// `return out`. Falls back to appending when the body has no return.
+func InsertStmtBeforeReturn(fn *dst.FuncDecl, stmtSrc string) error {
+	wrapped := "package x\nfunc _f() {\n" + stmtSrc + "\n}\n"
+	dec := decorator.NewDecorator(nil)
+	df, err := dec.Parse([]byte(wrapped))
+	if err != nil {
+		return clierr.Wrapf(clierr.CodeASTPatchFailed, err,
+			"parsing statement %q", strings.TrimSpace(stmtSrc))
+	}
+	var stmts []dst.Stmt
+	for _, decl := range df.Decls {
+		if fd, ok := decl.(*dst.FuncDecl); ok {
+			stmts = fd.Body.List
+			break
+		}
+	}
+	if len(stmts) == 0 {
+		return clierr.Newf(clierr.CodeASTPatchFailed,
+			"no statements extracted from %q", stmtSrc)
+	}
+	retIdx := -1
+	for i, s := range fn.Body.List {
+		if _, ok := s.(*dst.ReturnStmt); ok {
+			retIdx = i
+		}
+	}
+	if retIdx == -1 {
+		fn.Body.List = append(fn.Body.List, stmts...)
+		return nil
+	}
+	out := make([]dst.Stmt, 0, len(fn.Body.List)+len(stmts))
+	out = append(out, fn.Body.List[:retIdx]...)
+	out = append(out, stmts...)
+	out = append(out, fn.Body.List[retIdx:]...)
+	fn.Body.List = out
+	return nil
+}
+
+// FuncContainsStringLit reports whether fn's body contains the string
+// literal val anywhere. Used as the idempotency probe for statement
+// insertions keyed on a column name (`out["sku"] = ...`).
+func FuncContainsStringLit(fn *dst.FuncDecl, val string) bool {
+	quoted := strconv.Quote(val)
+	found := false
+	dst.Inspect(fn.Body, func(n dst.Node) bool {
+		if found {
+			return false
+		}
+		if bl, ok := n.(*dst.BasicLit); ok && bl.Kind == token.STRING && bl.Value == quoted {
+			found = true
+			return false
+		}
+		return true
+	})
+	return found
 }

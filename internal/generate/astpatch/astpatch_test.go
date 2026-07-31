@@ -467,3 +467,133 @@ func F() { fmt.Println() }
 	require.NoError(t, err)
 	require.True(t, strings.Contains(string(body), `"context"`))
 }
+
+// parseTestFile writes src to a temp file and parses it. Shared by the
+// composite-literal helper tests below.
+func parseTestFile(t *testing.T, src string) *File {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "x.go")
+	require.NoError(t, os.WriteFile(path, []byte(src), 0o644))
+	f, err := Parse(path)
+	require.NoError(t, err)
+	return f
+}
+
+func TestFindVarCompositeLit(t *testing.T) {
+	f := parseTestFile(t, `package x
+
+var cols = []string{
+	"id",
+	"created_at",
+}
+
+var notALit = otherValue
+`)
+	lit, err := FindVarCompositeLit(f, "cols")
+	require.NoError(t, err)
+	require.Len(t, lit.Elts, 2)
+
+	_, err = FindVarCompositeLit(f, "missing")
+	require.Error(t, err)
+	_, err = FindVarCompositeLit(f, "notALit")
+	require.Error(t, err, "a var bound to a non-composite value is not a valid target")
+}
+
+func TestCompositeLitStringHelpers(t *testing.T) {
+	f := parseTestFile(t, "package x\n\nvar cols = []string{\n\t\"id\",\n}\n")
+	lit, err := FindVarCompositeLit(f, "cols")
+	require.NoError(t, err)
+
+	require.True(t, CompositeLitHasString(lit, "id"))
+	require.False(t, CompositeLitHasString(lit, "sku"))
+
+	AppendStringToCompositeLit(lit, "sku")
+	require.True(t, CompositeLitHasString(lit, "sku"))
+
+	out, err := Render(f)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "\"sku\",", "appended element renders with trailing comma")
+}
+
+func TestFirstCompositeLitInFunc(t *testing.T) {
+	f := parseTestFile(t, `package x
+
+func build(m M) *Out {
+	out := &Out{
+		ID: m.ID,
+	}
+	return out
+}
+
+func empty() {}
+`)
+	fn, err := FindFunc(f, "", "build")
+	require.NoError(t, err)
+	lit, err := FirstCompositeLitInFunc(fn)
+	require.NoError(t, err)
+	require.True(t, CompositeLitHasKey(lit, "ID"))
+	require.False(t, CompositeLitHasKey(lit, "Title"))
+
+	require.NoError(t, AppendKeyValueToCompositeLit(lit, "Title", "m.Title"))
+	require.True(t, CompositeLitHasKey(lit, "Title"))
+	out, err := Render(f)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "Title: m.Title,")
+
+	fnEmpty, err := FindFunc(f, "", "empty")
+	require.NoError(t, err)
+	_, err = FirstCompositeLitInFunc(fnEmpty)
+	require.Error(t, err)
+}
+
+func TestAppendKeyValueToCompositeLit_BadExpr(t *testing.T) {
+	f := parseTestFile(t, "package x\n\nfunc b() *O {\n\treturn &O{}\n}\n")
+	fn, err := FindFunc(f, "", "b")
+	require.NoError(t, err)
+	lit, err := FirstCompositeLitInFunc(fn)
+	require.NoError(t, err)
+	require.Error(t, AppendKeyValueToCompositeLit(lit, "X", "not a } valid expr"))
+}
+
+func TestInsertStmtBeforeReturn(t *testing.T) {
+	f := parseTestFile(t, `package x
+
+func (p P) AsMap() map[string]any {
+	out := map[string]any{}
+	if p.A != nil {
+		out["a"] = *p.A
+	}
+	return out
+}
+`)
+	fn, err := FindFunc(f, "P", "AsMap")
+	require.NoError(t, err)
+	require.True(t, FuncContainsStringLit(fn, "a"))
+	require.False(t, FuncContainsStringLit(fn, "b"))
+
+	require.NoError(t, InsertStmtBeforeReturn(fn,
+		"if p.B != nil {\n\tout[\"b\"] = *p.B\n}"))
+	out, err := Render(f)
+	require.NoError(t, err)
+	rendered := string(out)
+	require.Contains(t, rendered, `out["b"] = *p.B`)
+	require.Less(t, strings.Index(rendered, `out["b"]`), strings.Index(rendered, "return out"),
+		"inserted statement must precede the return")
+}
+
+func TestInsertStmtBeforeReturn_NoReturnAppends(t *testing.T) {
+	f := parseTestFile(t, "package x\n\nfunc side() {\n\t_ = 1\n}\n")
+	fn, err := FindFunc(f, "", "side")
+	require.NoError(t, err)
+	require.NoError(t, InsertStmtBeforeReturn(fn, "_ = 2"))
+	out, err := Render(f)
+	require.NoError(t, err)
+	require.Contains(t, string(out), "_ = 2")
+}
+
+func TestInsertStmtBeforeReturn_BadStmt(t *testing.T) {
+	f := parseTestFile(t, "package x\n\nfunc side() {}\n")
+	fn, err := FindFunc(f, "", "side")
+	require.NoError(t, err)
+	require.Error(t, InsertStmtBeforeReturn(fn, "if {"))
+}

@@ -189,7 +189,7 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 		emitter.Info(fmt.Sprintf("loaded %d variables from %s", loaded, flags.envFile))
 	}
 	if flags.port != "" {
-		// The framework binds server.port, overridable ONLY via the
+		// The gofasta library's config binds server.port, overridable ONLY via the
 		// project-prefixed env var — a bare PORT never reaches config.
 		// Set both: <PREFIX>_SERVER_PORT is what makes the app actually
 		// bind the requested port; PORT stays for compose interpolation
@@ -381,7 +381,7 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	}
 
 	// In noDB mode print a loud banner so the user remembers why
-	// DB-touching endpoints are about to 5xx. The framework's
+	// DB-touching endpoints are about to 5xx. The scaffold's
 	// ProvideDB falls back to in-memory SQLite (no schema), so the
 	// app boots and non-DB endpoints work, but any Find/Save against
 	// the project's models fails with "no such table: X".

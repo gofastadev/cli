@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint lint-install test coverage build integration clean ci preflight
+.PHONY: fmt fmt-check vet lint lint-install test coverage build integration clean ci preflight
 
 ## Pinned golangci-lint version. MUST match .github/workflows/ci.yml so a
 ## green local run predicts a green CI run.
@@ -119,7 +119,9 @@ clean:
 	rm -rf bin/ coverage.out coverage.html
 
 ## Run all checks (what CI runs)
-ci: lint test build
+# The PR-level checks (what ci.yml's lint + test jobs run). `make
+# preflight` is the full local gate — it adds the integration scaffolds.
+ci: fmt-check vet lint test build
 
 ## Preflight — the full set of checks that MUST pass locally before any
 ## task is considered complete. Intended to be run before every commit and

@@ -100,13 +100,13 @@ func init() {
 	fieldCmd.Flags().BoolVar(&fieldDryRun, "dry-run", false,
 		"Preview the patches + migration without writing")
 	fieldCmd.Flags().BoolVar(&fieldNoDTO, "no-dto", false,
-		"Skip DTO patches (only model + migration are updated)")
+		"Skip DTO/inputs/allowlist/SDL patches (only model + migration are updated)")
 	fieldCmd.Flags().BoolVar(&fieldNoCreate, "no-create", false,
-		"Skip the CreateRequest DTO when --no-dto is not set")
+		"Skip the create shapes (TCreate<R>Dto, Create<R>Input) when --no-dto is not set")
 	fieldCmd.Flags().BoolVar(&fieldNoUpdate, "no-update", false,
-		"Skip the UpdateRequest DTO when --no-dto is not set")
+		"Skip the update shapes (TUpdate<R>Dto/GraphQLInput, Update<R>Patch) when --no-dto is not set")
 	fieldCmd.Flags().BoolVar(&fieldNoResponse, "no-response", false,
-		"Skip the Response DTO when --no-dto is not set")
+		"Skip the response DTO + FromModel when --no-dto is not set")
 
 	Cmd.AddCommand(endpointCmd)
 	endpointCmd.Flags().BoolVar(&endpointDryRun, "dry-run", false,
@@ -762,7 +762,7 @@ var emailTemplateCmd = &cobra.Command{
 	Short:   "Generate an HTML email template under templates/emails/",
 	Aliases: []string{"email"},
 	Long: `Generate templates/emails/<name>.html with a starter layout compatible
-with the framework's mailer package. The template is plain Go HTML
+with the gofasta library's mailer package. The template is plain Go HTML
 templating — substitute variables with ` + "`{{.FieldName}}`" + ` and render it via
 mailer.Renderer in your service code.`,
 	Args: cobra.ExactArgs(1),
@@ -942,19 +942,34 @@ Examples:
 var fieldCmd = &cobra.Command{
 	Use:   "field <Resource> <name>:<type>",
 	Short: "Add a field to an existing model, its DTOs, and emit a migration pair",
-	Long: `Append a column to an already-scaffolded resource. Patches:
+	Long: `Append a column to an already-scaffolded resource. Patches every
+surface a scaffolded field flows through:
 
   • app/models/<snake>.model.go               (struct field + GORM tag)
-  • app/dtos/<snake>.dtos.go                  (Create / Update / Response DTOs)
+  • app/dtos/<snake>.dtos.go                  (response DTO + FromModel, pointer
+                                               TCreate<R>Dto + ToCreateInput,
+                                               TUpdate<R>Dto / GraphQLInput +
+                                               ToPatch, filters DTO + ToFilter)
+  • app/services/<snake>_inputs.go            (Create<R>Input, Update<R>Patch +
+                                               AsMap, List<Plural>Filter +
+                                               AsRepoFilter)
+  • app/services/<snake>.service.go           (<lower>SortColumns allowlist)
+  • app/repositories/<snake>.repository.go    (<lower>FilterColumns allowlist)
+  • app/repositories/<snake>.repository_test.go (make<R> fixture, if present)
+  • app/graphql/schema/<snake>.gql            (all four blocks, if present —
+                                               re-run gqlgen afterwards)
   • db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
+
+Files that don't exist are skipped (a g-model-only resource has no
+DTOs); a file that exists with a missing anchor is a hard error.
 
 Supported types: string, text, int, float, bool, uuid, time.
 
 DTO patches are opt-out:
-  --no-dto       Skip every DTO patch (model + migration only)
-  --no-create    Skip the CreateRequest DTO
-  --no-update    Skip the UpdateRequest DTO
-  --no-response  Skip the Response DTO
+  --no-dto       Skip everything except model + migration
+  --no-create    Skip the create shapes (TCreate<R>Dto, Create<R>Input)
+  --no-update    Skip the update shapes (TUpdate<R>Dto/GraphQLInput, Update<R>Patch)
+  --no-response  Skip the response DTO + FromModel
 
 Use --dry-run to preview the patches and the migration that would be
 written (same {create, patch} JSON shape as g scaffold --dry-run).

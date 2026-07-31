@@ -32,11 +32,17 @@ Thank you for your interest in contributing to the Gofasta CLI! This document ex
    go mod tidy
    ```
 
-4. **Install golangci-lint** (optional, but recommended):
+4. **Install golangci-lint** at the pinned version (the Makefile does
+   this automatically the first time you run `make lint` or
+   `make preflight`):
 
    ```bash
-   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+   make lint-install
    ```
+
+   Note the module path is `/v2/` and the version is pinned in the
+   Makefile's `GOLANGCI_LINT_VERSION` — a floating `@latest` install
+   applies a different ruleset than CI and produces misleading results.
 
 5. **Build the CLI:**
 
@@ -63,7 +69,6 @@ cli/
 │   │   └── ...
 │   └── skeleton/                  # Embedded project templates
 │       └── project/              # Files that become a new project
-├── dist/                          # Distribution files (shell-script installer)
 └── go.mod
 ```
 
@@ -114,10 +119,18 @@ Files **without** `.tmpl` are copied as-is.
    go build ./...
    ```
 
-4. **Run unit tests:**
+4. **Run the full preflight** — the same gate CI runs (gofmt, vet, the
+   pinned linter, race tests, build, and the integration scaffolds).
+   A task is done only when this is green:
 
    ```bash
-   go test ./...
+   make preflight
+   ```
+
+   For a quicker inner loop while iterating:
+
+   ```bash
+   go test -race -timeout 20m ./...
    ```
 
 5. **Commit** with a clear message:
@@ -140,7 +153,7 @@ Files **without** `.tmpl` are copied as-is.
 
 ## Code Style
 
-- Run `golangci-lint run` before submitting a PR. The repository's `.golangci.yml` configures all required linters.
+- Run `make preflight` before submitting a PR — it runs gofmt, vet, the pinned golangci-lint, race tests, build, and the integration scaffolds in CI's exact order.
 - Follow standard Go conventions (`gofmt`, `go vet`).
 - Keep the CLI's dependencies minimal — it should not import the `github.com/gofastadev/gofasta` library.
 - Template files should produce clean, readable Go code.

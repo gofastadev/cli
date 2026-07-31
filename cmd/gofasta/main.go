@@ -10,7 +10,7 @@ import (
 //
 //	-ldflags="-X main.Version=<tag>"
 //
-// so pre-built binaries (from the GitHub Release + install.sh path) show the
+// so pre-built binaries (downloaded from the GitHub Release page) show the
 // exact release tag. For `go install` users, ldflags is not applied, so this
 // default value is used — but we replace it at startup with whatever Go
 // stamped into the binary via runtime/debug.ReadBuildInfo(), which reflects
