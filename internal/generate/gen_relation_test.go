@@ -138,7 +138,8 @@ func TestGenRelation_BelongsTo_PatchesModelAndEmitsMigration(t *testing.T) {
 	// gofmt aligns the field columns so the spacing between name and
 	// type is variable; match the substring with a permissive whitespace
 	// allowance.
-	require.Regexp(t, `CustomerID\s+uuid\.UUID`, string(model))
+	require.Regexp(t, `CustomerID\s+\*uuid\.UUID`, string(model),
+		"belongs_to FK is nullable by design — a NOT NULL FK could never migrate onto a populated table")
 	require.Regexp(t, `\bCustomer\s+\*Customer\b`, string(model))
 
 	// Migration pair must exist with the right columns.
@@ -258,6 +259,36 @@ func TestRelationModelFields_BelongsToPair(t *testing.T) {
 		Kind:     RelationBelongsTo,
 	})
 	require.Equal(t, 2, len(fields))
-	require.Contains(t, fields[0], "CustomerID uuid.UUID")
+	require.Contains(t, fields[0], "CustomerID *uuid.UUID")
 	require.Contains(t, fields[1], "Customer *Customer")
+}
+
+// TestRelationMigrationSQL_DriverForms — the FK migration must be
+// driver-correct (T-SQL has no COLUMN keyword; SQLite can't ADD a
+// table-level constraint; ClickHouse has no FK constraints at all) and
+// the column NULLABLE everywhere: a NOT NULL FK has no valid DEFAULT,
+// so it could never apply to a populated table.
+func TestRelationMigrationSQL_DriverForms(t *testing.T) {
+	up, down := relationMigrationSQL("postgres", "orders", "products", "product_id", "fk_orders_product_id")
+	require.Contains(t, up, "ALTER TABLE orders ADD COLUMN product_id uuid;\n")
+	require.Contains(t, up, "ADD CONSTRAINT fk_orders_product_id FOREIGN KEY (product_id) REFERENCES products (id)")
+	require.NotContains(t, up, "NOT NULL")
+	require.Contains(t, down, "DROP CONSTRAINT fk_orders_product_id")
+
+	up, _ = relationMigrationSQL("mysql", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id CHAR(36);")
+
+	up, down = relationMigrationSQL("sqlite", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id TEXT REFERENCES products (id);")
+	require.NotContains(t, up, "ADD CONSTRAINT", "SQLite cannot add a table-level constraint after creation")
+	require.Contains(t, down, "DROP COLUMN product_id")
+
+	up, _ = relationMigrationSQL("sqlserver", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ALTER TABLE orders ADD product_id UNIQUEIDENTIFIER;")
+	require.NotContains(t, up, "ADD COLUMN", "T-SQL ALTER TABLE ... ADD takes no COLUMN keyword")
+
+	up, down = relationMigrationSQL("clickhouse", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id Nullable(UUID);")
+	require.NotContains(t, up, "FOREIGN KEY", "ClickHouse has no FK constraints")
+	require.Contains(t, down, "DROP COLUMN product_id")
 }
