@@ -322,3 +322,96 @@ func TestGenMethod_ReturnsWithoutError(t *testing.T) {
 	_, perr := parser.ParseFile(token.NewFileSet(), "order.service.go", impl, 0)
 	require.NoError(t, perr, "patched impl must parse:\n%s", impl)
 }
+
+// TestBuildMockMethodDecl covers the two body shapes: the single-error
+// short form and the nil-guarded multi-result form.
+func TestBuildMockMethodDecl(t *testing.T) {
+	short := buildMockMethodDecl("mockOrderService", MethodData{
+		MethodName: "Recalculate",
+		Returns:    []string{"error"},
+	})
+	require.Contains(t, short, "func (m *mockOrderService) Recalculate(ctx context.Context) error {")
+	require.Contains(t, short, "return m.Called(ctx).Error(0)")
+
+	multi := buildMockMethodDecl("mockOrderRepository", MethodData{
+		MethodName: "FindBySlug",
+		Args:       ParseFields([]string{"slug:string"}),
+		Returns:    []string{"*models.Order", "error"},
+	})
+	require.Contains(t, multi, "func (m *mockOrderRepository) FindBySlug(ctx context.Context, slug string) (*models.Order, error) {")
+	require.Contains(t, multi, "callArgs := m.Called(ctx, slug)")
+	require.Contains(t, multi, "var r0 *models.Order")
+	require.Contains(t, multi, "r0 = v.(*models.Order)")
+	require.Contains(t, multi, "return r0, callArgs.Error(1)")
+}
+
+// TestPatchInlineTestMock_AppendsAndSkips — the inline mock in a
+// scaffolded test file gains the widened interface's method; re-running
+// is a no-op; a missing mock struct (user replaced it) is a skip.
+func TestPatchInlineTestMock_AppendsAndSkips(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte(`package controllers_test
+
+type mockOrderService struct {
+	mock.Mock
+}
+
+func (m *mockOrderService) Get(ctx context.Context, id uuid.UUID) (*models.Order, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Order), args.Error(1)
+}
+`), 0o644))
+
+	d := MethodData{
+		Resource:   "Order",
+		Snake:      "order",
+		MethodName: "Recalculate",
+		Returns:    []string{"error"},
+	}
+	require.NoError(t, patchInlineTestMock(mockFile, "mockOrderService", d))
+	body, err := os.ReadFile(mockFile)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "func (m *mockOrderService) Recalculate(ctx context.Context) error {")
+
+	// Idempotent second run.
+	before := string(body)
+	require.NoError(t, patchInlineTestMock(mockFile, "mockOrderService", d))
+	after, err := os.ReadFile(mockFile)
+	require.NoError(t, err)
+	require.Equal(t, before, string(after))
+
+	// Missing struct → skip without error or write.
+	other := filepath.Join(tmp, "other_test.go")
+	require.NoError(t, os.WriteFile(other, []byte("package controllers_test\n"), 0o644))
+	require.NoError(t, patchInlineTestMock(other, "mockOrderService", d))
+	otherBody, err := os.ReadFile(other)
+	require.NoError(t, err)
+	require.Equal(t, "package controllers_test\n", string(otherBody))
+}
+
+// TestInlineMockTarget maps interface names to their scaffolded mock
+// hosts; unconventional names opt out.
+func TestInlineMockTarget(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	f, ty := inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "OrderServiceInterface",
+	})
+	require.Equal(t, "app/rest/controllers/order.controller_test.go", f)
+	require.Equal(t, "mockOrderService", ty)
+
+	f, ty = inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "OrderRepositoryInterface",
+	})
+	require.Equal(t, "app/services/order.service_test.go", f)
+	require.Equal(t, "mockOrderRepository", ty)
+
+	f, _ = inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "SomethingCustom",
+	})
+	require.Equal(t, "", f)
+}

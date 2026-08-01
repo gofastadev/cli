@@ -169,8 +169,20 @@ func patchEndpointServiceImpl(d EndpointData) error {
 	if err := astpatchAppendFuncDeclFn(implFile, stub); err != nil {
 		return err
 	}
-	return writeBackOrRecord(implFile,
-		fmt.Sprintf("add %s impl stub to %s", d.HandlerName, implStruct))
+	if err := writeBackOrRecord(implFile,
+		fmt.Sprintf("add %s impl stub to %s", d.HandlerName, implStruct)); err != nil {
+		return err
+	}
+	// The widened service interface must keep its mocks compiling —
+	// the controller test's inline mock<R>Service and any testutil
+	// mock both implement it. Same step GenMethod runs.
+	return patchInterfaceMocks(MethodData{
+		Resource:      d.Resource,
+		Snake:         d.Snake,
+		MethodName:    d.HandlerName,
+		InterfaceName: d.Resource + "ServiceInterface",
+		Returns:       []string{"error"},
+	})
 }
 
 func endpointDataDefaults(d EndpointData) EndpointData {

@@ -13,6 +13,7 @@ package generate
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
@@ -100,8 +101,137 @@ func GenMethod(d MethodData) error {
 	if err := astpatch.AppendFuncDecl(implFile, stub); err != nil {
 		return err
 	}
-	return writeBackOrRecord(implFile,
-		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName))
+	if err := writeBackOrRecord(implFile,
+		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName)); err != nil {
+		return err
+	}
+
+	// Step 3: keep the generated mocks satisfying the widened interface.
+	// Two mock surfaces exist: the shared testutil/mocks file (the
+	// skeleton's User resource uses these — regenerated via the g mock
+	// engine when present) and the inline testify mock inside the
+	// scaffolded test files (the controller test mocks the service, the
+	// service test mocks the repository). Leaving either stale means the
+	// project's own vet/tests stop compiling the moment a modify-aware
+	// generator widens an interface.
+	return patchInterfaceMocks(d)
+}
+
+// patchInterfaceMocks refreshes both mock surfaces for d.InterfaceName.
+func patchInterfaceMocks(d MethodData) error {
+	if err := refreshTestutilMock(d.InterfaceName); err != nil {
+		return err
+	}
+	mockFile, mockType := inlineMockTarget(d)
+	if mockFile == "" {
+		return nil
+	}
+	return patchInlineTestMock(mockFile, mockType, d)
+}
+
+// refreshTestutilMock regenerates testutil/mocks/<iface>_mock.go when it
+// exists — after an interface patch the on-disk mock no longer
+// implements it. In dry-run the interface file itself was only
+// recorded, so regeneration would read the OLD interface; record the
+// intent instead.
+func refreshTestutilMock(interfaceName string) error {
+	path := filepath.Join("testutil", "mocks", toMockSnake(interfaceName)+"_mock.go")
+	if !fileExistsHelper(path) {
+		return nil
+	}
+	if GetDryRun() {
+		recordPatch(path, "regenerate mock for widened "+interfaceName, 0)
+		return nil
+	}
+	return GenMock(interfaceName, GenMockOpts{})
+}
+
+// inlineMockTarget maps the interface being widened onto the scaffolded
+// test file that declares an inline testify mock of it. Returns ""
+// for interfaces outside the scaffold's naming convention.
+func inlineMockTarget(d MethodData) (mockFile, mockType string) {
+	if d.Resource == "" || d.Snake == "" {
+		return "", ""
+	}
+	lo := layout.Detect()
+	switch {
+	case strings.HasSuffix(d.InterfaceName, "ServiceInterface"):
+		return lo.ControllerTestFile(d.Snake), "mock" + d.Resource + "Service"
+	case strings.HasSuffix(d.InterfaceName, "RepositoryInterface"):
+		return lo.SvcTestFile(d.Snake), "mock" + d.Resource + "Repository"
+	}
+	return "", ""
+}
+
+// patchInlineTestMock appends a testify method for d to the inline mock
+// struct in the scaffolded test file. Test files are user-owned after
+// generation, so a missing file or a missing/renamed mock struct is a
+// skip, not an error — there is nothing generated left to keep in sync.
+// A mock that already declares the method is a no-op.
+func patchInlineTestMock(mockFile, mockType string, d MethodData) error {
+	if !fileExistsHelper(mockFile) {
+		return nil
+	}
+	f, err := astpatch.Parse(mockFile)
+	if err != nil {
+		return err
+	}
+	if _, err := astpatch.FindStruct(f, mockType); err != nil {
+		return nil
+	}
+	if _, err := astpatch.FindFunc(f, mockType, d.MethodName); err == nil {
+		return nil
+	}
+	astpatch.EnsureImport(f, "context")
+	ensureArgTypeImports(f, d.Args)
+	ensureReturnTypeImports(f, d.Returns)
+	if err := astpatchAppendFuncDeclFn(f, buildMockMethodDecl(mockType, d)); err != nil {
+		return err
+	}
+	return writeBackOrRecord(f,
+		fmt.Sprintf("extend %s with %s", mockType, d.MethodName))
+}
+
+// buildMockMethodDecl renders the testify hook for the inline mock:
+//
+//	func (m *mockOrderService) Recalculate(ctx context.Context) error {
+//		return m.Called(ctx).Error(0)
+//	}
+//
+// Multi-result methods get the nil-guarded Get pattern the scaffolded
+// inline mocks already use, so a `Return(nil, err)` expectation doesn't
+// panic on the type assertion.
+func buildMockMethodDecl(mockType string, d MethodData) string {
+	params := make([]string, 0, 1+len(d.Args))
+	names := make([]string, 0, 1+len(d.Args))
+	params = append(params, "ctx context.Context")
+	names = append(names, "ctx")
+	for _, a := range d.Args {
+		n := toCamelCase(a.Name)
+		params = append(params, n+" "+a.GoType)
+		names = append(names, n)
+	}
+	if len(d.Returns) == 1 && d.Returns[0] == "error" {
+		return fmt.Sprintf(`func (m *%s) %s(%s) error {
+	return m.Called(%s).Error(0)
+}`, mockType, d.MethodName, strings.Join(params, ", "), strings.Join(names, ", "))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "func (m *%s) %s(%s) %s {\n",
+		mockType, d.MethodName, strings.Join(params, ", "), renderReturns(d.Returns))
+	fmt.Fprintf(&b, "\tcallArgs := m.Called(%s)\n", strings.Join(names, ", "))
+	results := make([]string, 0, len(d.Returns))
+	for i, r := range d.Returns {
+		if i == len(d.Returns)-1 && r == "error" {
+			results = append(results, fmt.Sprintf("callArgs.Error(%d)", i))
+			continue
+		}
+		fmt.Fprintf(&b, "\tvar r%d %s\n", i, r)
+		fmt.Fprintf(&b, "\tif v := callArgs.Get(%d); v != nil {\n\t\tr%d = v.(%s)\n\t}\n", i, i, r)
+		results = append(results, fmt.Sprintf("r%d", i))
+	}
+	fmt.Fprintf(&b, "\treturn %s\n}", strings.Join(results, ", "))
+	return b.String()
 }
 
 // methodDataDefaults fills in the conventional names + paths so callers
