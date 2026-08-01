@@ -137,11 +137,16 @@ linters:
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
       # writes the type defs after the methods that reference them. That's
       # gqlgen's intentional output — we don't get to reformat it without
-      # losing the regenerate-on-schema-change workflow.
+      # losing the regenerate-on-schema-change workflow. dupl is off for
+      # the same reason the other per-resource dirs disable it — and more
+      # so here: resolver bodies carry no per-field content, so ANY two
+      # scaffolded resources' resolver files are token-identical and the
+      # second `g scaffold` in a GraphQL project would fail `make lint`.
       - path: app/graphql/resolvers/
         linters:
           - gocritic
           - revive
+          - dupl
 
 formatters:
   enable:
