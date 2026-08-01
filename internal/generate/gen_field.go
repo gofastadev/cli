@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dave/dst"
+
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
@@ -27,26 +29,27 @@ import (
 
 // FieldData is the resolved input for the field generator.
 type FieldData struct {
-	Resource     string // PascalCase ("Order")
-	LowerName    string // camelCase ("order", "apiKey") — allowlist var prefix
-	Snake        string // snake_case ("order")
-	PluralSnake  string // snake_case plural ("orders")
-	PluralName   string // PascalCase plural ("Orders") — List<Plural>Filter
-	Field        Field  // parsed name:type with GORM + SQL tags resolved
-	WithDTO      bool   // include DTO/inputs/allowlist/SDL patches (default true)
-	WithCreate   bool   // include TCreate<R>Dto + Create<R>Input (default true)
-	WithUpdate   bool   // include TUpdate<R>Dto/GraphQLInput + Update<R>Patch (default true)
-	WithResponse bool   // include the <R> response DTO + FromModel (default true)
-	ModelFile    string
-	DTOFile      string
-	InputsFile   string
-	SvcFile      string
-	RepoFile     string
-	RepoTestFile string
-	SchemaFile   string // app/graphql/schema/<snake>.gql (empty file = no GraphQL)
-	MigrationDir string
-	MigrationVer string // 6-digit version prefix; computed by default
-	DBDriver     string
+	Resource           string // PascalCase ("Order")
+	LowerName          string // camelCase ("order", "apiKey") — allowlist var prefix
+	Snake              string // snake_case ("order")
+	PluralSnake        string // snake_case plural ("orders")
+	PluralName         string // PascalCase plural ("Orders") — List<Plural>Filter
+	Field              Field  // parsed name:type with GORM + SQL tags resolved
+	WithDTO            bool   // include DTO/inputs/allowlist/SDL patches (default true)
+	WithCreate         bool   // include TCreate<R>Dto + Create<R>Input (default true)
+	WithUpdate         bool   // include TUpdate<R>Dto/GraphQLInput + Update<R>Patch (default true)
+	WithResponse       bool   // include the <R> response DTO + FromModel (default true)
+	ModelFile          string
+	DTOFile            string
+	InputsFile         string
+	SvcFile            string
+	RepoFile           string
+	RepoTestFile       string
+	ControllerTestFile string
+	SchemaFile         string // app/graphql/schema/<snake>.gql (empty file = no GraphQL)
+	MigrationDir       string
+	MigrationVer       string // 6-digit version prefix; computed by default
+	DBDriver           string
 }
 
 // GenField is the entry point invoked by the Cobra command.
@@ -118,6 +121,7 @@ func patchFieldSurfaces(d FieldData) error {
 			return patchAllowlistVar(d.RepoFile, d.LowerName+"FilterColumns", d.Field.SnakeName)
 		}},
 		{d.RepoTestFile, func() error { return patchRepoTestFixture(d) }},
+		{d.ControllerTestFile, func() error { return patchControllerTestBody(d) }},
 		{d.SchemaFile, func() error { return patchSDLFile(d) }},
 	}
 	for _, s := range steps {
@@ -219,6 +223,7 @@ func fieldPathDefaults(d FieldData) FieldData {
 		{&d.SvcFile, lo.SvcImplFile(d.Snake)},
 		{&d.RepoFile, lo.RepoImplFile(d.Snake)},
 		{&d.RepoTestFile, lo.RepoTestFile(d.Snake)},
+		{&d.ControllerTestFile, lo.ControllerTestFile(d.Snake)},
 		{&d.SchemaFile, filepath.Join("app", "graphql", "schema", d.Snake+".gql")},
 		{&d.MigrationDir, lo.MigrationsDir()},
 	}
@@ -421,6 +426,66 @@ func patchRepoTestFixture(d FieldData) error {
 	ensureFieldTypeImports(f, d.Field)
 	return writeBackOrRecord(f,
 		fmt.Sprintf("add %s to make%s test fixture", d.Field.Name, d.Resource))
+}
+
+// patchControllerTestBody extends the JSON request body in the
+// generated Test<R>Controller_Create_ServiceError_500 test. That test
+// posts a fully-populated body past a noop validator straight into
+// ToCreateInput, whose pointer derefs assume every required field is
+// present — a field added after scaffold time would nil-panic the test.
+// Same skip policy as the repo-test fixture: test files are user-owned,
+// so a missing test or reshaped body means nothing generated is left to
+// keep in sync.
+func patchControllerTestBody(d FieldData) error {
+	if !d.WithCreate {
+		return nil
+	}
+	f, err := astpatch.Parse(d.ControllerTestFile)
+	if err != nil {
+		return err
+	}
+	fn, err := astpatch.FindFunc(f, "", "Test"+d.Resource+"Controller_Create_ServiceError_500")
+	if err != nil {
+		return nil
+	}
+	lit := findJSONBodyLit(fn)
+	if lit == nil {
+		return nil
+	}
+	if strings.Contains(lit.Value, "\""+d.Field.JSONName+"\"") {
+		return nil
+	}
+	inner := strings.TrimSuffix(strings.TrimPrefix(lit.Value, "`"), "`")
+	entry := fmt.Sprintf("%q: %s", d.Field.JSONName, d.Field.SampleJSON())
+	closing := strings.LastIndex(inner, "}")
+	if closing == -1 {
+		return nil
+	}
+	sep := ", "
+	if !strings.Contains(inner, ":") {
+		sep = "" // `{ }` body — first field, no leading comma
+	}
+	lit.Value = "`" + inner[:closing] + sep + entry + " " + inner[closing:] + "`"
+	return writeBackOrRecord(f,
+		fmt.Sprintf("add %s to the Create test body of %s", d.Field.JSONName, d.Resource))
+}
+
+// findJSONBodyLit returns the raw-string literal holding the test's
+// JSON request body (the only backtick literal starting with `{` in
+// the function).
+func findJSONBodyLit(fn *dst.FuncDecl) *dst.BasicLit {
+	var found *dst.BasicLit
+	dst.Inspect(fn.Body, func(n dst.Node) bool {
+		if found != nil {
+			return false
+		}
+		if bl, ok := n.(*dst.BasicLit); ok && strings.HasPrefix(bl.Value, "`{") {
+			found = bl
+			return false
+		}
+		return true
+	})
+	return found
 }
 
 // ensureFieldTypeImports adds the imports a field's Go type needs.
