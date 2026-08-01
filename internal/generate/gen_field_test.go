@@ -699,3 +699,78 @@ func TestPatchRepoTestFixture_MissingBuilderIsSkip(t *testing.T) {
 		Field: ParseFields([]string{"reason:string"})[0],
 	}))
 }
+
+// TestPatchControllerTestBody — the Create_ServiceError_500 test posts
+// its body past a noop validator into ToCreateInput's pointer derefs,
+// so a field added after scaffold time must land in that JSON too (a
+// stale body nil-panics the generated test).
+func TestPatchControllerTestBody(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	ct := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(ct, []byte(`package controllers_test
+
+func TestOrderController_Create_ServiceError_500(t *testing.T) {
+	body := `+"`"+`{ "title": "sample-title" }`+"`"+`
+	_ = body
+}
+`), 0o644))
+
+	d := FieldData{
+		Resource: "Order", ControllerTestFile: ct,
+		Field:      ParseFields([]string{"weight:float"})[0],
+		WithCreate: true,
+	}
+	require.NoError(t, patchControllerTestBody(d))
+	got, err := os.ReadFile(ct)
+	require.NoError(t, err)
+	require.Contains(t, string(got), `"weight": 1.5`)
+
+	// Idempotent second run.
+	before := string(got)
+	require.NoError(t, patchControllerTestBody(d))
+	after, err := os.ReadFile(ct)
+	require.NoError(t, err)
+	require.Equal(t, before, string(after))
+
+	// --no-create leaves the body alone.
+	d2 := d
+	d2.Field = ParseFields([]string{"qty:int"})[0]
+	d2.WithCreate = false
+	require.NoError(t, patchControllerTestBody(d2))
+	unchanged, err := os.ReadFile(ct)
+	require.NoError(t, err)
+	require.Equal(t, before, string(unchanged))
+
+	// Missing test func (user-owned file reshaped) is a skip.
+	other := filepath.Join(tmp, "bare_test.go")
+	require.NoError(t, os.WriteFile(other, []byte("package controllers_test\n"), 0o644))
+	d3 := d
+	d3.ControllerTestFile = other
+	require.NoError(t, patchControllerTestBody(d3))
+}
+
+// TestPatchControllerTestBody_EmptyBody — a zero-field scaffold's `{ }`
+// body gains its first field without a leading comma.
+func TestPatchControllerTestBody_EmptyBody(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	ct := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(ct, []byte(`package controllers_test
+
+func TestOrderController_Create_ServiceError_500(t *testing.T) {
+	body := `+"`"+`{ }`+"`"+`
+	_ = body
+}
+`), 0o644))
+
+	require.NoError(t, patchControllerTestBody(FieldData{
+		Resource: "Order", ControllerTestFile: ct,
+		Field:      ParseFields([]string{"active:bool"})[0],
+		WithCreate: true,
+	}))
+	got, err := os.ReadFile(ct)
+	require.NoError(t, err)
+	require.Contains(t, string(got), `{ "active": true }`)
+	require.NotContains(t, string(got), `{ ,`)
+}
