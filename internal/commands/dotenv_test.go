@@ -507,3 +507,12 @@ func TestMergeIntoDotEnv_RenameError(t *testing.T) {
 	_, statErr := os.Stat(target + ".tmp")
 	assert.True(t, os.IsNotExist(statErr), "tmp file should be removed after rename failure")
 }
+
+// TestUnescapeDotEnvValue_UnknownEscapePassesThrough — a backslash
+// before a character that isn't one of the defined escapes (\\ \" \n
+// \r) is kept literally, so hand-written values like `C:\path` survive
+// unescaping unchanged.
+func TestUnescapeDotEnvValue_UnknownEscapePassesThrough(t *testing.T) {
+	assert.Equal(t, `a\xb`, unescapeDotEnvValue(`a\xb`))
+	assert.Equal(t, `C:\path\to`, unescapeDotEnvValue(`C:\path\to`))
+}

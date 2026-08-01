@@ -451,3 +451,16 @@ func TestReadLayout(t *testing.T) {
 		})
 	}
 }
+
+// TestGetPort_PrefixedVarWins — the project-prefixed SERVER_PORT is
+// the only env var the app's config loader honors, so it outranks the
+// bare PORT compose convention.
+func TestGetPort_PrefixedVarWins(t *testing.T) {
+	setupConfigDir(t, `server:
+  port: "3000"
+`)
+	os.WriteFile("go.mod", []byte("module myapp\n\ngo 1.25\n"), 0644)
+	t.Setenv("MYAPP_SERVER_PORT", "7777")
+	t.Setenv("PORT", "9090")
+	assert.Equal(t, "7777", GetPort())
+}

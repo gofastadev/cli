@@ -1730,3 +1730,23 @@ func TestRunDev_RestartLoopIterates(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 3, calls, "pipeline should run 3 times (2 restarts + clean exit)")
 }
+
+// TestRunAir_StartFailure — when the air process cannot even start
+// (toolchain present but the spawn itself fails), runAir surfaces the
+// genuine "air isn't runnable" code instead of a generic exit error.
+func TestRunAir_StartFailure(t *testing.T) {
+	chdirTemp(t)
+	origCmd, origLook := execCommand, execLookPath
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return exec.Command("/nonexistent-gofasta-air-binary")
+	}
+	execLookPath = func(string) (string, error) { return "/usr/bin/go", nil }
+	t.Cleanup(func() { execCommand, execLookPath = origCmd, origLook })
+
+	_, err := runAir(devFlags{}, func(string) {}, nil)
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	assert.Equal(t, string(clierr.CodeDevAirNotInstalled), ce.Code)
+	assert.Contains(t, err.Error(), "failed to start air")
+}
