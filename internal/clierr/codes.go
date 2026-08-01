@@ -308,6 +308,22 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/cli-reference/db",
 	},
 
+	CodeRefactorIneligible: {
+		Hint: "run `gofasta refactor status` to see the project's current layout — `refactor feature` needs a layered project, `refactor layered` a feature one",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorAborted: {
+		Hint: "inspect the reported failure, then `git restore .` (or `git checkout -- .`) to roll the partial migration back before retrying",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorDirtyTree: {
+		Hint: "commit or stash your changes first so an aborted migration can be reverted cleanly, or pass --force to proceed anyway",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorResourceNotFound: {
+		Hint: "check the resource name against `ls app/models/` (layered) or `ls app/` (feature), or pass --all to migrate every discovered resource",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
 	CodeRefactorPrecheckFailed: {
 		Hint: "fix the blocking conditions listed above (run `gofasta refactor status` to re-check), then re-run the migration",
 		Docs: "https://gofasta.dev/docs/cli-reference/refactor",

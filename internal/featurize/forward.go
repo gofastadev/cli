@@ -33,7 +33,7 @@ import (
 // service impl now lives in package <snake> alongside the caller.
 //
 // The transformer only collapses imports whose path STARTS with the
-// project module path + one of these suffixes. Framework imports like
+// project module path + one of these suffixes. Gofasta library imports like
 // `github.com/gofastadev/gofasta/pkg/models` are left alone.
 //
 // Intentionally NOT collapsed:
@@ -610,7 +610,7 @@ var layeredPackageNames = []string{
 }
 
 // isCollapsablePath reports whether the import path points at one of
-// the project's layered packages (vs. a framework or third-party path).
+// the project's layered packages (vs. a gofasta-library or third-party path).
 // The match anchors on `<mod>` + collapsable suffix to avoid false
 func isCollapsablePath(path, mod string) bool {
 	if mod == "" {

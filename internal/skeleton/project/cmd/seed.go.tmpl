@@ -43,7 +43,12 @@ func runSeed(fresh bool) error {
 		if err != nil {
 			return fmt.Errorf("building migration URL: %w", err)
 		}
-		dropCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "down", "-all")
+		// Same layout-tolerant path resolution cmd/migrate.go uses —
+		// deploys flatten db/migrations to ./migrations or /migrations,
+		// and a hardcoded path here would make `seed --fresh` fail in
+		// exactly the environments where `migrate up` works.
+		migrationsPath := resolveMigrationsPath()
+		dropCmd := exec.Command("migrate", "-path", migrationsPath, "-database", dbURL, "down", "-all")
 		dropCmd.Stdout = os.Stdout
 		dropCmd.Stderr = os.Stderr
 		// Errors are intentionally ignored: an empty / not-yet-migrated
@@ -52,7 +57,7 @@ func runSeed(fresh bool) error {
 		// migrations below.
 		_ = dropCmd.Run()
 
-		upCmd := exec.Command("migrate", "-path", "db/migrations", "-database", dbURL, "up")
+		upCmd := exec.Command("migrate", "-path", migrationsPath, "-database", dbURL, "up")
 		upCmd.Stdout = os.Stdout
 		upCmd.Stderr = os.Stderr
 		if err := upCmd.Run(); err != nil {

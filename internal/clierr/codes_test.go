@@ -1,6 +1,10 @@
 package clierr
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -51,4 +55,50 @@ func TestRegistry_NonEmpty(t *testing.T) {
 	_, foundWire := registry[CodeWireMissingProvider]
 	assert.True(t, foundInternal, "CodeInternal missing from registry")
 	assert.True(t, foundWire, "CodeWireMissingProvider missing from registry")
+}
+
+// TestEveryDeclaredCodeIsRegistered parses this package's source and
+// asserts every Code-typed constant has a registry entry. The older
+// registry-side tests iterate the map, which can never notice a
+// constant that was declared but never registered — exactly the drift
+// that shipped four refactor codes with empty hints. Enumerating the
+// const block from the AST closes that hole for every future code.
+func TestEveryDeclaredCodeIsRegistered(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "codes.go", nil, 0)
+	require.NoError(t, err)
+
+	var declared []string
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			if id, ok := vs.Type.(*ast.Ident); !ok || id.Name != "Code" {
+				continue
+			}
+			for _, v := range vs.Values {
+				if lit, ok := v.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+					declared = append(declared, strings.Trim(lit.Value, `"`))
+				}
+			}
+		}
+	}
+	require.NotEmpty(t, declared, "AST scan found no Code constants — parser assumptions broke")
+
+	// Docs is deliberately NOT asserted non-empty: several long-standing
+	// entries (CodeInternal, the toolchain-failure family) route the
+	// user via the hint alone.
+	for _, code := range declared {
+		m, ok := registry[Code(code)]
+		assert.True(t, ok, "Code %q is declared but has no registry entry — the codes.go header says: keep the two lists in sync", code)
+		if ok {
+			assert.NotEmpty(t, m.Hint, "Code %q registry entry has an empty hint", code)
+		}
+	}
 }

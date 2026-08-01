@@ -265,7 +265,7 @@ func (c *applyCursor) Replace(n dst.Node) {
 // parent slot they belong to.
 //
 // Coverage: function declarations + their bodies, top-level var/const
-// initializer expressions, struct field types, import specs. Anything
+// initializer expressions, struct field types. Anything
 // useful for featurize. Doesn't try to cover every dst node shape —
 func applyOnFile(file *dst.File, fn func(*applyCursor) bool) {
 	for _, decl := range file.Decls {
