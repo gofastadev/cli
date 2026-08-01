@@ -1174,7 +1174,9 @@ var relationCmd = &cobra.Command{
 (for belongs_to) emit a paired migration that adds the FK column and
 constraint on the parent table.
 
-  belongs_to <Other>  → <Other>ID uuid.UUID + *<Other>; FK on this table.
+  belongs_to <Other>  → <Other>ID *uuid.UUID + *<Other>; nullable FK on this
+                        table (a NOT NULL FK could never migrate onto a
+                        populated table — backfill, then tighten yourself).
   has_many   <Other>  → []<Other>; FK lives on the OTHER table.
   has_one    <Other>  → *<Other>; FK lives on the OTHER table.
 
