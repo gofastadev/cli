@@ -20,10 +20,11 @@ package featurize
 import (
 	"bytes"
 	"fmt"
-	"go/format"
 	"go/token"
 	"maps"
 	"strings"
+
+	"golang.org/x/tools/imports"
 
 	"github.com/dave/dst"
 	"github.com/dave/dst/decorator"
@@ -80,11 +81,21 @@ func renderFile(file *dst.File) ([]byte, error) {
 	// bytes.Buffer never fails a write. A malformed tree panics inside the
 	// restorer rather than returning an error, so there is nothing to report.
 	_ = decorator.NewRestorer().Fprint(&buf, file)
-	out, err := format.Source(buf.Bytes())
+	// imports.Process (the goimports formatter, FormatOnly so nothing is
+	// added or removed) rather than format.Source: gofmt never regroups
+	// import blocks, but the scaffold's linter runs goimports — a
+	// refactor-rewritten file whose local and external imports share one
+	// group would fail the project's own `make lint`.
+	out, err := imports.Process("", buf.Bytes(), &imports.Options{
+		Comments:   true,
+		TabIndent:  true,
+		TabWidth:   8,
+		FormatOnly: true,
+	})
 	if err != nil {
 		// Return un-formatted source rather than failing — downstream
 		// callers can still inspect the output, and the failure is
-		// usually a transient gofmt input quirk.
+		// usually a transient formatter input quirk.
 		return buf.Bytes(), nil //nolint:nilerr // intentional fallback
 	}
 	return out, nil

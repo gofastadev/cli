@@ -264,6 +264,12 @@ func renameRoutesFunc(file *dst.File, resourceName string) {
 		}
 		if fd.Name.Name == target {
 			fd.Name.Name = "RegisterRoutes"
+			// Keep the doc comment naming the function it documents —
+			// revive's exported rule (correctly) requires the comment to
+			// open with the new name.
+			for i, line := range fd.Decs.Start {
+				fd.Decs.Start[i] = strings.Replace(line, "// "+target, "// RegisterRoutes", 1)
+			}
 			return
 		}
 	}

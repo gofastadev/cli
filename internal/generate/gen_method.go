@@ -42,6 +42,12 @@ type MethodData struct {
 	// for every non-error result; a trailing error gets the
 	// "not implemented" sentinel.
 	Returns []string
+	// ReceiverName is the impl stub's receiver identifier. It must match
+	// what the scaffold already uses on the target struct — revive's
+	// receiver-naming rule fails the project's own lint when one method
+	// of a type names its receiver differently from the rest. Services
+	// use "s" (the default); repositories use "r" (set by GenRepoMethod).
+	ReceiverName string
 }
 
 // GenMethod is the entry point invoked by the Cobra command.
@@ -240,6 +246,9 @@ func methodDataDefaults(d MethodData) MethodData {
 	if len(d.Returns) == 0 {
 		d.Returns = []string{"error"}
 	}
+	if d.ReceiverName == "" {
+		d.ReceiverName = "s"
+	}
 	if d.Resource == "" {
 		return d
 	}
@@ -388,10 +397,14 @@ func buildMethodImplStub(d MethodData) string {
 		}
 		results = append(results, zeroValueFor(r))
 	}
+	recv := d.ReceiverName
+	if recv == "" {
+		recv = "s"
+	}
 	return fmt.Sprintf(`// %s is a generated stub. Replace with the real implementation.
-func (s *%s) %s(%s) %s {
+func (%s *%s) %s(%s) %s {
 	return %s
-}`, d.MethodName, d.ImplStructName, d.MethodName, strings.Join(params, ", "),
+}`, d.MethodName, recv, d.ImplStructName, d.MethodName, strings.Join(params, ", "),
 		renderReturns(d.Returns), strings.Join(results, ", "))
 }
 

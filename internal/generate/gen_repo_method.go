@@ -32,6 +32,12 @@ func GenRepoMethod(d MethodData) error {
 	if d.ImplStructName == "" {
 		d.ImplStructName = d.Resource + "Repository"
 	}
+	// Scaffolded repository methods all use receiver `r`; a stub with
+	// the service-side `s` trips revive's receiver-naming rule in the
+	// generated project's own lint.
+	if d.ReceiverName == "" {
+		d.ReceiverName = "r"
+	}
 	if d.InterfaceFile == "" || d.ImplFile == "" {
 		lo := layout.Detect()
 		if d.InterfaceFile == "" {

@@ -415,3 +415,27 @@ func TestInlineMockTarget(t *testing.T) {
 	})
 	require.Equal(t, "", f)
 }
+
+// TestBuildMethodImplStub_ReceiverMatchesTarget — repository stubs use
+// `r` (matching the scaffolded repo's receiver), services use `s`.
+// revive's receiver-naming rule fails the generated project's own lint
+// when one method of a type names its receiver differently.
+func TestBuildMethodImplStub_ReceiverMatchesTarget(t *testing.T) {
+	svc := buildMethodImplStub(MethodData{
+		MethodName:     "Recalculate",
+		InterfaceName:  "OrderServiceInterface",
+		ImplStructName: "OrderService",
+		ReceiverName:   "s",
+		Returns:        []string{"error"},
+	})
+	require.Contains(t, svc, "func (s *OrderService) Recalculate")
+
+	repo := buildMethodImplStub(MethodData{
+		MethodName:     "FindBySlug",
+		InterfaceName:  "OrderRepositoryInterface",
+		ImplStructName: "OrderRepository",
+		ReceiverName:   "r",
+		Returns:        []string{"*models.Order", "error"},
+	})
+	require.Contains(t, repo, "func (r *OrderRepository) FindBySlug")
+}

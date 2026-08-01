@@ -377,6 +377,11 @@ func renameRegisterRoutesBack(file *dst.File, resourceName string) {
 		}
 		if fd.Name.Name == "RegisterRoutes" {
 			fd.Name.Name = resourceName + "Routes"
+			// Mirror of renameRoutesFunc: the doc comment must open with
+			// the (restored) function name or revive's exported rule fires.
+			for i, line := range fd.Decs.Start {
+				fd.Decs.Start[i] = strings.Replace(line, "// RegisterRoutes", "// "+resourceName+"Routes", 1)
+			}
 			return
 		}
 	}
