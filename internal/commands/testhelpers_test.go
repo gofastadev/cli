@@ -556,6 +556,16 @@ func withFakeExec(t *testing.T, exitCode int) {
 // the original on exit either way).
 func stubProbesOK(t *testing.T) {
 	t.Helper()
+	// Compose availability is stubbed here too: the pipeline tests fake
+	// every docker invocation through execCommand, but the availability
+	// PRECHECK does a real LookPath — green on developer machines with
+	// Docker installed, red on mac CI runners that have none. Tests that
+	// exercise the unavailable path override this back to false AFTER
+	// calling stubProbesOK.
+	origCompose := composeAvailableFn
+	composeAvailableFn = func() bool { return true }
+	t.Cleanup(func() { composeAvailableFn = origCompose })
+
 	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
 	probeDatabaseFn = func() probeResult {
 		return probeResult{Dep: "database", Status: probeOK, Endpoint: "stubbed"}

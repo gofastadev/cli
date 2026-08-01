@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
 
       - name: Lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
@@ -39,8 +39,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # The declared floor plus the current stable release.
-        go-version: ["1.25.0", "stable"]
+        # The newest patch of the declared floor (exact-pinning the .0
+        # patch froze CI on unpatched stdlib — govulncheck rightly
+        # failed on reachable crypto/tls CVEs) plus current stable.
+        go-version: ["1.25.x", "stable"]
     # Without GOTOOLCHAIN=local the go command silently upgrades itself
     # to go.mod's toolchain and the matrix tests one version twice.
     env:
@@ -61,7 +63,7 @@ jobs:
         run: go test -race -shuffle=on -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        if: matrix.go-version == '1.25.0'
+        if: matrix.go-version == '1.25.x'
         uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
@@ -90,7 +92,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
       - name: Build
         run: go build ./...
       - name: Vet (compiles all test code)
@@ -126,7 +128,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
 
       - name: Build CLI
         run: go build -o /tmp/gofasta ./cmd/gofasta/
@@ -162,12 +164,12 @@ jobs:
                 -e POSTGRES_DB=testproject_test \
                 -p 5432:5432 \
                 postgres:18-alpine
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=5432" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 30); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=5432" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 30); do
                 docker exec testproject_db pg_isready -U testproject -d testproject_test && break
                 sleep 2
               done
@@ -189,12 +191,12 @@ jobs:
                 -e MYSQL_DATABASE=testproject_test \
                 -p 3306:3306 \
                 mysql:8.4 --log_bin_trust_function_creators=ON
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=3306" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 60); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=3306" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 60); do
                 docker exec testproject_db mysqladmin ping -h localhost -u testproject -ptestproject 2>/dev/null | grep -q 'mysqld is alive' && break
                 sleep 2
               done
@@ -207,13 +209,13 @@ jobs:
                 --user root \
                 -p 1433:1433 \
                 mcr.microsoft.com/mssql/server:2022-latest
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=1433" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=sa" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=YourStrong@Passw0rd" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=1433" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=sa" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=YourStrong@Passw0rd" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
               # SQL Server takes ~30s to be queryable on cold start.
-              for i in $(seq 1 60); do
+              for _ in $(seq 1 60); do
                 docker exec testproject_db /opt/mssql-tools18/bin/sqlcmd \
                   -S localhost -U sa -P 'YourStrong@Passw0rd' -No \
                   -Q "SELECT 1" >/dev/null 2>&1 && break
@@ -233,12 +235,12 @@ jobs:
                 --ulimit nofile=262144:262144 \
                 -p 9000:9000 -p 8123:8123 \
                 clickhouse/clickhouse-server:24.8-alpine
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=9000" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=default" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 30); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=9000" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=default" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 30); do
                 curl -fsS http://localhost:8123/ping >/dev/null 2>&1 && break
                 sleep 2
               done
@@ -250,7 +252,7 @@ jobs:
       - name: Configure SQLite database name
         if: matrix.driver == 'sqlite'
         run: |
-          echo "TESTPROJECT_DATABASE_NAME=/tmp/testproject_test.db" >> $GITHUB_ENV
+          echo "TESTPROJECT_DATABASE_NAME=/tmp/testproject_test.db" >> "$GITHUB_ENV"
 
       - name: Scaffold a new project
         # `gofasta new` runs `go get github.com/gofastadev/gofasta@latest`
@@ -315,7 +317,7 @@ jobs:
           grep -q 'out\["weight"\]' app/services/product_inputs.go
           /tmp/gofasta g method Product Recalculate
           /tmp/gofasta g repo-method Product FindBySlug --returns "*models.Product, error"
-          /tmp/gofasta g endpoint Product POST /products/{id}/archive
+          /tmp/gofasta g endpoint Product POST '/products/{id}/archive'
           # g middleware splices the expression verbatim; the import is
           # the user's responsibility (same as hand-editing the chain).
           # Add it the way a user would, then wrap the route.
@@ -429,7 +431,11 @@ jobs:
           /tmp/gofasta ai claude
           /tmp/gofasta ai status | grep -q claude
           /tmp/gofasta ai uninstall claude
-          ! /tmp/gofasta ai status | grep -q claude
+          # Explicit if/exit — a bare `! cmd` skips errexit (SC2251)
+          # and would never fail the job.
+          if /tmp/gofasta ai status | grep -q claude; then
+            echo "claude config still reported installed after uninstall"; exit 1
+          fi
 
       # ─────────────────────────────────────────────────────────────
       # Server smoke — start `gofasta serve` in the background, wait
@@ -442,9 +448,9 @@ jobs:
         run: |
           /tmp/gofasta serve &
           SERVE_PID=$!
-          trap "kill $SERVE_PID 2>/dev/null || true" EXIT
+          trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
           # Poll for readiness — give the server up to ~30s to bind.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://localhost:8080/health/live >/dev/null 2>&1; then
               echo "serve is ready"
               break
@@ -499,7 +505,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
 
       - name: Build CLI
         run: go build -o /tmp/gofasta ./cmd/gofasta/
@@ -518,11 +524,17 @@ jobs:
         run: |
           /tmp/gofasta g scaffold Order title:string qty:int
           test -f app/graphql/resolvers/order.resolvers.go
-          ! grep -q "not implemented" app/graphql/resolvers/order.resolvers.go
+          # `! grep` would skip errexit (SC2251) and never fail the job —
+          # the stub gate must be an explicit exit.
+          if grep -q "not implemented" app/graphql/resolvers/order.resolvers.go; then
+            echo "order.resolvers.go contains unimplemented stubs"; exit 1
+          fi
           # Initialism/mangling gate: APIKey + sku through the full gql chain.
           /tmp/gofasta g scaffold APIKey sku:string active:bool
           test -f app/graphql/resolvers/api_key.resolvers.go
-          ! grep -q "not implemented" app/graphql/resolvers/api_key.resolvers.go
+          if grep -q "not implemented" app/graphql/resolvers/api_key.resolvers.go; then
+            echo "api_key.resolvers.go contains unimplemented stubs"; exit 1
+          fi
           grep -q "TCreateAPIKeyDto" app/dtos/api_key.dtos.go
           grep -q "sku: String" app/graphql/schema/api_key.gql
 

@@ -70,12 +70,16 @@ project-prefixed env vars) inherit the same environment ` + "`gofasta dev`" + ` 
 		// Cobra puts everything (positional + post-`--`) into args.
 		// ArgsLenAtDash returns the index where `--` appeared so we
 		// can split paths from raw forwarded flags.
+		// The dashAt > len(args) guard is defensive: cobra's own Execute
+		// path always hands RunE the args the same parse produced, but
+		// RunE is also directly callable (tests, embedders) where a
+		// stale ArgsLenAtDash from an earlier parse would slice out of
+		// bounds.
 		dashAt := cmd.ArgsLenAtDash()
 		var paths, extra []string
-		switch dashAt {
-		case -1:
+		if dashAt < 0 || dashAt > len(args) {
 			paths = args
-		default:
+		} else {
 			paths = args[:dashAt]
 			extra = args[dashAt:]
 		}

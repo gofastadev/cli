@@ -458,6 +458,13 @@ func TestTestCmd_RunE_PathsAndExtras(t *testing.T) {
 	stagedFakeExec(t, 0)
 	stubExecLookPathOK(t)
 	rootCmd.SetArgs([]string{"test", "./...", "--", "-count=1"})
-	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		// testCmd is package-level shared state: parsing `--` above
+		// leaves its pflag ArgsLenAtDash at a positive index, and a
+		// later direct-RunE test (shuffle order) would slice its own
+		// nil args with the stale index. Re-parse empty to reset.
+		_ = testCmd.Flags().Parse(nil)
+	})
 	assert.NoError(t, rootCmd.Execute())
 }

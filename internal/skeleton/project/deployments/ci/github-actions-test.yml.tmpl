@@ -133,8 +133,9 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          # Match the scaffold's go.mod directive exactly.
-          go-version: "1.25.0"
+          # Newest patch release of the scaffold's declared Go floor — an
+          # exact .0 pin would freeze CI on unpatched stdlib.
+          go-version: "1.25.x"
 {{- if eq .DBDriver "mysql" }}
 
       # The scaffold's per-resource migrations install BEFORE UPDATE /
@@ -196,5 +197,5 @@ jobs:
       - name: Scan for reachable vulnerabilities
         uses: golang/govulncheck-action@v1
         with:
-          go-version-input: "1.25.0"
+          go-version-input: "1.25.x"
           go-package: ./...
