@@ -40,7 +40,7 @@ lint: lint-install
 test:
 # -timeout 20m: internal/commands is large and its -race run sits near Go's
 # 10-minute default, which fails as a timeout rather than a test failure.
-	go test -race -timeout 20m ./...
+	go test -race -shuffle=on -timeout 20m ./...
 
 ## Run tests with coverage report
 coverage:

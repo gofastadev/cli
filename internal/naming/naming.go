@@ -101,9 +101,21 @@ func pascalWord(w string) string {
 func Pascal(s string) string {
 	var b strings.Builder
 	for _, w := range words(s) {
-		b.WriteString(pascalWord(w))
+		writeJoinedWord(&b, w)
 	}
 	return b.String()
+}
+
+// writeJoinedWord appends a word to a Pascal/Camel join. A case join
+// cannot mark a boundary before a digit-leading segment (digits have
+// no case): "a_00" would collapse to "A00" and Snake could never
+// recover the "a_00" the user wrote — so the underscore is kept for
+// digit-leading segments. Found by FuzzNamingRoundTrip with "A_00".
+func writeJoinedWord(b *strings.Builder, w string) {
+	if b.Len() > 0 && w != "" && w[0] >= '0' && w[0] <= '9' {
+		b.WriteString("_")
+	}
+	b.WriteString(pascalWord(w))
 }
 
 // Camel is Pascal with the first word fully lowered — the golint camel
@@ -117,7 +129,7 @@ func Camel(s string) string {
 	var b strings.Builder
 	b.WriteString(ws[0])
 	for _, w := range ws[1:] {
-		b.WriteString(pascalWord(w))
+		writeJoinedWord(&b, w)
 	}
 	return b.String()
 }
@@ -125,7 +137,11 @@ func Camel(s string) string {
 // Snake converts any accepted input shape to snake_case — the
 // initialism-aware inverse of Pascal: "APIKey" → "api_key",
 // "OwnerID" → "owner_id", "UTF8Name" → "utf8_name". Snake(Pascal(x))
-// is identity for snake inputs.
+// is identity for snake inputs, with one documented exception:
+// adjacent segments that both pascalize to all-caps ("api_id" →
+// "APIID") cannot encode their boundary in PascalCase, so the round
+// trip yields "apiid". Database columns are unaffected — GORM's
+// NamingStrategy makes the same split we do (APIID → api_id).
 func Snake(s string) string {
 	return strings.Join(words(s), "_")
 }

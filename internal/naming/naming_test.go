@@ -119,3 +119,46 @@ func TestIsIdentifier(t *testing.T) {
 	assert.False(t, IsIdentifier("has space"))
 	assert.False(t, IsIdentifier(""))
 }
+
+// FuzzNamingRoundTrip — for any valid identifier, the conversion set
+// must be internally stable: Snake output survives Pascal→Snake
+// round-tripping (the invariant `g rename` and the generators depend
+// on), and no conversion may panic on arbitrary input.
+func FuzzNamingRoundTrip(f *testing.F) {
+	f.Add("APIKey")
+	f.Add("owner_id")
+	f.Add("HTTPServer")
+	f.Add("simple")
+	f.Add("Product2Go")
+	f.Add("UTF8Name")
+	f.Fuzz(func(t *testing.T, in string) {
+		// Conversions must never panic, valid input or not.
+		p := Pascal(in)
+		_ = Camel(in)
+		s := Snake(in)
+		_ = Pluralize(p)
+		if !IsIdentifier(in) {
+			return // stability invariants only hold for valid identifiers
+		}
+		// Snake must be idempotent unconditionally.
+		if Snake(s) != s {
+			t.Fatalf("Snake not idempotent for %q: Snake=%q, Snake(Snake)=%q", in, s, Snake(s))
+		}
+		// Some boundaries are inherently unencodable in a case-based
+		// join: "a_a" → "AA", "api_id" → "APIID", "a_a0a" → "AA0a" — no
+		// PascalCase spelling can mark where one segment ends and the
+		// next begins. The invariant asserted is therefore operational:
+		// WHENEVER the Pascal join preserves the word boundaries, the
+		// round trip must be exact. (Purely Go-identifier cosmetics
+		// either way — GORM's NamingStrategy makes the same split we do,
+		// APIID → api_id, so database columns never drift; verified
+		// empirically against gorm.io/gorm/schema.)
+		joined := Pascal(s)
+		if len(words(joined)) != len(words(s)) {
+			return
+		}
+		if again := Snake(joined); again != s {
+			t.Fatalf("snake round-trip unstable for %q: Snake=%q, Snake(Pascal(Snake))=%q", in, s, again)
+		}
+	})
+}

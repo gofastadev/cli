@@ -516,3 +516,25 @@ func TestUnescapeDotEnvValue_UnknownEscapePassesThrough(t *testing.T) {
 	assert.Equal(t, `a\xb`, unescapeDotEnvValue(`a\xb`))
 	assert.Equal(t, `C:\path\to`, unescapeDotEnvValue(`C:\path\to`))
 }
+
+// FuzzDotEnvRoundTrip — the escaping contract: any value written via
+// quoteDotEnvValue must come back byte-identical through
+// parseDotEnvLine. A round-trip loss silently corrupts user secrets.
+func FuzzDotEnvRoundTrip(f *testing.F) {
+	f.Add("plain")
+	f.Add(`with "quotes" inside`)
+	f.Add("newline\nand\r\ncrlf")
+	f.Add(`back\slash and 'single'`)
+	f.Add("")
+	f.Add(`trailing\`)
+	f.Fuzz(func(t *testing.T, val string) {
+		line := "KEY=" + quoteDotEnvValue(val)
+		key, got, ok := parseDotEnvLine(line)
+		if !ok || key != "KEY" {
+			t.Fatalf("round-trip lost the line entirely: %q -> ok=%v key=%q", val, ok, key)
+		}
+		if got != val {
+			t.Fatalf("round-trip corrupted value: wrote %q, read back %q (line %q)", val, got, line)
+		}
+	})
+}

@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Managed-block markers identify a region of .env that the dev
@@ -324,7 +325,11 @@ func quoteDotEnvValue(v string) string {
 	}
 	needsQuote := false
 	for _, r := range v {
-		if r == ' ' || r == '\t' || r == '#' || r == '"' || r == '\'' || r == '\\' || r == '\n' || r == '\r' {
+		// unicode.IsSpace (not a hand-kept char list): parseDotEnvLine
+		// TrimSpaces unquoted values, so EVERY whitespace rune — \v, \f,
+		// NBSP, not just space/tab/newline — corrupts an unquoted value
+		// at the edges. Found by FuzzDotEnvRoundTrip with "\v".
+		if unicode.IsSpace(r) || r == '#' || r == '"' || r == '\'' || r == '\\' {
 			needsQuote = true
 			break
 		}

@@ -184,3 +184,17 @@ jobs:
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+  # Reachability-based vulnerability scanning (the Go team's scanner) —
+  # reports only CVEs whose vulnerable code paths this project actually
+  # calls, so findings are worth acting on. Runs alongside the test job
+  # on every push/PR.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for reachable vulnerabilities
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.25.0"
+          go-package: ./...

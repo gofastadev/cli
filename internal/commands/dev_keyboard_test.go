@@ -12,7 +12,6 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -245,27 +244,6 @@ func TestReadKeyboardLoop_MixedSequence(t *testing.T) {
 // banner-print function (no other test calls it directly).
 func TestPrintKeyboardBanner_DoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() { printKeyboardBanner() })
-}
-
-// startKeyboardListener happy path — all seams succeed, listener
-// launches and returns a non-nil signals channel + active=true. The
-// race detector requires cancelableStdinReader.Close to serialize with
-// in-flight Read (see the readMu inside cancelableStdinReader).
-func TestStartKeyboardListener_HappyPath(t *testing.T) {
-	withTerminalStubs(t, true, nil)
-	origNew := newCancelableStdinReaderFn
-	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
-		r, w, err := os.Pipe()
-		require.NoError(t, err)
-		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
-	}
-	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
-
-	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
-	require.True(t, active)
-	assert.NotNil(t, signals)
-	cancel()
-	cancel() // idempotent
 }
 
 // startKeyboardListener — newCancelableStdinReaderFn returns an error;
@@ -623,7 +601,10 @@ func TestHelperProcess(t *testing.T) {
 	// classification against real wait-status semantics rather than a
 	// stubbed isSignaledExit.
 	if os.Getenv("GOFASTA_FAKE_SIGNAL") == "1" {
-		_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
+		// killSelfWithSIGINT is defined per-platform (unix real, other
+		// stub) — syscall.Kill does not exist on windows and would break
+		// compiling this package's tests there.
+		killSelfWithSIGINT()
 		// Give the signal time to be delivered; unreachable normally.
 		time.Sleep(5 * time.Second)
 	}

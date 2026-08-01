@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -409,4 +410,36 @@ func TestCancelableStdinReader_ReadEmptyBuffer(t *testing.T) {
 	n, err := rdr.Read(nil)
 	assert.Equal(t, 0, n)
 	assert.NoError(t, err)
+}
+
+// TestStartKeyboardListener_HappyPath lives in the unix-tagged test
+// file because it constructs the unix cancelableStdinReader (the fd
+// field doesn't exist in the fallback build) — keeping it in the
+// cross-platform test file broke `go vet` on windows.
+// startKeyboardListener happy path — all seams succeed, listener
+// launches and returns a non-nil signals channel + active=true. The
+// race detector requires cancelableStdinReader.Close to serialize with
+// in-flight Read (see the readMu inside cancelableStdinReader).
+func TestStartKeyboardListener_HappyPath(t *testing.T) {
+	withTerminalStubs(t, true, nil)
+	origNew := newCancelableStdinReaderFn
+	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
+	}
+	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
+
+	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	require.True(t, active)
+	assert.NotNil(t, signals)
+	cancel()
+	cancel() // idempotent
+}
+
+// killSelfWithSIGINT delivers a real SIGINT to the current process —
+// the fake-exec child uses it so the parent observes a genuinely
+// signaled wait status.
+func killSelfWithSIGINT() {
+	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 }

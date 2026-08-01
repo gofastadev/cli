@@ -1,0 +1,29 @@
+name: govulncheck
+
+# Reachability-based vulnerability scanning (the Go team's scanner) —
+# reports only CVEs whose vulnerable symbols this module actually
+# calls. Runs on every PR/push AND on a weekly schedule so a CVE
+# published against an existing dependency surfaces without waiting
+# for the next code change.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * 1" # Mondays 05:23 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan for reachable vulnerabilities
+        uses: golang/govulncheck-action@032d45514ae346b1db93c04b0c90b841c370344f # v1
+        with:
+          go-version-input: "1.25.0"
+          go-package: ./...

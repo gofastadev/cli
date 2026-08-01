@@ -92,3 +92,25 @@ func TestParseFields_InitialismFieldNames(t *testing.T) {
 	require.Equal(t, "ownerId", fields[0].JSONName)
 	require.Equal(t, "owner_id", fields[0].SnakeName)
 }
+
+// FuzzParseFields — ParseFields consumes raw CLI arguments; it must
+// never panic and every produced Field must carry a resolved Go type,
+// whatever byte soup arrives.
+func FuzzParseFields(f *testing.F) {
+	f.Add("name:string")
+	f.Add("price:float")
+	f.Add("owner_id:uuid")
+	f.Add("released_at:time")
+	f.Add("weird::")
+	f.Add(":")
+	f.Add("no-type")
+	f.Add("UPPER:INT")
+	f.Fuzz(func(t *testing.T, arg string) {
+		fields := ParseFields([]string{arg})
+		for _, fld := range fields {
+			if fld.GoType == "" {
+				t.Fatalf("ParseFields(%q) produced a field with empty GoType: %+v", arg, fld)
+			}
+		}
+	})
+}

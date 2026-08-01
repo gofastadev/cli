@@ -44,6 +44,12 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+
+# One SPDX SBOM per released archive (generated with syft, which the
+# release workflow installs). Lands next to the archives on the release
+# page so consumers can audit exactly what each binary contains.
+sboms:
+  - artifacts: archive
   algorithm: sha256
 
 snapshot:

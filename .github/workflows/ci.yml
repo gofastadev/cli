@@ -5,10 +5,17 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly: scaffolds install external tools (gqlgen, air, migrate,
+  # golangci-lint) at generation time, so an upstream release can break
+  # `gofasta new` while this repo is untouched. The cron makes that
+  # failure ours to discover instead of a user's.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
 
 # Least privilege: CI only needs to read the repo. Any job that needs more
-# must opt in explicitly. (Third-party actions below are pinned to tags; for
-# stronger supply-chain guarantees pin them to full commit SHAs.)
+# must opt in explicitly. Actions are pinned to full commit SHAs (the tag
+# comment is for humans and Dependabot, which bumps SHA + comment together).
 permissions:
   contents: read
 
@@ -16,38 +23,46 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25.0"
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.11.4
 
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go-version: ["1.25.0"]
+        # The declared floor plus the current stable release.
+        go-version: ["1.25.0", "stable"]
+    # Without GOTOOLCHAIN=local the go command silently upgrades itself
+    # to go.mod's toolchain and the matrix tests one version twice.
+    env:
+      GOTOOLCHAIN: local
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Download dependencies
         run: go mod download
 
+      # -shuffle=on randomizes test order to surface order-coupled tests.
       - name: Test with coverage
-        run: go test -race -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -shuffle=on -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        if: matrix.go-version == '1.25.0'
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -57,6 +72,32 @@ jobs:
 
       - name: Build
         run: go build -o /dev/null ./cmd/gofasta/
+
+  # The CLI ships darwin and windows binaries; this job makes sure we
+  # compile (and, where the platform allows, test) what we ship. macOS
+  # runs the short unit suite (repo tests skip: no Docker on mac
+  # runners); Windows is compile-only for tests via `go vet` — the
+  # keyboard/PTY suites are unix-tagged.
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.0"
+      - name: Build
+        run: go build ./...
+      - name: Vet (compiles all test code)
+        run: go vet ./...
+      - name: Short tests (macOS only)
+        if: runner.os == 'macOS'
+        run: go test -short -shuffle=on ./...
 
   integration:
     runs-on: ubuntu-latest
@@ -81,9 +122,9 @@ jobs:
 
     steps:
       - name: Check out CLI repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25.0"
 
@@ -454,9 +495,9 @@ jobs:
 
     steps:
       - name: Check out CLI repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.25.0"
 
