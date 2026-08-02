@@ -230,3 +230,10 @@ deploy:
   health_path: /health/ready
   health_timeout: 30    # seconds to wait for health check
   keep_releases: 3      # number of old releases to keep for rollback
+  # SSH host-key policy: accept-new (default) trusts on first connect and
+  # pins afterwards; "yes" requires the key to already be in known_hosts.
+  strict_host_key: accept-new
+  # Public domain for the nginx reverse proxy. When set, `gofasta deploy
+  # setup` installs deployments/nginx/app.conf with this server_name.
+  # When empty, setup skips nginx and prints manual instructions.
+  domain: ""

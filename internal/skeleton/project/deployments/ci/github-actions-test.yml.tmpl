@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
 {{- if eq .DBDriver "postgres" }}
 
-    # The DB service and its connection env mirror deployments/docker/
+    # The DB service and its connection env mirror the project-root
     # compose.yaml so CI talks to the same engine the app is configured for.
     services:
       postgres:

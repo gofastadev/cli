@@ -3,14 +3,30 @@ package deploy
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // execCommand is a package-level seam for tests.
 var execCommand = exec.Command
+
+// printOut returns the writer all deploy-package subprocess output flows
+// through — cliout's stdout (text mode) / stderr (--json mode) routing, so
+// the JSON document a command emits at the end stays the only thing on
+// stdout in --json mode.
+func printOut() io.Writer { return cliout.Out() }
+
+// dryRunNote prints a dimmed [dry-run] line. Decorations go through
+// termcolor so NO_COLOR and non-TTY output stay free of raw escape codes.
+func dryRunNote(format string, args ...any) {
+	_, _ = fmt.Fprintln(printOut(), "   "+termcolor.CDim("[dry-run] "+fmt.Sprintf(format, args...)))
+}
 
 // strictHostKeyPolicy returns the ssh StrictHostKeyChecking value for this
 // deploy. It defaults to "accept-new" (trust-on-first-use, then pin) so an
@@ -40,12 +56,13 @@ func sshBaseArgs(cfg *DeployConfig) []string {
 // The "--" separator before cfg.Host is a security boundary: without it, a
 // Host value beginning with "-" (e.g. "-oProxyCommand=<payload>") would be
 // parsed by ssh as an option and execute arbitrary local commands
-// (CVE-2017-1000117 class). LoadDeployConfig also rejects such hosts.
+// (CVE-2017-1000117 class). LoadDeployConfig also rejects such hosts — and
+// validates every other config value interpolated into `command`.
 func RunRemote(cfg *DeployConfig, command string) error {
 	args := append(sshBaseArgs(cfg), "--", cfg.Host, command)
 
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] ssh %s %q\033[0m\n", cfg.Host, command)
+		dryRunNote("ssh %s %q", cfg.Host, command)
 		return nil
 	}
 
@@ -60,7 +77,7 @@ func RunRemoteInteractive(cfg *DeployConfig, command string) error {
 	args := append(sshBaseArgs(cfg), "--", cfg.Host, command)
 
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] ssh %s %q\033[0m\n", cfg.Host, command)
+		dryRunNote("ssh %s %q", cfg.Host, command)
 		return nil
 	}
 
@@ -76,7 +93,7 @@ func RunRemoteCapture(cfg *DeployConfig, command string) (string, error) {
 	args := append(sshBaseArgs(cfg), "--", cfg.Host, command)
 
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] ssh %s %q\033[0m\n", cfg.Host, command)
+		dryRunNote("ssh %s %q", cfg.Host, command)
 		return "", nil
 	}
 
@@ -101,7 +118,7 @@ func CopyFile(cfg *DeployConfig, localPath, remotePath string) error {
 	}
 
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] scp %s %s\033[0m\n", localPath, dest)
+		dryRunNote("scp %s %s", localPath, dest)
 		return nil
 	}
 
@@ -122,7 +139,7 @@ func CopyDir(cfg *DeployConfig, localDir, remoteDir string) error {
 	}
 
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] scp -r %s %s\033[0m\n", localDir, dest)
+		dryRunNote("scp -r %s %s", localDir, dest)
 		return nil
 	}
 
@@ -140,8 +157,7 @@ func CopyDir(cfg *DeployConfig, localDir, remoteDir string) error {
 // config.yaml) cannot inject commands.
 func RunLocalPiped(cfg *DeployConfig, left, right []string) error {
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] %s | %s\033[0m\n",
-			strings.Join(left, " "), strings.Join(right, " "))
+		dryRunNote("%s | %s", strings.Join(left, " "), strings.Join(right, " "))
 		return nil
 	}
 	if len(left) == 0 || len(right) == 0 {
@@ -173,7 +189,7 @@ func RunLocalPiped(cfg *DeployConfig, left, right []string) error {
 // RunLocal runs a local command with stdout/stderr passthrough.
 func RunLocal(cfg *DeployConfig, name string, args ...string) error {
 	if cfg.DryRun {
-		_, _ = fmt.Fprintf(printOut(), "   \033[90m[dry-run] %s %s\033[0m\n", name, strings.Join(args, " "))
+		dryRunNote("%s %s", name, strings.Join(args, " "))
 		return nil
 	}
 

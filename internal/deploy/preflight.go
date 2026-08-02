@@ -3,14 +3,17 @@ package deploy
 import (
 	"fmt"
 	"os/exec"
+
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/termcolor"
 )
 
 // Package-level seam for tests.
 var execLookPath = exec.LookPath
 
 // PreflightChecks verifies that all prerequisites are met before deploying.
+// The caller prints the step banner; this only prints the per-check lines.
 func PreflightChecks(cfg *DeployConfig) error {
-	dprintln("Running pre-flight checks...")
 	allPassed := true
 
 	// Local tool checks
@@ -51,12 +54,11 @@ func PreflightChecks(cfg *DeployConfig) error {
 
 	// Remote tool checks
 	if !allPassed {
-		return fmt.Errorf("pre-flight checks failed")
+		return clierr.New(clierr.CodeSSHFailed, "pre-flight checks failed")
 	}
 
 	if cfg.DryRun {
 		printCheck("remote tools", "[dry-run] skipped", true)
-		dprintln()
 		return nil
 	}
 
@@ -82,17 +84,16 @@ func PreflightChecks(cfg *DeployConfig) error {
 		}
 	}
 
-	dprintln()
 	if !allPassed {
-		return fmt.Errorf("pre-flight checks failed")
+		return clierr.New(clierr.CodeSSHFailed, "pre-flight checks failed")
 	}
 	return nil
 }
 
 func printCheck(name, info string, ok bool) {
-	mark := "\033[32m✓\033[0m"
+	mark := termcolor.CGreen("✓")
 	if !ok {
-		mark = "\033[31m✗\033[0m"
+		mark = termcolor.CRed("✗")
 	}
-	dprintf("  %s %-25s %s\n", mark, name, info)
+	_, _ = fmt.Fprintf(printOut(), "  %s %-25s %s\n", mark, name, info)
 }

@@ -346,7 +346,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/cli-reference/deploy",
 	},
 	CodeHealthCheckFailed: {
-		Hint: "the deployed app did not respond at the health endpoint within the timeout; the previous release is still active — inspect logs with `gofasta deploy logs`",
+		Hint: "the deployed app did not respond at the health endpoint within the timeout; gofasta automatically rolled back to the previous release (first deploys are left in place) — inspect logs with `gofasta deploy logs`",
 		Docs: "https://gofasta.dev/docs/cli-reference/deploy",
 	},
 	CodeDockerFailed: {

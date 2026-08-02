@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet lint lint-install test coverage build integration clean ci preflight
+.PHONY: fmt fmt-check vet lint lint-install test coverage build integration deploy-e2e clean ci preflight
 
 ## Pinned golangci-lint version. MUST match .github/workflows/ci.yml so a
 ## green local run predicts a green CI run.
@@ -114,6 +114,14 @@ integration: build
 		echo "integration: order.resolvers.go contains unimplemented stubs"; exit 1; fi
 	cd /tmp/gofasta-integration-test-gql && make preflight
 
+## End-to-end deploy test: scaffolds a project and runs real
+## `gofasta deploy setup/deploy/status/rollback` (both methods, repeat
+## deploys, induced-failure auto-rollback) against a disposable Docker
+## "VPS" container (systemd + sshd + Docker + PostgreSQL). Requires
+## Docker and network access. Runs in CI as the deploy-e2e job.
+deploy-e2e: build
+	test/e2e-deploy/run.sh
+
 ## Remove build artifacts
 clean:
 	rm -rf bin/ coverage.out coverage.html
@@ -131,7 +139,9 @@ ci: fmt-check vet lint test build
 ## Order matters: fmt-check is first (cheapest, catches the most common
 ## slip), then vet, then lint (includes errcheck + staticcheck + revive +
 ## the rest), then tests with -race, then a build, then the integration
-## smoke test that scaffolds a project and compiles it.
-preflight: fmt-check vet lint test build integration
+## smoke test that scaffolds a project and compiles it, then the deploy
+## end-to-end test against a disposable Docker VPS (mirrors the CI
+## deploy-e2e job — preflight runs everything CI runs).
+preflight: fmt-check vet lint test build integration deploy-e2e
 	@echo ""
 	@echo "  ✓ preflight green — safe to commit."

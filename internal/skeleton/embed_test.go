@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	texttemplate "text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,6 +251,135 @@ func TestResolverTemplates_DoNotImportGqlerror(t *testing.T) {
 			require.NoError(t, err)
 			assert.NotContains(t, string(body), "gqlparser/v2/gqlerror",
 				"%s imports gqlerror but declares no helpers that use it", tmpl)
+		})
+	}
+}
+
+// renderProjectTemplate renders a ProjectFS template with representative
+// scaffold data. Uses text/template like the generator does (new.go) — the
+// html/template import above is parse-only checking, but rendering through
+// it would HTML-escape YAML/shell content.
+func renderProjectTemplate(t *testing.T, tmplPath, driver string) string {
+	t.Helper()
+	data, err := fs.ReadFile(ProjectFS, tmplPath)
+	require.NoError(t, err)
+	tmpl, err := texttemplate.New(path.Base(tmplPath)).Parse(string(data))
+	require.NoError(t, err, "parse %s", tmplPath)
+	var b strings.Builder
+	require.NoError(t, tmpl.Execute(&b, map[string]any{
+		"ProjectName":      "Myapp",
+		"ProjectNameLower": "myapp",
+		"ProjectNameUpper": "MYAPP",
+		"ModulePath":       "github.com/example/myapp",
+		"DBDriver":         driver,
+		"GraphQL":          false,
+	}), "execute %s (driver=%s)", tmplPath, driver)
+	return b.String()
+}
+
+// TestProjectFS_NoDeployScript — the reference deploy.sh was deleted: it
+// documented a /etc/<app> layout incompatible with `gofasta deploy`'s
+// release directories. The scaffold must ship exactly one deploy story.
+func TestProjectFS_NoDeployScript(t *testing.T) {
+	_, err := fs.ReadFile(ProjectFS, "project/deployments/systemd/deploy.sh.tmpl")
+	assert.Error(t, err, "deploy.sh.tmpl must not ship — it contradicts the gofasta deploy release layout")
+}
+
+// TestProductionCompose_DeployContract — the production compose file is
+// half of the `gofasta deploy` docker method: the deploy pins the
+// transferred image via APP_IMAGE and relies on a stable compose project
+// name for container/volume reuse across releases.
+func TestProductionCompose_DeployContract(t *testing.T) {
+	const tmpl = "project/deployments/docker/compose.production.yaml.tmpl"
+	for _, driver := range []string{"postgres", "mysql", "sqlite", "sqlserver", "clickhouse"} {
+		t.Run(driver, func(t *testing.T) {
+			out := renderProjectTemplate(t, tmpl, driver)
+
+			assert.Contains(t, out, "name: ${PROJECT_NAME:-myapp}",
+				"compose needs a stable project name so containers/volumes survive releases")
+			assert.Contains(t, out, "image: ${APP_IMAGE:-myapp:latest}",
+				"the app service must consume the image gofasta deploy transfers")
+			assert.Contains(t, out, "http://127.0.0.1:8080/health/live",
+				"the app service needs a container-level healthcheck")
+
+			if driver == "sqlite" {
+				assert.Contains(t, out, "app_data:/data",
+					"sqlite needs a volume or the database dies with the container")
+				assert.Contains(t, out, "/data/myapp.db",
+					"sqlite database default must live on the app_data volume")
+				assert.NotContains(t, out, "db_data")
+			} else {
+				assert.Contains(t, out, "db_data")
+				assert.NotContains(t, out, "app_data")
+			}
+		})
+	}
+}
+
+// TestSystemdUnit_DeployLayout — the unit must run from the release layout
+// `gofasta deploy` actually provisions (/opt/<app>), not the abandoned
+// /etc/<app> scheme nothing populates.
+func TestSystemdUnit_DeployLayout(t *testing.T) {
+	out := renderProjectTemplate(t, "project/deployments/systemd/app.service.tmpl", "postgres")
+
+	assert.Contains(t, out, "WorkingDirectory=/opt/myapp/current")
+	assert.Contains(t, out, "EnvironmentFile=-/opt/myapp/shared/.env",
+		"secrets live in shared/.env; the '-' keeps config.yaml-only projects bootable")
+	assert.Contains(t, out, "ReadWritePaths=/opt/myapp")
+	assert.NotContains(t, out, "/etc/myapp",
+		"the /etc/<app> layout is dead — nothing provisions it")
+	assert.Contains(t, out, "After=network-online.target")
+	assert.NotContains(t, out, "postgresql.service",
+		"hardcoded DB units are wrong for sqlite/sqlserver/clickhouse/docker-hosted databases")
+}
+
+// TestDeployVpsWorkflow_RunsGofastaDeploy — the CI template must go through
+// `gofasta deploy` (one deploy code path) instead of the old git-pull model
+// that bypassed releases, health gates, and rollback.
+func TestDeployVpsWorkflow_RunsGofastaDeploy(t *testing.T) {
+	out := renderProjectTemplate(t, "project/deployments/ci/github-actions-deploy-vps.yml.tmpl", "postgres")
+
+	assert.Contains(t, out, "gofasta deploy")
+	assert.Contains(t, out, "workflow_dispatch:")
+	for _, secret := range []string{"DEPLOY_HOST", "DEPLOY_USER", "DEPLOY_SSH_KEY", "DEPLOY_PORT"} {
+		assert.Contains(t, out, secret)
+	}
+	assert.NotContains(t, out, "git pull", "the git-pull deploy model contradicts the release layout")
+	assert.NotContains(t, out, "VPS_HOST", "stale secret names")
+}
+
+// TestConfigYaml_DeployKeys — every key internal/deploy/config.go reads
+// must be discoverable in the scaffolded config.
+func TestConfigYaml_DeployKeys(t *testing.T) {
+	out := renderProjectTemplate(t, "project/config.yaml.tmpl", "postgres")
+	for _, key := range []string{
+		"host:", "method:", "port:", "path:", "arch:",
+		"health_path:", "health_timeout:", "keep_releases:",
+		"strict_host_key:", "domain:",
+	} {
+		assert.Contains(t, out, key, "deploy config key %q missing from config.yaml.tmpl", key)
+	}
+}
+
+// TestDockerfile_MigrateDriverTags — the migrate CLI build must use the
+// project's single driver tag (sqlite needs cgo + a C toolchain).
+func TestDockerfile_MigrateDriverTags(t *testing.T) {
+	for driver, tag := range map[string]string{
+		"postgres":   "-tags 'postgres'",
+		"mysql":      "-tags 'mysql'",
+		"sqlite":     "-tags 'sqlite3'",
+		"sqlserver":  "-tags 'sqlserver'",
+		"clickhouse": "-tags 'clickhouse'",
+	} {
+		t.Run(driver, func(t *testing.T) {
+			out := renderProjectTemplate(t, "project/Dockerfile.tmpl", driver)
+			assert.Contains(t, out, tag)
+			if driver == "sqlite" {
+				assert.Contains(t, out, "build-base", "sqlite migrate driver is cgo-backed")
+				assert.Contains(t, out, "chown app:app /data")
+			} else {
+				assert.NotContains(t, out, "build-base")
+			}
 		})
 	}
 }

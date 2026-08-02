@@ -57,6 +57,10 @@ func setupDeployProject(t *testing.T, host string) {
 	// compose.yaml for docker method
 	require.NoError(t, os.MkdirAll("deployments/docker", 0o755))
 	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0o644))
+
+	// systemd unit for binary method (required — its absence fails the deploy)
+	require.NoError(t, os.MkdirAll("deployments/systemd", 0o755))
+	require.NoError(t, os.WriteFile("deployments/systemd/app.service", []byte("[Unit]\n"), 0o644))
 }
 
 // makeDeployCmd builds a cobra.Command with the deploy flag set for test use.
@@ -164,6 +168,10 @@ func TestRunDeployRollback_NoHost(t *testing.T) {
 // directly on it for the duration of the test.
 func withDeployFlags(t *testing.T, c *cobra.Command, flags map[string]string) {
 	t.Helper()
+	// The deploy flags are persistent (shared with subcommands); merge them
+	// into Flags() the same way cobra's Execute path does, so direct RunE
+	// invocations see them.
+	_ = c.ParseFlags(nil)
 	prev := map[string]string{}
 	for k, v := range flags {
 		if f := c.Flags().Lookup(k); f != nil {
@@ -252,17 +260,10 @@ func TestRunDeploy_UnknownMethodCoverage(t *testing.T) {
 		[]byte("module example.com/t\n\ngo 1.25.0\n"), 0o644))
 	require.NoError(t, os.WriteFile("config.yaml",
 		[]byte("deploy:\n  host: user@example.com\n  method: docker\n"), 0o644))
-	cmd := &cobra.Command{}
-	cmd.Flags().String("host", "", "")
-	cmd.Flags().String("method", "", "")
-	cmd.Flags().Int("port", 0, "")
-	cmd.Flags().String("path", "", "")
-	cmd.Flags().String("arch", "", "")
-	cmd.Flags().Bool("dry-run", false, "")
-	_ = cmd.Flags().Set("dry-run", "true")
-	deployMethodOverride = "bogus"
-	t.Cleanup(func() { deployMethodOverride = "" })
-	err := runDeploy(cmd)
+	// LoadDeployConfig validates Method, so the default branch is only
+	// reachable with a hand-built config — which is exactly why the
+	// dispatch lives in runDeployMethod instead of a mutable test global.
+	err := runDeployMethod(&deploy.DeployConfig{Method: "bogus"})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unknown deploy method")
 }
@@ -290,7 +291,7 @@ func TestDeployCmd_HasSubcommands(t *testing.T) {
 }
 
 func TestDeployCmd_HasFlags(t *testing.T) {
-	flags := deployCmd.Flags()
+	flags := deployCmd.PersistentFlags()
 
 	assert.NotNil(t, flags.Lookup("host"), "deploy should have --host flag")
 	assert.NotNil(t, flags.Lookup("method"), "deploy should have --method flag")
@@ -298,6 +299,34 @@ func TestDeployCmd_HasFlags(t *testing.T) {
 	assert.NotNil(t, flags.Lookup("path"), "deploy should have --path flag")
 	assert.NotNil(t, flags.Lookup("arch"), "deploy should have --arch flag")
 	assert.NotNil(t, flags.Lookup("dry-run"), "deploy should have --dry-run flag")
+}
+
+// TestDeployCmd_SubcommandsInheritFlags — the flags are PERSISTENT so every
+// subcommand accepts them; the previous per-command copies silently omitted
+// --dry-run from all four subcommands, which no test could catch because
+// the tests rebuilt their own flag sets.
+func TestDeployCmd_SubcommandsInheritFlags(t *testing.T) {
+	for _, sub := range []*cobra.Command{deploySetupCmd, deployStatusCmd, deployLogsCmd, deployRollbackCmd} {
+		t.Run(sub.Name(), func(t *testing.T) {
+			inherited := sub.InheritedFlags()
+			for _, flag := range []string{"host", "method", "port", "path", "arch", "dry-run"} {
+				assert.NotNil(t, inherited.Lookup(flag),
+					"deploy %s must accept --%s", sub.Name(), flag)
+			}
+		})
+	}
+}
+
+// TestDeployCmd_RejectsPositionalArgs — `gofasta deploy statuss` (a typo)
+// must be an error, never a silent full production deploy.
+func TestDeployCmd_RejectsPositionalArgs(t *testing.T) {
+	for _, cmd := range []*cobra.Command{deployCmd, deploySetupCmd, deployStatusCmd, deployLogsCmd, deployRollbackCmd} {
+		t.Run(cmd.Name(), func(t *testing.T) {
+			require.NotNil(t, cmd.Args, "%s must declare an Args validator", cmd.Name())
+			assert.Error(t, cmd.Args(cmd, []string{"statuss"}),
+				"%s must reject positional arguments", cmd.Name())
+		})
+	}
 }
 
 func TestDeployCmd_HasDescriptions(t *testing.T) {
@@ -309,20 +338,14 @@ func TestDeployCmd_HasDescriptions(t *testing.T) {
 	assert.NotEmpty(t, deployRollbackCmd.Short)
 }
 
-// runDeploy in JSON mode emits a deployResult document on stdout. We run
-// with --dry-run + an unknown method override so the switch's default
-// branch fires and we get a failure result without shelling out.
-func TestRunDeploy_JSON_UnknownMethod(t *testing.T) {
-	setupDeployProject(t, "user@example.com")
-	stubDeployLookPath(t)
+// A failed deploy in JSON mode emits a deployResult document with
+// success=false and the error message.
+func TestRunDeploy_JSON_FailureDocument(t *testing.T) {
 	withJSONMode(t)
-	cmd := makeDeployCmd(true, nil)
-	deployMethodOverride = "weird"
-	t.Cleanup(func() { deployMethodOverride = "" })
 
 	out := captureStdout(t, func() {
-		err := runDeploy(cmd)
-		require.Error(t, err)
+		emitDeployResult("deploy", &deploy.DeployConfig{Method: "weird"},
+			runDeployMethod(&deploy.DeployConfig{Method: "weird"}))
 	})
 
 	var got deployResult
@@ -434,22 +457,24 @@ func TestRunDeployLogs_JSON_Refuses(t *testing.T) {
 // runDeployRollback in JSON mode — rollback fails in dry-run (no prior
 // release) and the failure is reflected in the JSON document rather than
 // raw text.
-func TestRunDeployRollback_JSON_Failure(t *testing.T) {
+// Dry-run rollback describes the plan and succeeds; the JSON document
+// reflects that. (Failure documents are covered by
+// TestRunDeploy_JSON_FailureDocument.)
+func TestRunDeployRollback_JSON_DryRun(t *testing.T) {
 	setupDeployProject(t, "user@example.com")
 	stubDeployLookPath(t)
 	withJSONMode(t)
 	cmd := makeDeployCmd(true, nil)
 
 	out := captureStdout(t, func() {
-		err := runDeployRollback(cmd)
-		require.Error(t, err)
+		require.NoError(t, runDeployRollback(cmd))
 	})
 
 	var got deployResult
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(out)), &got))
 	assert.Equal(t, "deploy.rollback", got.Action)
-	assert.False(t, got.Success)
-	assert.NotEmpty(t, got.Error)
+	assert.True(t, got.Success)
+	assert.Empty(t, got.Error)
 }
 
 // TestDeployLogs_JSONModeRefuses — `deploy logs` tails a remote stream

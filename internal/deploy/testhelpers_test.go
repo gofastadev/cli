@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -46,7 +47,11 @@ func withinProject(t *testing.T) {
 	require.NoError(t, os.MkdirAll("templates", 0o755))
 	require.NoError(t, os.MkdirAll("configs", 0o755))
 	require.NoError(t, os.MkdirAll("app/main", 0o755))
-	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte("services: {}\n"), 0o644))
+	// Mirrors the real template's deploy contract (image pinned via
+	// APP_IMAGE, stable project name) — the previous "services: {}" stub
+	// hid the fact that the deploy never referenced the transferred image.
+	composeStub := "name: ${PROJECT_NAME:-testapp}\nservices:\n  app:\n    image: ${APP_IMAGE:-testapp:latest}\n"
+	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte(composeStub), 0o644))
 	require.NoError(t, os.WriteFile("deployments/nginx/app.conf", []byte("server {}\n"), 0o644))
 	require.NoError(t, os.WriteFile("deployments/systemd/app.service", []byte("[Unit]\n"), 0o644))
 	require.NoError(t, os.WriteFile("config.yaml", []byte("server: {port: \"8080\"}\n"), 0o644))
@@ -64,8 +69,41 @@ const fakeEnvExitCode = "GOFASTA_DEPLOY_FAKE_EXIT"
 
 const fakeEnvStdout = "GOFASTA_DEPLOY_FAKE_STDOUT"
 
+// recordedCmds collects every command line the fake exec receives (name +
+// args joined with spaces), in call order. Reset by each with*Exec helper;
+// tests assert on COMMAND CONTENT and ORDER with it — an exit code alone
+// can't prove the right command ran.
+var recordedCmds []string
+
+func recordCmd(name string, args []string) {
+	recordedCmds = append(recordedCmds, strings.Join(append([]string{name}, args...), " "))
+}
+
+// commandsContaining returns the recorded commands that contain substr.
+func commandsContaining(substr string) []string {
+	var out []string
+	for _, c := range recordedCmds {
+		if contains(c, substr) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// commandIndex returns the index of the first recorded command containing
+// substr, or -1.
+func commandIndex(substr string) int {
+	for i, c := range recordedCmds {
+		if contains(c, substr) {
+			return i
+		}
+	}
+	return -1
+}
+
 func fakeExecCommand(exitCode int, stdout string) func(name string, args ...string) *exec.Cmd {
 	return func(name string, args ...string) *exec.Cmd {
+		recordCmd(name, args)
 		cs := make([]string, 0, 3+len(args))
 		cs = append(cs, "-test.run=TestDeployHelperProcess", "--", name)
 		cs = append(cs, args...)
@@ -79,6 +117,38 @@ func fakeExecCommand(exitCode int, stdout string) func(name string, args ...stri
 	}
 }
 
+// fakeRule drives respondingFakeExec: the FIRST rule whose Match substring
+// appears in the command line decides that call's exit code and stdout.
+type fakeRule struct {
+	Match  string
+	Exit   int
+	Stdout string
+}
+
+// respondingFakeExec answers each command by matching its content against
+// rules instead of by call index — robust to pipeline reorderings, and the
+// only way to script different stdout for readlink vs cat vs ls.
+func respondingFakeExec(t *testing.T, rules []fakeRule) {
+	t.Helper()
+	origCmd := execCommand
+	origLook := execLookPath
+	recordedCmds = nil
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		joined := strings.Join(append([]string{name}, args...), " ")
+		for _, r := range rules {
+			if contains(joined, r.Match) {
+				return fakeExecCommand(r.Exit, r.Stdout)(name, args...)
+			}
+		}
+		return fakeExecCommand(0, "")(name, args...)
+	}
+	execLookPath = func(n string) (string, error) { return "/usr/bin/" + n, nil }
+	t.Cleanup(func() {
+		execCommand = origCmd
+		execLookPath = origLook
+	})
+}
+
 func withFakeExec(t *testing.T, exitCode int) {
 	t.Helper()
 	withFakeExecStdout(t, exitCode, "")
@@ -86,6 +156,7 @@ func withFakeExec(t *testing.T, exitCode int) {
 
 func withFakeExecStdout(t *testing.T, exitCode int, stdout string) {
 	t.Helper()
+	recordedCmds = nil
 	origCmd := execCommand
 	origLook := execLookPath
 	execCommand = fakeExecCommand(exitCode, stdout)
@@ -97,9 +168,10 @@ func withFakeExecStdout(t *testing.T, exitCode int, stdout string) {
 }
 
 // stagedFakeExec exits with codes[i] on the i-th call and repeats the final
-// value afterwards. stdouts follows the same pattern (empty if omitted).
-func stagedFakeExec(t *testing.T, codes []int, stdouts []string) {
+// value afterwards.
+func stagedFakeExec(t *testing.T, codes []int) {
 	t.Helper()
+	recordedCmds = nil
 	origCmd := execCommand
 	origLook := execLookPath
 	call := 0
@@ -108,15 +180,8 @@ func stagedFakeExec(t *testing.T, codes []int, stdouts []string) {
 		if call < len(codes) {
 			code = codes[call]
 		}
-		out := ""
-		if len(stdouts) > 0 {
-			out = stdouts[len(stdouts)-1]
-			if call < len(stdouts) {
-				out = stdouts[call]
-			}
-		}
 		call++
-		return fakeExecCommand(code, out)(name, args...)
+		return fakeExecCommand(code, "")(name, args...)
 	}
 	execLookPath = func(name string) (string, error) { return "/usr/bin/" + name, nil }
 	t.Cleanup(func() {
@@ -129,14 +194,12 @@ func stagedFakeExec(t *testing.T, codes []int, stdouts []string) {
 // command line (name + joined args) contains the given substring.
 func withFailOnArg(t *testing.T, substr string) {
 	t.Helper()
+	recordedCmds = nil
 	origCmd := execCommand
 	origLook := execLookPath
 	execCommand = func(name string, args ...string) *exec.Cmd {
 		code := 0
-		joined := name
-		for _, a := range args {
-			joined += " " + a
-		}
+		joined := strings.Join(append([]string{name}, args...), " ")
 		if contains(joined, substr) {
 			code = 1
 		}

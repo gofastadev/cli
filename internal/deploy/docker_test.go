@@ -58,19 +58,99 @@ func TestDeployDocker_ComposeUpFails(t *testing.T) {
 	withinProject(t)
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
-	withFailOnArg(t, "docker compose -f compose.yaml up")
+	withFailOnArg(t, "compose.yaml up -d")
 	err := DeployDocker(cfg)
 	assert.Error(t, err)
 }
 
+// TestDeployDocker_HealthCheckFails — first deploy (no previous release):
+// the failure must surface AND nothing may be rolled back to; the broken
+// release stays up for inspection.
 func TestDeployDocker_HealthCheckFails(t *testing.T) {
 	withinProject(t)
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 	cfg.HealthTimeout = 0
-	withFailOnArg(t, "curl -sf")
+	withFailOnArg(t, "wget -qO /dev/null")
 	err := DeployDocker(cfg)
-	assert.Error(t, err)
+	require.Error(t, err)
+	assert.Empty(t, commandsContaining("rm -rf /opt/test/releases/20260101-000000"),
+		"a failed FIRST deploy is left in place for inspection")
+}
+
+// TestDeployDocker_Failure_AutoRollsBack — with a previous release on
+// record, a failed deploy must restore it: previous image up, symlink
+// back, failed release directory and image removed.
+func TestDeployDocker_Failure_AutoRollsBack(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	// Migration failure triggers the same auto-rollback path as a failed
+	// health gate; here the restored release's health probe succeeds, so
+	// the FULL rollback (restore + pointer + failed-release removal) runs.
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Stdout: "testapp:20251231-000000"},
+		{Match: "migrate up", Exit: 1},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+
+	restore := commandsContaining("APP_IMAGE=testapp:20251231-000000")
+	require.NotEmpty(t, restore, "auto-rollback must restart the previous release's pinned image")
+	assert.NotEmpty(t, commandsContaining("ln -sfn /opt/test/releases/20251231-000000 /opt/test/current"),
+		"auto-rollback must restore the current pointer")
+	assert.NotEmpty(t, commandsContaining("rm -rf /opt/test/releases/20260101-000000"),
+		"the failed release directory must be removed so `deploy rollback` can never select it")
+}
+
+// TestDeployDocker_PinsImageAndProject — the deploy's cutover must reference
+// the transferred image (APP_IMAGE) under the FIXED compose project, and
+// must record the tag in RELEASE_IMAGE before cutover.
+func TestDeployDocker_PinsImageAndProject(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	respondingFakeExec(t, nil)
+
+	require.NoError(t, DeployDocker(cfg))
+
+	up := commandsContaining("compose.yaml up -d")
+	require.NotEmpty(t, up)
+	assert.Contains(t, up[0], "APP_IMAGE=testapp:20260101-000000",
+		"the transferred image must be the one compose runs")
+	assert.Contains(t, up[0], "docker compose -p testapp",
+		"a fixed project name is required for container/volume reuse across releases")
+	assert.NotEmpty(t, commandsContaining("printf '%s' testapp:20260101-000000 > /opt/test/releases/20260101-000000/RELEASE_IMAGE"),
+		"the release must record its image tag for rollback")
+
+	migrate := commandsContaining("/app migrate up")
+	require.NotEmpty(t, migrate)
+	assert.Contains(t, migrate[0], "docker compose -p testapp -f compose.yaml exec -T app",
+		"migrations must target the compose service, not a hardcoded container name")
+
+	// Ordering: image transfer < cutover < health probe.
+	assert.Less(t, commandIndex("docker save testapp:20260101-000000"), commandIndex("compose.yaml up -d"))
+	assert.Less(t, commandIndex("compose.yaml up -d"), commandIndex("wget -qO /dev/null"))
+}
+
+// TestDeployDocker_CleanupExcludesCurrentAndPrunesImages — the cleanup
+// script must be name-sorted, keep whatever `current` resolves to, and
+// remove pruned releases' images.
+func TestDeployDocker_CleanupExcludesCurrentAndPrunesImages(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	respondingFakeExec(t, nil)
+
+	require.NoError(t, DeployDocker(cfg))
+
+	cleanup := commandsContaining("sort -r")
+	require.NotEmpty(t, cleanup, "cleanup must order releases by name, not mtime")
+	assert.Contains(t, cleanup[0], `[ "$r" = "$current" ]`, "the live release must never be pruned")
+	assert.Contains(t, cleanup[0], "docker rmi", "pruned releases' images must be removed")
+	assert.NotContains(t, cleanup[0], "ls -1t", "mtime ordering is the bug this replaced")
 }
 
 func TestDeployDocker_SymlinkFails(t *testing.T) {
@@ -171,11 +251,14 @@ func TestCopySharedFiles_ConfigYamlCopyFails(t *testing.T) {
 	assert.Contains(t, strings.ToLower(err.Error()), "config.yaml")
 }
 
-func TestDeployDocker_MigrationFailureIsNonFatal(t *testing.T) {
+// TestDeployDocker_MigrationFailureAborts — a failed migration must fail
+// the deploy (new code must not serve against a schema it didn't get).
+func TestDeployDocker_MigrationFailureAborts(t *testing.T) {
 	withinProject(t)
 	withFailOnArg(t, "migrate up")
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 
-	assert.NoError(t, DeployDocker(cfg), "a failed migration must not fail the deploy")
+	err := DeployDocker(cfg)
+	require.Error(t, err, "a failed migration must abort the deploy")
 }

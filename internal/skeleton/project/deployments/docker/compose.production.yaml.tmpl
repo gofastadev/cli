@@ -1,15 +1,32 @@
 # {{.ProjectName}} Production Docker Compose
 # Usage: docker compose -f deployments/docker/compose.production.yaml up -d
 # Works on any VPS, AWS EC2, GCP Compute Engine, Azure VM.
+#
+# `gofasta deploy` uses this file too: it transfers a locally-built image
+# to the server and points APP_IMAGE at the per-release tag, so no build
+# happens on the server. Without APP_IMAGE (standalone `up -d --build`),
+# compose falls back to building from the repository root.
+
+# A stable project name keeps container names, networks, and the data
+# volume identical across releases — `gofasta deploy` relies on this for
+# data persistence between deploys.
+name: ${PROJECT_NAME:-{{.ProjectNameLower}}}
 
 services:
   app:
+    image: ${APP_IMAGE:-{{.ProjectNameLower}}:latest}
     build:
       context: ../..
       dockerfile: Dockerfile
     container_name: ${PROJECT_NAME:-{{.ProjectNameLower}}}_app
     ports:
       - "${PORT:-8080}:8080"
+{{- if eq .DBDriver "sqlite" }}
+    volumes:
+      # SQLite is file-based — without a volume the database dies with the
+      # container. /data is created (app-owned) in the Dockerfile.
+      - app_data:/data
+{{- end }}
     environment:
       # Container apps must bind to all interfaces so the published port is
       # reachable from outside. The gofasta library's default is loopback (127.0.0.1)
@@ -18,7 +35,7 @@ services:
       - {{.ProjectNameUpper}}_SERVER_HOST=0.0.0.0
       - {{.ProjectNameUpper}}_DATABASE_DRIVER=${{"{"}}{{.ProjectNameUpper}}_DATABASE_DRIVER:-{{.DBDriver}}}
 {{- if eq .DBDriver "sqlite" }}
-      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-{{.ProjectNameLower}}.db}
+      - {{.ProjectNameUpper}}_DATABASE_NAME=${{"{"}}{{.ProjectNameUpper}}_DATABASE_NAME:-/data/{{.ProjectNameLower}}.db}
 {{- else if eq .DBDriver "mysql" }}
       - {{.ProjectNameUpper}}_DATABASE_HOST=db
       - {{.ProjectNameUpper}}_DATABASE_PORT=3306
@@ -65,6 +82,15 @@ services:
       - {{.ProjectNameUpper}}_EMAIL_PROVIDER=${{"{"}}{{.ProjectNameUpper}}_EMAIL_PROVIDER:-smtp}
       - {{.ProjectNameUpper}}_EMAIL_FROM_NAME=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_NAME}
       - {{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS=${{"{"}}{{.ProjectNameUpper}}_EMAIL_FROM_ADDRESS}
+    healthcheck:
+      # /health/live = process liveness only. The deploy gate polls
+      # /health/ready (DB + cache) separately; this container-level check
+      # exists so `docker ps` and restart policies see a real status.
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 {{- if ne .DBDriver "sqlite" }}
     depends_on:
       db:
@@ -176,4 +202,6 @@ services:
 volumes:
 {{- if ne .DBDriver "sqlite" }}
   db_data:
+{{- else }}
+  app_data:
 {{- end }}

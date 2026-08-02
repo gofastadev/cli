@@ -1,35 +1,35 @@
 # .github/workflows/deploy-vps.yml
-# Deploy to any VPS via SSH (Docker or bare metal).
-# Copy to .github/workflows/ and set GitHub secrets:
-#   VPS_HOST, VPS_USER, VPS_SSH_KEY, DEPLOY_METHOD (docker or binary)
+# Deploy to your VPS with `gofasta deploy` — the same command you run
+# locally, so CI and manual deploys share one code path (release
+# directories, pinned images, health gate, automatic rollback).
+#
+# One-time setup:
+#   1. Run `gofasta deploy setup` once from your machine to prepare the
+#      server (Docker/systemd, directories, service user).
+#   2. Put your production .env on the server at <deploy.path>/shared/.env
+#      (CI runners never see production secrets; the deploy reuses the
+#      copy already on the server).
+#   3. Copy this file to .github/workflows/ and set GitHub secrets:
+#        DEPLOY_HOST     server hostname or IP
+#        DEPLOY_USER     SSH user (the one `gofasta deploy setup` used)
+#        DEPLOY_SSH_KEY  private key for that user
+#        DEPLOY_PORT     SSH port (usually 22)
 
 name: Deploy to VPS
 
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+# Never run two production deploys at once; queue instead of cancelling so
+# a merged commit is never silently skipped.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
 
 jobs:
-  deploy-docker:
-    if: ${{"{{"}} vars.DEPLOY_METHOD == 'docker' || vars.DEPLOY_METHOD == '' {{"}}"}}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Deploy via Docker
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
-          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
-          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
-          script: |
-            cd /opt/{{.ProjectNameLower}}
-            git pull origin main
-            docker compose -f deployments/docker/compose.production.yaml up -d --build
-            echo "Deployed successfully!"
-
-  deploy-binary:
-    if: ${{"{{"}} vars.DEPLOY_METHOD == 'binary' {{"}}"}}
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,26 +38,19 @@ jobs:
         with:
           go-version: "1.25"
 
-      - name: Build binary
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o {{.ProjectNameLower}} ./app/main
+      - name: Install gofasta CLI
+        run: go install github.com/gofastadev/cli/cmd/gofasta@latest
 
-      - name: Deploy binary via SCP
-        uses: appleboy/scp-action@v0.1.7
-        with:
-          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
-          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
-          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
-          source: "{{.ProjectNameLower}},config.yaml,db/migrations/*,templates/*"
-          target: /etc/{{.ProjectNameLower}}/
+      - name: Configure SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{"{{"}} secrets.DEPLOY_SSH_KEY {{"}}"}}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          echo "IdentityFile ~/.ssh/id_deploy" >> ~/.ssh/config
+          ssh-keyscan -p "${{"{{"}} secrets.DEPLOY_PORT {{"}}"}}" "${{"{{"}} secrets.DEPLOY_HOST {{"}}"}}" >> ~/.ssh/known_hosts
 
-      - name: Restart service
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{"{{"}} secrets.VPS_HOST {{"}}"}}
-          username: ${{"{{"}} secrets.VPS_USER {{"}}"}}
-          key: ${{"{{"}} secrets.VPS_SSH_KEY {{"}}"}}
-          script: |
-            sudo mv /etc/{{.ProjectNameLower}}/{{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}}
-            sudo chmod +x /usr/local/bin/{{.ProjectNameLower}}
-            cd /etc/{{.ProjectNameLower}} && sudo -u {{.ProjectNameLower}} /usr/local/bin/{{.ProjectNameLower}} migrate up || true
-            sudo systemctl restart {{.ProjectNameLower}}
+      - name: Deploy
+        run: |
+          gofasta deploy \
+            --host "${{"{{"}} secrets.DEPLOY_USER {{"}}"}}@${{"{{"}} secrets.DEPLOY_HOST {{"}}"}}" \
+            --port "${{"{{"}} secrets.DEPLOY_PORT {{"}}"}}"

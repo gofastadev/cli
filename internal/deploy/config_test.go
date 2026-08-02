@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,7 +75,7 @@ func TestLoadDeployConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "docker", cfg.Method)
 	assert.Equal(t, 22, cfg.Port)
 	assert.Equal(t, "amd64", cfg.Arch)
-	assert.Equal(t, "/health", cfg.HealthPath)
+	assert.Equal(t, "/health/ready", cfg.HealthPath)
 	assert.Equal(t, 30, cfg.HealthTimeout)
 	assert.Equal(t, 3, cfg.KeepReleases)
 	assert.Equal(t, "8080", cfg.ServerPort)
@@ -262,7 +263,7 @@ func TestDeployConfig_Defaults(t *testing.T) {
 		cfg.Arch = "amd64"
 	}
 	if cfg.HealthPath == "" {
-		cfg.HealthPath = "/health"
+		cfg.HealthPath = "/health/ready"
 	}
 	if cfg.HealthTimeout == 0 {
 		cfg.HealthTimeout = 30
@@ -277,7 +278,7 @@ func TestDeployConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "docker", cfg.Method)
 	assert.Equal(t, 22, cfg.Port)
 	assert.Equal(t, "amd64", cfg.Arch)
-	assert.Equal(t, "/health", cfg.HealthPath)
+	assert.Equal(t, "/health/ready", cfg.HealthPath)
 	assert.Equal(t, 30, cfg.HealthTimeout)
 	assert.Equal(t, 3, cfg.KeepReleases)
 	assert.Equal(t, "8080", cfg.ServerPort)
@@ -331,4 +332,98 @@ func TestDeployHelperProcess(t *testing.T) {
 	}
 	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
 	os.Exit(code)
+}
+
+// ── Validation: every config value interpolated into a remote shell must
+// reject metacharacters at load time, with the right clierr code. ──
+
+func TestLoadDeployConfig_RejectsHostileValues(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+	}{
+		{"path with semicolon", "deploy:\n  host: host\n  path: \"/opt/x; rm -rf /\"\n"},
+		{"path with spaces", "deploy:\n  host: host\n  path: \"/opt/x $(whoami)\"\n"},
+		{"relative path", "deploy:\n  host: host\n  path: \"opt/x\"\n"},
+		{"arch injection", "deploy:\n  host: host\n  arch: \"amd64; rm -rf /\"\n"},
+		{"unknown arch", "deploy:\n  host: host\n  arch: riscv\n"},
+		{"health path injection", "deploy:\n  host: host\n  health_path: \"/health; reboot\"\n"},
+		{"domain injection", "deploy:\n  host: host\n  domain: \"example.com; reboot\"\n"},
+		{"domain with scheme", "deploy:\n  host: host\n  domain: \"https://example.com\"\n"},
+		{"strict host key injection", "deploy:\n  host: host\n  strict_host_key: \"no -oProxyCommand=payload\"\n"},
+		{"server port injection", "deploy:\n  host: host\nserver:\n  port: \"8080; reboot\"\n"},
+		{"ssh port out of range", "deploy:\n  host: host\n  port: 70000\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chdirProject(t, tc.config)
+			_, err := LoadDeployConfig(nil)
+			require.Error(t, err, "hostile value must be rejected at load time")
+			ce, ok := clierr.As(err)
+			require.True(t, ok, "validation errors must carry a clierr code")
+			assert.Equal(t, string(clierr.CodeDeployConfig), ce.Code)
+		})
+	}
+}
+
+func TestLoadDeployConfig_MissingHostCode(t *testing.T) {
+	chdirProject(t, "")
+	_, err := LoadDeployConfig(nil)
+	require.Error(t, err)
+	ce, ok := clierr.As(err)
+	require.True(t, ok)
+	assert.Equal(t, string(clierr.CodeDeployHostRequired), ce.Code)
+}
+
+func TestLoadDeployConfig_AcceptsDomainAndStrictHostKey(t *testing.T) {
+	chdirProject(t, "deploy:\n  host: host\n  domain: api.example.com\n  strict_host_key: \"yes\"\n")
+	cfg, err := LoadDeployConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "api.example.com", cfg.Domain)
+	assert.Equal(t, "yes", cfg.StrictHostKey)
+}
+
+// ── Env overlay: multi-word keys were unreachable when every underscore
+// became a dot (GOFASTA_DEPLOY_HEALTH_PATH → deploy.health.path). Only the
+// FIRST underscore separates section from key. ──
+
+func TestLoadDeployConfig_EnvOverlay_MultiWordKeys(t *testing.T) {
+	chdirProject(t, "deploy:\n  host: host\n")
+	t.Setenv("GOFASTA_DEPLOY_HEALTH_PATH", "/env/health")
+	t.Setenv("GOFASTA_DEPLOY_HEALTH_TIMEOUT", "77")
+	t.Setenv("GOFASTA_DEPLOY_KEEP_RELEASES", "9")
+	t.Setenv("GOFASTA_DEPLOY_STRICT_HOST_KEY", "no")
+
+	cfg, err := LoadDeployConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "/env/health", cfg.HealthPath)
+	assert.Equal(t, 77, cfg.HealthTimeout)
+	assert.Equal(t, 9, cfg.KeepReleases)
+	assert.Equal(t, "no", cfg.StrictHostKey)
+}
+
+// ── Derived helpers ──
+
+func TestComposeProject_NormalizesAppName(t *testing.T) {
+	for in, want := range map[string]string{
+		"myapp":    "myapp",
+		"My.App":   "my-app",
+		"_leading": "leading",
+		"API_v2":   "api_v2",
+		"...":      "app",
+	} {
+		cfg := &DeployConfig{AppName: in}
+		assert.Equal(t, want, cfg.ComposeProject(), "AppName %q", in)
+	}
+}
+
+func TestEnvPrefix_MirrorsScaffoldUpper(t *testing.T) {
+	for in, want := range map[string]string{
+		"myapp":  "MYAPP",
+		"my-app": "MY_APP",
+		"api.v2": "API_V2",
+	} {
+		cfg := &DeployConfig{AppName: in}
+		assert.Equal(t, want, cfg.EnvPrefix(), "AppName %q", in)
+	}
 }

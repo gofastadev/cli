@@ -32,7 +32,7 @@ func TestPreflightChecks_LiveSSHFail(t *testing.T) {
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 	// SSH fails on first call
-	stagedFakeExec(t, []int{1}, nil)
+	stagedFakeExec(t, []int{1})
 	err := PreflightChecks(cfg)
 	assert.Error(t, err)
 }
@@ -41,7 +41,7 @@ func TestPreflightChecks_LiveAllSucceed_Docker(t *testing.T) {
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 	// ssh echo ok, docker --version, docker compose version
-	stagedFakeExec(t, []int{0, 0, 0}, nil)
+	stagedFakeExec(t, []int{0, 0, 0})
 	assert.NoError(t, PreflightChecks(cfg))
 }
 
@@ -49,7 +49,7 @@ func TestPreflightChecks_LiveDockerMissing(t *testing.T) {
 	cfg := newTestCfg("docker")
 	cfg.DryRun = false
 	// ssh echo ok, docker --version fails
-	stagedFakeExec(t, []int{0, 1, 1}, nil)
+	stagedFakeExec(t, []int{0, 1, 1})
 	err := PreflightChecks(cfg)
 	assert.Error(t, err)
 }
@@ -58,14 +58,14 @@ func TestPreflightChecks_LiveSystemdOk(t *testing.T) {
 	cfg := newTestCfg("binary")
 	cfg.DryRun = false
 	// ssh echo ok, systemctl --version ok
-	stagedFakeExec(t, []int{0, 0}, nil)
+	stagedFakeExec(t, []int{0, 0})
 	assert.NoError(t, PreflightChecks(cfg))
 }
 
 func TestPreflightChecks_LiveSystemdMissing(t *testing.T) {
 	cfg := newTestCfg("binary")
 	cfg.DryRun = false
-	stagedFakeExec(t, []int{0, 1}, nil)
+	stagedFakeExec(t, []int{0, 1})
 	err := PreflightChecks(cfg)
 	assert.Error(t, err)
 }

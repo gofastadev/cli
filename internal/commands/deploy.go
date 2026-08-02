@@ -32,6 +32,12 @@ Two deployment methods are supported:
   docker  — Build a Docker image, transfer it to the server, run with Docker Compose (default)
   binary  — Cross-compile a Go binary, transfer it via SCP, manage with systemd
 
+Each deploy creates a release directory under <path>/releases/<timestamp>
+and restarts the app onto it (a brief restart, not zero-downtime). The
+deploy then polls the health endpoint; if the new release does not become
+healthy, gofasta automatically rolls back to the previous release. The
+` + "`current`" + ` symlink always points at the live release.
+
 Configuration is read from the deploy: section in config.yaml. Flags override config values.
 
 Prerequisites:
@@ -47,6 +53,7 @@ Examples:
   gofasta deploy --host user@server # Override host
   gofasta deploy --method binary    # Deploy as compiled binary
   gofasta deploy --dry-run          # Preview without executing`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeploy(cmd)
 	},
@@ -58,11 +65,13 @@ var deploySetupCmd = &cobra.Command{
 	Long: `Install prerequisites on a fresh VPS:
   - System packages (curl, nginx)
   - Docker (for docker deploy method)
-  - Service user (for binary deploy method)
-  - Directory structure
-  - Nginx reverse proxy configuration
+  - Service user + migrate CLI (for binary deploy method)
+  - Directory structure (<path>/releases, <path>/shared)
+  - Nginx reverse proxy vhost — only when deploy.domain is set in config.yaml
 
-Run this once before your first deployment.`,
+Run this once before your first deployment. Put your production .env on
+the server at <path>/shared/.env afterwards (deploys reuse it).`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeploySetup(cmd)
 	},
@@ -79,6 +88,7 @@ status for whichever deploy method is configured:
 
 Read-only — makes no changes on the remote host. Config is loaded from
 config.yaml and can be overridden with the same flags as ` + "`gofasta deploy`" + `.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployStatus(cmd)
 	},
@@ -94,6 +104,7 @@ until interrupted. Source depends on deploy method:
   binary   — ` + "`journalctl -u <appname> -f`" + `
 
 Read-only — makes no changes. Press Ctrl+C to stop tailing.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployLogs(cmd)
 	},
@@ -101,51 +112,32 @@ Read-only — makes no changes. Press Ctrl+C to stop tailing.`,
 
 var deployRollbackCmd = &cobra.Command{
 	Use:   "rollback",
-	Short: "Atomically swap the current release back to the previous version",
-	Long: `Roll the remote service back to the previous release by repointing the
-current symlink and restarting the service. Fails gracefully if no
-previous release exists. Use this when a deploy has caused a regression
-and you need to revert without re-running the full deploy pipeline.
+	Short: "Restart the service on the previous release",
+	Long: `Roll the remote service back to the newest release older than the one
+` + "`current`" + ` points at: restart onto it (docker: the release's pinned image;
+binary: the release's binary), verify its health endpoint, and only then
+leave the current pointer on it. If the rollback target turns out
+unhealthy, the release that was live before is restored.
 
-This only swaps atoms on the remote host — it does not touch any local
+Use this when a deploy has caused a regression and you need to revert
+without re-running the full deploy pipeline. It does not touch any local
 state or revert git.`,
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runDeployRollback(cmd)
 	},
 }
 
 func init() {
-	deployCmd.Flags().String("host", "", "Deploy target (user@server)")
-	deployCmd.Flags().String("method", "", "Deploy method: docker or binary (default: docker)")
-	deployCmd.Flags().Int("port", 0, "SSH port (default: 22)")
-	deployCmd.Flags().String("path", "", "Remote deploy directory (default: /opt/<appname>)")
-	deployCmd.Flags().String("arch", "", "Target architecture: amd64 or arm64 (default: amd64)")
-	deployCmd.Flags().Bool("dry-run", false, "Show commands without executing")
-
-	// Inherit flags for subcommands that need them
-	deploySetupCmd.Flags().String("host", "", "Deploy target (user@server)")
-	deploySetupCmd.Flags().String("method", "", "Deploy method: docker or binary (default: docker)")
-	deploySetupCmd.Flags().Int("port", 0, "SSH port (default: 22)")
-	deploySetupCmd.Flags().String("path", "", "Remote deploy directory")
-	deploySetupCmd.Flags().String("arch", "", "Target architecture")
-
-	deployStatusCmd.Flags().String("host", "", "Deploy target (user@server)")
-	deployStatusCmd.Flags().String("method", "", "Deploy method: docker or binary")
-	deployStatusCmd.Flags().Int("port", 0, "SSH port")
-	deployStatusCmd.Flags().String("path", "", "Remote deploy directory")
-	deployStatusCmd.Flags().String("arch", "", "Target architecture")
-
-	deployLogsCmd.Flags().String("host", "", "Deploy target (user@server)")
-	deployLogsCmd.Flags().String("method", "", "Deploy method: docker or binary")
-	deployLogsCmd.Flags().Int("port", 0, "SSH port")
-	deployLogsCmd.Flags().String("path", "", "Remote deploy directory")
-	deployLogsCmd.Flags().String("arch", "", "Target architecture")
-
-	deployRollbackCmd.Flags().String("host", "", "Deploy target (user@server)")
-	deployRollbackCmd.Flags().String("method", "", "Deploy method: docker or binary")
-	deployRollbackCmd.Flags().Int("port", 0, "SSH port")
-	deployRollbackCmd.Flags().String("path", "", "Remote deploy directory")
-	deployRollbackCmd.Flags().String("arch", "", "Target architecture")
+	// Persistent: one flag set shared by deploy and every subcommand, so
+	// --dry-run/--host/--port/... work uniformly (the previous per-command
+	// copies silently omitted --dry-run from every subcommand).
+	deployCmd.PersistentFlags().String("host", "", "Deploy target (user@server)")
+	deployCmd.PersistentFlags().String("method", "", "Deploy method: docker or binary (default: docker)")
+	deployCmd.PersistentFlags().Int("port", 0, "SSH port (default: 22)")
+	deployCmd.PersistentFlags().String("path", "", "Remote deploy directory (default: /opt/<appname>)")
+	deployCmd.PersistentFlags().String("arch", "", "Target architecture: amd64 or arm64 (default: amd64)")
+	deployCmd.PersistentFlags().Bool("dry-run", false, "Show commands without executing")
 
 	deployCmd.AddCommand(deploySetupCmd)
 	deployCmd.AddCommand(deployStatusCmd)
@@ -154,36 +146,33 @@ func init() {
 	rootCmd.AddCommand(deployCmd)
 }
 
-// deployMethodOverride is a test-only seam to force a cfg.Method value
-// not normally allowed by LoadDeployConfig. Used to exercise the
-// default-case in runDeploy's switch.
-var deployMethodOverride string
-
 func runDeploy(cmd *cobra.Command) error {
 	cfg, err := deploy.LoadDeployConfig(cmd)
 	if err != nil {
 		return err
-	}
-	if deployMethodOverride != "" {
-		cfg.Method = deployMethodOverride
 	}
 
 	if !cliout.JSON() {
 		cliout.Plain("Deploying %s to %s (%s method)...\n\n", cfg.AppName, cfg.Host, cfg.Method)
 	}
 
-	var deployErr error
-	switch cfg.Method {
-	case "docker":
-		deployErr = deploy.DeployDocker(cfg)
-	case "binary":
-		deployErr = deploy.DeployBinary(cfg)
-	default:
-		deployErr = fmt.Errorf("unknown deploy method: %s", cfg.Method)
-	}
-
+	deployErr := runDeployMethod(cfg)
 	emitDeployResult("deploy", cfg, deployErr)
 	return deployErr
+}
+
+// runDeployMethod dispatches on the validated method. Split from runDeploy
+// so the impossible-method branch is unit-testable with a hand-built config
+// (LoadDeployConfig never returns other values).
+func runDeployMethod(cfg *deploy.DeployConfig) error {
+	switch cfg.Method {
+	case "docker":
+		return deploy.DeployDocker(cfg)
+	case "binary":
+		return deploy.DeployBinary(cfg)
+	default:
+		return clierr.Newf(clierr.CodeDeployConfig, "unknown deploy method: %s", cfg.Method)
+	}
 }
 
 func runDeploySetup(cmd *cobra.Command) error {
@@ -209,7 +198,7 @@ func runDeployStatus(cmd *cobra.Command) error {
 	// Show current release
 	current, err := deploy.RunRemoteCapture(cfg, fmt.Sprintf("readlink %s 2>/dev/null || echo 'no current release'", cfg.CurrentPath()))
 	if err == nil && !cliout.JSON() {
-		deploy.PrintInfo("Current release: " + current)
+		cliout.Info("Current release: %s", current)
 	}
 
 	if !cliout.JSON() {
@@ -223,8 +212,11 @@ func runDeployStatus(cmd *cobra.Command) error {
 	var statusErr error
 	switch cfg.Method {
 	case "docker":
-		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())
-		query := fmt.Sprintf("cd %s && docker compose -f %s ps 2>/dev/null || echo 'No containers running'", cfg.CurrentPath(), composePath)
+		// -p keeps the query on the same fixed compose project the deploy
+		// uses; without it, compose derives a project name from the release
+		// directory and reports the wrong (empty) project.
+		query := fmt.Sprintf("cd %s && docker compose -p %s -f compose.yaml ps 2>/dev/null || echo 'No containers running'",
+			cfg.CurrentPath(), cfg.ComposeProject())
 		if cliout.JSON() {
 			serviceStatus, statusErr = deploy.RunRemoteCapture(cfg, query)
 		} else {
@@ -277,8 +269,8 @@ func runDeployLogs(cmd *cobra.Command) error {
 	cliout.Plain("Tailing logs for %s on %s (Ctrl+C to stop)...\n\n", cfg.AppName, cfg.Host)
 
 	if cfg.Method == "docker" {
-		composePath := fmt.Sprintf("%s/compose.yaml", cfg.CurrentPath())
-		return deploy.RunRemoteInteractive(cfg, fmt.Sprintf("cd %s && docker compose -f %s logs -f --tail 100", cfg.CurrentPath(), composePath))
+		return deploy.RunRemoteInteractive(cfg, fmt.Sprintf("cd %s && docker compose -p %s -f compose.yaml logs -f --tail 100",
+			cfg.CurrentPath(), cfg.ComposeProject()))
 	}
 	return deploy.RunRemoteInteractive(cfg, fmt.Sprintf("sudo journalctl -u %s -f -n 100", cfg.AppName))
 }
@@ -294,9 +286,9 @@ func runDeployRollback(cmd *cobra.Command) error {
 }
 
 // emitDeployResult prints a structured result in JSON mode. Text mode
-// is silent here because the deploy package's own printer is already
-// streaming progress messages; the operation's outcome is conveyed by
-// the exit code (returned err).
+// is silent here because the deploy package is already streaming progress
+// messages through cliout; the operation's outcome is conveyed by the
+// exit code (returned err).
 func emitDeployResult(action string, cfg *deploy.DeployConfig, err error) {
 	if !cliout.JSON() {
 		return
