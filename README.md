@@ -151,7 +151,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
 3. Copies ~78 template files, replacing placeholders with your project name
-4. Runs `go get github.com/gofastadev/gofasta@latest` to pull the gofasta library as a project dependency, plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
+4. Runs `go get github.com/gofastadev/gofasta@<pinned version>` to pull the gofasta library as a project dependency — the CLI pins the library release its templates were tested against (`toolVersionGofasta` in `internal/commands/new.go`) — plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
 7. Generates GraphQL resolver code

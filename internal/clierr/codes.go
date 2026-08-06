@@ -238,7 +238,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/getting-started/installation",
 	},
 	CodeGofastaInstall: {
-		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or run `go get github.com/gofastadev/gofasta@latest` inside the generated project once the sum DB catches up",
+		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and re-run `gofasta new`; the CLI installs the exact gofasta library version it was tested against, so no manual `go get` is needed",
 		Docs: "https://gofasta.dev/docs/cli-reference/new",
 	},
 	CodeGoBuildFailed: {
