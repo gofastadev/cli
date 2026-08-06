@@ -83,8 +83,9 @@ Visit `/swagger/index.html` for the auto-generated OpenAPI UI and
 ## Project structure
 
 Layered architecture — one directory per technical concern, one file per
-resource inside each directory. See [`AGENTS.md`](./AGENTS.md) for a full
-tree and the rules each layer follows.
+resource inside each directory. `gofasta ai <agent>` (see [AI coding
+agents](#ai-coding-agents) below) installs a briefing with the rules
+each layer follows.
 
 ```
 app/
@@ -227,22 +228,19 @@ the GitHub Actions workflow templates shipped under `deployments/ci/`.
 
 ## AI coding agents
 
-This project ships an [`AGENTS.md`](./AGENTS.md) at the root, read
-automatically by Claude Code, OpenAI Codex, Cursor, Aider, and other
-MCP-aware agents. It covers the directory layout, every command, the
-conventions each layer must follow, common failure modes (especially
-around Wire), and a pre-commit self-check list. If an agent is working
-on this codebase, point it there first.
-
-To install per-agent configuration (permission allowlists, pre-commit
-hooks, slash commands, conventions files), run:
+Run `gofasta ai <agent>` to install the configuration that agent reads
+natively — a root briefing file where the agent expects one, plus
+permission allowlists, hooks, slash commands, and convention rules. The
+briefing covers the directory layout, every command, the conventions
+each layer must follow, common failure modes (especially around Wire),
+and a pre-commit self-check list.
 
 ```bash
-gofasta ai claude       # Claude Code: .claude/ settings + hooks + slash commands
-gofasta ai cursor       # Cursor: .cursor/rules/gofasta.mdc
-gofasta ai codex        # OpenAI Codex: .codex/config.toml
-gofasta ai aider        # Aider: .aider.conf.yml + .aider/CONVENTIONS.md
-gofasta ai windsurf     # Windsurf: .windsurfrules
+gofasta ai claude       # Claude Code: CLAUDE.md + .claude/ (settings, hooks, slash commands)
+gofasta ai cursor       # Cursor: .cursor/ (rules, commands, hooks)
+gofasta ai codex        # OpenAI Codex: AGENTS.md + .codex/ (config, docs, prompts, hooks)
+gofasta ai aider        # Aider: CONVENTIONS.md + .aider.conf.yml + .aider/docs/
+gofasta ai windsurf     # Windsurf: .windsurf/ (rules, workflows, hooks)
 
 gofasta ai list         # every supported agent
 gofasta ai status       # what's currently installed

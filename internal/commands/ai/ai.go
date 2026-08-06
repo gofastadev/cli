@@ -36,9 +36,10 @@ var Cmd = &cobra.Command{
 needs to work smoothly in this codebase — permission allowlists, hooks,
 conventions files, and slash commands.
 
-Ships only AGENTS.md by default (the universal file every modern agent
-reads); per-agent configuration is opt-in via this command so developers
-who don't use AI agents aren't cluttered with dotfiles they don't need.
+The scaffold ships no agent configuration by default — everything,
+including each agent's root briefing file (CLAUDE.md, AGENTS.md,
+CONVENTIONS.md), is opt-in via this command so developers who don't use
+AI agents aren't cluttered with dotfiles they don't need.
 
 Every installer is idempotent — re-running after a gofasta update
 refreshes the config without touching files you've edited.

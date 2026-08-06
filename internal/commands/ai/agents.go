@@ -6,9 +6,9 @@
 //
 // The installer is intentionally opt-in — shipping every agent's config
 // in the scaffold would clutter projects for developers who don't use
-// AI agents. Only AGENTS.md (the universal file read by every modern
-// agent) is shipped by default; everything else lives behind this
-// command.
+// AI agents. The scaffold ships no agent configuration at all; every
+// footprint (including each agent's root briefing file, e.g. AGENTS.md
+// for Codex) lives behind this command.
 package ai
 
 import (
@@ -107,9 +107,9 @@ var fsWalkDir = fs.WalkDir
 // be written to (relative to the project root).
 //
 // Returns an empty slice (no error) when the agent has no templates at
-// all — agents like cursor and windsurf install nothing on disk because
-// they read AGENTS.md natively, so their template directory is omitted
-// from the embed FS entirely.
+// all — a defensive branch kept for registry entries whose template
+// directory is absent from the embed FS; every currently registered
+// agent ships a full template tree.
 //
 // Two path transforms are applied to every entry:
 //
