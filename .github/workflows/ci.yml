@@ -34,6 +34,13 @@ jobs:
         with:
           version: v2.11.4
 
+      # Docs anti-drift gate: README generated blocks, inline fact
+      # annotations, fence-validated `gofasta` invocations, release
+      # platform matrix, lint-version parity. `make docs-check` builds
+      # the CLI first, so this needs nothing beyond setup-go.
+      - name: Docs check
+        run: make docs-check
+
   test:
     runs-on: ubuntu-latest
     strategy:

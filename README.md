@@ -158,7 +158,7 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
-3. Copies ~78 template files (including a starter User resource), replacing placeholders with your project name, plus the foundational migrations for your chosen `--driver`
+3. Copies ~78 template files <!-- fact: skeleton.fileCount = 78 --> (including a starter User resource), replacing placeholders with your project name, plus the foundational migrations for your chosen `--driver`
 4. Runs `go get github.com/gofastadev/gofasta@<pinned version>` to pull the gofasta library as a project dependency — the CLI pins the library release its templates were tested against (`toolVersionGofasta` in `internal/commands/new.go`) — plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen, `--graphql` only), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
@@ -203,22 +203,23 @@ The `generate` command (shorthand: `g`) creates boilerplate code for new resourc
 gofasta g scaffold Product name:string price:float
 ```
 
+<!-- gofasta:begin scaffold-files -->
 This single command creates **18 files** (tests included) and patches 4 existing files:
 
 | Created file | What it is |
 |-------------|-----------|
-| `app/models/product.model.go` | Database model with `name` and `price` fields |
-| `db/migrations/000006_create_products.up.sql` | SQL to create the `products` table |
-| `db/migrations/000006_create_products.down.sql` | SQL to drop the `products` table |
+| `app/models/product.model.go` | Database model with your fields |
+| `db/migrations/000006_create_products.up.sql` | SQL to create the table |
+| `db/migrations/000006_create_products.down.sql` | SQL to drop the table |
 | `app/repositories/interfaces/product_repository.go` | Repository interface (contract) |
 | `app/repositories/product.repository.go` | Repository implementation (GORM queries) |
 | `app/repositories/product.repository_test.go` | Repository tests |
-| `app/services/interfaces/product_service.go` | Service interface (contract) |
-| `app/services/product.service.go` | Service implementation (business logic) |
-| `app/services/product.service_test.go` | Service tests |
 | `app/services/product_errors.go` | Per-resource sentinel errors |
 | `app/services/product_inputs.go` | Domain input types |
 | `app/services/product_inputs_test.go` | Domain input tests |
+| `app/services/interfaces/product_service.go` | Service interface (contract) |
+| `app/services/product.service.go` | Service implementation (business logic) |
+| `app/services/product.service_test.go` | Service tests |
 | `app/dtos/product.dtos.go` | Request/response DTOs with validation tags |
 | `app/dtos/product.dtos_test.go` | DTO tests |
 | `app/di/providers/product.go` | Wire dependency injection provider |
@@ -226,13 +227,14 @@ This single command creates **18 files** (tests included) and patches 4 existing
 | `app/rest/controllers/product.controller_test.go` | Controller tests |
 | `app/rest/routes/product.routes.go` | Route definitions (GET, POST, PUT, DELETE) |
 
-(With `--layout feature`, the same files land in per-resource packages under `app/<resource>/` instead.)
-
 It also patches these files automatically:
-- `app/di/container.go` — adds `ProductService` and `ProductController` fields
-- `app/di/wire.go` — adds `ProductSet` to the Wire build
-- `app/rest/routes/index.routes.go` — registers Product routes
-- `cmd/serve.go` — wires `ProductController` into the route config
+- `app/di/container.go` — adds the service and controller fields
+- `app/di/wire.go` — adds the provider set to the Wire build
+- `app/rest/routes/index.routes.go` — registers the resource routes
+- `cmd/serve.go` — wires the controller into the route config
+
+(With `--layout feature`, the same files land in per-resource packages under `app/<resource>/` instead.)
+<!-- gofasta:end scaffold-files -->
 
 Wire code is regenerated for you at the end, and a post-generation `go build ./...` verifies the result (skip with `--no-verify`; preview everything with `--dry-run`).
 
@@ -253,15 +255,17 @@ The `--graphql` flag additionally creates a `.gql` schema file and a resolver fi
 
 ### Supported Field Types
 
+<!-- gofasta:begin field-types -->
 | Type | Go type | SQL type (Postgres) | GraphQL type |
 |------|---------|-------------------|-------------|
-| `string` | `string` | `VARCHAR(255)` | `String` |
-| `text` | `string` | `TEXT` | `String` |
-| `int` | `int` | `INTEGER` | `Int` |
-| `float` | `float64` | `DECIMAL(10,2)` | `Float` |
-| `bool` | `bool` | `BOOLEAN` | `Boolean` |
-| `uuid` | `uuid.UUID` | `UUID` | `ID` |
-| `time` | `time.Time` | `TIMESTAMP` | `DateTime` |
+| `string` | `string` | `VARCHAR(255) NOT NULL` | `String` |
+| `text` | `string` | `TEXT NOT NULL` | `String` |
+| `int` | `int` | `INTEGER NOT NULL` | `Int` |
+| `float` | `float64` | `DECIMAL(10,2) NOT NULL` | `Float` |
+| `bool` | `bool` | `BOOLEAN NOT NULL DEFAULT false` | `Boolean` |
+| `uuid` | `uuid.UUID` | `UUID NOT NULL` | `ID` |
+| `time` (alias `datetime`) | `time.Time` | `TIMESTAMP NOT NULL DEFAULT now()` | `DateTime` |
+<!-- gofasta:end field-types -->
 
 SQL types are automatically adapted for MySQL, SQLite, SQL Server, and ClickHouse based on the `database.driver` in your `config.yaml`.
 
@@ -417,14 +421,16 @@ gofasta config schema > config.schema.json
 
 Pre-defined sequences of gofasta commands that together accomplish one higher-level task. Transparent (no hidden logic, each step is a command you could run by hand) but save agent round-trips and keystrokes:
 
+<!-- gofasta:begin do-workflows -->
 ```bash
-gofasta do new-rest-endpoint Invoice total:float    # scaffold + migrate up + swagger
-gofasta do rebuild                                  # wire + swagger
-gofasta do fresh-start                              # init + migrate up + seed
-gofasta do clean-slate                              # db reset + seed
-gofasta do health-check                             # verify + status
-gofasta do list                                     # every supported workflow
+gofasta do new-rest-endpoint <ResourceName> [field:type ...]   # Scaffold a REST resource, apply its migration, regenerate Swagger
+gofasta do rebuild                                             # Regenerate every derived artifact (Wire + Swagger)
+gofasta do fresh-start                                         # First-time project setup after `git clone` — install tool deps, migrate, seed
+gofasta do clean-slate                                         # Reset the dev database to a known state — drop + re-migrate + re-seed
+gofasta do health-check                                        # Run `verify` + `status` together — the full project health report
+gofasta do list                                                # every supported workflow
 ```
+<!-- gofasta:end do-workflows -->
 
 Pass `--dry-run` to preview the chain.
 
@@ -432,15 +438,17 @@ Pass `--dry-run` to preview the chain.
 
 A brand-new `gofasta new` project ships **zero** agent-related files. Agent setup is fully opt-in, per agent. Running `gofasta ai <key>` installs a self-contained tree at the locations that agent reads natively — no rename of pre-existing files, every file lands at its final path on first install and is removed wholesale on uninstall.
 
+<!-- gofasta:begin ai-agents -->
 ```bash
-gofasta ai claude       # CLAUDE.md + .claude/{settings,hooks,commands,rules}/
-gofasta ai cursor       # .cursor/rules/*.mdc (6 topic rules, no root briefing)
-gofasta ai codex        # AGENTS.md + .codex/{config.toml, docs/*.md}
-gofasta ai aider        # CONVENTIONS.md + .aider.conf.yml + .aider/docs/*.md
-gofasta ai windsurf     # .windsurf/rules/*.md (6 topic rules, no root briefing)
-gofasta ai list         # supported agents
-gofasta ai status       # what's currently installed in this project
+gofasta ai claude     # Claude Code — Anthropic's official CLI coding agent
+gofasta ai cursor     # Cursor — AI-first IDE with project-level rules and MCP support
+gofasta ai codex      # OpenAI Codex — OpenAI's coding agent — reads AGENTS.md by default
+gofasta ai aider      # Aider — Open-source pair-programming CLI agent
+gofasta ai windsurf   # Windsurf — Codeium's AI-native IDE
+gofasta ai list       # supported agents
+gofasta ai status     # what's currently installed in this project
 ```
+<!-- gofasta:end ai-agents -->
 
 Every install ships a slim root briefing (where the agent expects one) plus six topic chunks — `conventions`, `overview`, `workflow`, `commands`, `debugging`, `docs-index` — wrapped with the right activation metadata for that agent (Claude's `paths:`, Cursor's `alwaysApply` / `globs` / `description`, Windsurf's `trigger:`, etc.). Each chunk stays under the agent's per-file size cap (Claude 200-line target, Codex 32 KiB, Windsurf 12 KB).
 
@@ -475,15 +483,17 @@ $ gofasta --json g scaffold 2>&1 >/dev/null | jq .
 Grouped as `gofasta --help` prints them. Flag-level detail lives at
 [gofasta.dev/docs/cli-reference](https://gofasta.dev/docs/cli-reference).
 
+<!-- gofasta:begin command-index -->
 | Group | Commands |
 |---|---|
-| Project lifecycle | `new`, `init`, `doctor`, `upgrade`, `version`, `ai` (`list` / `status` / `uninstall`) |
-| Development workflow | `dev`, `serve`, `routes`, `swagger`, `wire`, `console`, `do`, `verify`, `status`, `config schema`, `debug` (18 subcommands: `requests`, `sql`, `traces`, `trace`, `logs`, `errors`, `last-error`, `last-slow-request`, `n-plus-one`, `explain`, `cache`, `goroutines`, `stack`, `profile`, `replay`, `har`, `health`, `watch`) |
-| Database | `migrate up` / `migrate down` / `migrate repair`, `seed`, `db reset` |
-| Code generation | `g scaffold`, `g model`, `g repository`, `g service`, `g controller`, `g dto`, `g migration`, `g route`, `g provider`, `g resolver`, `g job`, `g task`, `g email-template`, `g mock` — plus the modify-aware set: `g field`, `g method`, `g repo-method`, `g endpoint`, `g middleware`, `g relation`, `g rename` |
-| Deployment | `deploy`, `deploy setup`, `deploy status`, `deploy logs`, `deploy rollback` |
-| Introspection | `inspect`, `inspect-jobs`, `inspect-tasks`, `impact`, `xrefs`, `refactor` (`feature` / `layered` / `status`), `test` |
-| Shell | `completion` (bash / zsh / fish / powershell) |
+| Project lifecycle | `ai` (3 subcommands: `list`, `status`, `uninstall`), `doctor`, `init`, `new`, `upgrade`, `version` |
+| Development workflow | `config` (1 subcommand: `schema`), `console`, `debug` (18 subcommands: `cache`, `errors`, `explain`, `goroutines`, `har`, `health`, `last-error`, `last-slow-request`, `logs`, `n-plus-one`, `profile`, `replay`, `requests`, `sql`, `stack`, `trace`, `traces`, `watch`), `dev`, `do`, `routes`, `serve`, `status`, `swagger`, `verify`, `wire` |
+| Database | `db` (1 subcommand: `reset`), `migrate` (3 subcommands: `down`, `repair`, `up`), `seed` |
+| Code generation | `generate` (alias `g`) (21 subcommands: `controller`, `dto`, `email-template`, `endpoint`, `field`, `job`, `method`, `middleware`, `migration`, `mock`, `model`, `provider`, `relation`, `rename`, `repo-method`, `repository`, `resolver`, `route`, `scaffold`, `service`, `task`) |
+| Deployment | `deploy` (4 subcommands: `logs`, `rollback`, `setup`, `status`) |
+| Introspection | `facts`, `impact`, `inspect`, `inspect-jobs`, `inspect-tasks`, `refactor` (3 subcommands: `feature`, `layered`, `status`), `test`, `xrefs` |
+| Shell integration | `completion` (4 subcommands: `bash`, `fish`, `powershell`, `zsh`) |
+<!-- gofasta:end command-index -->
 
 Global flags: `--json` (machine-parseable single-line JSON, banner suppressed) and `--no-banner` (also via `GOFASTA_NO_BANNER=1`).
 

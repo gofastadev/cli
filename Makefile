@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check vet lint lint-install test coverage build integration deploy-e2e clean ci preflight
+.PHONY: fmt fmt-check vet lint lint-install test coverage build integration deploy-e2e clean ci preflight docs-sync docs-check
 
 ## Pinned golangci-lint version. MUST match .github/workflows/ci.yml so a
 ## green local run predicts a green CI run.
@@ -126,10 +126,22 @@ deploy-e2e: build
 clean:
 	rm -rf bin/ coverage.out coverage.html
 
+## Regenerate the README's marker-delimited blocks from `gofasta facts`
+docs-sync: build
+	./bin/gofasta --no-banner facts sync --repo .
+
+## Verify docs match the facts document: README generated blocks, inline
+## fact annotations, every `gofasta …` invocation in code fences (README,
+## skeleton README template, ../.claude/docs when present), the release
+## platform matrix vs .goreleaser.yaml, and the golangci-lint version
+## parity between this Makefile and ci.yml.
+docs-check: build
+	./bin/gofasta --no-banner facts check --repo .
+
 ## Run all checks (what CI runs)
 # The PR-level checks (what ci.yml's lint + test jobs run). `make
 # preflight` is the full local gate — it adds the integration scaffolds.
-ci: fmt-check vet lint test build
+ci: fmt-check vet lint test build docs-check
 
 ## Preflight — the full set of checks that MUST pass locally before any
 ## task is considered complete. Intended to be run before every commit and
@@ -138,10 +150,11 @@ ci: fmt-check vet lint test build
 ##
 ## Order matters: fmt-check is first (cheapest, catches the most common
 ## slip), then vet, then lint (includes errcheck + staticcheck + revive +
-## the rest), then tests with -race, then a build, then the integration
-## smoke test that scaffolds a project and compiles it, then the deploy
-## end-to-end test against a disposable Docker VPS (mirrors the CI
-## deploy-e2e job — preflight runs everything CI runs).
-preflight: fmt-check vet lint test build integration deploy-e2e
+## the rest), then tests with -race, then a build, then docs-check (cheap,
+## catches documentation drift before the expensive steps), then the
+## integration smoke test that scaffolds a project and compiles it, then
+## the deploy end-to-end test against a disposable Docker VPS (mirrors the
+## CI deploy-e2e job — preflight runs everything CI runs).
+preflight: fmt-check vet lint test build docs-check integration deploy-e2e
 	@echo ""
 	@echo "  ✓ preflight green — safe to commit."
