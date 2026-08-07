@@ -817,3 +817,33 @@ func TestParseReturnsFlag(t *testing.T) {
 	assert.Equal(t, []string{"[]*models.Order", "int64", "error"},
 		parseReturnsFlag(" []*models.Order ,int64,  error "))
 }
+
+// TestBuildFromArgs_RejectsBaseModelColumns — a field named after one of
+// the BaseModelImpl columns (in any casing) is rejected before it can
+// duplicate the embedded struct field, migration column, and JSON shape.
+func TestBuildFromArgs_RejectsBaseModelColumns(t *testing.T) {
+	setupTempProject(t)
+	for _, field := range []string{
+		"created_at:time", "createdAt:time", "CreatedAt:time",
+		"id:uuid", "record_version:int", "is_active:bool",
+	} {
+		t.Run(field, func(t *testing.T) {
+			_, err := buildFromArgs([]string{"Product", field})
+			require.Error(t, err)
+			var ce *clierr.Error
+			require.ErrorAs(t, err, &ce)
+			assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
+			assert.Contains(t, err.Error(), "BaseModelImpl")
+		})
+	}
+}
+
+// TestValidateFieldNotBaseColumn covers both verdicts directly.
+func TestValidateFieldNotBaseColumn(t *testing.T) {
+	assert.NoError(t, validateFieldNotBaseColumn("title"))
+	err := validateFieldNotBaseColumn("deletedAt")
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
+}

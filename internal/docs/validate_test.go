@@ -1,6 +1,8 @@
 package docs
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -112,4 +114,81 @@ func TestCheckGoreleaserPlatforms_RealRepo(t *testing.T) {
 		[]string{"linux", "darwin"}, []string{"amd64", "arm64"})
 	require.Len(t, got, 1)
 	assert.Contains(t, got[0], "goos")
+}
+
+func TestValidateInvocations_BareDashIgnored(t *testing.T) {
+	// A lone "-" trims to an empty flag name, which is skipped.
+	assert.Empty(t, problems("gofasta", "dev", "-"))
+}
+
+func TestValidateInvocations_InheritedShorthand(t *testing.T) {
+	f := factsFixture()
+	f.GlobalFlags = append(f.GlobalFlags, Flag{Name: "output", Shorthand: "o", Persistent: true})
+	got := ValidateInvocations(f, []Invocation{{File: "doc.md", Line: 1, Tokens: []string{"gofasta", "dev", "-o"}}})
+	assert.Empty(t, got, "shorthand declared on an inherited flag must resolve")
+}
+
+func TestCheckGoreleaserPlatforms_MissingAndMalformedFile(t *testing.T) {
+	dir := t.TempDir()
+
+	got := CheckGoreleaserPlatforms(dir, []string{"linux"}, []string{"amd64"})
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "reading .goreleaser.yaml")
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".goreleaser.yaml"),
+		[]byte("builds:\n  - main: ./cmd/gofasta\n"), 0o644))
+	got = CheckGoreleaserPlatforms(dir, []string{"linux"}, []string{"amd64"})
+	require.Len(t, got, 2, "both goos and goarch lists are unlocatable")
+	for _, p := range got {
+		assert.Contains(t, p, "could not locate")
+	}
+}
+
+func TestYamlListItems_KeyWithoutItems(t *testing.T) {
+	_, err := yamlListItems("goos:\nnot a dash list\n", "goos")
+	assert.ErrorContains(t, err, "could not locate list items")
+}
+
+func TestEqualStringSets(t *testing.T) {
+	assert.True(t, equalStringSets([]string{"linux", "darwin"}, []string{"darwin", "linux"}))
+	assert.False(t, equalStringSets([]string{"linux"}, []string{"linux", "darwin"}), "length mismatch")
+	assert.False(t, equalStringSets([]string{"linux", "darwin"}, []string{"linux", "freebsd"}), "same length, different members")
+}
+
+func TestCheckLintVersionParity_Fixtures(t *testing.T) {
+	writeRepo := func(t *testing.T, makefile, ci string) string {
+		t.Helper()
+		dir := t.TempDir()
+		if makefile != "" {
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "Makefile"), []byte(makefile), 0o644))
+		}
+		if ci != "" {
+			require.NoError(t, os.MkdirAll(filepath.Join(dir, ".github", "workflows"), 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(dir, ".github", "workflows", "ci.yml"), []byte(ci), 0o644))
+		}
+		return dir
+	}
+
+	got := CheckLintVersionParity(writeRepo(t, "", ""))
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "reading Makefile")
+
+	got = CheckLintVersionParity(writeRepo(t, "GOLANGCI_LINT_VERSION := v2.1.0\n", ""))
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "reading ci.yml")
+
+	got = CheckLintVersionParity(writeRepo(t, "all: build\n", "jobs:\n  lint:\n    with:\n      version: v2.1.0\n"))
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "could not locate GOLANGCI_LINT_VERSION in Makefile")
+
+	got = CheckLintVersionParity(writeRepo(t, "GOLANGCI_LINT_VERSION := v2.1.0\n", "jobs:\n  lint:\n    steps: []\n"))
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "could not locate golangci-lint version in ci.yml")
+
+	got = CheckLintVersionParity(writeRepo(t, "GOLANGCI_LINT_VERSION := v2.1.0\n", "jobs:\n  lint:\n    with:\n      version: v2.2.0\n"))
+	require.Len(t, got, 1)
+	assert.Contains(t, got[0], "golangci-lint version drift")
+
+	assert.Empty(t, CheckLintVersionParity(writeRepo(t,
+		"GOLANGCI_LINT_VERSION := v2.1.0\n", "jobs:\n  lint:\n    with:\n      version: v2.1.0\n")))
 }

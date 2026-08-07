@@ -43,8 +43,12 @@ func CheckInlineFacts(file string, content []byte, f Facts) []string {
 	return problems
 }
 
+// jsonMarshal is a seam: Facts contains no type json.Marshal can reject, so
+// the error branches below are unreachable without stubbing this out.
+var jsonMarshal = json.Marshal
+
 func factsAsMap(f Facts) (map[string]any, error) {
-	raw, err := json.Marshal(f)
+	raw, err := jsonMarshal(f)
 	if err != nil {
 		return nil, err
 	}

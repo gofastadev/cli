@@ -262,3 +262,147 @@ func TestDeployDocker_MigrationFailureAborts(t *testing.T) {
 	err := DeployDocker(cfg)
 	require.Error(t, err, "a failed migration must abort the deploy")
 }
+
+// TestDeployDocker_CleanupScriptFailureIsNonFatal — a failing cleanup script
+// (the real one, matched on its name-sort marker) is a warning: the deploy
+// itself already succeeded.
+func TestDeployDocker_CleanupScriptFailureIsNonFatal(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	withFailOnArg(t, "sort -r")
+
+	assert.NoError(t, DeployDocker(cfg))
+}
+
+// TestDeployDocker_LinkSharedFails — linking shared/.env + config.yaml into
+// the release directory must fail the deploy loudly, not leave compose to
+// interpolate empty credentials.
+func TestDeployDocker_LinkSharedFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	withFailOnArg(t, "for f in .env")
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to link shared config")
+}
+
+// TestDeployDocker_RecordImageFails — the RELEASE_IMAGE record is what
+// rollback depends on; failing to write it aborts the deploy.
+func TestDeployDocker_RecordImageFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	withFailOnArg(t, "> /opt/test/releases/20260101-000000/RELEASE_IMAGE")
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to record the release image tag")
+}
+
+// TestDeployDocker_PrevImageUnreadable_NoAutoRollback — the previous release
+// exists but its RELEASE_IMAGE cannot be read: auto-rollback must refuse to
+// guess an image and leave manual rollback to the operator.
+func TestDeployDocker_PrevImageUnreadable_NoAutoRollback(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Exit: 1},
+		{Match: "up -d --remove-orphans", Exit: 1},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "docker compose up failed")
+	assert.Empty(t, commandsContaining("cd /opt/test/releases/20251231-000000 && APP_IMAGE="),
+		"no rollback restart may run without a trustworthy previous image")
+}
+
+// TestDeployDocker_AutoRollbackComposeUpFails — the cutover fails AND
+// restarting the previous release fails too: the compounded rollback
+// failure must surface.
+func TestDeployDocker_AutoRollbackComposeUpFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	// One rule fails both compose up invocations (new release and previous).
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Stdout: "testapp:20251231-000000"},
+		{Match: "up -d --remove-orphans", Exit: 1},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "automatic rollback failed")
+	assert.NotEmpty(t, commandsContaining("APP_IMAGE=testapp:20251231-000000"),
+		"the previous release's restart must have been attempted")
+}
+
+// TestDeployDocker_AutoRollbackSymlinkRestoreWarns — the new release's
+// symlink flip fails (triggering rollback); restoring the pointer to the
+// previous release fails too, which is a warning — the previous release is
+// running and healthy again.
+func TestDeployDocker_AutoRollbackSymlinkRestoreWarns(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Stdout: "testapp:20251231-000000"},
+		{Match: "ln -sfn", Exit: 1},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to update current symlink")
+	assert.NotEmpty(t, commandsContaining("APP_IMAGE=testapp:20251231-000000"),
+		"the previous release must have been restarted")
+	assert.NotEmpty(t, commandsContaining("rm -rf /opt/test/releases/20260101-000000"),
+		"the failed release directory must still be removed after a successful restart")
+}
+
+// TestDeployDocker_AutoRollbackUnhealthy — the restored previous release
+// fails its own health gate after the rollback restart succeeded.
+func TestDeployDocker_AutoRollbackUnhealthy(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	// HealthTimeout 0 fails BOTH health gates: the deploy's (triggering the
+	// rollback) and the post-rollback probe of the restored release.
+	cfg.HealthTimeout = 0
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Stdout: "testapp:20251231-000000"},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "restored release is unhealthy")
+}
+
+// TestDeployDocker_AutoRollbackFailedReleaseCleanupWarns — removing the
+// failed release directory + image is best-effort: its own failure is a
+// warning and the original migration error is what surfaces.
+func TestDeployDocker_AutoRollbackFailedReleaseCleanupWarns(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "cat /opt/test/releases/20251231-000000/RELEASE_IMAGE", Stdout: "testapp:20251231-000000"},
+		{Match: "migrate up", Exit: 1},
+		{Match: "docker rmi testapp:20260101-000000", Exit: 1},
+	})
+
+	err := DeployDocker(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "database migrations failed",
+		"the migration failure, not the cleanup failure, must be the reported error")
+	assert.NotEmpty(t, commandsContaining("docker rmi testapp:20260101-000000"),
+		"the failed release's image removal must have been attempted")
+}

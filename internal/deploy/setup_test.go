@@ -169,6 +169,82 @@ func TestSetupServer_MigrateInstallFailureIsNonFatal(t *testing.T) {
 	assert.NoError(t, SetupServer(cfg))
 }
 
+// TestSetupServer_CreateUserFails — binary setup must abort when the
+// service user cannot be created (the systemd unit declares User=/Group=).
+func TestSetupServer_CreateUserFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	withFailOnArg(t, "useradd")
+
+	err := SetupServer(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to create service user")
+}
+
+// TestSetupServer_DomainSet_InstallsNginxVhost — with deploy.domain set,
+// setup must upload the vhost with the domain and app port substituted in,
+// enable it, and reload nginx.
+func TestSetupServer_DomainSet_InstallsNginxVhost(t *testing.T) {
+	withinProject(t)
+	withFakeExec(t, 0)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	cfg.Domain = "example.com"
+
+	require.NoError(t, SetupServer(cfg))
+
+	install := commandsContaining("server_name example.com")
+	require.NotEmpty(t, install, "the vhost's server_name must be rewritten to the configured domain")
+	assert.Contains(t, install[0], "server 127.0.0.1:8080", "the upstream must point at the app port")
+	assert.Contains(t, install[0], "sites-available/testapp.conf")
+	assert.Contains(t, install[0], "sudo nginx -t && sudo systemctl reload nginx")
+}
+
+// TestSetupServer_DomainSet_MissingNginxConf — deploy.domain is set but the
+// project ships no deployments/nginx/app.conf: a hard error, not a silent
+// skip.
+func TestSetupServer_DomainSet_MissingNginxConf(t *testing.T) {
+	withinProject(t)
+	require.NoError(t, os.Remove("deployments/nginx/app.conf"))
+	withFakeExec(t, 0)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	cfg.Domain = "example.com"
+
+	err := SetupServer(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "deployments/nginx/app.conf was not found")
+}
+
+// TestSetupServer_DomainSet_NginxCopyFails — the scp of the vhost to the
+// server fails.
+func TestSetupServer_DomainSet_NginxCopyFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	cfg.Domain = "example.com"
+	withFailOnArg(t, "/tmp/testapp.nginx.conf")
+
+	err := SetupServer(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to copy nginx config")
+}
+
+// TestSetupServer_DomainSet_NginxInstallFails — enabling/reloading nginx on
+// the server fails (e.g. `nginx -t` rejects the config).
+func TestSetupServer_DomainSet_NginxInstallFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	cfg.Domain = "example.com"
+	withFailOnArg(t, "nginx -t")
+
+	err := SetupServer(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "nginx configuration failed")
+}
+
 func contains(s, substr string) bool {
 	if substr == "" {
 		return false

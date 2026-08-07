@@ -92,3 +92,17 @@ func TestRenderBlocks_AllIDsPresent(t *testing.T) {
 		assert.Contains(t, blocks, id)
 	}
 }
+
+func TestRenderBlocks_ScaffoldErrorPropagates(t *testing.T) {
+	f := renderFixture()
+	f.Scaffold.Layered.Created = append(f.Scaffold.Layered.Created, "app/unknown/{resource}.go")
+	_, err := RenderBlocks(f)
+	assert.ErrorContains(t, err, "has no description")
+}
+
+func TestRenderCommandIndex_EmptyGroupOmitted(t *testing.T) {
+	f := renderFixture()
+	f.Groups = append(f.Groups, Group{ID: "deploy", Title: "Deployment"})
+	out := renderCommandIndex(f)
+	assert.NotContains(t, out, "Deployment", "groups with no commands must not render a row")
+}

@@ -57,3 +57,19 @@ func TestGlobalFlagFacts(t *testing.T) {
 	assert.Equal(t, "bool", flags[0].Type)
 	assert.True(t, flags[0].Persistent)
 }
+
+func TestCommandFlags_HelpFlagExcluded(t *testing.T) {
+	c := &cobra.Command{Use: "thing", Short: "Thing"}
+	c.Flags().Bool("verbose", false, "chatty")
+	// Execute lazily registers --help on every command; simulate that so the
+	// skip branch in commandFlags is exercised.
+	c.InitDefaultHelpFlag()
+
+	flags := commandFlags(c)
+	names := make([]string, 0, len(flags))
+	for _, f := range flags {
+		names = append(names, f.Name)
+	}
+	assert.Contains(t, names, "verbose")
+	assert.NotContains(t, names, "help", "the implicit --help flag must be excluded")
+}

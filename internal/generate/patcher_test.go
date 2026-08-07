@@ -8,6 +8,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 func TestPatchContainer_ReadError(t *testing.T) {
@@ -955,4 +957,70 @@ func run() {
 	require.NoError(t, PatchServeFile(d))
 	content := readTestFile(t, "cmd/serve.go")
 	require.Regexp(t, `\bProductController:\s+container\.ProductController,`, content)
+}
+
+// TestGeneratorMarkers — the refactor preflight consumes this map to
+// warn when a scaffold marker was hand-deleted; every anchored file must
+// be present with its exact marker string(s).
+func TestGeneratorMarkers(t *testing.T) {
+	m := GeneratorMarkers()
+	require.Equal(t, map[string][]string{
+		"app/di/container.go":               {"// gofasta:scaffold:container-fields"},
+		"app/di/wire.go":                    {"// gofasta:scaffold:wire-providers"},
+		"app/rest/routes/index.routes.go":   {"// gofasta:scaffold:route-config-fields", "// gofasta:scaffold:route-registrations"},
+		"cmd/serve.go":                      {"// gofasta:scaffold:routeconfig-init"},
+		"app/graphql/resolvers/resolver.go": {"// gofasta:scaffold:resolver-fields"},
+	}, m)
+}
+
+// TestPatchResolver_MissingMarkerErrors — a resolver.go without the
+// scaffold marker is out of sync with the patcher; hard error, no write.
+func TestPatchResolver_MissingMarkerErrors(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	resolverContent := `package resolvers
+
+import (
+	svcInterfaces "github.com/testorg/testapp/app/services/interfaces"
+)
+
+type Resolver struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+
+func NewResolver(userService svcInterfaces.UserServiceInterface) *Resolver {
+	return &Resolver{UserService: userService}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	err := PatchResolver(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gofasta:scaffold:resolver-fields")
+}
+
+// TestPatchResolver_FeatureImportBlockClose — feature layout needs the
+// per-feature alias import; a resolver file without an import block to
+// splice it into is a hard error.
+func TestPatchResolver_FeatureImportBlockClose(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+	d.Layout = layout.For(layout.Feature)
+
+	resolverContent := `package resolvers
+
+type Resolver struct {
+	// gofasta:scaffold:resolver-fields
+}
+
+func NewResolver() *Resolver {
+	return &Resolver{}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	err := PatchResolver(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "import block close")
 }

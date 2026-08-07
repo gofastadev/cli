@@ -174,6 +174,45 @@ func TestRollback_UnhealthyTargetRestoresCurrent(t *testing.T) {
 	assert.NotEmpty(t, restore, "the previously-live release must be restored after an unhealthy rollback target")
 }
 
+// TestRollback_UnhealthyTargetRestoreFails — the rollback target is
+// unhealthy AND re-activating the previously-live release fails too (its
+// RELEASE_IMAGE is unreadable): the compounded failure must surface.
+func TestRollback_UnhealthyTargetRestoreFails(t *testing.T) {
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	rules := append(rollbackRules(),
+		fakeRule{Match: "wget -qO /dev/null", Exit: 1},
+		fakeRule{Match: "cat /opt/test/releases/20260102-000000/RELEASE_IMAGE", Exit: 1},
+	)
+	respondingFakeExec(t, rules)
+
+	err := Rollback(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "the app may be down")
+}
+
+// TestRollback_UnhealthyTargetSymlinkRestoreWarns — the previously-live
+// release is re-activated after an unhealthy rollback target, but moving the
+// pointer back fails: that is a warning, and the health-check failure is the
+// reported error.
+func TestRollback_UnhealthyTargetSymlinkRestoreWarns(t *testing.T) {
+	cfg := newTestCfg("docker")
+	cfg.DryRun = false
+	rules := append(rollbackRules(),
+		fakeRule{Match: "wget -qO /dev/null", Exit: 1},
+		fakeRule{Match: "cat /opt/test/releases/20260102-000000/RELEASE_IMAGE", Stdout: "testapp:20260102-000000"},
+		// Fails only the pointer RESTORE — the initial flip targets 20260101.
+		fakeRule{Match: "ln -sfn /opt/test/releases/20260102-000000", Exit: 1},
+	)
+	respondingFakeExec(t, rules)
+
+	err := Rollback(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed its health check")
+	assert.NotEmpty(t, commandsContaining("APP_IMAGE=testapp:20260102-000000"),
+		"the previously-live release must have been re-activated")
+}
+
 // TestRollback_NoPreviousRelease — empty listing → error.
 func TestRollback_NoPreviousRelease(t *testing.T) {
 	cfg := newTestCfg("binary")

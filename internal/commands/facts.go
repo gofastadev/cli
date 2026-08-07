@@ -39,6 +39,13 @@ changes are gated by schemaVersion.`,
 // docs-check), not part of the user-facing surface.
 var factsRepo string
 
+// renderBlocksFn is a test seam over docs.RenderBlocks. Its only error mode
+// — a scaffold plan entry missing its description in internal/docs/render.go
+// — is compile-time-adjacent state that TestScaffoldPlan-style tests keep
+// impossible to reach through the public surface, yet the sync/check error
+// arms must stay exercised.
+var renderBlocksFn = docs.RenderBlocks
+
 var factsSyncCmd = &cobra.Command{
 	Use:    "sync",
 	Short:  "Regenerate the marker-delimited README blocks from the facts document",
@@ -70,7 +77,7 @@ func runFactsSync() error {
 	if err != nil {
 		return err
 	}
-	blocks, err := docs.RenderBlocks(facts)
+	blocks, err := renderBlocksFn(facts)
 	if err != nil {
 		return err
 	}
@@ -119,7 +126,7 @@ func runFactsCheck() error {
 	if err != nil {
 		return err
 	}
-	blocks, err := docs.RenderBlocks(facts)
+	blocks, err := renderBlocksFn(facts)
 	if err != nil {
 		return err
 	}

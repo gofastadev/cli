@@ -1,9 +1,15 @@
 package commands
 
 import (
+	"embed"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/docs"
+	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

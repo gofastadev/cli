@@ -64,3 +64,38 @@ func TestBlockMismatches(t *testing.T) {
 	assert.Contains(t, problems[0], "have: stale line")
 	assert.Contains(t, problems[0], "want: fresh line")
 }
+
+func TestBlockMismatches_MarkerErrorSurfaces(t *testing.T) {
+	problems := BlockMismatches("no markers here", map[string]string{"one": "x\n"})
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], "missing marker")
+}
+
+func TestBlockMismatches_OnlyStaleBlocksReported(t *testing.T) {
+	src := "<!-- gofasta:begin one -->\ncurrent\n<!-- gofasta:end one -->\n" +
+		"<!-- gofasta:begin two -->\nstale\n<!-- gofasta:end two -->\n"
+	problems := BlockMismatches(src, map[string]string{"one": "current\n", "two": "fresh\n"})
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], `block "two" is stale`)
+}
+
+func TestBlockMismatches_WhitespaceOnlyDrift(t *testing.T) {
+	// Extra blank lines inside the block trim away when comparing bodies, so
+	// no block is individually stale — the generic fallback message fires.
+	src := "<!-- gofasta:begin one -->\n\ncurrent\n\n<!-- gofasta:end one -->\n"
+	problems := BlockMismatches(src, map[string]string{"one": "current\n"})
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], "generated blocks differ from the on-disk content")
+}
+
+func TestExtractBlock_MissingOrReversedMarkers(t *testing.T) {
+	assert.Empty(t, extractBlock("plain prose", "one"))
+	assert.Empty(t, extractBlock("<!-- gofasta:begin one -->\n", "one"))
+	assert.Empty(t, extractBlock("<!-- gofasta:end one -->\n<!-- gofasta:begin one -->\n", "one"))
+}
+
+func TestFirstDiffLines_Identical(t *testing.T) {
+	gotLine, wantLine := firstDiffLines("same\nlines", "same\nlines")
+	assert.Empty(t, gotLine)
+	assert.Empty(t, wantLine)
+}

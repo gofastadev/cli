@@ -60,3 +60,51 @@ func TestResolvePath_Errors(t *testing.T) {
 	_, err = resolvePath(doc, "skeleton.migrations[x]")
 	assert.ErrorContains(t, err, "malformed index")
 }
+
+func TestCheckInlineFacts_StringAndBoolLeaves(t *testing.T) {
+	f := inlineFixture()
+	md := "Default driver <!-- fact: skeleton.migrations[0].driver = postgres -->.\n"
+	assert.Empty(t, CheckInlineFacts("doc.md", []byte(md), f))
+}
+
+func TestResolvePath_LeafKindsAndIndexErrors(t *testing.T) {
+	doc, err := factsAsMap(inlineFixture())
+	require.NoError(t, err)
+
+	// string leaf
+	got, err := resolvePath(doc, "skeleton.migrations[0].driver")
+	require.NoError(t, err)
+	assert.Equal(t, "postgres", got)
+
+	// bool leaf (hand-built doc — the fixture has no bool leaves)
+	got, err = resolvePath(map[string]any{"flags": []any{map[string]any{"persistent": true}}}, "flags[0].persistent")
+	require.NoError(t, err)
+	assert.Equal(t, "true", got)
+
+	// indexing into a non-array
+	_, err = resolvePath(doc, "skeleton.fileCount[0]")
+	assert.ErrorContains(t, err, "not an array")
+
+	// unclosed index bracket
+	_, err = resolvePath(doc, "skeleton.migrations[0")
+	assert.ErrorContains(t, err, "malformed index")
+}
+
+func TestFactsAsMap_MarshalAndUnmarshalErrors(t *testing.T) {
+	orig := jsonMarshal
+	t.Cleanup(func() { jsonMarshal = orig })
+
+	jsonMarshal = func(any) ([]byte, error) { return nil, assert.AnError }
+	_, err := factsAsMap(inlineFixture())
+	require.ErrorIs(t, err, assert.AnError)
+
+	// CheckInlineFacts surfaces the flattening failure as a problem string.
+	problems := CheckInlineFacts("doc.md", []byte("x"), inlineFixture())
+	require.Len(t, problems, 1)
+	assert.Contains(t, problems[0], "internal error flattening facts")
+
+	// Marshal "succeeds" with bytes json.Unmarshal rejects.
+	jsonMarshal = func(any) ([]byte, error) { return []byte("{not json"), nil }
+	_, err = factsAsMap(inlineFixture())
+	require.Error(t, err)
+}

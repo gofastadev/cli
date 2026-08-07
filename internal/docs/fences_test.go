@@ -77,3 +77,24 @@ func TestExtractInvocations_BinDirSpelling(t *testing.T) {
 	require.Len(t, invs, 1)
 	assert.Equal(t, "./bin/gofasta", invs[0].Tokens[0])
 }
+
+func TestExtractInvocations_UnterminatedFence(t *testing.T) {
+	// Fence never closes: fenceUsesPrompts scans to EOF without finding a
+	// prompt or a closing marker, and the command is still extracted.
+	invs := extract("```bash\ngofasta verify\n")
+	require.Len(t, invs, 1)
+	assert.Equal(t, []string{"gofasta", "verify"}, invs[0].Tokens)
+}
+
+func TestExtractInvocations_SingleQuotedArgs(t *testing.T) {
+	invs := extract("```bash\ngofasta g job cleanup '0 0 * * * *' && echo 'a; b'\n```\n")
+	require.Len(t, invs, 1)
+	assert.Equal(t, []string{"gofasta", "g", "job", "cleanup", "0 0 * * * *"}, invs[0].Tokens)
+}
+
+func TestIsEnvAssignment(t *testing.T) {
+	assert.True(t, isEnvAssignment("GOFASTA_NO_BANNER=1"))
+	assert.False(t, isEnvAssignment("=value"), "no name before =")
+	assert.False(t, isEnvAssignment("plain"), "no = at all")
+	assert.False(t, isEnvAssignment("./path=x"), "non-identifier characters in the name")
+}

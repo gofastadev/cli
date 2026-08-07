@@ -516,3 +516,91 @@ func TestBuildEndpointHandlerStub_IncludesSwaggerAndSignature(t *testing.T) {
 	require.True(t, strings.Contains(stub, "@Router   /orders/{id}/archive [post]"))
 	require.True(t, strings.Contains(stub, "func (c *OrderController) ArchiveOrder(w http.ResponseWriter, r *http.Request) error"))
 }
+
+// TestGenEndpoint_WithServiceMissingImplErrors — --with-service demands
+// the impl file up front, before any file is patched.
+func TestGenEndpoint_WithServiceMissingImplErrors(t *testing.T) {
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+	require.NoError(t, os.Remove(filepath.Join(tmp, "app", "services", "order.service.go")))
+
+	err := GenEndpoint(EndpointData{
+		Resource: "Order", HTTPMethod: "POST", Path: "/orders/{id}/archive",
+		WithService: true,
+	})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	require.Equal(t, string(clierr.CodeResourceNotFound), ce.Code)
+}
+
+// TestPatchEndpointService_WriteBackError — interface patch succeeds
+// in-memory but the write-back fails on a read-only file.
+func TestPatchEndpointService_WriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+	svcPath := filepath.Join(tmp, "app", "services", "interfaces", "order_service.go")
+	require.NoError(t, os.Chmod(svcPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(svcPath, 0o644) })
+
+	err := patchEndpointService(EndpointData{
+		Resource: "Order", HandlerName: "Archive",
+		ServiceFile:     svcPath,
+		ServiceImplFile: filepath.Join(tmp, "app", "services", "order.service.go"),
+	})
+	require.Error(t, err)
+}
+
+// TestPatchEndpointServiceImpl_ParseError — the impl file exists but is
+// not valid Go.
+func TestPatchEndpointServiceImpl_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	implPath := filepath.Join(tmp, "order.service.go")
+	require.NoError(t, os.WriteFile(implPath, []byte("package services\nfunc {\n"), 0o644))
+	chdirTest(t, tmp)
+
+	err := patchEndpointServiceImpl(EndpointData{
+		Resource: "Order", HandlerName: "Archive", ServiceImplFile: implPath,
+	})
+	require.Error(t, err)
+}
+
+// TestPatchEndpointServiceImpl_AppendFuncDeclError — the stub append
+// fails via the astpatchAppendFuncDeclFn seam.
+func TestPatchEndpointServiceImpl_AppendFuncDeclError(t *testing.T) {
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+
+	saved := astpatchAppendFuncDeclFn
+	astpatchAppendFuncDeclFn = func(_ *astpatch.File, _ string) error {
+		return errStubGenerate
+	}
+	t.Cleanup(func() { astpatchAppendFuncDeclFn = saved })
+
+	err := patchEndpointServiceImpl(EndpointData{
+		Resource: "Order", HandlerName: "Archive",
+		ServiceImplFile: filepath.Join(tmp, "app", "services", "order.service.go"),
+	})
+	require.ErrorIs(t, err, errStubGenerate)
+}
+
+// TestPatchEndpointServiceImpl_WriteBackError — stub built, write-back
+// fails on a read-only impl file.
+func TestPatchEndpointServiceImpl_WriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupEndpointResource(t)
+	chdirTest(t, tmp)
+	implPath := filepath.Join(tmp, "app", "services", "order.service.go")
+	require.NoError(t, os.Chmod(implPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(implPath, 0o644) })
+
+	err := patchEndpointServiceImpl(EndpointData{
+		Resource: "Order", HandlerName: "Archive", ServiceImplFile: implPath,
+	})
+	require.Error(t, err)
+}

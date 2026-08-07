@@ -263,3 +263,119 @@ func TestDeployBinary_CopyDirFailureIsFatal(t *testing.T) {
 	cfg.DryRun = false
 	assert.Error(t, DeployBinary(cfg), "a failed supporting-file upload must fail the deploy")
 }
+
+// TestDeployBinary_LocalTmpDirCreateFails — a regular file named "tmp" in
+// the project directory makes os.MkdirAll fail before the cross-compile.
+func TestDeployBinary_LocalTmpDirCreateFails(t *testing.T) {
+	withinProject(t)
+	require.NoError(t, os.WriteFile("tmp", []byte("not a directory"), 0o644))
+	withFakeExec(t, 0)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot create local tmp directory")
+}
+
+// TestDeployBinary_LinkSharedFails — the shared-config link into the release
+// directory must fail the deploy loudly (compose/systemd would otherwise run
+// with empty credentials).
+func TestDeployBinary_LinkSharedFails(t *testing.T) {
+	withinProject(t)
+	withFailOnArg(t, "for f in .env")
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to link shared config")
+}
+
+// TestDeployBinary_InstallServiceFails — the remote install of the systemd
+// unit (cp into /etc/systemd/system + daemon-reload) fails.
+func TestDeployBinary_InstallServiceFails(t *testing.T) {
+	withinProject(t)
+	withFailOnArg(t, "daemon-reload")
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to install systemd service")
+}
+
+// TestDeployBinary_ReadlinkFails_TreatedAsFirstDeploy — a failing readlink
+// on the current pointer means "no previous release": the deploy proceeds as
+// a first deploy and still succeeds.
+func TestDeployBinary_ReadlinkFails_TreatedAsFirstDeploy(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// The cleanup script also contains "readlink /opt/test/current", so this
+	// rule additionally exercises the non-fatal cleanup warning.
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Exit: 1},
+	})
+
+	assert.NoError(t, DeployBinary(cfg))
+}
+
+// TestDeployBinary_AutoRollbackCutoverFails — the new release's cutover
+// fails AND reinstalling the previous release fails too: the deploy must
+// surface the compounded rollback failure.
+func TestDeployBinary_AutoRollbackCutoverFails(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// Both cutovers (new release and previous release) stage the binary at
+	// /usr/local/bin/testapp.new, so one rule fails them both.
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+		{Match: "/usr/local/bin/testapp.new", Exit: 1},
+	})
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "automatic rollback failed")
+	assert.NotEmpty(t, commandsContaining("sudo cp /opt/test/releases/20251231-000000/testapp /usr/local/bin/testapp.new"),
+		"the previous release's reinstall must have been attempted")
+}
+
+// TestDeployBinary_AutoRollbackUnhealthy — the restored previous release
+// fails its own health gate after the rollback cutover succeeded.
+func TestDeployBinary_AutoRollbackUnhealthy(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	// HealthTimeout 0 fails BOTH health gates: the deploy's (triggering the
+	// rollback) and the post-rollback probe of the restored release.
+	cfg.HealthTimeout = 0
+	respondingFakeExec(t, []fakeRule{
+		{Match: "readlink /opt/test/current", Stdout: "/opt/test/releases/20251231-000000"},
+	})
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "restored release is unhealthy")
+}
+
+// TestDeployBinary_RemoveFailedReleaseWarns — removing the failed release
+// directory is best-effort: its own failure is a warning, and the original
+// migration error is what surfaces.
+func TestDeployBinary_RemoveFailedReleaseWarns(t *testing.T) {
+	withinProject(t)
+	cfg := newTestCfg("binary")
+	cfg.DryRun = false
+	respondingFakeExec(t, []fakeRule{
+		{Match: "migrate up", Exit: 1},
+		{Match: "rm -rf /opt/test/releases/20260101-000000", Exit: 1},
+	})
+
+	err := DeployBinary(cfg)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "database migrations failed",
+		"the migration failure, not the cleanup failure, must be the reported error")
+	assert.NotEmpty(t, commandsContaining("rm -rf /opt/test/releases/20260101-000000"),
+		"the failed release removal must have been attempted")
+}
