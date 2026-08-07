@@ -340,19 +340,10 @@ func parseExprFragment(exprSrc string) (dst.Expr, error) {
 		return nil, clierr.Wrapf(clierr.CodeASTPatchFailed, err,
 			"parsing expression %q", strings.TrimSpace(exprSrc))
 	}
-	for _, decl := range df.Decls {
-		gd, ok := decl.(*dst.GenDecl)
-		if !ok || gd.Tok != token.VAR {
-			continue
-		}
-		for _, spec := range gd.Specs {
-			if vs, ok := spec.(*dst.ValueSpec); ok && len(vs.Values) > 0 {
-				return vs.Values[0], nil
-			}
-		}
-	}
-	return nil, clierr.Newf(clierr.CodeASTPatchFailed,
-		"could not extract expression from %q", exprSrc)
+	// The wrapper guarantees the first declaration is `var _ = <expr>`;
+	// any input that breaks that shape fails to parse above.
+	vs := df.Decls[0].(*dst.GenDecl).Specs[0].(*dst.ValueSpec)
+	return vs.Values[0], nil
 }
 
 // FindVarCompositeLit locates a package-level `var <name> = T{...}`
