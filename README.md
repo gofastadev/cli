@@ -30,12 +30,14 @@ Compiles the CLI from source using your local Go toolchain and drops the `gofast
 
 **Option B — Pre-built binary (no Go toolchain needed):**
 
-Download the archive for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) (macOS and Linux, `amd64` and `arm64`), then unpack it onto your `PATH`:
+Download the archive for your platform from [GitHub Releases](https://github.com/gofastadev/cli/releases) (macOS, Linux, and Windows, `amd64` and `arm64`), then unpack it onto your `PATH`. On macOS/Linux:
 
 ```bash
 tar -xzf gofasta_*_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz
 sudo install -m 0755 gofasta /usr/local/bin/gofasta
 ```
+
+On Windows, download the `.zip` archive, extract `gofasta.exe`, and place it in a directory on your `%PATH%`.
 
 Verify the installation:
 
@@ -82,7 +84,7 @@ If you installed before v0.1.3, re-run `go install github.com/gofastadev/cli/cmd
 
 | You have Go installed | You don't have Go installed |
 |---|---|
-| **Option A** — `go install` compiles a native binary with your exact toolchain and there's nothing to keep in sync. Upgrade with `go install …@latest`. | **Option B** — shell script. Downloads a pre-built binary from GitHub Releases. Upgrade with `gofasta upgrade`. |
+| **Option A** — `go install` compiles a native binary with your exact toolchain and there's nothing to keep in sync. Upgrade with `go install …@latest`. | **Option B** — pre-built binary from GitHub Releases. Upgrade with `gofasta upgrade`. |
 
 Both end up as a `gofasta` binary in a standard directory. Use whichever matches your environment.
 
@@ -125,22 +127,28 @@ myapp/
 │   │   └── resolvers/      # GraphQL resolvers
 │   ├── validators/         # Input validation rules
 │   ├── di/                 # Dependency injection (Google Wire)
+│   ├── devtools/           # Build-tagged /debug/* endpoints for `gofasta debug`
 │   └── jobs/               # Cron jobs
 ├── cmd/                    # CLI commands for your app
 │   ├── root.go             # Cobra root command
 │   ├── serve.go            # Starts the HTTP server
-│   └── seed.go             # Runs database seeders
+│   ├── seed.go             # Runs database seeders
+│   ├── migrate.go          # In-app migration runner
+│   └── schema/             # Emits the config.yaml JSON Schema (`gofasta config schema`)
 ├── db/
-│   ├── migrations/         # SQL migration files
+│   ├── migrations/         # SQL migration files (foundational set matches your --driver)
 │   └── seeds/              # Database seed functions
 ├── configs/                # RBAC policies, feature flags
-├── deployments/            # Docker, Kubernetes, CI/CD, nginx, systemd
+├── deployments/            # Docker, CI/CD, nginx, systemd
+├── docs/                   # Generated Swagger/OpenAPI output
 ├── templates/emails/       # HTML email templates
 ├── locales/                # Translation files
+├── testutil/mocks/         # Generated testify mocks
 ├── config.yaml             # Application configuration
 ├── compose.yaml            # Docker Compose (app + your chosen database)
 ├── Dockerfile              # Production container image
 ├── Makefile                # Development shortcuts
+├── air.toml                # Hot-reload config (used by `gofasta dev`)
 └── gqlgen.yml              # GraphQL codegen config (--graphql only)
 ```
 
@@ -150,33 +158,40 @@ The project imports `github.com/gofastadev/gofasta` as a library dependency. It 
 
 1. Creates the project directory
 2. Runs `go mod init` with your module path
-3. Copies ~78 template files, replacing placeholders with your project name
-4. Runs `go get github.com/gofastadev/gofasta@<pinned version>` to pull the gofasta library as a project dependency — the CLI pins the library release its templates were tested against (`toolVersionGofasta` in `internal/commands/new.go`) — plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
+3. Copies ~78 template files (including a starter User resource), replacing placeholders with your project name, plus the foundational migrations for your chosen `--driver`
+4. Runs `go get github.com/gofastadev/gofasta@<pinned version>` to pull the gofasta library as a project dependency — the CLI pins the library release its templates were tested against (`toolVersionGofasta` in `internal/commands/new.go`) — plus tool dependencies. The tool deps are recorded as `go.mod` tools (Go 1.24+) and fetched on first `go mod tidy` — no separate install required by the user. They are: [Wire](https://github.com/google/wire) (DI codegen), [gqlgen](https://gqlgen.com/getting-started/) (GraphQL codegen, `--graphql` only), [Air](https://github.com/air-verse/air) (hot reload), and [swag](https://github.com/swaggo/swag) (Swagger generator).
 5. Runs `go mod tidy`
 6. Generates Wire dependency injection code
-7. Generates GraphQL resolver code
-8. Initializes a git repository with an initial commit
+7. Generates GraphQL resolver code (`--graphql` only)
+8. Generates Swagger/OpenAPI docs
+9. Initializes a git repository with an initial commit
 
 ## Start Developing
 
-After creating a project, you have two ways to run it. Either path requires **Docker** (install: <https://docs.docker.com/get-docker/>) — the recommended path runs the entire stack in containers; the host-machine path uses Docker only for PostgreSQL and runs the app on the host.
+`gofasta dev` is the one-command dev loop. It runs **host-first** by default: your app runs on the host with Air hot reload, and a preflight probes your database / cache / queue connections — if a dependency is unreachable, an interactive menu offers to start it in Docker or continue without it. Docker (install: <https://docs.docker.com/get-docker/>) is only needed when you let `dev` run services in containers.
 
 ```bash
 cd myapp
 
-# Option 1: Docker (recommended — starts app + PostgreSQL)
-make up
+# Default — app on host with hot reload, preflight + interactive recovery
+gofasta dev
 
-# Option 2: Host machine (requires local PostgreSQL or Docker for the DB)
-docker compose up db -d    # Start just the database
-make dev                   # Run with hot reload (uses Air, fetched as a go.mod tool)
+# Bring up the database in Docker explicitly, app stays on host
+gofasta dev --services db
+
+# Full stack in Docker (app + db + cache + queue)
+gofasta dev --services all
 ```
+
+Useful extras: `--dashboard` starts a live dev dashboard on `http://localhost:9090`, `--fresh` drops compose volumes for a clean DB, `--dry-run` prints the resolved plan, and the interactive keyboard layer supports `r` (restart) and `q` (quit).
 
 Your app is now running:
 - REST API: `http://localhost:8080/api/v1/`
 - GraphQL: `http://localhost:8080/graphql`
 - GraphQL Playground: `http://localhost:8080/graphql-playground`
 - Health check: `http://localhost:8080/health`
+- Prometheus metrics: `http://localhost:8080/metrics`
+- Swagger UI: `http://localhost:8080/swagger/index.html`
 
 ## Generate Code
 
@@ -188,7 +203,7 @@ The `generate` command (shorthand: `g`) creates boilerplate code for new resourc
 gofasta g scaffold Product name:string price:float
 ```
 
-This single command creates **11 files** and patches 4 existing files:
+This single command creates **18 files** (tests included) and patches 4 existing files:
 
 | Created file | What it is |
 |-------------|-----------|
@@ -197,18 +212,29 @@ This single command creates **11 files** and patches 4 existing files:
 | `db/migrations/000006_create_products.down.sql` | SQL to drop the `products` table |
 | `app/repositories/interfaces/product_repository.go` | Repository interface (contract) |
 | `app/repositories/product.repository.go` | Repository implementation (GORM queries) |
+| `app/repositories/product.repository_test.go` | Repository tests |
 | `app/services/interfaces/product_service.go` | Service interface (contract) |
 | `app/services/product.service.go` | Service implementation (business logic) |
+| `app/services/product.service_test.go` | Service tests |
+| `app/services/product_errors.go` | Per-resource sentinel errors |
+| `app/services/product_inputs.go` | Domain input types |
+| `app/services/product_inputs_test.go` | Domain input tests |
 | `app/dtos/product.dtos.go` | Request/response DTOs with validation tags |
+| `app/dtos/product.dtos_test.go` | DTO tests |
 | `app/di/providers/product.go` | Wire dependency injection provider |
 | `app/rest/controllers/product.controller.go` | REST controller with CRUD handlers |
+| `app/rest/controllers/product.controller_test.go` | Controller tests |
 | `app/rest/routes/product.routes.go` | Route definitions (GET, POST, PUT, DELETE) |
+
+(With `--layout feature`, the same files land in per-resource packages under `app/<resource>/` instead.)
 
 It also patches these files automatically:
 - `app/di/container.go` — adds `ProductService` and `ProductController` fields
 - `app/di/wire.go` — adds `ProductSet` to the Wire build
 - `app/rest/routes/index.routes.go` — registers Product routes
 - `cmd/serve.go` — wires `ProductController` into the route config
+
+Wire code is regenerated for you at the end, and a post-generation `go build ./...` verifies the result (skip with `--no-verify`; preview everything with `--dry-run`).
 
 After scaffolding, run migrations and start coding your business logic:
 
@@ -223,7 +249,7 @@ gofasta migrate up
 gofasta g scaffold Product name:string price:float --graphql
 ```
 
-The `--graphql` flag additionally creates a `.gql` schema file and auto-wires a GraphQL resolver.
+The `--graphql` flag additionally creates a `.gql` schema file and a resolver file, patches the resolver struct and the gqlgen autobind list, and regenerates gqlgen code.
 
 ### Supported Field Types
 
@@ -247,13 +273,13 @@ You don't have to scaffold everything at once. Generate only what you need:
 # Just the model + migration
 gofasta g model Product name:string price:float
 
-# Model + repository
+# Model + migration + repository interface, implementation, and test
 gofasta g repository Product name:string price:float
 
-# Model + repo + service + DTOs + Wire provider
+# Everything below the controller: model, repo, service, errors, inputs, DTOs, tests, Wire provider
 gofasta g service Product name:string price:float
 
-# Everything up to controller + routes
+# The full stack — identical to `g scaffold`
 gofasta g controller Product name:string price:float
 
 # Individual pieces
@@ -326,7 +352,7 @@ Run this once after cloning an existing gofasta project:
 gofasta init
 ```
 
-This creates `.env` from `.env.example`, runs `go mod tidy`, generates Wire and GraphQL code, runs migrations, and verifies the build.
+This creates `.env` from `.env.example`, runs `go mod tidy`, generates Wire, GraphQL, and Swagger code, runs migrations, and verifies the build.
 
 ### Swagger Documentation
 
@@ -465,11 +491,13 @@ Global flags: `--json` (machine-parseable single-line JSON, banner suppressed) a
 
 The CLI is a standalone Go binary. It does **not** import the gofasta library — it only manipulates files on disk.
 
-- `gofasta new` uses Go's `embed.FS` to carry project template files inside the binary. Templates are rendered with `text/template`, replacing `{{.ModulePath}}` with your project's module path and `{{.ProjectNameLower}}` with your project name.
+- `gofasta new` uses Go's `embed.FS` to carry project template files inside the binary. Templates are rendered with `text/template`, replacing placeholders like `{{.ModulePath}}`, `{{.ProjectNameLower}}`, `{{.DBDriver}}`, and `{{.GraphQL}}`. The binary embeds two filesystems: the project tree, and one set of foundational migrations per database driver — `gofasta new --driver X` copies the matching set into your project's `db/migrations/`.
 
 - `gofasta g scaffold` reads Go template strings (for models, services, controllers, etc.) and renders them with your resource name and field definitions. It then patches existing files (container, wire, routes, serve) by finding insertion points via string matching.
 
-- `gofasta dev`, `gofasta migrate`, `gofasta init` are thin wrappers that shell out to external tools (`air`, `migrate`, `go mod tidy`). They read your `config.yaml` to get database connection details.
+- `gofasta dev` orchestrates the whole dev loop: it resolves a plan, starts any requested Docker compose services, waits for them to become healthy, runs a connectivity preflight (with an interactive recovery menu), applies migrations, then supervises Air on the host — or runs the full stack in Docker with `--services all` — and tears everything down on exit.
+
+- `gofasta migrate` and `gofasta init` shell out to external tools (`migrate`, `go mod tidy`). They read your `config.yaml` to get database connection details.
 
 - `gofasta serve` and `gofasta seed` delegate to your project's own binary (`go run ./app/main serve`) because they need to import your project's code.
 
@@ -482,12 +510,13 @@ cli/
 │   ├── commands/                  # Cobra command definitions
 │   │   ├── root.go               # Root command + subcommand registration
 │   │   ├── new.go                # Project scaffolding
-│   │   ├── dev.go                # Development server
+│   │   ├── dev*.go               # The dev loop (plan, services, preflight, Air supervisor)
 │   │   ├── init_cmd.go           # Project initialization
 │   │   ├── migrate.go            # Database migrations
 │   │   ├── serve.go              # Passthrough to project serve
 │   │   ├── seed.go               # Passthrough to project seed
 │   │   ├── swagger.go            # Swagger generation
+│   │   ├── ai/                   # `gofasta ai` — agent config installer
 │   │   └── configutil/           # Reads config.yaml without importing the gofasta library
 │   ├── generate/                  # Code generation engine
 │   │   ├── commands.go           # Generate subcommands and step chains
@@ -500,9 +529,15 @@ cli/
 │   │   ├── stringutil.go         # Case conversion, pluralization
 │   │   ├── gen_*.go              # Individual generators (model, service, etc.)
 │   │   └── templates/            # Go template strings for generated code
-│   └── skeleton/                  # Embedded project templates
-│       ├── embed.go              # //go:embed all:project
-│       └── project/              # ~78 files that become a new project
+│   ├── skeleton/                  # Embedded project templates
+│   │   ├── embed.go              # //go:embed all:project + per-driver migrations
+│   │   ├── project/              # ~78 files that become a new project
+│   │   └── migrations/           # Foundational migrations, one directory per driver
+│   ├── layout/                    # Layered vs feature layout — every generated file path
+│   ├── deploy/                    # `gofasta deploy` — SSH deploys (docker + binary methods)
+│   ├── clierr/                    # Structured error codes ({code, message, hint, docs})
+│   ├── cliout/                    # Single console-output surface (--json routing)
+│   └── termcolor/                 # ANSI color helpers
 ├── go.mod
 └── README.md
 ```
