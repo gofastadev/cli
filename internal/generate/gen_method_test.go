@@ -439,3 +439,143 @@ func TestBuildMethodImplStub_ReceiverMatchesTarget(t *testing.T) {
 	})
 	require.Contains(t, repo, "func (r *OrderRepository) FindBySlug")
 }
+
+// TestGenMethod_ImplWriteBackError — the interface write succeeds, then
+// the impl write-back fails on a read-only file.
+func TestGenMethod_ImplWriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	implPath := filepath.Join(tmp, "app", "services", "order.service.go")
+	require.NoError(t, os.Chmod(implPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(implPath, 0o644) })
+
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "Archive"})
+	require.Error(t, err)
+}
+
+// TestGenMethod_ReturnTypeImports — uuid/time RESULT types must pull
+// their imports into both the interface and impl files (the stub's zero
+// values reference uuid.Nil / time.Time{}).
+func TestGenMethod_ReturnTypeImports(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Window",
+		Returns:    []string{"uuid.UUID", "time.Time", "error"},
+	}))
+
+	for _, rel := range []string{
+		filepath.Join("app", "services", "interfaces", "order_service.go"),
+		filepath.Join("app", "services", "order.service.go"),
+	} {
+		body, err := os.ReadFile(filepath.Join(tmp, rel))
+		require.NoError(t, err)
+		require.Contains(t, string(body), "\"github.com/google/uuid\"", rel)
+		require.Contains(t, string(body), "\"time\"", rel)
+		_, perr := parser.ParseFile(token.NewFileSet(), rel, body, 0)
+		require.NoError(t, perr, "%s must parse:\n%s", rel, body)
+	}
+}
+
+// TestPatchInterfaceMocks_RefreshErrorPropagates — a testutil mock file
+// exists, so refreshTestutilMock regenerates via GenMock; with no
+// interface anywhere in the project the regeneration fails, and
+// patchInterfaceMocks must surface that error.
+func TestPatchInterfaceMocks_RefreshErrorPropagates(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	mustWriteFile(t, filepath.Join(tmp, "testutil", "mocks", "order_service_interface_mock.go"),
+		"package mocks\n")
+	chdirTest(t, tmp)
+
+	err := patchInterfaceMocks(MethodData{InterfaceName: "OrderServiceInterface"})
+	require.Error(t, err)
+}
+
+// TestPatchInterfaceMocks_NoInlineTargetIsNoop — no testutil mock and an
+// interface outside the scaffold naming convention: nothing to do.
+func TestPatchInterfaceMocks_NoInlineTargetIsNoop(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	require.NoError(t, patchInterfaceMocks(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "SomethingCustom",
+	}))
+}
+
+// TestRefreshTestutilMock_DryRunRecordsIntent — in dry-run the interface
+// file was only recorded, so regenerating would read the OLD interface;
+// the mock refresh must be recorded, not executed.
+func TestRefreshTestutilMock_DryRunRecordsIntent(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	mustWriteFile(t, filepath.Join(tmp, "testutil", "mocks", "order_service_interface_mock.go"),
+		"package mocks\n")
+	chdirTest(t, tmp)
+	resetPlannerState(t)
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	require.NoError(t, refreshTestutilMock("OrderServiceInterface"))
+
+	plan := Plan()
+	require.Len(t, plan, 1)
+	require.Equal(t, "patch", plan[0].Kind)
+	require.Contains(t, plan[0].Path, "order_service_interface_mock.go")
+}
+
+// TestInlineMockTarget_EmptyResourceOptsOut — repo-method style calls
+// without Resource/Snake have no scaffolded inline mock host.
+func TestInlineMockTarget_EmptyResourceOptsOut(t *testing.T) {
+	f, ty := inlineMockTarget(MethodData{InterfaceName: "OrderServiceInterface"})
+	require.Equal(t, "", f)
+	require.Equal(t, "", ty)
+
+	f, ty = inlineMockTarget(MethodData{Resource: "Order", InterfaceName: "OrderServiceInterface"})
+	require.Equal(t, "", f)
+	require.Equal(t, "", ty)
+}
+
+// TestPatchInlineTestMock_ParseError — the scaffolded test file exists
+// but is not valid Go.
+func TestPatchInlineTestMock_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte("package controllers_test\nfunc {\n"), 0o644))
+
+	err := patchInlineTestMock(mockFile, "mockOrderService", MethodData{
+		MethodName: "Recalculate", Returns: []string{"error"},
+	})
+	require.Error(t, err)
+}
+
+// TestPatchInlineTestMock_AppendFuncDeclError — the append fails via the
+// astpatchAppendFuncDeclFn seam.
+func TestPatchInlineTestMock_AppendFuncDeclError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte(`package controllers_test
+
+type mockOrderService struct {
+	mock.Mock
+}
+`), 0o644))
+
+	saved := astpatchAppendFuncDeclFn
+	astpatchAppendFuncDeclFn = func(_ *astpatch.File, _ string) error {
+		return errStubGenerate
+	}
+	t.Cleanup(func() { astpatchAppendFuncDeclFn = saved })
+
+	err := patchInlineTestMock(mockFile, "mockOrderService", MethodData{
+		MethodName: "Recalculate", Returns: []string{"error"},
+	})
+	require.ErrorIs(t, err, errStubGenerate)
+}

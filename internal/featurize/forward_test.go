@@ -862,3 +862,22 @@ func TestDropDuplicateErrorVars_ToleratesUnexpectedSpecKinds(t *testing.T) {
 	assert.Contains(t, typeDecl.Specs, ifaceSpec,
 		"the interface decl that drives the heuristic must survive")
 }
+
+// TestTransformPerResource_RewritesRoutesDocComment covers the doc-comment
+// rewrite riding along with the <Name>Routes → RegisterRoutes rename:
+// revive's exported rule requires the comment to open with the new name.
+func TestTransformPerResource_RewritesRoutesDocComment(t *testing.T) {
+	src := `package routes
+
+// UserRoutes registers the user endpoints.
+func UserRoutes(r Router, c *Controller) {` + nonIdentSelectors + `}
+`
+	got, err := TransformPerResource([]byte(src), Options{
+		ModulePath: testMod, Resource: userResource(),
+	})
+	require.NoError(t, err)
+	out := string(got)
+
+	assert.Contains(t, out, "// RegisterRoutes registers the user endpoints.")
+	assert.NotContains(t, out, "// UserRoutes")
+}

@@ -597,3 +597,65 @@ func TestInsertStmtBeforeReturn_BadStmt(t *testing.T) {
 	require.NoError(t, err)
 	require.Error(t, InsertStmtBeforeReturn(fn, "if {"))
 }
+
+func TestFindVarCompositeLit_SkipsNonVarDecls(t *testing.T) {
+	// Func, const and type decls before the target var exercise the
+	// outer skip: only VAR GenDecls are candidates.
+	f := parseTestFile(t, `package x
+
+func F() {}
+
+const c = 1
+
+type T int
+
+var cols = []string{
+	"id",
+}
+`)
+	lit, err := FindVarCompositeLit(f, "cols")
+	require.NoError(t, err)
+	require.Len(t, lit.Elts, 1)
+}
+
+func TestFindVarCompositeLit_NonValueSpecSkipped(t *testing.T) {
+	// The parser only ever puts ValueSpecs inside a VAR GenDecl; the
+	// inner guard exists for hand-built (malformed) ASTs. Build one
+	// directly to prove the guard skips it instead of panicking.
+	f := &File{
+		Path: "x.go",
+		Dst: &dst.File{
+			Name: dst.NewIdent("x"),
+			Decls: []dst.Decl{&dst.GenDecl{
+				Tok: token.VAR,
+				Specs: []dst.Spec{&dst.TypeSpec{
+					Name: dst.NewIdent("T"),
+					Type: dst.NewIdent("int"),
+				}},
+			}},
+		},
+	}
+	_, err := FindVarCompositeLit(f, "cols")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no composite-literal var cols")
+}
+
+func TestCompositeLitHasKey_SkipsNonKeyValueElements(t *testing.T) {
+	// A positional (non key:value) literal must report false for any
+	// key rather than tripping on the element type.
+	f := parseTestFile(t, "package x\n\nvar cols = []string{\n\t\"id\",\n}\n")
+	lit, err := FindVarCompositeLit(f, "cols")
+	require.NoError(t, err)
+	require.False(t, CompositeLitHasKey(lit, "id"))
+}
+
+func TestInsertStmtBeforeReturn_CommentOnlyStmtSrc(t *testing.T) {
+	// Parses cleanly but yields zero statements — the empty-extraction
+	// error, not a silent no-op.
+	f := parseTestFile(t, "package x\n\nfunc side() {}\n")
+	fn, err := FindFunc(f, "", "side")
+	require.NoError(t, err)
+	err = InsertStmtBeforeReturn(fn, "// no statements here")
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "no statements extracted")
+}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/generate/astpatch"
 	"github.com/stretchr/testify/require"
 )
 
@@ -773,4 +774,443 @@ func TestOrderController_Create_ServiceError_500(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(got), `{ "active": true }`)
 	require.NotContains(t, string(got), `{ ,`)
+}
+
+// TestGenField_PatchesControllerTestViaSurfaces — the controller-test
+// step of patchFieldSurfaces fires when the scaffolded test file exists.
+func TestGenField_PatchesControllerTestViaSurfaces(t *testing.T) {
+	tmp := setupModelOnlyProject(t)
+	chdirTest(t, tmp)
+	ct := filepath.Join(tmp, "app", "rest", "controllers", "order.controller_test.go")
+	mustWriteFile(t, ct, `package controllers_test
+
+func TestOrderController_Create_ServiceError_500(t *testing.T) {
+	body := `+"`"+`{ "title": "sample-title" }`+"`"+`
+	_ = body
+}
+`)
+
+	require.NoError(t, GenField(FieldData{
+		Resource:   "Order",
+		Field:      ParseFields([]string{"reason:string"})[0],
+		WithDTO:    true,
+		WithCreate: true,
+	}))
+	got, err := os.ReadFile(ct)
+	require.NoError(t, err)
+	require.Contains(t, string(got), `"reason": "sample-reason"`)
+}
+
+// TestPatchDTOFile_MissingMapperIsHardError — structs are intact but a
+// mapper func was removed: drift, hard error.
+func TestPatchDTOFile_MissingMapperIsHardError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	dtosPath := filepath.Join(tmp, "order.dtos.go")
+	mustWriteFile(t, dtosPath, fixtureSrc(`package dtos
+
+type Order struct {
+	Title string 'json:"title"'
+}
+
+type TOrderFiltersQueryParamsDto struct {
+	Title *string 'json:"title,omitempty" schema:"title"'
+}
+`))
+
+	err := patchDTOFile(FieldData{
+		Resource: "Order", DTOFile: dtosPath,
+		Field:        ParseFields([]string{"reason:string"})[0],
+		WithResponse: true,
+	})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+	require.Contains(t, err.Error(), "OrderFromModel")
+}
+
+// TestPatchMapperComposite_NoCompositeLit — the mapper exists but no
+// longer builds a struct literal: drift, hard error.
+func TestPatchMapperComposite_NoCompositeLit(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "order.dtos.go")
+	mustWriteFile(t, src, `package dtos
+
+func OrderFromModel(m *Order) *Order {
+	return nil
+}
+`)
+	f, err := astpatch.Parse(src)
+	require.NoError(t, err)
+
+	_, err = patchMapperComposite(f, "", "OrderFromModel", "Reason", "m.Reason")
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+	require.Contains(t, err.Error(), "composite literal")
+}
+
+// TestPatchMapperComposite_AppendError — an unparseable value
+// expression surfaces the astpatch error.
+func TestPatchMapperComposite_AppendError(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "order.dtos.go")
+	mustWriteFile(t, src, `package dtos
+
+func OrderFromModel(m *Order) *Order {
+	out := &Order{
+		Title: m.Title,
+	}
+	return out
+}
+`)
+	f, err := astpatch.Parse(src)
+	require.NoError(t, err)
+
+	_, err = patchMapperComposite(f, "", "OrderFromModel", "Reason", "} broken")
+	require.Error(t, err)
+}
+
+// TestPatchInputsFile_ParseError — the inputs file is not valid Go.
+func TestPatchInputsFile_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	path := filepath.Join(tmp, "order_inputs.go")
+	require.NoError(t, os.WriteFile(path, []byte("package services\nfunc {\n"), 0o644))
+
+	err := patchInputsFile(FieldData{
+		Resource: "Order", PluralName: "Orders", InputsFile: path,
+		Field: ParseFields([]string{"reason:string"})[0],
+	})
+	require.Error(t, err)
+}
+
+// TestPatchInputsFile_MissingAnchors — each removed anchor in the
+// inputs file is drift, not a skip: Create input struct, Update patch
+// struct, AsMap func, List filter struct, AsRepoFilter func.
+func TestPatchInputsFile_MissingAnchors(t *testing.T) {
+	cases := []struct {
+		name       string
+		src        string
+		withCreate bool
+		withUpdate bool
+		wantInErr  string
+	}{
+		{"create-input-struct", "package services\n", true, false, "CreateOrderInput"},
+		{"update-patch-struct", "package services\n", false, true, "UpdateOrderPatch"},
+		{"asmap-func", `package services
+
+type UpdateOrderPatch struct {
+	Title *string
+}
+`, false, true, "AsMap"},
+		{"list-filter-struct", "package services\n", false, false, "ListOrdersFilter"},
+		{"asrepofilter-func", `package services
+
+type ListOrdersFilter struct {
+	Title *string
+}
+`, false, false, "AsRepoFilter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			chdirTest(t, tmp)
+			path := filepath.Join(tmp, "order_inputs.go")
+			require.NoError(t, os.WriteFile(path, []byte(tc.src), 0o644))
+
+			err := patchInputsFile(FieldData{
+				Resource: "Order", PluralName: "Orders", InputsFile: path,
+				Field:      ParseFields([]string{"reason:string"})[0],
+				WithCreate: tc.withCreate,
+				WithUpdate: tc.withUpdate,
+			})
+			require.Error(t, err)
+			var ce *clierr.Error
+			require.True(t, errors.As(err, &ce))
+			require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+			require.Contains(t, err.Error(), tc.wantInErr)
+		})
+	}
+}
+
+// TestPatchInputsFile_FieldAlreadyEverywhereIsNoOp — nothing patched,
+// nothing written, no error.
+func TestPatchInputsFile_FieldAlreadyEverywhereIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	path := filepath.Join(tmp, "order_inputs.go")
+	require.NoError(t, os.WriteFile(path, []byte(realInputsFixture), 0o644))
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	require.NoError(t, patchInputsFile(FieldData{
+		Resource: "Order", PluralName: "Orders", InputsFile: path,
+		Field:      ParseFields([]string{"title:string"})[0],
+		WithCreate: true,
+		WithUpdate: true,
+	}))
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+}
+
+// TestPatchInputsFile_UUIDFieldAddsImport — the uuid.UUID branch of
+// ensureFieldTypeImports fires on the inputs surface.
+func TestPatchInputsFile_UUIDFieldAddsImport(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	path := filepath.Join(tmp, "order_inputs.go")
+	require.NoError(t, os.WriteFile(path, []byte(realInputsFixture), 0o644))
+
+	require.NoError(t, patchInputsFile(FieldData{
+		Resource: "Order", PluralName: "Orders", InputsFile: path,
+		Field:      ParseFields([]string{"owner_id:uuid"})[0],
+		WithCreate: true,
+		WithUpdate: true,
+	}))
+	body, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "\"github.com/google/uuid\"")
+}
+
+// TestPatchGuardedMapStmt_InsertError — a field whose generated guard
+// statement cannot parse surfaces the astpatch error.
+func TestPatchGuardedMapStmt_InsertError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "order_inputs.go")
+	require.NoError(t, os.WriteFile(path, []byte(realInputsFixture), 0o644))
+	f, err := astpatch.Parse(path)
+	require.NoError(t, err)
+
+	_, err = patchGuardedMapStmt(f, "UpdateOrderPatch", "AsMap", "p",
+		Field{Name: "Bad}", SnakeName: "bad_brace"})
+	require.Error(t, err)
+}
+
+// TestPatchAllowlistVar_ParseError — the allowlist host file is not
+// valid Go.
+func TestPatchAllowlistVar_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "order.service.go")
+	require.NoError(t, os.WriteFile(path, []byte("package services\nfunc {\n"), 0o644))
+
+	require.Error(t, patchAllowlistVar(path, "orderSortColumns", "reason"))
+}
+
+// TestPatchAllowlistVar_ColumnAlreadyPresentIsNoOp — idempotent.
+func TestPatchAllowlistVar_ColumnAlreadyPresentIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "order.service.go")
+	require.NoError(t, os.WriteFile(path, []byte(realSvcFixture), 0o644))
+	before, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	require.NoError(t, patchAllowlistVar(path, "orderSortColumns", "title"))
+	after, err := os.ReadFile(path)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+}
+
+// TestPatchRepoTestFixture_ParseError — the repo test file is not
+// valid Go.
+func TestPatchRepoTestFixture_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	path := filepath.Join(tmp, "order.repository_test.go")
+	require.NoError(t, os.WriteFile(path, []byte("package repositories_test\nfunc {\n"), 0o644))
+
+	err := patchRepoTestFixture(FieldData{
+		Resource: "Order", RepoTestFile: path,
+		Field: ParseFields([]string{"reason:string"})[0],
+	})
+	require.Error(t, err)
+}
+
+// TestPatchRepoTestFixture_SkipsAndErrors — user-owned reshapes skip
+// (builder without a literal, field already present); an unparseable
+// sample literal is the one hard error left.
+func TestPatchRepoTestFixture_SkipsAndErrors(t *testing.T) {
+	t.Run("no-composite-literal-is-skip", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.repository_test.go")
+		require.NoError(t, os.WriteFile(path, []byte(`package repositories_test
+
+func makeOrder(t T, db D) *Order {
+	return nil
+}
+`), 0o644))
+		require.NoError(t, patchRepoTestFixture(FieldData{
+			Resource: "Order", RepoTestFile: path,
+			Field: ParseFields([]string{"reason:string"})[0],
+		}))
+	})
+
+	t.Run("field-already-present-is-skip", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.repository_test.go")
+		require.NoError(t, os.WriteFile(path, []byte(realRepoTestFixture), 0o644))
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, patchRepoTestFixture(FieldData{
+			Resource: "Order", RepoTestFile: path,
+			Field: ParseFields([]string{"title:string"})[0],
+		}))
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t, string(before), string(after))
+	})
+
+	t.Run("unparseable-sample-literal-errors", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.repository_test.go")
+		require.NoError(t, os.WriteFile(path, []byte(realRepoTestFixture), 0o644))
+		err := patchRepoTestFixture(FieldData{
+			Resource: "Order", RepoTestFile: path,
+			Field: Field{Name: "Weird", GoType: "string", SnakeName: `x"y`},
+		})
+		require.Error(t, err)
+	})
+}
+
+// TestPatchControllerTestBody_ErrorAndSkips — parse failure is an
+// error; a body-less test func and a brace-less literal are skips.
+func TestPatchControllerTestBody_ErrorAndSkips(t *testing.T) {
+	field := ParseFields([]string{"reason:string"})[0]
+
+	t.Run("parse-error", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.controller_test.go")
+		require.NoError(t, os.WriteFile(path, []byte("package controllers_test\nfunc {\n"), 0o644))
+		require.Error(t, patchControllerTestBody(FieldData{
+			Resource: "Order", ControllerTestFile: path,
+			Field: field, WithCreate: true,
+		}))
+	})
+
+	t.Run("no-json-body-literal-is-skip", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.controller_test.go")
+		require.NoError(t, os.WriteFile(path, []byte(`package controllers_test
+
+func TestOrderController_Create_ServiceError_500(t *testing.T) {
+	body := "not a raw literal"
+	_ = body
+}
+`), 0o644))
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, patchControllerTestBody(FieldData{
+			Resource: "Order", ControllerTestFile: path,
+			Field: field, WithCreate: true,
+		}))
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t, string(before), string(after))
+	})
+
+	t.Run("no-closing-brace-is-skip", func(t *testing.T) {
+		tmp := t.TempDir()
+		path := filepath.Join(tmp, "order.controller_test.go")
+		require.NoError(t, os.WriteFile(path, []byte(`package controllers_test
+
+func TestOrderController_Create_ServiceError_500(t *testing.T) {
+	body := `+"`"+`{ "title": "x"`+"`"+`
+	_ = body
+}
+`), 0o644))
+		before, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.NoError(t, patchControllerTestBody(FieldData{
+			Resource: "Order", ControllerTestFile: path,
+			Field: field, WithCreate: true,
+		}))
+		after, err := os.ReadFile(path)
+		require.NoError(t, err)
+		require.Equal(t, string(before), string(after))
+	})
+}
+
+// TestPatchSDLFile_ReadError — the schema file vanished between the
+// existence check and the read.
+func TestPatchSDLFile_ReadError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	err := patchSDLFile(FieldData{
+		Resource: "Order", SchemaFile: filepath.Join(tmp, "missing.gql"),
+		Field:        ParseFields([]string{"reason:string"})[0],
+		WithResponse: true,
+	})
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodeFileIO), ce.Code)
+}
+
+// TestPatchSDLFile_FieldAlreadyEverywhereIsNoOp — all four blocks carry
+// the field already: nothing written.
+func TestPatchSDLFile_FieldAlreadyEverywhereIsNoOp(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	schema := filepath.Join(tmp, "order.gql")
+	require.NoError(t, os.WriteFile(schema, []byte(realSDLFixture), 0o644))
+	before, err := os.ReadFile(schema)
+	require.NoError(t, err)
+
+	require.NoError(t, patchSDLFile(FieldData{
+		Resource: "Order", SchemaFile: schema,
+		Field:        ParseFields([]string{"title:string"})[0],
+		WithCreate:   true,
+		WithUpdate:   true,
+		WithResponse: true,
+	}))
+	after, err := os.ReadFile(schema)
+	require.NoError(t, err)
+	require.Equal(t, string(before), string(after))
+}
+
+// TestPatchSDLFile_WriteError — patched in memory, write fails on a
+// read-only schema file.
+func TestPatchSDLFile_WriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	schema := filepath.Join(tmp, "order.gql")
+	require.NoError(t, os.WriteFile(schema, []byte(realSDLFixture), 0o644))
+	require.NoError(t, os.Chmod(schema, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(schema, 0o644) })
+
+	err := patchSDLFile(FieldData{
+		Resource: "Order", SchemaFile: schema,
+		Field:        ParseFields([]string{"reason:string"})[0],
+		WithResponse: true,
+	})
+	require.Error(t, err)
+}
+
+// TestInsertSDLField_NoClosingBrace — a block whose closing brace was
+// deleted is drift, hard error.
+func TestInsertSDLField_NoClosingBrace(t *testing.T) {
+	_, patched, err := insertSDLField(
+		"type Order {\n  id: ID!\n", "type Order {", "  reason: String!", "reason", "order.gql")
+	require.Error(t, err)
+	require.False(t, patched)
+	var ce *clierr.Error
+	require.True(t, errors.As(err, &ce))
+	require.Equal(t, string(clierr.CodePatcherFailed), ce.Code)
+	require.Contains(t, err.Error(), "closing brace")
+}
+
+// TestSqlZeroDefault — every Go type maps to its SQL zero literal; types
+// that carry their own DEFAULT in the type table map to "".
+func TestSqlZeroDefault(t *testing.T) {
+	require.Equal(t, "''", sqlZeroDefault("string"))
+	require.Equal(t, "0", sqlZeroDefault("int"))
+	require.Equal(t, "0", sqlZeroDefault("float64"))
+	require.Equal(t, "'00000000-0000-0000-0000-000000000000'", sqlZeroDefault("uuid.UUID"))
+	require.Equal(t, "", sqlZeroDefault("bool"))
+	require.Equal(t, "", sqlZeroDefault("time.Time"))
 }

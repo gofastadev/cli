@@ -483,3 +483,25 @@ func TestExpectedResourceSymbols(t *testing.T) {
 		assert.True(t, got[extra], "missing %q", extra)
 	}
 }
+
+// TestTransformPerResourceReverse_RewritesRegisterRoutesDocComment mirrors
+// TestTransformPerResource_RewritesRoutesDocComment for the unwind: the
+// restored <Name>Routes function's doc comment must open with the restored
+// name or revive's exported rule fires on the layered output.
+func TestTransformPerResourceReverse_RewritesRegisterRoutesDocComment(t *testing.T) {
+	src := `package user
+
+// RegisterRoutes registers the user endpoints.
+func RegisterRoutes(r Router, c *UserController) {
+	r.Get("/users", c.List)
+}
+`
+	got, err := TransformPerResourceReverse([]byte(src),
+		LayeredDestination{Path: "app/rest/routes/user.routes.go", PackageName: "routes"},
+		Options{ModulePath: testMod, Resource: userResource()})
+	require.NoError(t, err)
+	out := string(got)
+
+	assert.Contains(t, out, "// UserRoutes registers the user endpoints.")
+	assert.NotContains(t, out, "// RegisterRoutes")
+}

@@ -100,3 +100,34 @@ func TestEnsureGqlgenAutobind(t *testing.T) {
 	unchanged := EnsureGqlgenAutobind([]byte(gqlgenYamlSrc()), testMod, "widget")
 	assert.Equal(t, gqlgenYamlSrc(), string(unchanged))
 }
+
+// TestRewriteGqlgenConfig_SkipsPreexistingResourceEntry covers the forward
+// dedupe: a hand-edited config may already carry a feature package entry
+// while the layered dtos anchor is still present — the rewrite must not
+// duplicate it.
+func TestRewriteGqlgenConfig_SkipsPreexistingResourceEntry(t *testing.T) {
+	src := strings.Replace(gqlgenYamlSrc(),
+		"autobind:\n - \""+testMod+"/app/dtos\"\n",
+		"autobind:\n - \""+testMod+"/app/dtos\"\n - \""+testMod+"/app/user\"\n", 1)
+	s := string(RewriteGqlgenConfig([]byte(src), testMod, []Resource{userResource()}))
+
+	assert.Equal(t, 1, countOccurrences(s, `- "`+testMod+`/app/user"`),
+		"pre-existing feature entry must not be duplicated")
+	assert.Contains(t, s, `- "`+testMod+`/app/shared/dtos"`)
+	assert.NotContains(t, s, `- "`+testMod+`/app/dtos"`)
+}
+
+// TestRewriteGqlgenConfig_AddsNewResourceToFlippedConfig covers the
+// already-flipped anchor branch actually appending: re-running the rewrite
+// with an extra resource must add its entry after the shared anchor
+// without duplicating the ones already there.
+func TestRewriteGqlgenConfig_AddsNewResourceToFlippedConfig(t *testing.T) {
+	once := RewriteGqlgenConfig([]byte(gqlgenYamlSrc()), testMod, []Resource{userResource()})
+	again := string(RewriteGqlgenConfig(once, testMod, []Resource{userResource(), orderResource()}))
+
+	assert.Contains(t, again, `- "`+testMod+`/app/order"`)
+	assert.Equal(t, 1, countOccurrences(again, `- "`+testMod+`/app/user"`))
+	sharedIdx := strings.Index(again, testMod+"/app/shared/dtos")
+	orderIdx := strings.Index(again, testMod+"/app/order")
+	assert.Greater(t, orderIdx, sharedIdx, "new entry must come after the shared anchor")
+}

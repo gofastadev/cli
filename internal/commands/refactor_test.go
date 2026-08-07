@@ -2350,3 +2350,307 @@ func TestPreflightRefusal_CodeSelection(t *testing.T) {
 	err = preflightRefusal(&mixed)
 	assert.Contains(t, err.Error(), "2 blocking condition(s)")
 }
+
+// ---------- remaining orchestration error arms ----------
+//
+// The eligibility preflight refuses parse-broken projects BEFORE the
+// orchestrators write anything, so the mid-flight error returns can only
+// be reached by failures the preflight cannot see: write-time collisions
+// (a directory where a file must land) and permission denials. Each test
+// below drives one such failure through the full orchestrator, not the
+// step function, so the `return err` arm itself is exercised.
+
+func TestRunRefactorFeature_MigrateWriteFailureStops(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	stubGoCommands(t, nil)
+	// Invisible to the preflight (directories are skipped by the tree
+	// walk), fatal to migrateResource's first write.
+	occupyWithDir(t, "app/user/dtos.go")
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing app/user/dtos.go")
+}
+
+func TestRunRefactorFeature_PasswordGeneratorWriteFailureStops(t *testing.T) {
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	stubGoCommands(t, nil)
+	occupyWithDir(t, "app/user/password_generator.go")
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/user/password_generator.go")
+}
+
+func TestRunRefactorFeature_CrossCuttingWriteFailureStops(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedProject(t)
+	setRefactorFlagsWithAll(t, false, false)
+	stubGoCommands(t, nil)
+	makeReadOnly(t, "app/di/container.go")
+
+	err := runRefactorFeature(refactorFeatureCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/di/container.go")
+}
+
+func TestRunRefactorFeature_GraphQLWriteFailureStops(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	stubGoCommands(t, nil)
+	makeReadOnly(t, "app/graphql/resolvers/gql_filters.go")
+
+	err := runRefactorFeature(refactorFeatureCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/graphql/resolvers/gql_filters.go")
+}
+
+func TestRunRefactorLayered_RevertWriteFailureStops(t *testing.T) {
+	migratedProject(t)
+	occupyWithDir(t, "app/dtos/user.dtos.go")
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing app/dtos/user.dtos.go")
+}
+
+func TestRunRefactorLayered_PasswordGeneratorWriteFailureStops(t *testing.T) {
+	migratedProject(t)
+	occupyWithDir(t, "app/services/password_generator.go")
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "password_generator.go")
+}
+
+func TestRunRefactorLayered_CrossCuttingWriteFailureStops(t *testing.T) {
+	requireNonRoot(t)
+	migratedProject(t)
+	makeReadOnly(t, "app/di/container.go")
+
+	err := runRefactorLayered(refactorLayeredCmd, []string{"User"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/di/container.go")
+}
+
+func TestRunRefactorLayered_GraphQLWriteFailureStops(t *testing.T) {
+	requireNonRoot(t)
+	migratedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	stubGoCommands(t, nil)
+	makeReadOnly(t, "app/graphql/resolvers/gql_filters.go")
+
+	err := runRefactorLayered(refactorLayeredCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "app/graphql/resolvers/gql_filters.go")
+}
+
+func TestRunRefactorLayered_GqlgenFailureAborts(t *testing.T) {
+	migratedGraphQLProject(t)
+	setRefactorFlagsWithAll(t, false, true)
+	orig := runGoCommandFn
+	t.Cleanup(func() { runGoCommandFn = orig })
+	runGoCommandFn = func(args ...string) error {
+		if len(args) > 1 && args[1] == "gqlgen" {
+			return errors.New("gqlgen blew up")
+		}
+		return nil
+	}
+
+	err := runRefactorLayered(refactorLayeredCmd, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gqlgen generation failed")
+}
+
+// ---------- resource-name validation ----------
+
+func TestResolveRefactorResources_InvalidName(t *testing.T) {
+	chdirTemp(t)
+	_, err := resolveRefactorResources([]string{"9bad"}, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid resource name")
+}
+
+func TestResolveLayeredRevertResources_InvalidName(t *testing.T) {
+	chdirTemp(t)
+	_, err := resolveLayeredRevertResources([]string{"9bad"}, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid resource name")
+}
+
+// ---------- setProjectLayout block-walk arms ----------
+
+// TestSetProjectLayout_InsertsBeforeNextBlock — the project block exists,
+// carries no layout key, and another top-level block follows it. The key
+// must be inserted INSIDE the project block, not appended to the file.
+func TestSetProjectLayout_InsertsBeforeNextBlock(t *testing.T) {
+	chdirTemp(t)
+	writeRefactorFile(t, "config.yaml", "project:\n  name: demo\nserver:\n  port: \"8080\"\n")
+
+	require.NoError(t, setProjectLayout("feature"))
+	got := readFixtureFile(t, "config.yaml")
+	assert.Contains(t, got, "project:\n  layout: feature\n  name: demo\nserver:")
+	assert.Equal(t, 1, strings.Count(got, "project:"))
+}
+
+// TestSetProjectLayout_AppendsWhenProjectIsLastBlock — the project block
+// is the file's final block and has no layout key: the walk falls off the
+// end of the file and the tail-insert arm fires.
+func TestSetProjectLayout_AppendsWhenProjectIsLastBlock(t *testing.T) {
+	chdirTemp(t)
+	writeRefactorFile(t, "config.yaml", "server:\n  port: \"8080\"\nproject:\n  name: demo\n")
+
+	require.NoError(t, setProjectLayout("layered"))
+	got := readFixtureFile(t, "config.yaml")
+	assert.Contains(t, got, "project:\n  layout: layered\n  name: demo")
+	assert.Equal(t, 1, strings.Count(got, "project:"))
+}
+
+// ---------- status renderer arms ----------
+
+// TestRunRefactorStatus_UnrecognizedLayoutHasNoTarget — config.yaml
+// declares a layout the CLI doesn't know. Status reports it verbatim with
+// no migration target, and the text renderer's nil-preflight arm fires.
+func TestRunRefactorStatus_UnrecognizedLayoutHasNoTarget(t *testing.T) {
+	chdirTemp(t)
+	writeRefactorFile(t, "config.yaml", "project:\n  layout: hexagonal\n")
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
+	})
+	assert.Contains(t, out, "hexagonal")
+	assert.NotContains(t, out, "Eligibility", "no preflight runs without a migration target")
+}
+
+// TestRunRefactorStatus_TextListsWarnings — an unmanaged file in a
+// drained directory produces a preflight warning, and the text renderer
+// must list it under the eligibility section.
+func TestRunRefactorStatus_TextListsWarnings(t *testing.T) {
+	inRenderedProject(t)
+	writeRefactorFile(t, "app/services/custom_helper.go",
+		"package services\n\nfunc CustomHelper() {}\n")
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRefactorStatus(refactorStatusCmd, nil))
+	})
+	assert.Contains(t, out, "⚠ [unmanaged-file]")
+	assert.Contains(t, out, "app/services/custom_helper.go")
+}
+
+// ---------- GraphQL patch arms unreachable through the orchestrators ----------
+
+func TestApplyGraphQLPatches_UnreadableResolverEntryIsSkipped(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	// A directory matching the resolver glob: ReadFile fails, the loop
+	// must move on rather than abort.
+	occupyWithDir(t, "app/graphql/resolvers/zz_not_a_file.go")
+
+	patched, _, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.NotContains(t, patched, "app/graphql/resolvers/zz_not_a_file.go")
+	assert.Contains(t, patched, "app/graphql/resolvers/user.resolvers.go")
+}
+
+func TestApplyGraphQLPatches_TransformFailureIsReported(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	writeRefactorFile(t, "app/graphql/resolvers/broken.go",
+		"package resolvers\n\nfunc Broken( {\n")
+
+	_, _, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transform graphql")
+}
+
+func TestApplyGraphQLPatches_WriteFailureIsReported(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedGraphQLProject(t)
+	makeReadOnly(t, "app/graphql/resolvers/gql_filters.go")
+
+	_, _, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing app/graphql/resolvers/gql_filters.go")
+}
+
+func TestApplyGraphQLPatches_GqlgenYmlWriteFailureIsReported(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedGraphQLProject(t)
+	makeReadOnly(t, "gqlgen.yml")
+
+	_, _, err := applyGraphQLPatches(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing gqlgen.yml")
+}
+
+func TestApplyGraphQLPatchesReverse_SkipNoticeForRestOnlyResource(t *testing.T) {
+	inRenderedGraphQLProject(t)
+
+	invoice := featurize.Resource{Name: "Invoice", Snake: "invoice", Plural: "Invoices"}
+	out := captureStdout(t, func() {
+		_, skipped, err := applyGraphQLPatchesReverse(fixtureModulePath,
+			[]featurize.Resource{userResourceFixture(), invoice})
+		require.NoError(t, err)
+		assert.Equal(t, []string{"app/graphql/resolvers/invoice.resolvers.go"}, skipped)
+	})
+	assert.Contains(t, out, "invoice.resolvers.go")
+}
+
+func TestApplyGraphQLPatchesReverse_UnreadableResolverEntryIsSkipped(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	occupyWithDir(t, "app/graphql/resolvers/zz_not_a_file.go")
+
+	patched, _, err := applyGraphQLPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.NoError(t, err)
+	assert.NotContains(t, patched, "app/graphql/resolvers/zz_not_a_file.go")
+}
+
+func TestApplyGraphQLPatchesReverse_TransformFailureIsReported(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	writeRefactorFile(t, "app/graphql/resolvers/broken.go",
+		"package resolvers\n\nfunc Broken( {\n")
+
+	_, _, err := applyGraphQLPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "transform graphql reverse")
+}
+
+func TestApplyGraphQLPatchesReverse_WriteFailureIsReported(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedGraphQLProject(t)
+	makeReadOnly(t, "app/graphql/resolvers/gql_filters.go")
+
+	_, _, err := applyGraphQLPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing app/graphql/resolvers/gql_filters.go")
+}
+
+func TestApplyGraphQLPatchesReverse_GqlgenYmlWriteFailureIsReported(t *testing.T) {
+	requireNonRoot(t)
+	inRenderedGraphQLProject(t)
+	makeReadOnly(t, "gqlgen.yml")
+
+	_, _, err := applyGraphQLPatchesReverse(fixtureModulePath,
+		[]featurize.Resource{userResourceFixture()})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "writing gqlgen.yml")
+}
+
+func TestDryRunGraphQLPlan_ReportsMissingResolvers(t *testing.T) {
+	inRenderedGraphQLProject(t)
+
+	invoice := featurize.Resource{Name: "Invoice", Snake: "invoice", Plural: "Invoices"}
+	out := captureStdout(t, func() {
+		dryRunGraphQLPlan([]featurize.Resource{userResourceFixture(), invoice})
+	})
+	assert.Contains(t, out, "invoice.resolvers.go")
+	assert.Contains(t, out, "would skip")
+}

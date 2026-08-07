@@ -303,3 +303,23 @@ func TestDoCmd_RunE_Unknown(t *testing.T) {
 	err := doCmd.RunE(doCmd, []string{"nonexistent-workflow"})
 	require.Error(t, err)
 }
+
+// TestWorkflowFacts_SkipsWorkflowsWhoseBuildFails covers the defensive
+// continue: a Build that errors even with its placeholder args must be
+// dropped from the facts projection rather than panic or truncate it.
+func TestWorkflowFacts_SkipsWorkflowsWhoseBuildFails(t *testing.T) {
+	orig := workflows
+	workflows = append(append([]workflow(nil), orig...), workflow{
+		Key:         "boom",
+		Description: "always fails to build",
+		Args:        "<Name>",
+		Build:       func([]string) ([]workflowStep, error) { return nil, errDummy },
+	})
+	t.Cleanup(func() { workflows = orig })
+
+	wfs := workflowFacts()
+	require.Len(t, wfs, len(orig), "the failing workflow must be skipped")
+	for _, wf := range wfs {
+		assert.NotEqual(t, "boom", wf.Key)
+	}
+}

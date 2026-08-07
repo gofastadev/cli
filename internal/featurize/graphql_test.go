@@ -423,3 +423,26 @@ func TestTransformGraphQL_GeneratedResolversTemplateFixpoint(t *testing.T) {
 		assert.Equal(t, wantImports, gotImports)
 	})
 }
+
+// TestTransformGraphQLReverse_KeepsFeatureImportStillReferenced covers the
+// keep branch of the import cleanup: a resolver referencing a feature
+// symbol outside the known swap table (e.g. a hand-written helper) must
+// keep its feature import — dropping it would break the build.
+func TestTransformGraphQLReverse_KeepsFeatureImportStillReferenced(t *testing.T) {
+	src := `package resolvers
+
+import (
+	orderpkg "` + testMod + `/app/order"
+)
+
+func helper() {
+	_ = orderpkg.CustomHelper
+}
+`
+	back, err := TransformGraphQLReverse([]byte(src), testMod, []Resource{orderResource()})
+	require.NoError(t, err)
+	s := string(back)
+
+	assert.Contains(t, s, `orderpkg "`+testMod+`/app/order"`)
+	assert.Contains(t, s, "orderpkg.CustomHelper")
+}

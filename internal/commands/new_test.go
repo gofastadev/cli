@@ -1253,3 +1253,48 @@ func TestRunNew_SessionSecretFailureStops(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "session secret")
 }
+
+// TestRunNew_CleanupFailureWarns — runNew fails after creating the
+// project directory, and the partial-scaffold cleanup itself fails too
+// (a write-protected subdirectory blocks os.RemoveAll). The user must be
+// told to remove the directory manually instead of being left with a
+// silent half-scaffold that blocks every retry.
+func TestRunNew_CleanupFailureWarns(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can unlink from a write-protected directory")
+	}
+	chdirTemp(t)
+	withFakeExec(t, 0)
+
+	const projectDir = "cleanup-fail-app"
+	poison := filepath.Join(projectDir, "poison")
+
+	// The chdir seam runs between MkdirAll(projectDir) and the first
+	// scaffold write — the only window where a test can plant a
+	// RemoveAll-resistant entry inside the freshly created directory.
+	origOS := osChdir
+	osChdir = func(path string) error {
+		if err := os.MkdirAll(poison, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(poison, "keep.txt"), []byte("x"), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chmod(poison, 0o555); err != nil {
+			return err
+		}
+		return os.ErrPermission
+	}
+	t.Cleanup(func() {
+		osChdir = origOS
+		_ = os.Chmod(poison, 0o755) // let TempDir cleanup succeed
+	})
+
+	out := captureStdout(t, func() {
+		require.Error(t, runNew(projectDir, false, "postgres", "layered"))
+	})
+
+	assert.Contains(t, stripANSI(out), "Could not clean up partial project directory")
+	_, statErr := os.Stat(projectDir)
+	assert.NoError(t, statErr, "the directory survives when cleanup fails")
+}

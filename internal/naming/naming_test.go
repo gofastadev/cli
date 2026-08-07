@@ -162,3 +162,12 @@ func FuzzNamingRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+func TestPascalWordEmptySegment(t *testing.T) {
+	// splitWords never emits an empty segment today, so Pascal cannot
+	// reach this branch — but pascalWord must stay safe on one (the
+	// w[:1] slice below the guard would panic otherwise).
+	assert.Equal(t, "", pascalWord(""))
+	assert.Equal(t, "ID", pascalWord("id"))
+	assert.Equal(t, "Name", pascalWord("name"))
+}
