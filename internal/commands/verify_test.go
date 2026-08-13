@@ -1,9 +1,14 @@
 package commands
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +16,343 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestStepGoVet_SkipsWhenScopeHasNoPackages — scope is non-nil with
+// NonGoOnly=false but Packages is empty → step short-circuits with
+// "skip", "", nil.
+func TestStepGoVet_SkipsWhenScopeHasNoPackages(t *testing.T) {
+	saved := currentVerifyScope
+	currentVerifyScope = &verifyScopeData{Packages: nil}
+	t.Cleanup(func() { currentVerifyScope = saved })
+
+	msg, _, err := stepGoVet()
+	require.NoError(t, err)
+	require.Equal(t, "skip", msg)
+}
+
+// TestStepGoTest_SkipsWhenScopeHasNoTestSet — analog for stepGoTest.
+func TestStepGoTest_SkipsWhenScopeHasNoTestSet(t *testing.T) {
+	saved := currentVerifyScope
+	currentVerifyScope = &verifyScopeData{TestSet: nil}
+	t.Cleanup(func() { currentVerifyScope = saved })
+
+	msg, _, err := stepGoTest(true)
+	require.NoError(t, err)
+	require.Equal(t, "skip", msg)
+}
+
+// TestStepGoBuild_SkipsWhenScopeHasNoPackages — analog for stepGoBuild.
+func TestStepGoBuild_SkipsWhenScopeHasNoPackages(t *testing.T) {
+	saved := currentVerifyScope
+	currentVerifyScope = &verifyScopeData{Packages: nil}
+	t.Cleanup(func() { currentVerifyScope = saved })
+
+	msg, _, err := stepGoBuild()
+	require.NoError(t, err)
+	require.Equal(t, "skip", msg)
+}
+
+// setupRepoWithGoFile builds a minimal git repo with go.mod + one file.
+func setupRepoWithGoFile(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(),
+			"GIT_AUTHOR_NAME=t", "GIT_AUTHOR_EMAIL=t@x",
+			"GIT_COMMITTER_NAME=t", "GIT_COMMITTER_EMAIL=t@x",
+		)
+		out, err := cmd.CombinedOutput()
+		require.NoError(t, err, "cmd %v: %s", args, out)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"),
+		[]byte("package m\n"), 0o644))
+	run("git", "init", "-q", "-b", "main")
+	run("git", "config", "user.email", "t@x")
+	run("git", "config", "user.name", "t")
+	run("git", "config", "commit.gpgsign", "false")
+	run("git", "add", ".")
+	run("git", "commit", "-q", "-m", "init")
+	return dir
+}
+
+// TestResolveVerifyScopeImpl_NoChanges — clean repo: ChangedFiles
+// returns empty, scope is returned with empty files.
+func TestResolveVerifyScopeImpl_NoChanges(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	scope, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
+	require.NoError(t, err)
+	require.NotNil(t, scope)
+	require.Empty(t, scope.Files)
+}
+
+// TestResolveVerifyScopeImpl_NonGoFileOnly — only README.md changed →
+// NonGoOnly=true branch.
+func TestResolveVerifyScopeImpl_NonGoFileOnly(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"),
+		[]byte("hello"), 0o644))
+	scope, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
+	require.NoError(t, err)
+	require.True(t, scope.NonGoOnly)
+}
+
+// TestResolveVerifyScopeImpl_GoFileChanged — modify a.go → exercises
+// the PackagesForDirs + ReverseDeps path.
+func TestResolveVerifyScopeImpl_GoFileChanged(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"),
+		[]byte("package m\nvar X = 1\n"), 0o644))
+	scope, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
+	require.NoError(t, err)
+	require.Greater(t, len(scope.Files), 0)
+	require.Greater(t, len(scope.Dirs), 0)
+}
+
+// TestResolveVerifyScopeImpl_BadRefReturnsError — unknown ref →
+// gitdiff.ChangedFiles errors → resolveVerifyScopeImpl returns err.
+func TestResolveVerifyScopeImpl_BadRefReturnsError(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	_, err := resolveVerifyScopeImpl(verifyOptions{since: "this-ref-does-not-exist"})
+	require.Error(t, err)
+}
+
+// TestResolveVerifyScopeImpl_PackagesForDirsError — inject a failure
+// into the gitdiff.PackagesForDirs seam so the err-return branch fires.
+func TestResolveVerifyScopeImpl_PackagesForDirsError(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"),
+		[]byte("package m\nvar X = 1\n"), 0o644))
+
+	saved := gitdiffPackagesForDirsFn
+	gitdiffPackagesForDirsFn = func(_ context.Context, _ []string) ([]string, error) {
+		return nil, errors.New("stub")
+	}
+	t.Cleanup(func() { gitdiffPackagesForDirsFn = saved })
+
+	_, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
+	require.Error(t, err)
+}
+
+// TestResolveVerifyScopeImpl_ReverseDepsErrorFallback — ReverseDeps
+// errors → scope.TestSet falls back to pkgs (the `else` branch).
+func TestResolveVerifyScopeImpl_ReverseDepsErrorFallback(t *testing.T) {
+	dir := setupRepoWithGoFile(t)
+	chdirTest(t, dir)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "a.go"),
+		[]byte("package m\nvar X = 1\n"), 0o644))
+
+	saved := gitdiffReverseDepsFn
+	gitdiffReverseDepsFn = func(_ context.Context, _ []string) ([]string, error) {
+		return nil, errors.New("stub")
+	}
+	t.Cleanup(func() { gitdiffReverseDepsFn = saved })
+
+	scope, err := resolveVerifyScopeImpl(verifyOptions{since: "HEAD"})
+	require.NoError(t, err)
+	require.Equal(t, scope.Packages, scope.TestSet)
+}
+
+// TestRunVerify_ExtraStepsAreAppended covers the extraVerifySteps seam itself.
+// The seam exists so other tests can inject defensive branches without
+// shelling out; the append that consumes it needs its own coverage, or a
+// regression that dropped injected steps would go unnoticed and quietly
+// disable every test relying on it.
+func TestRunVerify_ExtraStepsAreAppended(t *testing.T) {
+	inRenderedProject(t)
+
+	called := false
+	orig := extraVerifySteps
+	extraVerifySteps = []verifyStepDef{{
+		name: "injected",
+		fn: func() (string, string, error) {
+			called = true
+			return "injected step ran", "", nil
+		},
+	}}
+	t.Cleanup(func() { extraVerifySteps = orig })
+
+	out := captureStdout(t, func() {
+		_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
+	})
+
+	assert.True(t, called, "an injected step must actually be executed")
+	assert.Contains(t, out, "injected")
+}
+
+// withRecordedShell substitutes runShellFn with a recorder that returns
+// success for every command. Restores the original on test cleanup.
+func withRecordedShell(t *testing.T) *[]recordedShellCall {
+	t.Helper()
+	calls := &[]recordedShellCall{}
+	orig := runShellFn
+	runShellFn = func(name string, args ...string) (string, error) {
+		*calls = append(*calls, recordedShellCall{name: name, args: append([]string{}, args...)})
+		return "", nil
+	}
+	t.Cleanup(func() { runShellFn = orig })
+	return calls
+}
+
+// withFakeScope installs a fixed verifyScopeData by stubbing the resolver
+// seam — keeps the test off real git + go list while still exercising
+// every step's scope-handling branch.
+func withFakeScope(t *testing.T, scope *verifyScopeData) {
+	t.Helper()
+	orig := resolveVerifyScopeFn
+	resolveVerifyScopeFn = func(_ verifyOptions) (*verifyScopeData, error) {
+		return scope, nil
+	}
+	t.Cleanup(func() { resolveVerifyScopeFn = orig })
+}
+
+func TestVerify_Since_GofmtReceivesOnlyChangedGoFiles(t *testing.T) {
+	calls := withRecordedShell(t)
+	withFakeScope(t, &verifyScopeData{
+		Since:    "HEAD~1",
+		Files:    []string{"a.go", "b.txt", "pkg/c.go"},
+		GoFiles:  []string{"a.go", "pkg/c.go"},
+		Packages: []string{"example.com/m", "example.com/m/pkg"},
+		TestSet:  []string{"example.com/m", "example.com/m/pkg"},
+	})
+
+	require.NoError(t, runVerify(verifyOptions{since: "HEAD~1"}))
+
+	gofmt := findCall(*calls, "gofmt")
+	require.NotNil(t, gofmt, "gofmt should have been invoked")
+	require.Contains(t, gofmt.args, "a.go")
+	require.Contains(t, gofmt.args, "pkg/c.go")
+	// "." as a positional arg means "format the whole tree" — must not appear.
+	for _, a := range gofmt.args {
+		require.NotEqual(t, ".", a, "scoped gofmt must not also receive `.`")
+	}
+}
+
+func TestVerify_Since_GoVetReceivesScopedPackages(t *testing.T) {
+	calls := withRecordedShell(t)
+	withFakeScope(t, &verifyScopeData{
+		Since:    "HEAD~1",
+		Files:    []string{"a.go"},
+		GoFiles:  []string{"a.go"},
+		Packages: []string{"example.com/m"},
+		TestSet:  []string{"example.com/m"},
+	})
+
+	require.NoError(t, runVerify(verifyOptions{since: "HEAD~1"}))
+
+	govet := findCall(*calls, "go")
+	require.NotNil(t, govet)
+	require.Contains(t, govet.args, "example.com/m")
+	require.NotContains(t, strings.Join(govet.args, " "), "./...")
+}
+
+func TestVerify_Since_GolangciLintGetsNewFromRev(t *testing.T) {
+	// Force lint to be considered installed by stubbing the lookup.
+	origLP := golangciLintLookPath
+	golangciLintLookPath = func() (string, error) { return "/usr/bin/golangci-lint", nil }
+	t.Cleanup(func() { golangciLintLookPath = origLP })
+
+	calls := withRecordedShell(t)
+	withFakeScope(t, &verifyScopeData{
+		Since:    "origin/main",
+		Files:    []string{"a.go"},
+		GoFiles:  []string{"a.go"},
+		Packages: []string{"example.com/m"},
+		TestSet:  []string{"example.com/m"},
+	})
+
+	require.NoError(t, runVerify(verifyOptions{since: "origin/main"}))
+
+	lint := findCall(*calls, "golangci-lint")
+	require.NotNil(t, lint)
+	require.Contains(t, lint.args, "--new-from-rev=origin/main")
+}
+
+// TestVerify_Since_NonGoChangesFallBackToFullProject — config.yaml /
+// migration SQL changes might affect runtime behavior even when no Go
+// code changed, so build/vet/test fall back to whole-project for safety.
+// Only gofmt skips (it has nothing to format).
+func TestVerify_Since_NonGoChangesFallBackToFullProject(t *testing.T) {
+	calls := withRecordedShell(t)
+	withFakeScope(t, &verifyScopeData{
+		Since:     "HEAD~1",
+		Files:     []string{"README.md", "config.yaml"},
+		NonGoOnly: true,
+	})
+
+	require.NoError(t, runVerify(verifyOptions{since: "HEAD~1"}))
+
+	// gofmt with no .go files is skipped (no shell call recorded).
+	require.Nil(t, findCall(*calls, "gofmt"),
+		"gofmt should be skipped when no .go files changed")
+
+	// go vet / build / test must fall back to ./... when only non-Go
+	// files changed — a config or migration change can affect runtime
+	// behavior even without a Go diff.
+	sawVet, sawBuild, sawTest := false, false, false
+	for _, c := range *calls {
+		if c.name != "go" {
+			continue
+		}
+		switch {
+		case len(c.args) > 0 && c.args[0] == "vet":
+			require.Contains(t, c.args, "./...", "vet should fall back to ./... under non-Go-only changes")
+			sawVet = true
+		case len(c.args) > 0 && c.args[0] == "build":
+			require.Contains(t, c.args, "./...", "build should fall back to ./...")
+			sawBuild = true
+		case len(c.args) > 0 && c.args[0] == "test":
+			require.Contains(t, c.args, "./...", "test should fall back to ./...")
+			sawTest = true
+		}
+	}
+	require.True(t, sawVet && sawBuild && sawTest,
+		"vet/build/test must all run with ./... under non-Go-only changes")
+}
+
+func TestVerify_Since_PopulatesScopedFieldsInResult(t *testing.T) {
+	withRecordedShell(t)
+	withFakeScope(t, &verifyScopeData{
+		Since:    "HEAD~1",
+		Files:    []string{"a.go"},
+		GoFiles:  []string{"a.go"},
+		Packages: []string{"example.com/m"},
+		TestSet:  []string{"example.com/m"},
+	})
+
+	require.NoError(t, runVerify(verifyOptions{since: "HEAD~1"}))
+}
+
+func TestVerify_Since_ResolverErrorPropagates(t *testing.T) {
+	orig := resolveVerifyScopeFn
+	resolveVerifyScopeFn = func(_ verifyOptions) (*verifyScopeData, error) {
+		return nil, clierr.New(clierr.CodeGitNotAvailable, "not in a repo")
+	}
+	t.Cleanup(func() { resolveVerifyScopeFn = orig })
+
+	err := runVerify(verifyOptions{since: "HEAD~1"})
+	require.Error(t, err)
+	require.Equal(t, string(clierr.CodeGitNotAvailable), codeOf(err))
+}
+
+// findCall returns the first call matching the given binary name, or nil.
+func findCall(calls []recordedShellCall, name string) *recordedShellCall {
+	for i := range calls {
+		if calls[i].name == name {
+			return &calls[i]
+		}
+	}
+	return nil
+}
 
 // TestVerifyCmd_Registered ensures `verify` shows up on the root command.
 func TestVerifyCmd_Registered(t *testing.T) {
@@ -183,35 +525,6 @@ func TestVerifyCmd_RunE_KeepGoing(t *testing.T) {
 	// failed checks. We accept either outcome — this test is only
 	// about covering the anonymous RunE wrapper.
 	_ = verifyCmd.RunE(verifyCmd, nil)
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for verify.go step functions and runVerify branches.
-// Uses the runShellFn seam to stub the individual `gofmt` / `go vet`
-// /etc invocations so tests don't depend on the local toolchain.
-// ─────────────────────────────────────────────────────────────────────
-
-// withStubShell swaps runShellFn for the duration of the test to a
-// scripted response. The responses slice is consumed in order; further
-// calls return the final entry.
-type stubResponse struct {
-	out string
-	err error
-}
-
-func withStubShell(t *testing.T, responses ...stubResponse) {
-	t.Helper()
-	orig := runShellFn
-	call := 0
-	runShellFn = func(_ string, _ ...string) (string, error) {
-		r := responses[len(responses)-1]
-		if call < len(responses) {
-			r = responses[call]
-		}
-		call++
-		return r.out, r.err
-	}
-	t.Cleanup(func() { runShellFn = orig })
 }
 
 // TestStepGofmt_RunError — the underlying shell errors outright
@@ -397,22 +710,6 @@ func TestStepWireDrift_WalkErr(t *testing.T) {
 	_, _, _ = stepWireDrift()
 }
 
-// TestRunVerify_MessageEmptyFallback — a step returns an error with an
-// empty message. runVerify falls back to err.Error().
-func TestRunVerify_MessageEmptyFallback(t *testing.T) {
-	chdirTemp(t)
-	// Every step uses runShellFn, so we force the first step (gofmt)
-	// to succeed with drift, then ensure the subsequent tests run.
-	withStubShell(t,
-		// gofmt → no drift
-		stubResponse{out: "", err: nil},
-		// go vet → fails with empty message (msg="vet reported issues" actually)
-		stubResponse{out: "", err: fmt.Errorf("boom")},
-	)
-	// Also disable lint.
-	_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
-}
-
 // TestRunVerify_AllPass — every step succeeds → runVerify returns nil.
 func TestRunVerify_AllPass(t *testing.T) {
 	chdirTemp(t)
@@ -437,17 +734,24 @@ func TestRunVerify_IncludesLint(t *testing.T) {
 	golangciLintLookPath = func() (string, error) { return "", fmt.Errorf("not found") }
 	t.Cleanup(func() { golangciLintLookPath = origLP })
 	withStubShell(t, stubResponse{out: "", err: nil})
+	withJSONMode(t)
 	// skipLint=false → lint step is included; lookPath says missing
 	// → "skip" result, so the whole run passes.
-	err := runVerify(verifyOptions{skipLint: false, skipRace: true, keepGoing: false})
-	_ = err
-}
-
-// TestRunVerify_EmptyErrorMessage — stepGoVet sets the msg directly,
-// so the fallback branch at the runVerify level is unreachable via
-// the canned steps.
-func TestRunVerify_EmptyErrorMessage(t *testing.T) {
-	t.Skip("stepGoVet sets Message directly; fallback unreachable from step level")
+	var err error
+	out := captureStdout(t, func() {
+		err = runVerify(verifyOptions{skipLint: false, skipRace: true, keepGoing: false})
+	})
+	assert.NoError(t, err)
+	var res verifyResult
+	require.NoError(t, json.Unmarshal([]byte(out), &res))
+	var lint *verifyCheck
+	for i := range res.Checks {
+		if res.Checks[i].Name == "golangci-lint" {
+			lint = &res.Checks[i]
+		}
+	}
+	require.NotNil(t, lint, "lint step should be present when skipLint=false")
+	assert.Equal(t, "skip", lint.Status)
 }
 
 // TestRunVerify_KeepGoingContinuesPastFailure — a failed step with
@@ -465,23 +769,21 @@ func TestRunVerify_KeepGoingContinuesPastFailure(t *testing.T) {
 	require.Error(t, err)
 }
 
-// TestRunVerify_EmptyMessageFallback — inject a step that returns
-// ("", "", err) so runVerify's fallback branch assigning err.Error()
-// as the message fires.
+// TestRunVerify_EmptyMessageFallback — when a step returns ("", "", err)
+// with an empty message, runVerifyStep falls back to err.Error() as the
+// check message. Assert that fallback directly at the step level.
 func TestRunVerify_EmptyMessageFallback(t *testing.T) {
-	chdirTemp(t)
-	origLP := golangciLintLookPath
-	golangciLintLookPath = func() (string, error) { return "", fmt.Errorf("nope") }
-	t.Cleanup(func() { golangciLintLookPath = origLP })
-	// All built-in steps pass; the injected one fails with empty msg.
-	withStubShell(t, stubResponse{out: "", err: nil})
-	extraVerifySteps = []verifyStepDef{
-		{"custom", func() (string, string, error) {
+	step := verifyStepDef{
+		name: "custom",
+		fn: func() (string, string, error) {
 			return "", "", fmt.Errorf("silent fail")
-		}},
+		},
 	}
-	t.Cleanup(func() { extraVerifySteps = nil })
-	_ = runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: true})
+	var result verifyResult
+	check := runVerifyStep(step, &result)
+	assert.Equal(t, "fail", check.Status)
+	assert.Equal(t, "silent fail", check.Message)
+	assert.Equal(t, 1, result.Failed)
 }
 
 // TestRunVerify_BreakOnFirstFail — keep-going=false breaks on the

@@ -275,6 +275,25 @@ func TestUpdateUser_BadIfMatch_400(t *testing.T) {
 	svc.AssertNotCalled(t, "Update")
 }
 
+// TestUpdateUser_IfMatchStar_MatchAny — RFC 7232: `If-Match: *`
+// matches any current representation. The controller passes the -1
+// match-any sentinel to the service instead of rejecting the header
+// as non-numeric.
+func TestUpdateUser_IfMatchStar_MatchAny(t *testing.T) {
+	svc := &mocks.MockUserService{}
+	id := uuid.New()
+	updated := validUserModel(id)
+	updated.RecordVersion = 4
+	svc.On("Update", mock.Anything, id, -1, mock.Anything).Return(updated, nil)
+
+	c := controllers.NewUserControllerInstance(svc, noopValidator{})
+	rec := httptest.NewRecorder()
+	mountController(c).ServeHTTP(rec, makeUpdateReq(id, `*`, `{"firstName":"Changed"}`))
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	assert.Equal(t, `"4"`, rec.Header().Get("ETag"))
+}
+
 // TestUpdateUser_NotFound_404 — sentinel translation when the service
 // reports the row doesn't exist.
 func TestUpdateUser_NotFound_404(t *testing.T) {

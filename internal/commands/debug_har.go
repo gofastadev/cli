@@ -6,7 +6,7 @@ import (
 	"os"
 
 	"github.com/gofastadev/cli/internal/clierr"
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
 
@@ -79,9 +79,8 @@ func runDebugHar() error {
 		return clierr.Wrap(clierr.CodeFileIO, err, "HAR write failed")
 	}
 	if debugHarOutput != "" {
-		fprintln(os.Stderr, termcolor.CGreen(
-			"wrote "+debugHarOutput+" · "+intToStr(len(har.Log.Entries))+" entries · import into Chrome DevTools → Network tab",
-		))
+		cliout.Success("wrote %s · %d entries · import into Chrome DevTools → Network tab",
+			debugHarOutput, len(har.Log.Entries))
 	}
 	return nil
 }

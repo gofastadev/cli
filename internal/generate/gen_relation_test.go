@@ -11,35 +11,117 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupRelationProject(t *testing.T) string {
-	t.Helper()
-	tmp := t.TempDir()
+func TestGenRelation_ValidateError_MissingResource(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	err := GenRelation(RelationData{Kind: RelationBelongsTo})
+	require.Error(t, err)
+}
 
+func TestGenRelation_InvalidKind(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	err := GenRelation(RelationData{Resource: "Order", Other: "Customer", Kind: "bogus"})
+	require.Error(t, err)
+}
+
+func TestGenRelation_MissingModelFile(t *testing.T) {
+	tmp := t.TempDir()
 	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
 		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(tmp, "config.yaml"),
-		[]byte("database:\n  driver: postgres\n"), 0o644))
-
-	mustWriteFile(t, filepath.Join(tmp, "app", "models", "order.model.go"), `package models
-
-import "github.com/google/uuid"
-
-// Order is the customer order entity.
-type Order struct {
-	ID uuid.UUID `+"`gorm:\"primaryKey\"`"+`
+	chdirTest(t, tmp)
+	err := GenRelation(RelationData{Resource: "Order", Other: "Customer", Kind: RelationBelongsTo})
+	require.Error(t, err)
 }
-`)
-	mustWriteFile(t, filepath.Join(tmp, "app", "models", "customer.model.go"), `package models
 
-import "github.com/google/uuid"
-
-// Customer is the customer entity.
-type Customer struct {
-	ID uuid.UUID `+"`gorm:\"primaryKey\"`"+`
+func TestGenRelation_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	models := filepath.Join(tmp, "app", "models")
+	require.NoError(t, os.MkdirAll(models, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(models, "order.model.go"),
+		[]byte("package models\nfunc {\n"), 0o644))
+	chdirTest(t, tmp)
+	err := GenRelation(RelationData{Resource: "Order", Other: "Customer", Kind: RelationBelongsTo})
+	require.Error(t, err)
 }
-`)
-	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "db", "migrations"), 0o755))
-	return tmp
+
+func TestGenRelation_StructMissing(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	models := filepath.Join(tmp, "app", "models")
+	require.NoError(t, os.MkdirAll(models, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(models, "order.model.go"),
+		[]byte("package models\n// no Order struct\n"), 0o644))
+	chdirTest(t, tmp)
+	err := GenRelation(RelationData{Resource: "Order", Other: "Customer", Kind: RelationBelongsTo})
+	require.Error(t, err)
+}
+
+func TestGenRelation_HasMany_HappyPath(t *testing.T) {
+	tmp := setupRelationProject(t)
+	chdirTest(t, tmp)
+	require.NoError(t, GenRelation(RelationData{
+		Resource: "Order", Other: "LineItem", Kind: RelationHasMany,
+	}))
+	model, _ := os.ReadFile(filepath.Join(tmp, "app", "models", "order.model.go"))
+	require.Contains(t, string(model), "[]LineItem")
+}
+
+func TestGenRelation_HasOne_HappyPath(t *testing.T) {
+	tmp := setupRelationProject(t)
+	chdirTest(t, tmp)
+	require.NoError(t, GenRelation(RelationData{
+		Resource: "Order", Other: "Customer", Kind: RelationHasOne,
+	}))
+	model, _ := os.ReadFile(filepath.Join(tmp, "app", "models", "order.model.go"))
+	require.Contains(t, string(model), "*Customer")
+}
+
+func TestGenRelation_BelongsTo_AppendStructFieldError(t *testing.T) {
+	tmp := setupRelationProject(t)
+	chdirTest(t, tmp)
+	// "Bad}" as Other makes the synthetic struct field unparseable.
+	err := GenRelation(RelationData{
+		Resource: "Order", Other: "Bad}", Kind: RelationBelongsTo,
+	})
+	require.Error(t, err)
+}
+
+func TestGenRelation_WriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupRelationProject(t)
+	chdirTest(t, tmp)
+	modelPath := filepath.Join(tmp, "app", "models", "order.model.go")
+	require.NoError(t, os.Chmod(modelPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(modelPath, 0o644) })
+	err := GenRelation(RelationData{
+		Resource: "Order", Other: "Customer", Kind: RelationBelongsTo,
+	})
+	require.Error(t, err)
+}
+
+func TestRelationModelFields_UnknownKind(t *testing.T) {
+	// Unknown kind → return nil branch.
+	require.Nil(t, relationModelFields(RelationData{Kind: "bogus"}))
+}
+
+func TestWriteRelationMigration_FirstWriteError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := t.TempDir()
+	migDir := filepath.Join(tmp, "migs")
+	require.NoError(t, os.MkdirAll(migDir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(migDir, 0o755) })
+	err := writeRelationMigration(RelationData{
+		Resource: "Order", Other: "Customer",
+		MigrationDir: migDir,
+		MigrationVer: "000001",
+	})
+	require.Error(t, err)
 }
 
 func TestGenRelation_BelongsTo_PatchesModelAndEmitsMigration(t *testing.T) {
@@ -56,7 +138,8 @@ func TestGenRelation_BelongsTo_PatchesModelAndEmitsMigration(t *testing.T) {
 	// gofmt aligns the field columns so the spacing between name and
 	// type is variable; match the substring with a permissive whitespace
 	// allowance.
-	require.Regexp(t, `CustomerID\s+uuid\.UUID`, string(model))
+	require.Regexp(t, `CustomerID\s+\*uuid\.UUID`, string(model),
+		"belongs_to FK is nullable by design — a NOT NULL FK could never migrate onto a populated table")
 	require.Regexp(t, `\bCustomer\s+\*Customer\b`, string(model))
 
 	// Migration pair must exist with the right columns.
@@ -176,6 +259,36 @@ func TestRelationModelFields_BelongsToPair(t *testing.T) {
 		Kind:     RelationBelongsTo,
 	})
 	require.Equal(t, 2, len(fields))
-	require.Contains(t, fields[0], "CustomerID uuid.UUID")
+	require.Contains(t, fields[0], "CustomerID *uuid.UUID")
 	require.Contains(t, fields[1], "Customer *Customer")
+}
+
+// TestRelationMigrationSQL_DriverForms — the FK migration must be
+// driver-correct (T-SQL has no COLUMN keyword; SQLite can't ADD a
+// table-level constraint; ClickHouse has no FK constraints at all) and
+// the column NULLABLE everywhere: a NOT NULL FK has no valid DEFAULT,
+// so it could never apply to a populated table.
+func TestRelationMigrationSQL_DriverForms(t *testing.T) {
+	up, down := relationMigrationSQL("postgres", "orders", "products", "product_id", "fk_orders_product_id")
+	require.Contains(t, up, "ALTER TABLE orders ADD COLUMN product_id uuid;\n")
+	require.Contains(t, up, "ADD CONSTRAINT fk_orders_product_id FOREIGN KEY (product_id) REFERENCES products (id)")
+	require.NotContains(t, up, "NOT NULL")
+	require.Contains(t, down, "DROP CONSTRAINT fk_orders_product_id")
+
+	up, _ = relationMigrationSQL("mysql", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id CHAR(36);")
+
+	up, down = relationMigrationSQL("sqlite", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id TEXT REFERENCES products (id);")
+	require.NotContains(t, up, "ADD CONSTRAINT", "SQLite cannot add a table-level constraint after creation")
+	require.Contains(t, down, "DROP COLUMN product_id")
+
+	up, _ = relationMigrationSQL("sqlserver", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ALTER TABLE orders ADD product_id UNIQUEIDENTIFIER;")
+	require.NotContains(t, up, "ADD COLUMN", "T-SQL ALTER TABLE ... ADD takes no COLUMN keyword")
+
+	up, down = relationMigrationSQL("clickhouse", "orders", "products", "product_id", "fk")
+	require.Contains(t, up, "ADD COLUMN product_id Nullable(UUID);")
+	require.NotContains(t, up, "FOREIGN KEY", "ClickHouse has no FK constraints")
+	require.Contains(t, down, "DROP COLUMN product_id")
 }

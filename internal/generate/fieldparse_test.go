@@ -81,3 +81,36 @@ func TestParseFields_CaseConversion(t *testing.T) {
 	assert.Equal(t, "productName", fields[0].JSONName)
 	assert.Equal(t, "product_name", fields[0].SnakeName)
 }
+
+// TestParseFields_InitialismFieldNames — revive's var-naming in the
+// generated project rejects OwnerId; the parser must emit OwnerID
+// while json/snake names keep the plain conversions.
+func TestParseFields_InitialismFieldNames(t *testing.T) {
+	fields := ParseFields([]string{"owner_id:uuid"})
+	require.Len(t, fields, 1)
+	require.Equal(t, "OwnerID", fields[0].Name)
+	require.Equal(t, "ownerId", fields[0].JSONName)
+	require.Equal(t, "owner_id", fields[0].SnakeName)
+}
+
+// FuzzParseFields — ParseFields consumes raw CLI arguments; it must
+// never panic and every produced Field must carry a resolved Go type,
+// whatever byte soup arrives.
+func FuzzParseFields(f *testing.F) {
+	f.Add("name:string")
+	f.Add("price:float")
+	f.Add("owner_id:uuid")
+	f.Add("released_at:time")
+	f.Add("weird::")
+	f.Add(":")
+	f.Add("no-type")
+	f.Add("UPPER:INT")
+	f.Fuzz(func(t *testing.T, arg string) {
+		fields := ParseFields([]string{arg})
+		for _, fld := range fields {
+			if fld.GoType == "" {
+				t.Fatalf("ParseFields(%q) produced a field with empty GoType: %+v", arg, fld)
+			}
+		}
+	})
+}

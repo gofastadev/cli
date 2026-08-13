@@ -181,8 +181,6 @@ func TestLoadDotEnv_UnreadableFile(t *testing.T) {
 	assert.Contains(t, err.Error(), "open")
 }
 
-// ── mergeIntoDotEnv ───────────────────────────────────────────────────
-
 // TestMergeIntoDotEnv_ReplacesExistingKeyInPlace — an existing key in
 // the file has its value swapped on the SAME line. Surrounding
 // content (comments, ordering of unrelated keys, blank lines) is
@@ -379,13 +377,9 @@ func TestLoadDotEnv_ShellStillWinsOverManagedBlock(t *testing.T) {
 }
 
 // TestQuoteDotEnvValue_QuotesOnlyWhenNeeded — plain values pass
-// through unquoted; values with whitespace/special chars get wrapped.
+// through unquoted; values with whitespace/special chars get wrapped
+// with escaping that parseDotEnvLine symmetrically unescapes.
 func TestQuoteDotEnvValue_QuotesOnlyWhenNeeded(t *testing.T) {
-	// Plain backslashes pass through unquoted because parseDotEnvLine
-	// doesn't process escape sequences — a `\n` in the value reads as
-	// the literal two-char sequence, not a newline. Only chars a naive
-	// parser would mis-interpret (space, tab, '#', '"', actual newline)
-	// trigger quoting.
 	cases := map[string]string{
 		"":                                    "",
 		"plain":                               "plain",
@@ -393,11 +387,44 @@ func TestQuoteDotEnvValue_QuotesOnlyWhenNeeded(t *testing.T) {
 		"with\ttab":                           "\"with\ttab\"",
 		"has#hash":                            `"has#hash"`,
 		`has"quote`:                           `"has\"quote"`,
-		`has\backslash`:                       `has\backslash`,
+		`has\backslash`:                       `"has\\backslash"`,
+		"has\nnewline":                        `"has\nnewline"`,
 		"postgres://u:p@h/db?sslmode=require": "postgres://u:p@h/db?sslmode=require",
 	}
 	for in, want := range cases {
 		assert.Equal(t, want, quoteDotEnvValue(in), "in=%q", in)
+	}
+}
+
+// TestDotEnvValue_RoundTrip — the write→read property: any value that
+// mergeIntoDotEnv persists must load back byte-identical, for any
+// number of cycles. The old writer escaped without the reader
+// unescaping, so quotes gained a backslash per save/load cycle and
+// embedded newlines lost their tail.
+func TestDotEnvValue_RoundTrip(t *testing.T) {
+	values := []string{
+		"plain",
+		"p a\"ss",
+		`back\slash`,
+		`multi\\slash"and quote`,
+		"line1\nline2",
+		"crlf\r\nend",
+		"'single quoted'",
+		"tab\there",
+		"#looks like a comment",
+		"postgres://u:p a@h:5432/db?sslmode=require",
+	}
+	for _, v := range values {
+		got := v
+		// Three cycles: growth bugs compound, single-cycle tests miss them.
+		for i := 0; i < 3; i++ {
+			line := "KEY=" + quoteDotEnvValue(got)
+			key, parsed, ok := parseDotEnvLine(line)
+			require.True(t, ok, "value %q cycle %d", v, i)
+			require.Equal(t, "KEY", key)
+			got = parsed
+		}
+		assert.Equal(t, v, got, "round-trip changed the value")
 	}
 }
 
@@ -479,4 +506,35 @@ func TestMergeIntoDotEnv_RenameError(t *testing.T) {
 	assert.Contains(t, err.Error(), "rename")
 	_, statErr := os.Stat(target + ".tmp")
 	assert.True(t, os.IsNotExist(statErr), "tmp file should be removed after rename failure")
+}
+
+// TestUnescapeDotEnvValue_UnknownEscapePassesThrough — a backslash
+// before a character that isn't one of the defined escapes (\\ \" \n
+// \r) is kept literally, so hand-written values like `C:\path` survive
+// unescaping unchanged.
+func TestUnescapeDotEnvValue_UnknownEscapePassesThrough(t *testing.T) {
+	assert.Equal(t, `a\xb`, unescapeDotEnvValue(`a\xb`))
+	assert.Equal(t, `C:\path\to`, unescapeDotEnvValue(`C:\path\to`))
+}
+
+// FuzzDotEnvRoundTrip — the escaping contract: any value written via
+// quoteDotEnvValue must come back byte-identical through
+// parseDotEnvLine. A round-trip loss silently corrupts user secrets.
+func FuzzDotEnvRoundTrip(f *testing.F) {
+	f.Add("plain")
+	f.Add(`with "quotes" inside`)
+	f.Add("newline\nand\r\ncrlf")
+	f.Add(`back\slash and 'single'`)
+	f.Add("")
+	f.Add(`trailing\`)
+	f.Fuzz(func(t *testing.T, val string) {
+		line := "KEY=" + quoteDotEnvValue(val)
+		key, got, ok := parseDotEnvLine(line)
+		if !ok || key != "KEY" {
+			t.Fatalf("round-trip lost the line entirely: %q -> ok=%v key=%q", val, ok, key)
+		}
+		if got != val {
+			t.Fatalf("round-trip corrupted value: wrote %q, read back %q (line %q)", val, got, line)
+		}
+	})
 }

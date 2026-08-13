@@ -18,6 +18,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/generate/astpatch"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MethodData is the resolved input for the method generator.
@@ -36,6 +37,17 @@ type MethodData struct {
 	// when generating for repositories instead of services.
 	InterfaceFile string
 	ImplFile      string
+	// Returns is the method's result list (e.g. ["*models.Order",
+	// "error"]). Defaults to ["error"]. The stub returns zero values
+	// for every non-error result; a trailing error gets the
+	// "not implemented" sentinel.
+	Returns []string
+	// ReceiverName is the impl stub's receiver identifier. It must match
+	// what the scaffold already uses on the target struct — revive's
+	// receiver-naming rule fails the project's own lint when one method
+	// of a type names its receiver differently from the rest. Services
+	// use "s" (the default); repositories use "r" (set by GenRepoMethod).
+	ReceiverName string
 }
 
 // GenMethod is the entry point invoked by the Cobra command.
@@ -70,6 +82,8 @@ func GenMethod(d MethodData) error {
 	// context is the conventional first argument — make sure the import
 	// is present even if the file didn't have it before.
 	astpatch.EnsureImport(ifaceFile, "context")
+	ensureArgTypeImports(ifaceFile, d.Args)
+	ensureReturnTypeImports(ifaceFile, d.Returns)
 	if err := writeBackOrRecord(ifaceFile,
 		fmt.Sprintf("add %s to %s", d.MethodName, d.InterfaceName)); err != nil {
 		return err
@@ -81,17 +95,160 @@ func GenMethod(d MethodData) error {
 		return err
 	}
 	astpatch.EnsureImport(implFile, "context")
+	// The stub body returns fmt.Errorf when the method has a trailing
+	// error — scaffolded impl files import fmt already, but hand-written
+	// or trimmed ones may not.
+	if d.Returns[len(d.Returns)-1] == "error" {
+		astpatch.EnsureImport(implFile, "fmt")
+	}
+	ensureArgTypeImports(implFile, d.Args)
+	ensureReturnTypeImports(implFile, d.Returns)
 	stub := buildMethodImplStub(d)
 	if err := astpatch.AppendFuncDecl(implFile, stub); err != nil {
 		return err
 	}
-	return writeBackOrRecord(implFile,
-		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName))
+	if err := writeBackOrRecord(implFile,
+		fmt.Sprintf("add %s impl stub to %s", d.MethodName, d.ImplStructName)); err != nil {
+		return err
+	}
+
+	// Step 3: keep the generated mocks satisfying the widened interface.
+	// Two mock surfaces exist: the shared testutil/mocks file (the
+	// skeleton's User resource uses these — regenerated via the g mock
+	// engine when present) and the inline testify mock inside the
+	// scaffolded test files (the controller test mocks the service, the
+	// service test mocks the repository). Leaving either stale means the
+	// project's own vet/tests stop compiling the moment a modify-aware
+	// generator widens an interface.
+	return patchInterfaceMocks(d)
+}
+
+// patchInterfaceMocks refreshes both mock surfaces for d.InterfaceName.
+func patchInterfaceMocks(d MethodData) error {
+	if err := refreshTestutilMock(d.InterfaceName); err != nil {
+		return err
+	}
+	mockFile, mockType := inlineMockTarget(d)
+	if mockFile == "" {
+		return nil
+	}
+	return patchInlineTestMock(mockFile, mockType, d)
+}
+
+// refreshTestutilMock regenerates testutil/mocks/<iface>_mock.go when it
+// exists — after an interface patch the on-disk mock no longer
+// implements it. In dry-run the interface file itself was only
+// recorded, so regeneration would read the OLD interface; record the
+// intent instead.
+func refreshTestutilMock(interfaceName string) error {
+	path := filepath.Join("testutil", "mocks", toMockSnake(interfaceName)+"_mock.go")
+	if !fileExistsHelper(path) {
+		return nil
+	}
+	if GetDryRun() {
+		recordPatch(path, "regenerate mock for widened "+interfaceName, 0)
+		return nil
+	}
+	return GenMock(interfaceName, GenMockOpts{})
+}
+
+// inlineMockTarget maps the interface being widened onto the scaffolded
+// test file that declares an inline testify mock of it. Returns ""
+// for interfaces outside the scaffold's naming convention.
+func inlineMockTarget(d MethodData) (mockFile, mockType string) {
+	if d.Resource == "" || d.Snake == "" {
+		return "", ""
+	}
+	lo := layout.Detect()
+	switch {
+	case strings.HasSuffix(d.InterfaceName, "ServiceInterface"):
+		return lo.ControllerTestFile(d.Snake), "mock" + d.Resource + "Service"
+	case strings.HasSuffix(d.InterfaceName, "RepositoryInterface"):
+		return lo.SvcTestFile(d.Snake), "mock" + d.Resource + "Repository"
+	}
+	return "", ""
+}
+
+// patchInlineTestMock appends a testify method for d to the inline mock
+// struct in the scaffolded test file. Test files are user-owned after
+// generation, so a missing file or a missing/renamed mock struct is a
+// skip, not an error — there is nothing generated left to keep in sync.
+// A mock that already declares the method is a no-op.
+func patchInlineTestMock(mockFile, mockType string, d MethodData) error {
+	if !fileExistsHelper(mockFile) {
+		return nil
+	}
+	f, err := astpatch.Parse(mockFile)
+	if err != nil {
+		return err
+	}
+	if _, err := astpatch.FindStruct(f, mockType); err != nil {
+		return nil
+	}
+	if _, err := astpatch.FindFunc(f, mockType, d.MethodName); err == nil {
+		return nil
+	}
+	astpatch.EnsureImport(f, "context")
+	ensureArgTypeImports(f, d.Args)
+	ensureReturnTypeImports(f, d.Returns)
+	if err := astpatchAppendFuncDeclFn(f, buildMockMethodDecl(mockType, d)); err != nil {
+		return err
+	}
+	return writeBackOrRecord(f,
+		fmt.Sprintf("extend %s with %s", mockType, d.MethodName))
+}
+
+// buildMockMethodDecl renders the testify hook for the inline mock:
+//
+//	func (m *mockOrderService) Recalculate(ctx context.Context) error {
+//		return m.Called(ctx).Error(0)
+//	}
+//
+// Multi-result methods get the nil-guarded Get pattern the scaffolded
+// inline mocks already use, so a `Return(nil, err)` expectation doesn't
+// panic on the type assertion.
+func buildMockMethodDecl(mockType string, d MethodData) string {
+	params := make([]string, 0, 1+len(d.Args))
+	names := make([]string, 0, 1+len(d.Args))
+	params = append(params, "ctx context.Context")
+	names = append(names, "ctx")
+	for _, a := range d.Args {
+		n := toCamelCase(a.Name)
+		params = append(params, n+" "+a.GoType)
+		names = append(names, n)
+	}
+	if len(d.Returns) == 1 && d.Returns[0] == "error" {
+		return fmt.Sprintf(`func (m *%s) %s(%s) error {
+	return m.Called(%s).Error(0)
+}`, mockType, d.MethodName, strings.Join(params, ", "), strings.Join(names, ", "))
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "func (m *%s) %s(%s) %s {\n",
+		mockType, d.MethodName, strings.Join(params, ", "), renderReturns(d.Returns))
+	fmt.Fprintf(&b, "\tcallArgs := m.Called(%s)\n", strings.Join(names, ", "))
+	results := make([]string, 0, len(d.Returns))
+	for i, r := range d.Returns {
+		if i == len(d.Returns)-1 && r == "error" {
+			results = append(results, fmt.Sprintf("callArgs.Error(%d)", i))
+			continue
+		}
+		fmt.Fprintf(&b, "\tvar r%d %s\n", i, r)
+		fmt.Fprintf(&b, "\tif v := callArgs.Get(%d); v != nil {\n\t\tr%d = v.(%s)\n\t}\n", i, i, r)
+		results = append(results, fmt.Sprintf("r%d", i))
+	}
+	fmt.Fprintf(&b, "\treturn %s\n}", strings.Join(results, ", "))
+	return b.String()
 }
 
 // methodDataDefaults fills in the conventional names + paths so callers
 // only need to pass Resource + MethodName for the common case.
 func methodDataDefaults(d MethodData) MethodData {
+	if len(d.Returns) == 0 {
+		d.Returns = []string{"error"}
+	}
+	if d.ReceiverName == "" {
+		d.ReceiverName = "s"
+	}
 	if d.Resource == "" {
 		return d
 	}
@@ -103,16 +260,51 @@ func methodDataDefaults(d MethodData) MethodData {
 		// (see internal/generate/templates/svc_interface.go). Honor that.
 		d.InterfaceName = d.Resource + "ServiceInterface"
 	}
+	// The scaffold declares the exported `type <Name>Service struct`
+	// (templates/svc.go) — the stub's receiver must match it or the
+	// patched file doesn't compile.
 	if d.ImplStructName == "" {
-		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Service"
+		d.ImplStructName = d.Resource + "Service"
 	}
-	if d.InterfaceFile == "" {
-		d.InterfaceFile = filepath.Join("app", "services", "interfaces", d.Snake+"_service.go")
-	}
-	if d.ImplFile == "" {
-		d.ImplFile = filepath.Join("app", "services", d.Snake+".service.go")
+	if d.InterfaceFile == "" || d.ImplFile == "" {
+		lo := layout.Detect()
+		if d.InterfaceFile == "" {
+			d.InterfaceFile = lo.SvcIfaceFile(d.Snake)
+		}
+		if d.ImplFile == "" {
+			d.ImplFile = lo.SvcImplFile(d.Snake)
+		}
 	}
 	return d
+}
+
+// ensureArgTypeImports adds the imports the parsed field types need
+// (uuid/time) to a patched file. Same mapping gen_field uses when it
+// appends a field to a model.
+func ensureArgTypeImports(f *astpatch.File, args []Field) {
+	for _, a := range args {
+		switch a.GoType {
+		case "time.Time":
+			astpatch.EnsureImport(f, "time")
+		case "uuid.UUID":
+			astpatch.EnsureImport(f, "github.com/google/uuid")
+		}
+	}
+}
+
+// ensureReturnTypeImports adds the imports the return types need
+// (uuid/time — both for the type itself and its stub zero value).
+// Types from other packages (e.g. models.Order) assume the target file
+// already imports them, which holds for every scaffolded service/repo.
+func ensureReturnTypeImports(f *astpatch.File, returns []string) {
+	for _, r := range returns {
+		switch {
+		case strings.Contains(r, "uuid.UUID"):
+			astpatch.EnsureImport(f, "github.com/google/uuid")
+		case strings.Contains(r, "time.Time"):
+			astpatch.EnsureImport(f, "time")
+		}
+	}
 }
 
 // ensureExists returns CodeResourceNotFound when the file is missing.
@@ -129,6 +321,7 @@ func ensureExists(path string) error {
 // buildMethodSignature produces the interface-method line:
 //
 //	Archive(ctx context.Context, id string) error
+//	FindByOwner(ctx context.Context, ownerId uuid.UUID) (*models.Order, error)
 //
 // context.Context is always first; user-supplied args follow.
 func buildMethodSignature(d MethodData) string {
@@ -137,23 +330,82 @@ func buildMethodSignature(d MethodData) string {
 	for _, a := range d.Args {
 		params = append(params, fmt.Sprintf("%s %s", toCamelCase(a.Name), a.GoType))
 	}
-	return fmt.Sprintf("%s(%s) error", d.MethodName, strings.Join(params, ", "))
+	return fmt.Sprintf("%s(%s) %s", d.MethodName, strings.Join(params, ", "), renderReturns(d.Returns))
 }
 
-// buildMethodImplStub produces the impl body that returns a placeholder
-// error. Stubbing rather than panicking keeps `go test` green out of the
-// box; the user can hollow it out as they fill the method in.
+// renderReturns formats a result list: a single type stays bare, two or
+// more get the parenthesized tuple form.
+func renderReturns(returns []string) string {
+	if len(returns) == 1 {
+		return returns[0]
+	}
+	return "(" + strings.Join(returns, ", ") + ")"
+}
+
+// numericGoTypes are the built-in types whose zero value is 0.
+var numericGoTypes = map[string]bool{
+	"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+	"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+	"uintptr": true, "byte": true, "rune": true,
+	"float32": true, "float64": true,
+	"complex64": true, "complex128": true,
+}
+
+// zeroValueFor returns the Go literal for a type's zero value, used by
+// the generated stub bodies. Named/qualified types fall back to the
+// composite-literal zero (`T{}`), which is correct for structs — the
+// common case for repo/service return types like models.Order.
+func zeroValueFor(goType string) string {
+	t := strings.TrimSpace(goType)
+	switch {
+	case strings.HasPrefix(t, "*"), strings.HasPrefix(t, "[]"),
+		strings.HasPrefix(t, "map["), strings.HasPrefix(t, "chan "),
+		strings.HasPrefix(t, "func("),
+		t == "any", t == "error", t == "interface{}":
+		return "nil"
+	case t == "string":
+		return `""`
+	case t == "bool":
+		return "false"
+	case t == "uuid.UUID":
+		return "uuid.Nil"
+	case t == "time.Time":
+		return "time.Time{}"
+	case numericGoTypes[t]:
+		return "0"
+	default:
+		return t + "{}"
+	}
+}
+
+// buildMethodImplStub produces the impl body that returns zero values
+// for every result, with a trailing error carrying the "not implemented"
+// sentinel. Stubbing rather than panicking keeps `go test` green out of
+// the box; the user can hollow it out as they fill the method in.
 func buildMethodImplStub(d MethodData) string {
 	params := make([]string, 0, 1+len(d.Args))
 	params = append(params, "ctx context.Context")
 	for _, a := range d.Args {
 		params = append(params, fmt.Sprintf("%s %s", toCamelCase(a.Name), a.GoType))
 	}
+	results := make([]string, 0, len(d.Returns))
+	for i, r := range d.Returns {
+		if i == len(d.Returns)-1 && r == "error" {
+			results = append(results,
+				fmt.Sprintf("fmt.Errorf(%q)", d.InterfaceName+"."+d.MethodName+": not implemented"))
+			continue
+		}
+		results = append(results, zeroValueFor(r))
+	}
+	recv := d.ReceiverName
+	if recv == "" {
+		recv = "s"
+	}
 	return fmt.Sprintf(`// %s is a generated stub. Replace with the real implementation.
-func (s *%s) %s(%s) error {
-	return fmt.Errorf("%s.%s: not implemented")
-}`, d.MethodName, d.ImplStructName, d.MethodName, strings.Join(params, ", "),
-		d.InterfaceName, d.MethodName)
+func (%s *%s) %s(%s) %s {
+	return %s
+}`, d.MethodName, recv, d.ImplStructName, d.MethodName, strings.Join(params, ", "),
+		renderReturns(d.Returns), strings.Join(results, ", "))
 }
 
 // astpatchRenderFn / astpatchAppendFuncDeclFn are package-level seams

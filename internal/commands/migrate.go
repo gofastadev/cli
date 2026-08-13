@@ -183,15 +183,6 @@ func runMigrationDown() error {
 	return runMigrate("down", args, stdinOverride)
 }
 
-// runMigration is a backward-compat dispatcher used by older tests.
-// New callers should use runMigrationUp / runMigrationDown directly.
-func runMigration(direction string) error {
-	if direction == "down" {
-		return runMigrationDown()
-	}
-	return runMigrationUp()
-}
-
 // migrateDownPlan describes a resolved rollback request. steps=0 means
 // "all" (which is what passing no count to `migrate down` does).
 type migrateDownPlan struct {

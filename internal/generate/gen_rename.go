@@ -25,9 +25,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // RenameData is the resolved input.
@@ -117,15 +117,18 @@ func validateRename(d RenameData) error {
 
 // renameTargets returns the file paths a rename can touch for a given
 // resource. Missing files are skipped at apply time so model-only
-// resources work fine.
+// resources work fine. Paths are layout-dependent — layered scatters
+// the resource's files across layer dirs; feature collapses them into
+// app/<resource>/.
 func renameTargets(resource string) []string {
 	snake := toSnakeCase(resource)
+	lo := layout.Detect()
 	return []string{
-		filepath.Join("app", "models", snake+".model.go"),
-		filepath.Join("app", "dtos", snake+".dtos.go"),
-		filepath.Join("app", "services", snake+".service.go"),
-		filepath.Join("app", "services", snake+".service_test.go"),
-		filepath.Join("app", "repositories", snake+".repository.go"),
+		lo.ModelFile(snake),
+		lo.DTOsFile(snake),
+		lo.SvcImplFile(snake),
+		lo.SvcTestFile(snake),
+		lo.RepoImplFile(snake),
 	}
 }
 
@@ -169,7 +172,3 @@ func applyRenameRules(body []byte, rules []renameSubst) []byte {
 // pluralize and toSnakeCase / toCamelCase live in scaffold_data.go's
 // neighbors. Adding small wrappers here would shadow them, so we leave
 // the call sites to use the package-level helpers directly.
-
-// toCamelCaseSafe is unused — placeholder to avoid an import-needed
-// rebuild when the package's other helpers haven't yet been wired in.
-var _ = strings.ToLower

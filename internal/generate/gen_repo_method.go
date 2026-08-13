@@ -11,8 +11,7 @@
 package generate
 
 import (
-	"path/filepath"
-	"strings"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // GenRepoMethod is a thin wrapper that fills in repo-specific defaults
@@ -27,14 +26,26 @@ func GenRepoMethod(d MethodData) error {
 	if d.InterfaceName == "" {
 		d.InterfaceName = d.Resource + "RepositoryInterface"
 	}
+	// The scaffold declares the exported `type <Name>Repository struct`
+	// (templates/repo.go) — the stub's receiver must match it or the
+	// patched file doesn't compile.
 	if d.ImplStructName == "" {
-		d.ImplStructName = strings.ToLower(d.Resource[:1]) + d.Resource[1:] + "Repository"
+		d.ImplStructName = d.Resource + "Repository"
 	}
-	if d.InterfaceFile == "" {
-		d.InterfaceFile = filepath.Join("app", "repositories", "interfaces", snake+"_repository.go")
+	// Scaffolded repository methods all use receiver `r`; a stub with
+	// the service-side `s` trips revive's receiver-naming rule in the
+	// generated project's own lint.
+	if d.ReceiverName == "" {
+		d.ReceiverName = "r"
 	}
-	if d.ImplFile == "" {
-		d.ImplFile = filepath.Join("app", "repositories", snake+".repository.go")
+	if d.InterfaceFile == "" || d.ImplFile == "" {
+		lo := layout.Detect()
+		if d.InterfaceFile == "" {
+			d.InterfaceFile = lo.RepoIfaceFile(snake)
+		}
+		if d.ImplFile == "" {
+			d.ImplFile = lo.RepoImplFile(snake)
+		}
 	}
 	d.Snake = snake
 	return GenMethod(d)

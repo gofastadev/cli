@@ -1,7 +1,6 @@
 package commands
 
 import (
-	"bytes"
 	"net/http"
 	"testing"
 	"time"
@@ -10,11 +9,63 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func resetTraceFlags() {
-	debugTracesSlowerThan = ""
-	debugTracesStatus = ""
-	debugTracesLimit = 0
-	debugTraceWithStacks = false
+func TestRunDebugTracesList_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleTraces()) },
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	require.NoError(t, runDebugTracesList())
+}
+
+func TestRunDebugTracesList_Filtered(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleTraces()) },
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	debugTracesStatus = "error"
+	debugTracesLimit = 1
+	t.Cleanup(resetTraceFlags)
+	require.NoError(t, runDebugTracesList())
+}
+
+func TestRunDebugTracesList_BadDuration(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedTrace{}) },
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	debugTracesSlowerThan = "xyz"
+	t.Cleanup(resetTraceFlags)
+	require.Error(t, runDebugTracesList())
+}
+
+func TestRunDebugTraceDetail_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces/abc": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, scrapedTrace{
+				TraceID: "abc", RootName: "GET /x", DurationMS: 10, SpanCount: 1,
+				Time:  time.Now(),
+				Spans: []scrapedSpan{{SpanID: "r", Name: "root", DurationMS: 10}},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetTraceFlags()
+	debugTraceWithStacks = true
+	t.Cleanup(resetTraceFlags)
+	require.NoError(t, runDebugTraceDetail("abc"))
+}
+
+func TestRunDebugTraceDetail_NotFound(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/traces/missing": func(w http.ResponseWriter, _ *http.Request) {
+			http.NotFound(w, nil)
+		},
+	})
+	withDebugAppURL(t, url)
+	require.Error(t, runDebugTraceDetail("missing"))
 }
 
 func sampleTraces() []scrapedTrace {
@@ -53,48 +104,6 @@ func TestApplyTraceFilters_InvalidStatus(t *testing.T) {
 	_, err := applyTraceFilters(sampleTraces())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fubar")
-}
-
-// TestRenderWaterfall_ProducesTreeGlyphs — smoke test that the
-// waterfall renderer emits the expected tree glyphs for nested spans.
-// Also verifies durations appear.
-func TestRenderWaterfall_ProducesTreeGlyphs(t *testing.T) {
-	spans := []scrapedSpan{
-		{SpanID: "r", Name: "root", OffsetMS: 0, DurationMS: 100},
-		{SpanID: "c1", ParentID: "r", Name: "child1", OffsetMS: 10, DurationMS: 40},
-		{SpanID: "c2", ParentID: "r", Name: "child2", OffsetMS: 60, DurationMS: 30},
-		{SpanID: "g", ParentID: "c1", Name: "grandchild", OffsetMS: 20, DurationMS: 20},
-	}
-	var buf bytes.Buffer
-	renderWaterfall(&buf, 100, spans, false)
-	out := buf.String()
-	assert.Contains(t, out, "root")
-	assert.Contains(t, out, "child1")
-	assert.Contains(t, out, "child2")
-	assert.Contains(t, out, "grandchild")
-	// Tree glyphs — at least one ├─ and one └─ should appear.
-	assert.Contains(t, out, "├─")
-	assert.Contains(t, out, "└─")
-}
-
-// TestRenderWaterfall_WithStacks — when withStacks=true, the stack
-// frames render below each span that has one.
-func TestRenderWaterfall_WithStacks(t *testing.T) {
-	spans := []scrapedSpan{
-		{SpanID: "r", Name: "root", OffsetMS: 0, DurationMS: 10,
-			Stack: []string{"app/service.go:1 fn"}},
-	}
-	var buf bytes.Buffer
-	renderWaterfall(&buf, 10, spans, true)
-	assert.Contains(t, buf.String(), "app/service.go:1 fn")
-}
-
-// TestRenderWaterfall_EmptySpans — renders a "(no spans)" placeholder,
-// not a blank.
-func TestRenderWaterfall_EmptySpans(t *testing.T) {
-	var buf bytes.Buffer
-	renderWaterfall(&buf, 0, nil, false)
-	assert.Contains(t, buf.String(), "no spans")
 }
 
 // TestRunDebugTracesList_DevtoolsError — unreachable app URL short-

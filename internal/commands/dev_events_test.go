@@ -12,13 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// dev_events covers every emitter method on both jsonEmitter and
-// humanEmitter. JSON variants round-trip through encoding/json; human
-// variants are called for their side-effects on stdout (we just
-// verify they don't panic and produce output).
-// ─────────────────────────────────────────────────────────────────────
-
 // TestJSONEmitter_AllEvents — cycles through every emitter method,
 // asserts the emitted line parses as JSON with the right `event` +
 // status fields.

@@ -66,11 +66,18 @@ gqlgen:
 # Testing
 # ──────────────────────────────────────────────
 
+# Unit tests only. -short makes the repository tests skip themselves —
+# they provision a real database via testdb (Docker for container
+# drivers), which is exactly what a quick unit pass should not need.
 test:
 	go test ./... -short -v
 
+# The full suite including the database-backed repository tests.
+# Requires Docker (testcontainers). Note: this is NOT a -run filter —
+# generated tests are named Test<Resource>Repository_*, so filtering on
+# "Integration" would silently run nothing.
 test-integration:
-	go test ./... -run Integration -v
+	go test ./... -v
 
 # ──────────────────────────────────────────────
 # Database

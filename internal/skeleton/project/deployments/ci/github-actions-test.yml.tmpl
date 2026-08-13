@@ -21,7 +21,10 @@ on:
 jobs:
   preflight:
     runs-on: ubuntu-latest
+{{- if eq .DBDriver "postgres" }}
 
+    # The DB service and its connection env mirror the project-root
+    # compose.yaml so CI talks to the same engine the app is configured for.
     services:
       postgres:
         image: postgres:18-alpine
@@ -32,7 +35,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U {{.ProjectNameLower}}"
+          --health-cmd "pg_isready -U {{.ProjectNameLower}} -d {{.ProjectNameLower}}_test"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 5
@@ -43,13 +46,107 @@ jobs:
       {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
       {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
       {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+      {{.ProjectNameUpper}}_DATABASE_SSLMODE: disable
+{{- else if eq .DBDriver "mysql" }}
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: {{.ProjectNameLower}}
+          MYSQL_USER: {{.ProjectNameLower}}
+          MYSQL_PASSWORD: {{.ProjectNameLower}}
+          MYSQL_DATABASE: {{.ProjectNameLower}}_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -u{{.ProjectNameLower}} -p{{.ProjectNameLower}}"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      {{.ProjectNameUpper}}_DATABASE_HOST: 127.0.0.1
+      {{.ProjectNameUpper}}_DATABASE_PORT: "3306"
+      {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+{{- else if eq .DBDriver "sqlserver" }}
+
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_SA_PASSWORD: "YourStrong@Passw0rd"
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P YourStrong@Passw0rd -No -Q 'SELECT 1'"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      {{.ProjectNameUpper}}_DATABASE_HOST: localhost
+      {{.ProjectNameUpper}}_DATABASE_PORT: "1433"
+      {{.ProjectNameUpper}}_DATABASE_USER: sa
+      {{.ProjectNameUpper}}_DATABASE_PASSWORD: "YourStrong@Passw0rd"
+      {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+{{- else if eq .DBDriver "clickhouse" }}
+
+    services:
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_DB: {{.ProjectNameLower}}_test
+          CLICKHOUSE_USER: {{.ProjectNameLower}}
+          CLICKHOUSE_PASSWORD: {{.ProjectNameLower}}
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 9000:9000
+          - 8123:8123
+        options: >-
+          --health-cmd "wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      {{.ProjectNameUpper}}_DATABASE_HOST: localhost
+      {{.ProjectNameUpper}}_DATABASE_PORT: "9000"
+      {{.ProjectNameUpper}}_DATABASE_USER: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_PASSWORD: {{.ProjectNameLower}}
+      {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test
+{{- else if eq .DBDriver "sqlite" }}
+
+    # sqlite is file-based — no service container. The app writes a local
+    # .db file for the duration of the run.
+    env:
+      {{.ProjectNameUpper}}_DATABASE_DRIVER: sqlite
+      {{.ProjectNameUpper}}_DATABASE_NAME: {{.ProjectNameLower}}_test.db
+{{- end }}
 
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          # Newest patch release of the scaffold's declared Go floor — an
+          # exact .0 pin would freeze CI on unpatched stdlib.
+          go-version: "1.25.x"
+{{- if eq .DBDriver "mysql" }}
+
+      # The scaffold's per-resource migrations install BEFORE UPDATE /
+      # BEFORE DELETE triggers through the app's DB user. GitHub Actions
+      # service containers can't pass --log_bin_trust_function_creators as
+      # a startup flag (compose.yaml sets it via `command:`), so enable it
+      # at runtime as root before migrations run. The mysql client ships
+      # with the ubuntu-latest runner image.
+      - name: Allow MySQL trigger creation
+        run: mysql -h 127.0.0.1 -P 3306 -uroot -p{{.ProjectNameLower}} -e "SET GLOBAL log_bin_trust_function_creators = 1;"
+{{- end }}
 
       - name: Install dependencies
         run: go mod download
@@ -57,7 +154,7 @@ jobs:
       # Install the linter at the version the Makefile pins, so CI and a
       # developer's `make preflight` agree on the ruleset.
       - name: Install golangci-lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
           install-mode: binary
@@ -88,3 +185,17 @@ jobs:
         with:
           files: ./coverage.out
           fail_ci_if_error: false
+
+  # Reachability-based vulnerability scanning (the Go team's scanner) —
+  # reports only CVEs whose vulnerable code paths this project actually
+  # calls, so findings are worth acting on. Runs alongside the test job
+  # on every push/PR.
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for reachable vulnerabilities
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: "1.25.x"
+          go-package: ./...

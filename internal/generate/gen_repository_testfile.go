@@ -1,8 +1,6 @@
 package generate
 
 import (
-	"fmt"
-
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
@@ -12,7 +10,7 @@ import (
 // SoftDeleteIfDeletable, List pagination.
 func GenRepoTestFile(d ScaffoldData) error {
 	return WriteTemplate(
-		fmt.Sprintf("app/repositories/%s.repository_test.go", d.SnakeName),
+		d.L().RepoTestFile(d.SnakeName),
 		"repo_test", templates.RepoTest, d,
 	)
 }

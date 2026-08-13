@@ -190,7 +190,7 @@ func New__NAME__Job(db *gorm.DB, logger *slog.Logger) *__NAME__Job {
 	return &__NAME__Job{db: db, logger: logger}
 }
 
-// Name returns the scheduler-visible job name. The framework matches
+// Name returns the scheduler-visible job name. The scheduler matches
 // this to a ` + "`name`" + ` entry in the project's jobs config to look up
 // the cron schedule.
 func (j *__NAME__Job) Name() string { return "__SNAKE_NAME__" }
@@ -201,7 +201,7 @@ func (j *__NAME__Job) Name() string { return "__SNAKE_NAME__" }
 // to wait for them.
 //
 // Returning an error doesn't stop the scheduler — the next tick still
-// fires — but the framework logs the error at ERROR level with the
+// fires — but the scheduler logs the error at ERROR level with the
 // job name attached. Idempotency is the job's responsibility.
 func (j *__NAME__Job) Run(ctx context.Context) error {
 	ctx, span := otel.Tracer(__LOWER_NAME__JobTracerName).Start(ctx, "__NAME__Job.Run")

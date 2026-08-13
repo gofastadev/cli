@@ -45,17 +45,24 @@ func runMigration(direction string) error {
 	}
 	logger.NewLogger(&cfg.Log)
 
-	dbURL := buildMigrationURL(cfg)
+	// config.BuildMigrateURL escapes user/password/db-name per driver
+	// (url.UserPassword etc.) — a hand-rolled Sprintf DSN breaks the
+	// moment a password contains @ : / % or a space.
+	dbURL, err := config.BuildMigrateURL(&cfg.Database)
+	if err != nil {
+		return fmt.Errorf("building migration URL: %w", err)
+	}
+	migrationsPath := resolveMigrationsPath()
 
 	migrateCmd := exec.Command("migrate",
-		"-path", "db/migrations",
+		"-path", migrationsPath,
 		"-database", dbURL,
 		direction,
 	)
 	migrateCmd.Stdout = os.Stdout
 	migrateCmd.Stderr = os.Stderr
 
-	slog.Info("running migration", "direction", direction)
+	slog.Info("running migration", "direction", direction, "path", migrationsPath)
 	if err := migrateCmd.Run(); err != nil {
 		return fmt.Errorf("migration %s failed: %w", direction, err)
 	}
@@ -63,18 +70,16 @@ func runMigration(direction string) error {
 	return nil
 }
 
-func buildMigrationURL(cfg *config.AppConfig) string {
-	db := cfg.Database
-	switch db.Driver {
-	case "mysql":
-		return fmt.Sprintf("mysql://%s:%s@tcp(%s:%s)/%s", db.User, db.Password, db.Host, db.Port, db.Name)
-	case "sqlite":
-		return fmt.Sprintf("sqlite3://%s", db.Name)
-	case "sqlserver":
-		return fmt.Sprintf("sqlserver://%s:%s@%s:%s?database=%s", db.User, db.Password, db.Host, db.Port, db.Name)
-	case "clickhouse":
-		return fmt.Sprintf("clickhouse://%s:%s@%s:%s/%s", db.User, db.Password, db.Host, db.Port, db.Name)
-	default:
-		return fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s", db.User, db.Password, db.Host, db.Port, db.Name, db.SSLMode)
+// resolveMigrationsPath returns the migrations directory, tolerating the
+// different layouts the app runs under: local dev keeps them at db/migrations,
+// while deploys flatten them to ./migrations (systemd/binary release dir) or
+// /migrations (the Docker image). The first existing candidate wins; if none
+// exist we fall back to db/migrations so the error message is meaningful.
+func resolveMigrationsPath() string {
+	for _, candidate := range []string{"db/migrations", "migrations", "/migrations"} {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
 	}
+	return "db/migrations"
 }

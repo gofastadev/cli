@@ -5,13 +5,48 @@ import (
 	"os"
 	"strings"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/commands/configutil"
+	"github.com/gofastadev/cli/internal/layout"
+	"github.com/gofastadev/cli/internal/naming"
 )
+
+// validateIdentifier rejects a field / job / task / template name that
+// is not a plain identifier (letters, digits, underscores, hyphens;
+// starts with a letter). Names outside this set would flow unescaped
+// into file paths (app/models/<snake>.model.go, db/migrations/…) and
+// into rendered SQL/Go templates, making them a path-traversal /
+// template-injection vector. A leading `.` (so `..` and `../x`) fails
+// the leading-letter anchor, so traversal is blocked even though `-`
+// and `_` are allowed after the first character. Returns
+// clierr.CodeInvalidName — the same code the sibling validators
+// (validateEndpoint / validateRelation / validateRename) use.
+func validateIdentifier(name string) error {
+	if !naming.IsIdentifier(name) {
+		return clierr.Newf(clierr.CodeInvalidName,
+			"invalid name %q: must start with a letter and contain only letters, digits, underscores, and hyphens", name)
+	}
+	return nil
+}
+
+// validateResourceName is validateIdentifier's strict sibling for
+// RESOURCE names: hyphens are additionally rejected because resources
+// become Go package directories and feature-layout import aliases
+// (`<snake>pkg`), and `blog-postpkg` is not a valid Go identifier.
+// Jobs, tasks, and email templates keep their kebab-case freedom via
+// validateIdentifier.
+func validateResourceName(name string) error {
+	if !naming.IsResourceName(name) {
+		return clierr.Newf(clierr.CodeInvalidName,
+			"invalid resource name %q: must start with a letter and contain only letters, digits, and underscores (hyphens aren't allowed — resources become Go package names)", name)
+	}
+	return nil
+}
 
 // BuildScaffoldData converts a resource name and fields into fully computed ScaffoldData.
 func BuildScaffoldData(name string, fields []Field) ScaffoldData {
-	pascal := toPascalCase(name)
-	plural := pluralize(pascal)
+	pascal := naming.Pascal(name)
+	plural := naming.Pluralize(pascal)
 	driver := configutil.ReadDBDriver()
 
 	// Resolve per-driver SQL type into the active SQLType field
@@ -20,16 +55,19 @@ func BuildScaffoldData(name string, fields []Field) ScaffoldData {
 	}
 
 	return ScaffoldData{
-		Name:         pascal,
-		LowerName:    toCamelCase(name),
-		SnakeName:    toSnakeCase(name),
+		Name: pascal,
+		// LowerName is a Go identifier prefix (apiKeySortColumns), so it
+		// uses the golint camel form — leading initialism fully lowered.
+		LowerName:    naming.Camel(name),
+		SnakeName:    naming.Snake(name),
 		PluralName:   plural,
-		PluralSnake:  toSnakeCase(plural),
-		PluralLower:  toCamelCase(plural),
+		PluralSnake:  naming.Snake(plural),
+		PluralLower:  naming.Camel(plural),
 		Fields:       fields,
 		MigrationNum: nextMigrationNumber(),
 		DBDriver:     driver,
 		ModulePath:   readModulePath(),
+		Layout:       layout.Detect(),
 	}
 }
 

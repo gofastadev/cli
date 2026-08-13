@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -26,4 +27,26 @@ func TestDebugNPlusOneCmd_RunE(t *testing.T) {
 	withDebugAppURL(t, url)
 	resetAllDebugFlags()
 	require.NoError(t, debugNPlusOneCmd.RunE(debugNPlusOneCmd, nil))
+}
+
+func TestRunDebugNPlusOne_WithFindings(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedQuery{
+				{TraceID: "t", SQL: "SELECT * FROM x WHERE id = 1"},
+				{TraceID: "t", SQL: "SELECT * FROM x WHERE id = 2"},
+				{TraceID: "t", SQL: "SELECT * FROM x WHERE id = 3"},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	require.NoError(t, runDebugNPlusOne())
+}
+
+func TestRunDebugNPlusOne_NoFindings(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedQuery{}) },
+	})
+	withDebugAppURL(t, url)
+	require.NoError(t, runDebugNPlusOne())
 }

@@ -42,7 +42,7 @@ func TestUpdateUserPatch_AsMap_EmptyPatchIsEmptyMap(t *testing.T) {
 	assert.Empty(t, got)
 }
 
-// TestUpdateUserPatch_AsMap_SnakeCaseColumnNames — the framework
+// TestUpdateUserPatch_AsMap_SnakeCaseColumnNames — the repository
 // expects column names in snake_case (matches the GORM naming
 // convention). PascalCase or camelCase keys would fail SQL parsing.
 func TestUpdateUserPatch_AsMap_SnakeCaseColumnNames(t *testing.T) {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/http"
+	"os"
 	"time"
 
 	"github.com/gofastadev/gofasta/pkg/auth"
@@ -87,22 +89,39 @@ var CoreSet = wire.NewSet(
 // binary is built with the `devtools` tag. In production builds the
 // plugin is a no-op (see app/devtools/devtools_stub.go).
 //
-// Degraded-mode behavior: a cheap TCP probe runs FIRST so we can skip
-// config.SetupDB entirely when the DB is unreachable. SetupDB calls
-// gorm.Open, which logs `[error] failed to initialize database` from
-// inside GORM before returning the error, and then SetupDB itself
-// slog.Error's and panics. Probing first means none of that noise
-// appears in degraded mode — just the WARN below explaining what
-// happened. When `gofasta dev` is in front of this, the developer
-// has already seen the preflight menu and picked "Run app without
-// db"; the in-app logs should match that choice, not contradict it
-// with red ERROR lines.
+// Connection-failure behavior is config-gated by
+// `database.degraded_fallback` (default false):
+//
+//   - false (the default) — REFUSE TO START. In production a process
+//     that boots without its database half-serves traffic: /health
+//     looks alive, DB-touching endpoints all 5xx, and the orchestrator
+//     never restarts it. Failing fast turns a dead DB into a visible
+//     crash-loop instead of a silent outage.
+//   - true — boot in DEGRADED mode on an in-memory SQLite stub.
+//     `gofasta dev` sets {{.ProjectNameUpper}}_DATABASE_DEGRADED_FALLBACK=true
+//     for the dev child process when you pick "Run app without db" at
+//     the preflight menu, so local development keeps that workflow
+//     without weakening the production default.
+//
+// A cheap TCP probe runs FIRST so we can skip config.SetupDB entirely
+// when the DB is unreachable. SetupDB calls gorm.Open, which logs
+// `[error] failed to initialize database` from inside GORM before
+// returning the error, and then SetupDB itself slog.Error's and
+// panics. Probing first means none of that noise appears — just one
+// line explaining what happened.
 //
 // Recovery via panic catch is still in place as a belt-and-braces
 // layer for races (DB went down between the probe and SetupDB) and
 // for non-TCP drivers (SQLite file-mode, etc.).
 func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
 	if !databaseReachable(cfg) {
+		if !cfg.DegradedFallback {
+			slog.Error(
+				"database unreachable — refusing to start (set database.degraded_fallback: true, or the {{.ProjectNameUpper}}_DATABASE_DEGRADED_FALLBACK env var, to boot in degraded mode instead)",
+				"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port,
+			)
+			osExit(1)
+		}
 		slog.Warn(
 			"database unreachable — starting in DEGRADED mode; endpoints touching the DB will return 5xx until the connection comes back",
 			"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port,
@@ -116,12 +135,23 @@ func ProvideDB(cfg *config.DatabaseConfig) *gorm.DB {
 		}
 		return db
 	}
+	if !cfg.DegradedFallback {
+		slog.Error(
+			"database connect failed — refusing to start (set database.degraded_fallback: true, or the {{.ProjectNameUpper}}_DATABASE_DEGRADED_FALLBACK env var, to boot in degraded mode instead)",
+			"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port, "error", err,
+		)
+		osExit(1)
+	}
 	slog.Warn(
 		"database connect failed after reachability probe passed — starting in DEGRADED mode",
 		"driver", cfg.Driver, "host", cfg.Host, "port", cfg.Port, "error", err,
 	)
 	return buildDegradedDB(cfg)
 }
+
+// osExit is a seam so tests can assert the refuse-to-start path
+// without killing the test process.
+var osExit = os.Exit
 
 // databaseReachable opens and closes a 2-second TCP connection to
 // cfg.Host:cfg.Port to confirm the DB is accepting connections. For
@@ -204,7 +234,7 @@ func ProvideCacheService(cfg *config.CacheConfig, log *slog.Logger) (cache.Cache
 
 // ProvideLogger wraps logger.NewLogger with the devtools slog
 // decorator. Every log record continues to flow to stdout through the
-// framework's handler (text or JSON, level from config) AND is teed
+// gofasta library's handler (text or JSON, level from config) AND is teed
 // into the dev-dashboard's log ring keyed by trace ID. In production
 // builds (no `devtools` build tag) the wrapper is identity, so the
 // cost is zero.
@@ -256,7 +286,7 @@ func ProvideTemplateRenderer(cfg *config.AppConfig) *mailer.TemplateRenderer {
 	return mailer.NewTemplateRenderer("templates/emails", cfg.Email.FromName)
 }
 
-// ProvideWebSocketHub constructs the framework's WebSocket hub used for
+// ProvideWebSocketHub constructs the gofasta library's WebSocket hub used for
 // real-time fan-out (rooms, broadcasts, per-connection state).
 func ProvideWebSocketHub(log *slog.Logger) *websocket.Hub {
 	return websocket.NewHub(log)
@@ -296,10 +326,36 @@ func ProvideEncrypter(cfg *config.AppConfig) *encryption.Encrypter {
 // ProvideSessionStore constructs the session store named by config —
 // filesystem-backed when sessions need to survive a process restart,
 // cookie-backed (the default) when statelessness is preferred.
+//
+// Cookie attributes come from config so the production manifest can
+// flip them at the environment layer (compose.production.yaml sets
+// {{.ProjectNameUpper}}_SESSION_COOKIE_SECURE=true — session cookies
+// must never ride plain HTTP in production).
 func ProvideSessionStore(cfg *config.AppConfig) *session.Store {
 	sc := cfg.Session
-	if sc.Driver == "filesystem" {
-		return session.NewFilesystemStore(sc.FilesystemPath, sc.Secret, sc.SessionName)
+	opts := session.Options{
+		Secure:   sc.CookieSecure,
+		HTTPOnly: sc.CookieHTTPOnly,
+		SameSite: sessionSameSite(sc.CookieSameSite),
+		MaxAge:   sc.CookieMaxAge,
+		Path:     "/",
 	}
-	return session.NewCookieStore(sc.Secret, sc.SessionName)
+	if sc.Driver == "filesystem" {
+		return session.NewFilesystemStore(sc.FilesystemPath, sc.Secret, sc.SessionName, opts)
+	}
+	return session.NewCookieStore(sc.Secret, sc.SessionName, opts)
+}
+
+// sessionSameSite maps the config string (lax|strict|none, "" → lax)
+// onto http.SameSite. "none" only works with Secure=true — browsers
+// reject SameSite=None cookies on plain HTTP.
+func sessionSameSite(v string) http.SameSite {
+	switch v {
+	case "strict":
+		return http.SameSiteStrictMode
+	case "none":
+		return http.SameSiteNoneMode
+	default:
+		return http.SameSiteLaxMode
+	}
 }

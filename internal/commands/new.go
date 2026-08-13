@@ -1,15 +1,19 @@
 package commands
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
@@ -26,6 +30,7 @@ type newResult struct {
 	ModulePath string `json:"module_path"`
 	GraphQL    bool   `json:"graphql"`
 	DBDriver   string `json:"db_driver"`
+	Layout     string `json:"layout"`
 	Success    bool   `json:"success"`
 	Error      string `json:"error,omitempty"`
 }
@@ -38,6 +43,107 @@ type ProjectData struct {
 	ModulePath       string // Go module path: "github.com/myorg/myapp"
 	GraphQL          bool   // true when --graphql flag is passed
 	DBDriver         string // "postgres" | "mysql" | "sqlite" | "sqlserver" | "clickhouse"
+	Layout           string // "layered" | "feature"
+}
+
+// scaffoldGoVersion is the Go language version every generated project
+// declares. It is the toolkit's stated support floor, deliberately decoupled
+// from whatever toolchain the developer running `gofasta new` happens to have.
+//
+// Keep in sync with:
+//   - internal/skeleton/project/dot-go-version
+//   - the `go` directive in this repo's go.mod
+const scaffoldGoVersion = "1.25.0"
+
+// Tool dependency versions, pinned rather than tracked at @latest.
+//
+// Two reasons the versions are pinned:
+//
+//  1. Reproducibility — two developers running `gofasta new` weeks apart get
+//     identical tool versions in go.mod.
+//
+//  2. The Go floor. A tool dependency lives in the generated project's go.mod,
+//     so ITS `go` directive raises the project's. air v1.67.2 moved to
+//     `go 1.26.0`, which silently bumped every new scaffold from 1.25.0 to
+//     1.26.0 and broke the project's own `make lint`: golangci-lint is itself
+//     a go1.25 module, so the pinned binary refuses to load a config targeting
+//     a newer language version. Pinning air to v1.67.1 — the last release
+//     declaring go 1.25 — keeps the floor where scaffoldGoVersion says it is.
+//
+// When bumping any of these, re-run `make integration`: it scaffolds a project
+// and runs that project's full preflight, which is what catches a version whose
+// `go` directive exceeds scaffoldGoVersion.
+const (
+	toolVersionGqlgen      = "v0.17.94"
+	toolVersionWire        = "v0.7.0"
+	toolVersionAir         = "v1.67.1" // last release declaring go 1.25 — see above
+	toolVersionSwag        = "v1.16.6"
+	toolVersionHTTPSwagger = "v2.0.2"
+	toolVersionChi         = "v5.3.1"
+	// toolVersionGofasta pins the gofasta library release scaffolds are
+	// generated against — the version this CLI's templates were written
+	// for and its integration suite verified. Previously @latest, which
+	// meant a library release could change behavior under every new
+	// scaffold before the CLI had been tested against it. Bump in
+	// lockstep with library releases, then re-run `make integration`.
+	toolVersionGofasta = "v0.1.10"
+)
+
+// goDirectivePattern extracts the `go` directive from a go.mod file.
+var goDirectivePattern = regexp.MustCompile(`(?m)^go\s+(\S+)\s*$`)
+
+// readGoDirective returns the `go` version declared in the go.mod at path, or
+// "" when the file cannot be read or carries no directive.
+func readGoDirective(path string) string {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	m := goDirectivePattern.FindSubmatch(content)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// verifyGoFloor checks that installing the tool dependencies did not raise the
+// generated project's Go language version above the declared floor.
+//
+// This is the guard for the failure mode described on the tool version block:
+// `go get` silently rewrites the `go` directive upward when a dependency
+// requires a newer language version, and nothing downstream complains until the
+// developer runs the project's own lint — by which point the cause is several
+// steps behind them. Warn rather than abort: the project is already written and
+// otherwise usable, and the developer can pin the offending tool themselves.
+func verifyGoFloor(projectName string) {
+	got := readGoDirective("go.mod")
+	if got == "" || got == scaffoldGoVersion {
+		return
+	}
+	cliout.Blank()
+	cliout.Warn("A tool dependency raised this project's Go version to %s (expected %s).", got, scaffoldGoVersion)
+	cliout.Hint("`make lint` in %s will fail until this is resolved — golangci-lint cannot", projectName)
+	cliout.Hint("lint a module targeting a newer Go version than the linter was built with.")
+	cliout.Hint("Pin the offending tool in go.mod, or upgrade the toolchain and linter together.")
+	cliout.Blank()
+}
+
+// randReadFn is the crypto/rand seam. Production reads real entropy; tests
+// swap it to drive the failure path, which is otherwise unreachable —
+// rand.Read only errors when the OS entropy source is broken. Same pattern as
+// runDevPipelineFn in dev.go.
+var randReadFn = rand.Read
+
+// randomSecret returns a cryptographically-random, URL-safe secret string.
+// Each `gofasta new` mints fresh JWT and session secrets so a generated
+// project is never seeded with the gofasta library's publicly-known placeholder
+// (which pkg/config.ValidateSecrets rejects at boot).
+func randomSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := randReadFn(buf); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 // supportedDrivers is the canonical set of --driver values. The first
@@ -51,6 +157,22 @@ var supportedDrivers = []string{"postgres", "mysql", "sqlite", "sqlserver", "cli
 func isSupportedDriver(v string) bool {
 	for _, d := range supportedDrivers {
 		if d == v {
+			return true
+		}
+	}
+	return false
+}
+
+// supportedLayouts is the canonical set of --layout values. The first
+// entry is the default. Values match what configutil.ReadLayout returns
+// and what layout.ParseKind accepts.
+var supportedLayouts = []string{"layered", "feature"}
+
+// isSupportedLayout reports whether v is one of the canonical layout
+// strings. Used to validate the --layout flag before scaffolding.
+func isSupportedLayout(v string) bool {
+	for _, l := range supportedLayouts {
+		if l == v {
 			return true
 		}
 	}
@@ -85,7 +207,8 @@ What the command does, in order:
   2. Runs ` + "`go mod init`" + ` with the resolved module path
   3. Renders every template file from the embedded skeleton, replacing
      {{.ModulePath}} / {{.ProjectNameLower}} / {{.ProjectNameUpper}}
-  4. Copies .env from the generated .env.example
+  4. Copies .env from the generated .env.example and injects freshly
+     generated JWT/session secrets (into the gitignored .env only)
   5. Runs ` + "`go get`" + ` for github.com/gofastadev/gofasta and the tool deps
      (Wire, Air, swag — and gqlgen if --graphql is set)
   6. Registers those tools via ` + "`go mod edit -tool`" + ` so ` + "`go tool wire`" + ` works
@@ -111,7 +234,14 @@ After the command finishes, ` + "`cd`" + ` into the new directory and run
 				"--driver %q is not supported — valid values: %s",
 				driver, strings.Join(supportedDrivers, ", "))
 		}
-		return runNew(args[0], gql || gqlShort, driver)
+		layoutFlag, _ := cmd.Flags().GetString("layout")
+		layoutFlag = strings.ToLower(strings.TrimSpace(layoutFlag))
+		if !isSupportedLayout(layoutFlag) {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"--layout %q is not supported — valid values: %s",
+				layoutFlag, strings.Join(supportedLayouts, ", "))
+		}
+		return runNew(args[0], gql || gqlShort, driver, layoutFlag)
 	},
 }
 
@@ -121,6 +251,8 @@ func init() {
 	newCmd.Flags().Bool("gql", false, "Shorthand for --graphql")
 	newCmd.Flags().String("driver", "postgres",
 		"Database driver: "+strings.Join(supportedDrivers, "|"))
+	newCmd.Flags().String("layout", "layered",
+		"Project layout: "+strings.Join(supportedLayouts, "|"))
 }
 
 // dotfileRenames maps embedded names to actual dotfile names.
@@ -166,21 +298,24 @@ var osChdir = os.Chdir
 var migrationsFSOverride fs.FS
 
 //nolint:gocognit,gocyclo // linear scaffold pipeline; refactoring would obscure the flow.
-func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr error) {
+func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (resultErr error) {
 	projectDir, projectName, modulePath := resolveProjectPaths(nameOrPath)
 	if driver == "" {
 		driver = "postgres"
 	}
+	if layoutKind == "" {
+		layoutKind = "layered"
+	}
 
-	// In --json mode, redirect stdout to stderr for the duration of
-	// the scaffold so the dozens of decorative `termcolor.Print*` and
-	// `fmt.Print*` calls below — plus the streamed stdout of every
-	// child `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation — go
-	// to stderr. Restore stdout in a deferred closure and emit a
-	// single structured JSON result so agents see one parseable
-	// document on stdout. Safe because runNew is fully sequential
-	// (no goroutines), so swapping the package-level os.Stdout has
-	// no concurrency hazard.
+	// In --json mode, redirect stdout to stderr for the duration of the
+	// scaffold so the streamed stdout of every child
+	// `go mod`/`go get`/`wire`/`gqlgen`/`swag` invocation goes to stderr.
+	// (Decorated progress already routes correctly via cliout; this swap
+	// exists solely to catch child-process stdout that is wired directly to
+	// os.Stdout.) Restore stdout in a deferred closure and emit a single
+	// structured JSON result so agents see one parseable document on stdout.
+	// Safe because runNew is fully sequential (no goroutines), so swapping the
+	// package-level os.Stdout has no concurrency hazard.
 	if cliout.JSON() {
 		savedStdout := os.Stdout
 		os.Stdout = os.Stderr
@@ -193,6 +328,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 				ModulePath: modulePath,
 				GraphQL:    includeGraphQL,
 				DBDriver:   driver,
+				Layout:     layoutKind,
 				Success:    resultErr == nil,
 				Error:      errString(resultErr),
 			}, nil)
@@ -200,7 +336,16 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	}
 
 	if _, err := os.Stat(projectDir); err == nil {
-		return fmt.Errorf("directory %q already exists", projectDir)
+		return clierr.Newf(clierr.CodeProjectDirExists, "directory %q already exists", projectDir)
+	}
+
+	jwtSecret, err := randomSecret()
+	if err != nil {
+		return clierr.Wrap(clierr.CodeInternal, err, "generating JWT secret")
+	}
+	sessionSecret, err := randomSecret()
+	if err != nil {
+		return clierr.Wrap(clierr.CodeInternal, err, "generating session secret")
 	}
 
 	data := ProjectData{
@@ -210,12 +355,13 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 		// .env.example, CI workflows, and the generated LoadConfig wrapper. Shell variable names only allow
 		// [A-Z0-9_], so we strip anything else (dashes, dots, etc.) —
 		// otherwise a project named "my-app" would produce invalid env
-		// vars like "MY-APP_DATABASE_HOST" and the framework would never
+		// vars like "MY-APP_DATABASE_HOST" and the config loader would never
 		// read them.
 		ProjectNameUpper: envVarSafeUpper(projectName),
 		ModulePath:       modulePath,
 		GraphQL:          includeGraphQL,
 		DBDriver:         driver,
+		Layout:           layoutKind,
 	}
 
 	cliout.Header("🚀 Creating new gofasta project: %s", projectName)
@@ -226,6 +372,21 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		return err
 	}
+	// From here on WE created the directory, so a failure must not
+	// strand a half-rendered scaffold: the dir-exists check above would
+	// then block every retry with a directory the user never asked for.
+	// Registered before the chdir defer below (LIFO) so removal runs
+	// after the working directory has moved back out of projectDir.
+	defer func() {
+		if resultErr == nil {
+			return
+		}
+		if rmErr := os.RemoveAll(projectDir); rmErr != nil {
+			cliout.Warn("Could not clean up partial project directory %s/: %v — remove it manually before retrying", projectDir, rmErr)
+			return
+		}
+		cliout.Info("Removed partial project directory %s/ — fix the cause above and re-run `gofasta new %s`", projectDir, projectName)
+	}()
 
 	// Change into the new directory
 	origDir, _ := os.Getwd()
@@ -246,8 +407,8 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	// developer's local toolchain. Best-effort: if this fails, the scaffold
 	// still works, it just ships with the developer's toolchain version
 	// instead of the declared minimum.
-	if err := runCmdSilent("go", "mod", "edit", "-go=1.25.0"); err != nil {
-		cliout.Warn("Could not normalise go directive to 1.25.0 (generated go.mod may pin a higher version): %v", err)
+	if err := runCmdSilent("go", "mod", "edit", "-go="+scaffoldGoVersion); err != nil {
+		cliout.Warn("Could not normalise go directive to %s (generated go.mod may pin a higher version): %v", scaffoldGoVersion, err)
 	}
 
 	// Walk embedded skeleton and generate files
@@ -256,7 +417,7 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	if projectFS == nil {
 		projectFS = skeleton.ProjectFS
 	}
-	err := fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
+	err = fs.WalkDir(projectFS, "project", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -322,6 +483,25 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 			output = content
 		}
 
+		// --layout=feature: route per-resource files through the
+		// featurize transformer and emit them at app/<snake>/ paths
+		// instead of the layered locations. Cross-cutting files
+		// (container.go, wire.go, index.routes.go) get a separate
+		// transform that adjusts imports + symbol references to
+		// reference the per-feature packages.
+		if data.Layout == "feature" {
+			rerouted, transformed, ferr := featurizeFile(outputPath, output, data.ModulePath, starterResources())
+			if ferr != nil {
+				return ferr
+			}
+			outputPath = rerouted
+			output = transformed
+			// Ensure new parent directory exists after potential reroute.
+			if dir := filepath.Dir(outputPath); dir != "." {
+				_ = os.MkdirAll(dir, 0o755)
+			}
+		}
+
 		cliout.Path(outputPath)
 		return os.WriteFile(outputPath, output, 0o644)
 	})
@@ -337,9 +517,21 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 		return fmt.Errorf("copying %s foundational migrations: %w", driver, err)
 	}
 
-	// Copy .env from .env.example
+	// Copy .env from .env.example, injecting the generated secrets into
+	// the copy only. The committed .env.example ships the assignments
+	// blank so no signing key ever reaches version control; .env is
+	// gitignored and is where the real values live (compose interpolates
+	// it, and `gofasta dev/serve/seed/migrate` load it before spawning).
 	if envExample, err := os.ReadFile(".env.example"); err == nil {
-		_ = os.WriteFile(".env", envExample, 0o644)
+		envContent := string(envExample)
+		envContent = strings.Replace(envContent,
+			data.ProjectNameUpper+"_AUTH_JWT_SECRET=\n",
+			data.ProjectNameUpper+"_AUTH_JWT_SECRET="+jwtSecret+"\n", 1)
+		envContent = strings.Replace(envContent,
+			data.ProjectNameUpper+"_SESSION_SECRET=\n",
+			data.ProjectNameUpper+"_SESSION_SECRET="+sessionSecret+"\n", 1)
+		// 0600: the file now carries live signing keys.
+		_ = os.WriteFile(".env", []byte(envContent), 0o600)
 		cliout.Path(".env")
 	}
 
@@ -354,18 +546,16 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	// project is usable.
 	cliout.Blank()
 	cliout.Step("📦 Installing gofasta library...")
-	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@latest"); err != nil {
+	if err := runCmdSilent("go", "get", "github.com/gofastadev/gofasta@"+toolVersionGofasta); err != nil {
 		// Print the longform hint to the user then return a short,
 		// punctuation-clean error that satisfies ST1005.
 		cliout.Warn("gofasta library install failed. Common causes:")
 		cliout.Plainln("  • sum.golang.org hasn't yet indexed a freshly-published release")
-		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`, or\n", projectName)
-		cliout.Plainln("    → run `go get github.com/gofastadev/gofasta@latest` inside the")
-		cliout.Plainln("      generated project to retry after the sum DB catches up.")
+		cliout.Plain("    → wait 5-30 minutes and re-run `gofasta new %s`\n", projectName)
 		cliout.Plainln("  • your network blocks the Go module proxy or github.com.")
 		cliout.Plainln("  • a corporate proxy requires GOPROXY / GOSUMDB overrides.")
 		cliout.Blank()
-		return fmt.Errorf("failed to install github.com/gofastadev/gofasta: %w", err)
+		return clierr.Wrap(clierr.CodeGofastaInstall, err, "failed to install github.com/gofastadev/gofasta")
 	}
 
 	// Install cobra for project commands
@@ -373,16 +563,17 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 		cliout.Warn("Could not install cobra")
 	}
 
-	// Add tool dependencies
+	// Add tool dependencies. Versions are pinned — see the tool version block
+	// for why @latest is not used here.
 	cliout.Step("📦 Installing tool dependencies...")
 	if includeGraphQL {
-		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@latest")
+		_ = runCmdSilent("go", "get", "github.com/99designs/gqlgen@"+toolVersionGqlgen)
 	}
-	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@latest")
-	_ = runCmdSilent("go", "get", "github.com/air-verse/air@latest")
-	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@latest")
-	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@latest")
-	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@latest")
+	_ = runCmdSilent("go", "get", "github.com/google/wire/cmd/wire@"+toolVersionWire)
+	_ = runCmdSilent("go", "get", "github.com/air-verse/air@"+toolVersionAir)
+	_ = runCmdSilent("go", "get", "github.com/swaggo/swag/cmd/swag@"+toolVersionSwag)
+	_ = runCmdSilent("go", "get", "github.com/swaggo/http-swagger/v2@"+toolVersionHTTPSwagger)
+	_ = runCmdSilent("go", "get", "github.com/go-chi/chi/v5@"+toolVersionChi)
 	// Register as Go tools
 	if includeGraphQL {
 		_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/99designs/gqlgen")
@@ -394,6 +585,10 @@ func runNew(nameOrPath string, includeGraphQL bool, driver string) (resultErr er
 	// Tidy
 	cliout.Step("📦 Running go mod tidy...")
 	_ = runCmdSilent("go", "mod", "tidy")
+
+	// Tidy resolves the final module graph, so this is the first point where
+	// the effective Go floor is known.
+	verifyGoFloor(projectName)
 
 	// Generate code
 	cliout.Blank()
@@ -496,6 +691,19 @@ func printGetStarted(projectName string) {
 	}
 	cliout.Blank()
 
+	// --- Security posture ---------------------------------------------------
+	cliout.Header("Security — before exposing this API:")
+	cliout.Blank()
+	cliout.Warn("Scaffolded routes ship UNPROTECTED — every endpoint (including")
+	cliout.Warn("user create/update/delete) is publicly callable until you add auth:")
+	cliout.Blank()
+	cliout.Plain("  %-72s %s\n",
+		termcolor.CBold(`gofasta g middleware PUT /users/{id} 'auth.JWTAuth(jwtSvc), auth.RequireRole("admin")'`),
+		termcolor.CDim("# protect a route"))
+	cliout.Plain("  %s\n", termcolor.CDim("  RequireRole reads claims that JWTAuth extracts — always chain both, JWTAuth first."))
+	cliout.Plain("  %s\n", termcolor.CDim("  Auth guide: https://gofasta.dev/docs/guides/authentication"))
+	cliout.Blank()
+
 	// --- Make shortcuts (thin wrappers over the gofasta commands above) ---
 	cliout.Header("Also available as Make targets:")
 	cliout.Blank()
@@ -587,4 +795,169 @@ func runCmdSilent(name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// starterResources is the list of resources the User starter scaffold
+// produces. Only one — "User" — today. When the scaffold ships a
+// multi-resource starter, extend this slice.
+func starterResources() []featurize.Resource {
+	return []featurize.Resource{
+		{Name: "User", Snake: "user", Plural: "Users"},
+	}
+}
+
+// featurizeFile re-routes and transforms one already-rendered template
+// file when `--layout=feature` is active. Returns:
+//
+//	rerouted   — new output path (== outputPath when no reroute needed)
+//	transformed— possibly-rewritten content (== output when no transform)
+//	err        — non-nil if the transform fails
+//
+// Three categories of files:
+//
+//  1. Per-resource: app/models/<s>.model.go, app/services/<s>.service.go,
+//     etc. — re-routed to app/<s>/* and content collapsed via
+//     featurize.TransformPerResource.
+//
+//  2. Cross-cutting per-layout: app/di/container.go, app/di/wire.go,
+//     app/rest/routes/index.routes.go — stay at their paths, but
+//     content rewritten to reference per-feature packages.
+//
+//  3. Shared infra that exists in `app/services/` but isn't a resource
+//     file: `password_generator.go` — moved into the feature package
+//     it serves (currently `app/user/`).
+//
+// Files that match none of these pass through unchanged (they're shared
+// infra that lives in the same place in both layouts).
+//
+//nolint:gocognit,gocyclo // dispatch over 5 distinct file categories — splitting into helpers would just move the conditional tree without reducing branches.
+func featurizeFile(outputPath string, content []byte, mod string, resources []featurize.Resource) (rerouted string, transformed []byte, err error) {
+	// Category 1: per-resource reroute + featurize.
+	for _, r := range resources {
+		for _, pair := range featurize.PerResourceMapping(r.Snake) {
+			if outputPath == pair.Layered {
+				out, terr := featurize.TransformPerResource(content, featurize.Options{
+					ModulePath: mod,
+					Resource:   r,
+				})
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return pair.Feature, out, nil
+			}
+		}
+	}
+
+	// Category 3: password_generator.go follows the user feature (only
+	// consumer today). Move into app/user/ with the package rewritten.
+	if outputPath == "app/services/password_generator.go" {
+		out, terr := featurize.TransformPerResource(content, featurize.Options{
+			ModulePath: mod,
+			Resource:   featurize.Resource{Name: "User", Snake: "user", Plural: "Users"},
+		})
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return "app/user/password_generator.go", out, nil
+	}
+
+	// Category 2: cross-cutting per-layout files.
+	switch outputPath {
+	case "app/di/container.go":
+		out, terr := featurize.TransformContainer(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/di/wire.go":
+		out, terr := featurize.TransformWire(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/rest/routes/index.routes.go":
+		out, terr := featurize.TransformIndexRoutes(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	case "app/di/providers/core.go":
+		out, terr := featurize.TransformCoreProviders(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
+	// Mock files in testutil/mocks/ — reroute the import block to
+	// the per-feature package. Match by filename suffix so future
+	// per-feature mocks (Order, Product, etc.) get the same treatment.
+	if strings.HasPrefix(outputPath, "testutil/mocks/") &&
+		(strings.HasSuffix(outputPath, "_repository_mock.go") ||
+			strings.HasSuffix(outputPath, "_service_mock.go")) {
+		base := filepath.Base(outputPath)
+		// extract <snake> from "<snake>_repository_mock.go" / "<snake>_service_mock.go"
+		snake := strings.TrimSuffix(base, "_repository_mock.go")
+		snake = strings.TrimSuffix(snake, "_service_mock.go")
+		for _, r := range resources {
+			if r.Snake == snake {
+				out, terr := featurize.TransformMock(content, mod, r)
+				if terr != nil {
+					return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+				}
+				return outputPath, out, nil
+			}
+		}
+	}
+
+	// Shared relocations — files that just move path with no source
+	// rewrites (e.g. app/dtos/aliases.go → app/shared/dtos/aliases.go).
+	for _, pair := range featurize.SharedRelocations() {
+		if outputPath == pair.Layered {
+			return pair.Feature, content, nil
+		}
+	}
+
+	// GraphQL resolver files stay in app/graphql/resolvers/ (gqlgen owns
+	// the directory) but reference the moved per-resource symbols and the
+	// relocated shared dtos package. EVERY .go file in the directory gets
+	// the full re-qualification — matching by prefix, not by name, so a
+	// project's own resolver files are covered too (the historical
+	// hardcoded user.resolvers.go case missed every other file).
+	if strings.HasPrefix(outputPath, "app/graphql/resolvers/") && strings.HasSuffix(outputPath, ".go") {
+		out, terr := featurize.TransformGraphQL(content, mod, resources)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
+	// gqlgen.yml follows the dtos relocation: model.filename and autobind
+	// point at app/shared/dtos plus the per-resource feature packages, so
+	// the `go tool gqlgen generate` step of `new` emits code that
+	// compiles against the feature layout.
+	if outputPath == "gqlgen.yml" {
+		return outputPath, featurize.RewriteGqlgenConfig(content, mod, resources), nil
+	}
+
+	// Shared infra files that stay in their layered location but
+	// reference the relocated shared dtos package. Only their import
+	// path needs flipping — no other source rewrite.
+	switch outputPath {
+	case "app/validators/app_validator.go",
+		"app/rest/controllers/validator.go":
+		out, terr := featurize.FixDtosImportPath(content, mod)
+		if terr != nil {
+			return outputPath, content, fmt.Errorf("featurize %s: %w", outputPath, terr)
+		}
+		return outputPath, out, nil
+	}
+
+	// Per-resource validator files stay in app/validators/ as-is.
+	// The user.validators.go template only references gorm + validator
+	// + slog (no per-resource types), so no transformation needed.
+	// If a future per-resource validator references the feature
+	// package, add a transformer case here.
+
+	return outputPath, content, nil
 }

@@ -10,18 +10,22 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MiddlewareData is the resolved input.
 type MiddlewareData struct {
 	HTTPMethod string // "GET" | "POST" | ...
 	Path       string // chi-style path
-	Middleware string // expression: "auth.RequireRole(\"admin\")" or "middleware.Logger"
+	// Middleware is the literal Go expression spliced into .With(...).
+	// Role checks need the full chain: "auth.JWTAuth(jwtSvc),
+	// auth.RequireRole(\"admin\")" — RequireRole alone 401s every
+	// request because only JWTAuth puts claims into the context.
+	Middleware string
 	RoutesFile string // optional override; default scans every *.routes.go
 	RoutesDir  string // default app/rest/routes
 }
@@ -36,7 +40,7 @@ func GenMiddleware(d MiddlewareData) error {
 	d = middlewareDataDefaults(d)
 	if d.HTTPMethod == "" || d.Path == "" || d.Middleware == "" {
 		return clierr.New(clierr.CodeInvalidName,
-			"<METHOD> <path> <middleware> all required (e.g. POST /orders/{id}/archive auth.RequireRole(\"admin\"))")
+			"<METHOD> <path> <middleware> all required (e.g. POST /orders/{id}/archive 'auth.JWTAuth(jwtSvc), auth.RequireRole(\"admin\")')")
 	}
 
 	// Locate the routes file holding this route.
@@ -67,13 +71,16 @@ func GenMiddleware(d MiddlewareData) error {
 
 func middlewareDataDefaults(d MiddlewareData) MiddlewareData {
 	if d.RoutesDir == "" {
-		d.RoutesDir = filepath.Join("app", "rest", "routes")
+		d.RoutesDir = layout.Detect().RoutesDir()
 	}
 	return d
 }
 
-// findRouteFile walks routes/*.routes.go looking for the file that
-// registers <METHOD> <path>. Returns the matching path + hit flag.
+// findRouteFile scans the layout's route files looking for the one that
+// registers <METHOD> <path>. Returns the matching path + hit flag. The set of
+// files is layout-aware (layered: app/rest/routes/*.routes.go; feature: the
+// route index plus each app/<resource>/routes.go), so `g middleware` works in
+// both layouts.
 func findRouteFile(d MiddlewareData) (path string, hit bool, err error) {
 	if d.RoutesFile != "" {
 		body, err := os.ReadFile(d.RoutesFile)
@@ -82,22 +89,13 @@ func findRouteFile(d MiddlewareData) (path string, hit bool, err error) {
 		}
 		return d.RoutesFile, endpointRouteRegistered(body, d.HTTPMethod, d.Path), nil
 	}
-	entries, err := os.ReadDir(d.RoutesDir)
-	if err != nil {
-		return "", false, clierr.Wrap(clierr.CodeRoutesDirMissing, err, "reading "+d.RoutesDir)
-	}
-	for _, e := range entries {
-		name := e.Name()
-		if !strings.HasSuffix(name, ".routes.go") {
-			continue
-		}
-		path := filepath.Join(d.RoutesDir, name)
-		body, err := os.ReadFile(path)
+	for _, file := range layout.Detect().RouteFiles() {
+		body, err := os.ReadFile(file)
 		if err != nil {
 			continue
 		}
 		if endpointRouteRegistered(body, d.HTTPMethod, d.Path) {
-			return path, true, nil
+			return file, true, nil
 		}
 	}
 	return "", false, nil

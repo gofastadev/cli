@@ -33,10 +33,13 @@ type {{.Name}}RepositoryInterface interface {
 	List(ctx context.Context, filter map[string]any, page, limit int, sort string) ([]*models.{{.Name}}, int64, error)
 	FindByID(ctx context.Context, id uuid.UUID) (*models.{{.Name}}, error)
 	Create(ctx context.Context, entity *models.{{.Name}}) error
-	// UpdateIfVersionMatches runs an atomic UPDATE with the version check
-	// folded into WHERE, then refetches in the same transaction. Returns
-	// (entity, 1, nil) on success; (nil, 0, nil) when the version didn't
-	// match (caller maps to Err{{.Name}}VersionConflict).
+	// UpdateIfVersionMatches runs the optimistic-locking update as
+	// read-classify-write in one transaction, then refetches. Returns
+	// (entity, 1, nil) on success; (nil, 0, nil) when the row exists
+	// but the version didn't match (caller maps to
+	// Err{{.Name}}VersionConflict); (nil, 0, gorm.ErrRecordNotFound)
+	// when no live row has that id (caller maps to Err{{.Name}}NotFound).
+	// expectedVersion == -1 means "match any version" (If-Match: *).
 	UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.{{.Name}}, int64, error)
 	// SoftDeleteIfDeletable archives the row and returns the soft-
 	// deleted record (Stripe-pattern 200 response). Distinguishes:

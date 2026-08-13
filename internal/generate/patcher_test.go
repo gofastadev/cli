@@ -3,11 +3,55 @@ package generate
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/gofastadev/cli/internal/layout"
 )
+
+func TestPatchContainer_ReadError(t *testing.T) {
+	setupTempProject(t)
+	// No app/di/container.go — ReadFile returns an error immediately.
+	err := PatchContainer(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchWireFile_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchWireFile(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchResolver_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchResolver(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchRouteConfig_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchRouteConfig(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestPatchServeFile_ReadError(t *testing.T) {
+	setupTempProject(t)
+	err := PatchServeFile(sampleScaffoldData())
+	assert.Error(t, err)
+}
+
+func TestGenResolver_DelegatesToPatchResolver(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	// GenResolver calls PatchResolver, which reads app/graphql/resolvers/resolver.go.
+	// Without the file, it should return an error.
+	err := GenResolver(d)
+	assert.Error(t, err)
+}
 
 func TestPatchContainer_AddsFields(t *testing.T) {
 	setupTempProject(t)
@@ -139,6 +183,7 @@ import (
 
 type Resolver struct {
 	UserService svcInterfaces.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 // NewResolver creates a new resolver.
@@ -164,6 +209,7 @@ func TestPatchResolver_SkipsIfExists(t *testing.T) {
 
 type Resolver struct {
 	ProductService svcInterfaces.ProductServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 func NewResolver(productService svcInterfaces.ProductServiceInterface) *Resolver {
@@ -183,6 +229,7 @@ func TestPatchResolver_ErrorNoSignature(t *testing.T) {
 	resolverContent := `package resolvers
 
 type Resolver struct {
+	// gofasta:scaffold:resolver-fields
 }
 
 func CreateResolver() *Resolver {
@@ -276,12 +323,6 @@ func TestPatchServeFile_SkipsIfExists(t *testing.T) {
 	err := PatchServeFile(d)
 	require.NoError(t, err)
 }
-
-// Marker-missing error branches — each patcher refuses to mutate a file
-// whose scaffold marker has been stripped. Seed a target file that's
-// otherwise well-formed but missing the marker comment the patcher
-// anchors on, then assert the patcher returns an actionable error
-// pointing at the missing marker.
 
 func TestPatchContainer_MarkerMissing(t *testing.T) {
 	setupTempProject(t)
@@ -408,10 +449,578 @@ func TestPatchResolver_NoConstructor(t *testing.T) {
 	path := filepath.Join(dir, "resolver.go")
 	require.NoError(t, os.WriteFile(path, []byte(
 		"package resolvers\n"+
-			"type Resolver struct{}\n\n"+
+			"type Resolver struct {\n\t// gofasta:scaffold:resolver-fields\n}\n\n"+
 			"// NewResolver\n"+
 			"func NewResolver() *Resolver { /* no return &Resolver here */ }\n"), 0o644))
 	err := PatchResolver(sampleScaffoldData())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Resolver constructor body")
+}
+
+const featureContainer = `package di
+
+import (
+	"github.com/testorg/testapp/app/graphql/resolvers"
+)
+
+type Container struct {
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`
+
+func TestPatchContainer_FeatureAddsAliasedImportAndFields(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	d.IncludeController = true
+	writeTestFile(t, "app/di/container.go", featureContainer)
+
+	require.NoError(t, PatchContainer(d))
+
+	content := readTestFile(t, "app/di/container.go")
+	assert.Contains(t, content, `productpkg "github.com/testorg/testapp/app/product"`,
+		"the feature package must be imported before it is referenced")
+	assert.Contains(t, content, "productpkg.ProductRepositoryInterface")
+	assert.Contains(t, content, "productpkg.ProductServiceInterface")
+	assert.Contains(t, content, "*productpkg.ProductController")
+	// The layered qualifiers must not leak into a feature project.
+	assert.NotContains(t, content, "repoInterfaces.")
+	assert.NotContains(t, content, "controllers.ProductController")
+}
+
+func TestPatchContainer_FeatureWithoutController(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	d.IncludeController = false
+	writeTestFile(t, "app/di/container.go", featureContainer)
+
+	require.NoError(t, PatchContainer(d))
+
+	content := readTestFile(t, "app/di/container.go")
+	assert.Contains(t, content, "productpkg.ProductServiceInterface")
+	assert.NotContains(t, content, "ProductController")
+}
+
+// TestPatchContainer_FeatureDoesNotDuplicateImport covers the branch where the
+// alias is already imported — patching a second resource into a container that
+// has been patched before must not add the line twice.
+func TestPatchContainer_FeatureDoesNotDuplicateImport(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/di/container.go", `package di
+
+import (
+	productpkg "github.com/testorg/testapp/app/product"
+	"github.com/testorg/testapp/app/graphql/resolvers"
+)
+
+type Container struct {
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`)
+
+	require.NoError(t, PatchContainer(d))
+
+	content := readTestFile(t, "app/di/container.go")
+	assert.Equal(t, 1, countSubstring(content, `productpkg "github.com/testorg/testapp/app/product"`),
+		"the feature import must be inserted at most once")
+}
+
+// TestPatchContainer_FeatureNoImportBlock covers the error return. Without a
+// closing ")" there is nowhere to put the import, and emitting the field
+// referencing an unimported alias would produce a file that cannot compile —
+// so the patcher refuses rather than writing broken code.
+func TestPatchContainer_FeatureNoImportBlock(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/di/container.go",
+		"package di\n\ntype Container struct {\n\t// gofasta:scaffold:container-fields\n}\n")
+
+	err := PatchContainer(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not locate import block close")
+}
+
+const featureWire = `//go:build wireinject
+
+package di
+
+import (
+	"github.com/google/wire"
+)
+
+func InitializeContainer() (*Container, error) {
+	wire.Build(
+		// gofasta:scaffold:wire-providers
+	)
+	return nil, nil
+}
+`
+
+func TestPatchWireFile_FeatureUsesAliasedProviderSet(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/di/wire.go", featureWire)
+
+	require.NoError(t, PatchWireFile(d))
+
+	content := readTestFile(t, "app/di/wire.go")
+	assert.Contains(t, content, `productpkg "github.com/testorg/testapp/app/product"`)
+	assert.Contains(t, content, "productpkg.ProductSet")
+	assert.NotContains(t, content, "providers.ProductSet",
+		"the layered provider package must not be referenced in a feature project")
+}
+
+func TestPatchWireFile_FeatureSkipsWhenAlreadyWired(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/di/wire.go", `//go:build wireinject
+
+package di
+
+import (
+	productpkg "github.com/testorg/testapp/app/product"
+	"github.com/google/wire"
+)
+
+func InitializeContainer() (*Container, error) {
+	wire.Build(
+		productpkg.ProductSet,
+		// gofasta:scaffold:wire-providers
+	)
+	return nil, nil
+}
+`)
+	before := readTestFile(t, "app/di/wire.go")
+
+	require.NoError(t, PatchWireFile(d))
+
+	assert.Equal(t, before, readTestFile(t, "app/di/wire.go"),
+		"re-wiring an already-wired resource must leave the file untouched")
+}
+
+func TestPatchWireFile_FeatureNoImportBlock(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/di/wire.go",
+		"package di\n\nfunc InitializeContainer() {\n\t\t// gofasta:scaffold:wire-providers\n}\n")
+
+	err := PatchWireFile(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not locate import block close")
+}
+
+const featureRouteIndex = `package routes
+
+import (
+	"github.com/gofastadev/gofasta/pkg/health"
+)
+
+type RouteConfig struct {
+	// gofasta:scaffold:route-config-fields
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
+	r := chi.NewRouter()
+	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
+	r.Mount("/api/v1", api)
+	return r
+}
+`
+
+// TestPatchRouteConfig_FeatureDelegatesToFeaturePackage pins the routing
+// difference: layered calls a package-level <Name>Routes function, while
+// feature calls RegisterRoutes on the resource's own package.
+func TestPatchRouteConfig_FeatureDelegatesToFeaturePackage(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/rest/routes/index.routes.go", featureRouteIndex)
+
+	require.NoError(t, PatchRouteConfig(d))
+
+	content := readTestFile(t, "app/rest/routes/index.routes.go")
+	assert.Contains(t, content, `productpkg "github.com/testorg/testapp/app/product"`)
+	assert.Contains(t, content, "ProductController *productpkg.ProductController")
+	assert.Contains(t, content, "productpkg.RegisterRoutes(api, config.ProductController)")
+	assert.NotContains(t, content, "ProductRoutes(api",
+		"the layered route-function form must not appear in a feature project")
+}
+
+func TestPatchRouteConfig_FeatureDoesNotDuplicateImport(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/rest/routes/index.routes.go", `package routes
+
+import (
+	productpkg "github.com/testorg/testapp/app/product"
+	"github.com/gofastadev/gofasta/pkg/health"
+)
+
+type RouteConfig struct {
+	// gofasta:scaffold:route-config-fields
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) *chi.Mux {
+	api := chi.NewRouter()
+	// gofasta:scaffold:route-registrations
+	return nil
+}
+`)
+
+	require.NoError(t, PatchRouteConfig(d))
+
+	content := readTestFile(t, "app/rest/routes/index.routes.go")
+	assert.Equal(t, 1, countSubstring(content, `productpkg "github.com/testorg/testapp/app/product"`))
+}
+
+func TestPatchRouteConfig_FeatureNoImportBlock(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "app/rest/routes/index.routes.go",
+		"package routes\n\ntype RouteConfig struct {\n\t// gofasta:scaffold:route-config-fields\n}\n\n"+
+			"func InitAPIRoutes() {\n\t// gofasta:scaffold:route-registrations\n}\n")
+
+	err := PatchRouteConfig(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not locate import block close")
+}
+
+// countSubstring reports how many times sub occurs in s.
+func countSubstring(s, sub string) int {
+	n := 0
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			n++
+		}
+	}
+	return n
+}
+
+func TestPatchContainer_DryRunRecordsPatch(t *testing.T) {
+	resetPlannerState(t)
+	dir := t.TempDir()
+	orig, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	require.NoError(t, os.Chdir(dir))
+
+	// Minimal container.go that PatchContainer will accept.
+	require.NoError(t, os.MkdirAll("app/di", 0755))
+	container := `package di
+
+import (
+	svcInterfaces "example.com/app/app/services/interfaces"
+	"example.com/app/app/rest/controllers"
+)
+
+type Container struct {
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`
+	require.NoError(t, os.WriteFile("app/di/container.go", []byte(container), 0644))
+
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	d := ScaffoldData{Name: "Product", ModulePath: "example.com/app", IncludeController: true}
+	require.NoError(t, PatchContainer(d))
+
+	// File on disk must be unchanged.
+	after, err := os.ReadFile("app/di/container.go")
+	require.NoError(t, err)
+	assert.Equal(t, container, string(after), "dry-run must not modify files on disk")
+
+	plan := Plan()
+	require.Len(t, plan, 1)
+	assert.Equal(t, "patch", plan[0].Kind)
+	assert.Equal(t, "app/di/container.go", plan[0].Path)
+	assert.Contains(t, plan[0].Detail, "Product")
+}
+
+// TestPatchResolver_FeatureUsesFeaturePackage covers the feature-layout
+// branch: the injected service field references the per-feature package
+// (with its alias import inserted), not svcInterfaces — the layered
+// qualifier would not compile because app/services/interfaces is empty
+// in a feature project.
+func TestPatchResolver_FeatureUsesFeaturePackage(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+
+	// A feature-shaped resolver.go: the User feature is already wired
+	// via its alias import (the shape `gofasta new --graphql
+	// --layout=feature` and `refactor feature` both produce).
+	resolverContent := `package resolvers
+
+import (
+	userpkg "github.com/testorg/testapp/app/user"
+	"github.com/testorg/testapp/app/validators"
+)
+
+type Resolver struct {
+	UserService userpkg.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
+	Validator   *validators.AppValidator
+}
+
+// NewResolver creates a new resolver.
+func NewResolver(userService userpkg.UserServiceInterface, validator *validators.AppValidator) *Resolver {
+	return &Resolver{UserService: userService, Validator: validator}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	require.NoError(t, PatchResolver(d))
+
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Contains(t, content, `productpkg "github.com/testorg/testapp/app/product"`,
+		"the feature package must be imported before it is referenced")
+	assert.Contains(t, content, "ProductService productpkg.ProductServiceInterface")
+	assert.Contains(t, content, "productService productpkg.ProductServiceInterface")
+	assert.Contains(t, content, "ProductService: productService")
+	assert.NotContains(t, content, "svcInterfaces.ProductServiceInterface",
+		"the layered qualifier must not leak into a feature project")
+}
+
+// TestPatchResolver_FeatureDoesNotDuplicateImport covers re-patching: a
+// resolver already carrying the alias import must not gain it twice.
+func TestPatchResolver_FeatureDoesNotDuplicateImport(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+
+	resolverContent := `package resolvers
+
+import (
+	productpkg "github.com/testorg/testapp/app/product"
+)
+
+type Resolver struct {
+	OtherService productpkg.OtherServiceInterface
+	// gofasta:scaffold:resolver-fields
+}
+
+// NewResolver creates a new resolver.
+func NewResolver(otherService productpkg.OtherServiceInterface) *Resolver {
+	return &Resolver{OtherService: otherService}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	require.NoError(t, PatchResolver(d))
+
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	assert.Equal(t, 1,
+		strings.Count(content, `productpkg "github.com/testorg/testapp/app/product"`),
+		"the alias import must appear exactly once")
+}
+
+// TestPatchGqlgenAutobind covers the autobind patcher: feature layout
+// adds the new resource's package to gqlgen.yml; layered layout and
+// already-covered resources are no-ops.
+func TestPatchGqlgenAutobind_FeatureAddsEntry(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	writeTestFile(t, "gqlgen.yml", `autobind:
+ - "github.com/testorg/testapp/app/shared/dtos"
+ - "github.com/testorg/testapp/app/user"
+`)
+
+	require.NoError(t, PatchGqlgenAutobind(d))
+
+	content := readTestFile(t, "gqlgen.yml")
+	assert.Contains(t, content, ` - "github.com/testorg/testapp/app/product"`)
+}
+
+func TestPatchGqlgenAutobind_SkipsWhenAlreadyPresent(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	original := `autobind:
+ - "github.com/testorg/testapp/app/shared/dtos"
+ - "github.com/testorg/testapp/app/product"
+`
+	writeTestFile(t, "gqlgen.yml", original)
+
+	require.NoError(t, PatchGqlgenAutobind(d))
+	assert.Equal(t, original, readTestFile(t, "gqlgen.yml"))
+}
+
+func TestPatchGqlgenAutobind_LayeredIsNoop(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData() // layered layout
+	// Deliberately NO gqlgen.yml on disk: the layered branch must
+	// return before reading the file.
+	require.NoError(t, PatchGqlgenAutobind(d))
+}
+
+func TestPatchGqlgenAutobind_ReadError(t *testing.T) {
+	setupTempProject(t)
+	d := featureScaffoldData()
+	// Feature layout but no gqlgen.yml → the read error surfaces (the
+	// step only runs for --graphql scaffolds, where the file exists).
+	require.Error(t, PatchGqlgenAutobind(d))
+}
+
+// TestPatchContainer_PrefixCollisionStillPatches — the regression the
+// identifierPresent helper exists for: a container already wired for
+// SubProduct must NOT satisfy the idempotency check for Product
+// (Contains("SubProductService", "ProductService") is true; the word-
+// boundary match is not).
+func TestPatchContainer_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData() // Name: Product
+
+	writeTestFile(t, "app/di/container.go", `package di
+
+type Container struct {
+	SubProductRepo       repoInterfaces.SubProductRepositoryInterface
+	SubProductService    svcInterfaces.SubProductServiceInterface
+	SubProductController *controllers.SubProductController
+	// gofasta:scaffold:container-fields
+	Resolver *resolvers.Resolver
+}
+`)
+
+	require.NoError(t, PatchContainer(d))
+	content := readTestFile(t, "app/di/container.go")
+	require.Regexp(t, `\bProductService\s+svcInterfaces\.ProductServiceInterface`, content,
+		"Product must be wired even though SubProduct contains its name")
+}
+
+// TestPatchResolver_PrefixCollisionStillPatches — same contract for the
+// resolver struct.
+func TestPatchResolver_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", `package resolvers
+
+type Resolver struct {
+	SubProductService svcInterfaces.SubProductServiceInterface
+	// gofasta:scaffold:resolver-fields
+	Validator         *validators.AppValidator
+}
+
+// NewResolver creates a new Resolver.
+func NewResolver(subProductService svcInterfaces.SubProductServiceInterface, validator *validators.AppValidator) *Resolver {
+	return &Resolver{SubProductService: subProductService, Validator: validator}
+}
+`)
+
+	require.NoError(t, PatchResolver(d))
+	content := readTestFile(t, "app/graphql/resolvers/resolver.go")
+	require.Regexp(t, `\bProductService\s+svcInterfaces\.ProductServiceInterface`, content)
+}
+
+// TestPatchRouteConfig_PrefixCollisionStillPatches and the serve.go
+// twin: an existing SubProductController must not skip Product.
+func TestPatchRouteConfig_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "app/rest/routes/index.routes.go", `package routes
+
+type RouteConfig struct {
+	SubProductController *controllers.SubProductController
+	// gofasta:scaffold:route-config-fields
+	HealthController *health.Controller
+}
+
+func InitAPIRoutes(config *RouteConfig) {
+	SubProductRoutes(api, config.SubProductController)
+	// gofasta:scaffold:route-registrations
+}
+`)
+
+	require.NoError(t, PatchRouteConfig(d))
+	content := readTestFile(t, "app/rest/routes/index.routes.go")
+	require.Regexp(t, `\bProductController\s+\*controllers\.ProductController`, content)
+	require.Contains(t, content, "ProductRoutes(api, config.ProductController)")
+}
+
+func TestPatchServeFile_PrefixCollisionStillPatches(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	writeTestFile(t, "cmd/serve.go", `package cmd
+
+func run() {
+	apiRouter := routes.InitAPIRoutes(&routes.RouteConfig{
+		SubProductController: container.SubProductController,
+		// gofasta:scaffold:routeconfig-init
+	})
+}
+`)
+
+	require.NoError(t, PatchServeFile(d))
+	content := readTestFile(t, "cmd/serve.go")
+	require.Regexp(t, `\bProductController:\s+container\.ProductController,`, content)
+}
+
+// TestGeneratorMarkers — the refactor preflight consumes this map to
+// warn when a scaffold marker was hand-deleted; every anchored file must
+// be present with its exact marker string(s).
+func TestGeneratorMarkers(t *testing.T) {
+	m := GeneratorMarkers()
+	require.Equal(t, map[string][]string{
+		"app/di/container.go":               {"// gofasta:scaffold:container-fields"},
+		"app/di/wire.go":                    {"// gofasta:scaffold:wire-providers"},
+		"app/rest/routes/index.routes.go":   {"// gofasta:scaffold:route-config-fields", "// gofasta:scaffold:route-registrations"},
+		"cmd/serve.go":                      {"// gofasta:scaffold:routeconfig-init"},
+		"app/graphql/resolvers/resolver.go": {"// gofasta:scaffold:resolver-fields"},
+	}, m)
+}
+
+// TestPatchResolver_MissingMarkerErrors — a resolver.go without the
+// scaffold marker is out of sync with the patcher; hard error, no write.
+func TestPatchResolver_MissingMarkerErrors(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+
+	resolverContent := `package resolvers
+
+import (
+	svcInterfaces "github.com/testorg/testapp/app/services/interfaces"
+)
+
+type Resolver struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+
+func NewResolver(userService svcInterfaces.UserServiceInterface) *Resolver {
+	return &Resolver{UserService: userService}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	err := PatchResolver(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "gofasta:scaffold:resolver-fields")
+}
+
+// TestPatchResolver_FeatureImportBlockClose — feature layout needs the
+// per-feature alias import; a resolver file without an import block to
+// splice it into is a hard error.
+func TestPatchResolver_FeatureImportBlockClose(t *testing.T) {
+	setupTempProject(t)
+	d := sampleScaffoldData()
+	d.Layout = layout.For(layout.Feature)
+
+	resolverContent := `package resolvers
+
+type Resolver struct {
+	// gofasta:scaffold:resolver-fields
+}
+
+func NewResolver() *Resolver {
+	return &Resolver{}
+}
+`
+	writeTestFile(t, "app/graphql/resolvers/resolver.go", resolverContent)
+
+	err := PatchResolver(d)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "import block close")
 }

@@ -1,8 +1,19 @@
 # {{.ProjectName}} Environment Configuration
 # Copy this to .env and customize as needed.
-# All values have sensible defaults — you can start with an empty .env file.
+# All values except the secrets below have sensible defaults.
 
-# Server
+# Secrets — REQUIRED. The app refuses to boot while these are empty.
+# `gofasta new` wrote randomly-generated values into .env (which is
+# gitignored); this committed example deliberately ships them blank.
+# Rotate with: openssl rand -base64 48
+{{.ProjectNameUpper}}_AUTH_JWT_SECRET=
+{{.ProjectNameUpper}}_SESSION_SECRET=
+
+# Server — PORT drives compose's host-side port mappings and is
+# mirrored into the container as {{.ProjectNameUpper}}_SERVER_PORT (the
+# variable the app's config loader actually reads). For a host-run app,
+# `gofasta dev --port <n>` sets both; setting
+# {{.ProjectNameUpper}}_SERVER_PORT here directly also works.
 PORT=8080
 
 # Database — shared between host-run and docker-run flows.

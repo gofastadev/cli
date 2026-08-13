@@ -30,6 +30,9 @@ import (
 
 func setup{{.Name}}RepoTest(t *testing.T) (*gorm.DB, *repositories.{{.Name}}Repository) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("repository tests provision a database via testdb (Docker for container drivers); skipped in -short mode")
+	}
 	db := testdb.SetupTestDB(t)
 	require.NoError(t, db.AutoMigrate(&models.{{.Name}}{}))
 	return db, repositories.New{{.Name}}Repository(db)
@@ -38,7 +41,9 @@ func setup{{.Name}}RepoTest(t *testing.T) (*gorm.DB, *repositories.{{.Name}}Repo
 func make{{.Name}}(t *testing.T, db *gorm.DB) *models.{{.Name}} {
 	t.Helper()
 	e := &models.{{.Name}}{
-		// TODO: populate any non-null fields specific to {{.Name}}
+{{- range .Fields}}
+		{{.Name}}: {{.SampleLiteral}},
+{{- end}}
 	}
 	require.NoError(t, db.Create(e).Error)
 	return e
@@ -118,6 +123,38 @@ func Test{{.Name}}Repository_UpdateIfVersionMatches_VersionConflict(t *testing.T
 	require.NoError(t, err)
 	assert.Equal(t, int64(0), affected)
 	assert.Nil(t, updated)
+}
+
+// Test{{.Name}}Repository_UpdateIfVersionMatches_NotFound — unknown id
+// → gorm.ErrRecordNotFound (the service maps this to 404, distinct
+// from the version-conflict 412).
+func Test{{.Name}}Repository_UpdateIfVersionMatches_NotFound(t *testing.T) {
+	_, repo := setup{{.Name}}RepoTest(t)
+
+	updated, _, err := repo.UpdateIfVersionMatches(
+		context.Background(), uuid.New(), 1,
+		map[string]any{"is_active": false},
+	)
+	require.Error(t, err)
+	assert.Nil(t, updated)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+// Test{{.Name}}Repository_UpdateIfVersionMatches_MatchAny — the -1
+// sentinel (If-Match: *) skips the version precondition but still
+// bumps record_version from the current value.
+func Test{{.Name}}Repository_UpdateIfVersionMatches_MatchAny(t *testing.T) {
+	db, repo := setup{{.Name}}RepoTest(t)
+	e := make{{.Name}}(t, db)
+
+	updated, affected, err := repo.UpdateIfVersionMatches(
+		context.Background(), e.ID, -1,
+		map[string]any{"is_active": false},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected)
+	require.NotNil(t, updated)
+	assert.Equal(t, e.RecordVersion+1, updated.RecordVersion)
 }
 
 // Test{{.Name}}Repository_UpdateIfVersionMatches_AtomicityUnderRace —
@@ -218,7 +255,7 @@ func Test{{.Name}}Repository_SoftDeleteIfDeletable_NotFound(t *testing.T) {
 func Test{{.Name}}Repository_List_PaginationAndSort(t *testing.T) {
 	db, repo := setup{{.Name}}RepoTest(t)
 	for i := 0; i < 4; i++ {
-		require.NoError(t, db.Create(&models.{{.Name}}{}).Error)
+		make{{.Name}}(t, db)
 		time.Sleep(2 * time.Millisecond) // deterministic created_at order
 	}
 
@@ -230,5 +267,34 @@ func Test{{.Name}}Repository_List_PaginationAndSort(t *testing.T) {
 	got, _, err = repo.List(context.Background(), nil, 2, 2, "created_at ASC")
 	require.NoError(t, err)
 	require.Len(t, got, 2)
+}
+
+// Test{{.Name}}Repository_List_FilterApplied — a REAL filter assertion:
+// the filter map must actually narrow the result set (this pins the
+// allowlisted WHERE-building path end to end, not just that List runs).
+func Test{{.Name}}Repository_List_FilterApplied(t *testing.T) {
+	db, repo := setup{{.Name}}RepoTest(t)
+	kept := make{{.Name}}(t, db)
+	excluded := make{{.Name}}(t, db)
+	require.NoError(t, db.Model(excluded).Update("is_active", false).Error)
+
+	got, total, err := repo.List(context.Background(),
+		map[string]any{"is_active": true}, 1, 10, "created_at ASC")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, got, 1)
+	assert.Equal(t, kept.ID, got[0].ID)
+}
+
+// Test{{.Name}}Repository_List_UnknownFilterColumnIgnored — keys not in
+// the allowlist are dropped, never interpolated into SQL.
+func Test{{.Name}}Repository_List_UnknownFilterColumnIgnored(t *testing.T) {
+	db, repo := setup{{.Name}}RepoTest(t)
+	make{{.Name}}(t, db)
+
+	_, total, err := repo.List(context.Background(),
+		map[string]any{"no_such_column; DROP TABLE {{.PluralSnake}}": "x"}, 1, 10, "created_at ASC")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total, "unknown filter keys must be ignored, not error or match nothing")
 }
 `

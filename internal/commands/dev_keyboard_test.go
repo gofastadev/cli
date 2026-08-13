@@ -2,35 +2,126 @@ package commands
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/term"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for dev_keyboard.go.
-//
-// startKeyboardListener depends on x/term primitives that need a real
-// PTY — fine in production, hostile to `go test`. We stub via the
-// package-level seams (termIsTerminalFn / termSetCbreakFn / termRestoreFn)
-// so the listener's branching logic can be exercised without a TTY.
-// ─────────────────────────────────────────────────────────────────────
-
-// fakeKeyboardReader is the in-memory stdin used by the listener tests.
-// It satisfies keyboardReader by wrapping a bytes.Reader plus a fake fd.
-type fakeKeyboardReader struct {
-	*bytes.Reader
-	fd uintptr
+func TestHandleTraceDetail_Forwards(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/traces/t1": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"trace_id":"t1"}`))
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/trace/t1", nil)
+	rec := httptest.NewRecorder()
+	srv.handleTraceDetail(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"trace_id":"t1"`)
 }
 
-func (f *fakeKeyboardReader) Fd() uintptr { return f.fd }
+func TestHandleTraceDetail_UpstreamMiss(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/traces/missing": func(w http.ResponseWriter, _ *http.Request) {
+			http.NotFound(w, nil)
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/trace/missing", nil)
+	rec := httptest.NewRecorder()
+	srv.handleTraceDetail(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+}
+
+func TestHandleLogs_ForwardsQueryParams(t *testing.T) {
+	var seenQuery string
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/logs": func(w http.ResponseWriter, r *http.Request) {
+			seenQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`[]`))
+		},
+	})
+	req := httptest.NewRequest(http.MethodGet, "/api/logs?trace_id=abc&level=WARN", nil)
+	rec := httptest.NewRecorder()
+	srv.handleLogs(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, seenQuery, "trace_id=abc")
+	assert.Contains(t, seenQuery, "level=WARN")
+}
+
+func TestHandleExplain_ProxiesToApp(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/explain": func(w http.ResponseWriter, r *http.Request) {
+			require.Equal(t, http.MethodPost, r.Method)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"plan":"Seq Scan"}`))
+		},
+	})
+	body := `{"sql":"SELECT 1"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/explain", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	srv.handleExplain(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.Contains(t, rec.Body.String(), "Seq Scan")
+}
+
+func TestHandleExplain_PropagatesUpstreamStatus(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/explain": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte("only SELECT"))
+		},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/explain", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	srv.handleExplain(rec, req)
+	assert.Equal(t, http.StatusBadRequest, rec.Code)
+}
+
+func TestScrapeDevtools_HappyPath(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode([]scrapedRequest{{Method: "GET"}})
+		},
+		"/debug/sql": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("[]"))
+		},
+		"/debug/traces": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/errors": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":  func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+	})
+	got := srv.scrapeDevtools(true)
+	assert.Len(t, got.requests, 1)
+	assert.Equal(t, 1, got.goroutines.Total)
+}
+
+// TestRefresh_PopulatesHealthFromUpstream — refresh() probes /health
+// and records the result.
+func TestRefresh_PopulatesHealthFromUpstream(t *testing.T) {
+	srv := withUpstreamApp(t, map[string]http.HandlerFunc{
+		"/health":  func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) },
+		"/metrics": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("# metrics\n")) },
+	})
+	srv.refresh()
+	assert.Equal(t, "ok", srv.state.Health)
+}
 
 func newFakeKB(input string) *fakeKeyboardReader {
 	return &fakeKeyboardReader{Reader: bytes.NewReader([]byte(input)), fd: 99}
@@ -149,87 +240,10 @@ func TestReadKeyboardLoop_MixedSequence(t *testing.T) {
 	assert.Equal(t, []keyboardSignal{sigKeyboardRestart, sigKeyboardQuit}, got)
 }
 
-// TestRunInDockerSupervisor_RestartSignal — when the user presses R
-// (sigKeyboardRestart on the channel), the supervisor calls teardown
-// with reason "restart" and returns true so the outer pipeline loop
-// re-runs from scratch.
-//
-// Subtle: `exited` MUST NOT be ready at the moment the outer select
-// fires, or Go's random-case selection can pick it over keySignals
-// (50% failure rate). We deliver to it from a delayed goroutine so
-// the outer select definitively picks keySignals first; the inner
-// `<-exited` (after interruptCompose) then unblocks on the delivery.
-func TestRunInDockerSupervisor_RestartSignal(t *testing.T) {
-	keyCh := make(chan keyboardSignal, 1)
-	exited := make(chan error, 1)
-	keyCh <- sigKeyboardRestart
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		exited <- nil
-	}()
-	var called string
-	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
-	assert.True(t, restart)
-	assert.Equal(t, "restart", called)
-}
-
-// TestRunInDockerSupervisor_QuitSignal — Q press is the same teardown
-// path as Ctrl+C; restart=false so the outer loop exits.
-// Same delayed-exited pattern as the Restart test (see comment above).
-func TestRunInDockerSupervisor_QuitSignal(t *testing.T) {
-	keyCh := make(chan keyboardSignal, 1)
-	exited := make(chan error, 1)
-	keyCh <- sigKeyboardQuit
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		exited <- nil
-	}()
-	var called string
-	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
-	assert.False(t, restart)
-	assert.Equal(t, "quit", called)
-}
-
-// TestRunInDockerSupervisor_ChildExits — if the foreground compose
-// process exits on its own (app crashed, container died), the
-// supervisor must call teardown("app-exited") and return false so the
-// outer loop exits cleanly. This is the path the user gets when the
-// app inside the container crashes.
-func TestRunInDockerSupervisor_ChildExits(t *testing.T) {
-	keyCh := make(chan keyboardSignal, 1)
-	exited := make(chan error, 1)
-	exited <- nil // child exited cleanly
-	var called string
-	restart := runInDockerSupervisor(nil, exited, func(r string) { called = r }, keyCh)
-	assert.False(t, restart)
-	assert.Equal(t, "app-exited", called)
-}
-
 // printKeyboardBanner — invoked once to register coverage on the
 // banner-print function (no other test calls it directly).
 func TestPrintKeyboardBanner_DoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, func() { printKeyboardBanner() })
-}
-
-// startKeyboardListener happy path — all seams succeed, listener
-// launches and returns a non-nil signals channel + active=true. The
-// race detector requires cancelableStdinReader.Close to serialize with
-// in-flight Read (see the readMu inside cancelableStdinReader).
-func TestStartKeyboardListener_HappyPath(t *testing.T) {
-	withTerminalStubs(t, true, nil)
-	origNew := newCancelableStdinReaderFn
-	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
-		r, w, err := os.Pipe()
-		require.NoError(t, err)
-		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
-	}
-	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
-
-	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
-	require.True(t, active)
-	assert.NotNil(t, signals)
-	cancel()
-	cancel() // idempotent
 }
 
 // startKeyboardListener — newCancelableStdinReaderFn returns an error;
@@ -335,4 +349,367 @@ func (g *gateReader) Read(p []byte) (int, error) {
 		g.afterRead()
 	}
 	return 1, nil
+}
+
+// TestMenu_NonTTY_SkipsAndCancels — non-TTY environments skip the
+// menu entirely and return menuCancel after printing actionable text.
+// CI scripts get a deterministic exit code; humans without a terminal
+// get the same info they'd see in the prompt.
+func TestMenu_NonTTY_SkipsAndCancels(t *testing.T) {
+	forceTTY(t, false)
+	out := captureMenuOutput(t)
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "Non-interactive shell detected")
+	assert.Contains(t, out.String(), "database unreachable")
+}
+
+// TestMenu_Cancel — user picks [4]; menuCancel returned, no retries.
+func TestMenu_Cancel(t *testing.T) {
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t, "4")
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+}
+
+// TestMenu_RunWithoutDB — user picks [3]; menuRunWithoutDB returned.
+// The framework's degraded-mode ProvideDB makes this honest now
+// (in-memory SQLite stub keeps the app alive).
+func TestMenu_RunWithoutDB(t *testing.T) {
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t, "3")
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuRunWithoutDB, got)
+}
+
+// TestMenu_InvalidChoiceLoops — bogus input loops back to the menu.
+// We feed an invalid char first, then "4" to cancel. The output
+// should mention "invalid choice".
+func TestMenu_InvalidChoiceLoops(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "z", "4")
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "invalid choice")
+}
+
+// TestMenu_EnterConnString_EmptyInputLoops — blank line is rejected,
+// menu loops. Verifies the input-validation guard.
+func TestMenu_EnterConnString_EmptyInputLoops(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "1", "", "4")
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "empty input")
+}
+
+// TestMenu_EnterConnString_InvalidURL — typo'd URL fails to parse;
+// menu prints the validation error and loops.
+func TestMenu_EnterConnString_InvalidURL(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "1", "not-a-url", "4")
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "URL must include scheme")
+}
+
+// TestMenu_EnterConnString_ProbeStillFails — override applied but
+// reprobe still reports unreachable; menu loops back. User then
+// cancels via [4].
+func TestMenu_EnterConnString_ProbeStillFails(t *testing.T) {
+	forceTTY(t, true)
+	_ = captureMenuOutput(t)
+	pipeStdin(t, "1", "postgres://u:p@h:9/d", "4")
+	// menuActionEnterConnString sets the full database connection set —
+	// driver/host/port/user/password/name — under every prefix from
+	// configutil.EnvPrefixes(). Unsetting only HOST left PORT=9 (etc.)
+	// in the process env, where downstream tests like
+	// TestProbeDatabase_OK saw "localhost:9" instead of "localhost:5432"
+	// even when their config.yaml said otherwise.
+	t.Cleanup(func() {
+		_ = unsetenv("GOFASTA_DATABASE_DRIVER")
+		_ = unsetenv("GOFASTA_DATABASE_HOST")
+		_ = unsetenv("GOFASTA_DATABASE_PORT")
+		_ = unsetenv("GOFASTA_DATABASE_USER")
+		_ = unsetenv("GOFASTA_DATABASE_PASSWORD")
+		_ = unsetenv("GOFASTA_DATABASE_NAME")
+	})
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "h:9", Reason: "still refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+}
+
+// TestMenu_StartInDocker_DockerUnavailable — docker not on PATH;
+// the option fails with an install hint, menu loops.
+func TestMenu_StartInDocker_DockerUnavailable(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "2", "4")
+	stubComposeAvailable(t, false)
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "Docker")
+}
+
+// TestMenu_StartInDocker_StartFails — compose up fails; menu loops.
+func TestMenu_StartInDocker_StartFails(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "2", "4")
+	stubComposeAvailable(t, true)
+	stubStartServices(t, errors.New("pull failed"))
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "compose up")
+}
+
+// TestMenu_StartInDocker_HealthFails — services start but never go
+// healthy; menu loops.
+func TestMenu_StartInDocker_HealthFails(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "2", "4")
+	stubComposeAvailable(t, true)
+	stubStartServices(t, nil)
+	stubWaitHealthy(t, errors.New("timeout"))
+	stubReprobe(t, []probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "database", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "healthy")
+}
+
+// TestMenu_StartInDocker_NoFailingServices — option [2] errors
+// cleanly when the only failing dep doesn't map to a compose service
+// (e.g. user has hand-edited their config.yaml and probe reports
+// something we can't help with). The action surfaces the error, the
+// menu loops, and we drop to cancel.
+func TestMenu_StartInDocker_NoFailingServices(t *testing.T) {
+	forceTTY(t, true)
+	out := captureMenuOutput(t)
+	pipeStdin(t, "2", "4")
+	stubComposeAvailable(t, true)
+	// Reprobe keeps the same unknown-dep as unreachable so the menu
+	// stays in the failure loop until the user hits [4].
+	stubReprobe(t, []probeResult{
+		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	got, _ := runPreflightMenu([]probeResult{
+		{Dep: "unknown-dep", Status: probeUnreachable, Endpoint: "x:1", Reason: "refused"},
+	})
+	assert.Equal(t, menuCancel, got)
+	assert.Contains(t, out.String(), "no failing services")
+}
+
+// TestParseServicesInList — parseServicesList trims spaces and
+// filters empty entries.
+func TestParseServicesInList(t *testing.T) {
+	got := parseServicesList("a, b , c")
+	assert.Equal(t, 3, len(got))
+	for _, s := range got {
+		assert.NotEmpty(t, s)
+	}
+	// Silence unused imports if nothing else pulls strconv.
+	_ = strconv.Itoa(len(got))
+}
+
+// TestNewRestEndpoint_RequiresResourceName — the build function must
+// reject invocations with no positional argument.
+func TestNewRestEndpoint_RequiresResourceName(t *testing.T) {
+	wf := findWorkflow("new-rest-endpoint")
+	require.NotNil(t, wf)
+	_, err := wf.Build(nil)
+	require.Error(t, err)
+	ce, ok := clierr.As(err)
+	require.True(t, ok)
+	assert.Equal(t, string(clierr.CodeInvalidName), ce.Code)
+}
+
+// TestHelperProcess is not a real test — it's the fake subprocess invoked by
+// fakeExecCommand. If any argument is "--version" and GOFASTA_FAKE_VERSION is
+// set, it prints a Cobra-style version line and exits 0. Otherwise it exits
+// with GOFASTA_FAKE_EXIT.
+func TestHelperProcess(t *testing.T) {
+	if os.Getenv("GOFASTA_WANT_HELPER_PROCESS") != "1" {
+		return
+	}
+	// Find the `--` separator: everything after it is the fake command + args.
+	args := os.Args
+	for i, a := range args {
+		if a == "--" {
+			args = args[i+1:]
+			break
+		}
+	}
+	if v := os.Getenv(fakeEnvVersion); v != "" {
+		for _, a := range args {
+			if a == "--version" {
+				fmt.Fprintf(os.Stdout, "gofasta version %s\n", v)
+				os.Exit(0)
+			}
+		}
+	}
+	// GOFASTA_FAKE_STDOUT lets callers script the child's stdout —
+	// used by dev_services_success_test.go to simulate the JSON that
+	// `docker compose config` / `docker compose ps` emit.
+	if stdout := os.Getenv("GOFASTA_FAKE_STDOUT"); stdout != "" {
+		fmt.Fprint(os.Stdout, stdout)
+	}
+	// GOFASTA_FAKE_SIGNAL makes the child die BY a signal instead of
+	// exiting — the only way a parent's ProcessState reports
+	// Signaled()==true. Used to test runAir's signaled-shutdown
+	// classification against real wait-status semantics rather than a
+	// stubbed isSignaledExit.
+	if os.Getenv("GOFASTA_FAKE_SIGNAL") == "1" {
+		// killSelfWithSIGINT is defined per-platform (unix real, other
+		// stub) — syscall.Kill does not exist on windows and would break
+		// compiling this package's tests there.
+		killSelfWithSIGINT()
+		// Give the signal time to be delivered; unreachable normally.
+		time.Sleep(5 * time.Second)
+	}
+	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
+	os.Exit(code)
+}
+
+func TestRunMigration_NoConfig(t *testing.T) {
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	// loadConfig returns a koanf instance even without config.yaml,
+	// so BuildMigrationURL returns a postgres URL with defaults
+	err := runMigration("up")
+	// Should fail because migrate binary is not available
+	assert.Error(t, err)
+}
+
+func TestRunMigration_EmptyURL(t *testing.T) {
+	// runMigration checks for empty URL and returns an error
+	// This is hard to trigger since loadConfig always returns a koanf instance
+	// but we can test the direction parameter
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(origDir) })
+	os.Chdir(dir)
+
+	err := runMigration("down")
+	assert.Error(t, err)
+}
+
+// TestRunMigration_EmptyURLCoverage — no config.yaml and no env vars
+// so configutil's defaults produce a non-empty URL; the empty-URL
+// branch is defensive. This test exercises the code path without a
+// seam override.
+func TestRunMigration_EmptyURLCoverage(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	_ = runMigration("up")
+}
+
+// TestRunMigration_LoadsDotEnv — regression for the bug where
+// `gofasta migrate up` produced `postgres://:@localhost:5432/?sslmode=disable`
+// because it never read .env. The scaffold's config.yaml intentionally
+// omits user/password/name; .env supplies them via the project-prefixed
+// env vars (e.g. ACME_DATABASE_USER). This test pins that runMigration
+// loads .env BEFORE building the URL so the credentials show up in the
+// -database argument passed to `migrate`.
+func TestRunMigration_LoadsDotEnv(t *testing.T) {
+	chdirTemp(t)
+	// Scaffold-style config.yaml: no user/pass/name, host/port from yaml.
+	scaffoldConfig := `database:
+  driver: postgres
+  host: localhost
+  port: "5432"
+  sslmode: disable
+`
+	require.NoError(t, os.WriteFile("config.yaml", []byte(scaffoldConfig), 0o644))
+	require.NoError(t, os.WriteFile("go.mod",
+		[]byte("module github.com/acme/myapp\n\ngo 1.25.0\n"), 0o644))
+
+	// .env that overrides everything the way the dev workflow expects:
+	// host port (5433) maps to container 5432, plus the credentials.
+	dotenv := `MYAPP_DATABASE_USER=myappuser
+MYAPP_DATABASE_PASSWORD=myapppass
+MYAPP_DATABASE_NAME=myapp_dev
+MYAPP_DATABASE_HOST=localhost
+MYAPP_DATABASE_PORT=5433
+`
+	require.NoError(t, os.WriteFile(".env", []byte(dotenv), 0o644))
+	// Clean up the env vars that loadDotEnv will os.Setenv so this
+	// test doesn't leak state into sibling tests.
+	for _, k := range []string{
+		"MYAPP_DATABASE_USER", "MYAPP_DATABASE_PASSWORD",
+		"MYAPP_DATABASE_NAME", "MYAPP_DATABASE_HOST", "MYAPP_DATABASE_PORT",
+	} {
+		t.Cleanup(func() { _ = os.Unsetenv(k) })
+	}
+
+	// Capture the exact args passed to the migrate shell-out so we can
+	// assert the URL contains the .env values.
+	var captured []string
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		captured = append([]string{name}, args...)
+		return fakeExecCommand(0)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	require.NoError(t, runMigration("up"))
+
+	// Find the -database arg (it follows -database in the captured slice).
+	var dbURL string
+	for i, a := range captured {
+		if a == "-database" && i+1 < len(captured) {
+			dbURL = captured[i+1]
+			break
+		}
+	}
+	require.NotEmpty(t, dbURL, "migrate should be invoked with -database <url>")
+	assert.Contains(t, dbURL, "myappuser:myapppass@", "URL must include .env credentials, not empty :@")
+	assert.Contains(t, dbURL, "localhost:5433", "URL must use the .env host:port mapping")
+	assert.Contains(t, dbURL, "/myapp_dev", "URL must include .env database name")
+	assert.NotContains(t, dbURL, "://:@", "URL must not have empty user/password")
+	assert.NotContains(t, dbURL, "/?sslmode", "URL must include database name before query")
 }

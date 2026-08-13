@@ -5,6 +5,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Managed-block markers identify a region of .env that the dev
@@ -198,8 +199,11 @@ func mergeIntoDotEnv(path string, kvs map[string]string) error {
 		body += "\n"
 	}
 
+	// .env holds secrets (DB credentials, API keys). Write the temp file
+	// 0o600 so the final .env (which inherits the temp file's mode across
+	// the rename) is owner read/write only.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(body), 0o644); err != nil {
+	if err := os.WriteFile(tmp, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("write tmp: %w", err)
 	}
 	if err := osRenameFn(tmp, path); err != nil {
@@ -305,16 +309,27 @@ func stripManagedBlockMarkers(content string) string {
 
 // quoteDotEnvValue wraps the value in double quotes ONLY if it
 // contains whitespace or characters a naive .env parser would
-// mis-interpret (#, =, quotes, newlines). The vast majority of values
-// (URLs, hostnames, passwords with letters/digits) need no quoting —
-// keeping them unquoted makes the file easy to scan by eye.
+// mis-interpret (#, quotes, backslashes, newlines). The vast majority
+// of values (URLs, hostnames, passwords with letters/digits) need no
+// quoting — keeping them unquoted makes the file easy to scan by eye.
+//
+// Inside the quotes, `\`, `"`, and newlines are escaped as `\\`, `\"`,
+// and `\n`/`\r` — and parseDotEnvLine UNESCAPES the same set, so a
+// save/load cycle is lossless. (The writer used to escape while the
+// reader never unescaped: a password containing a quote gained one
+// backslash per cycle, and an embedded newline split the entry across
+// two lines, dropping the tail.)
 func quoteDotEnvValue(v string) string {
 	if v == "" {
 		return ""
 	}
 	needsQuote := false
 	for _, r := range v {
-		if r == ' ' || r == '\t' || r == '#' || r == '"' || r == '\n' || r == '\r' {
+		// unicode.IsSpace (not a hand-kept char list): parseDotEnvLine
+		// TrimSpaces unquoted values, so EVERY whitespace rune — \v, \f,
+		// NBSP, not just space/tab/newline — corrupts an unquoted value
+		// at the edges. Found by FuzzDotEnvRoundTrip with "\v".
+		if unicode.IsSpace(r) || r == '#' || r == '"' || r == '\'' || r == '\\' {
 			needsQuote = true
 			break
 		}
@@ -322,11 +337,39 @@ func quoteDotEnvValue(v string) string {
 	if !needsQuote {
 		return v
 	}
-	// Escape embedded double quotes; we use double quotes for the
-	// wrapper because they're more common in env-file conventions.
 	v = strings.ReplaceAll(v, `\`, `\\`)
 	v = strings.ReplaceAll(v, `"`, `\"`)
+	v = strings.ReplaceAll(v, "\n", `\n`)
+	v = strings.ReplaceAll(v, "\r", `\r`)
 	return `"` + v + `"`
+}
+
+// unescapeDotEnvValue reverses quoteDotEnvValue's escaping for a
+// double-quoted value. Unknown escape sequences keep the backslash so
+// hand-written files that never intended escaping stay untouched.
+func unescapeDotEnvValue(v string) string {
+	var b strings.Builder
+	b.Grow(len(v))
+	for i := 0; i < len(v); i++ {
+		if v[i] != '\\' || i+1 >= len(v) {
+			b.WriteByte(v[i])
+			continue
+		}
+		switch v[i+1] {
+		case '\\', '"':
+			b.WriteByte(v[i+1])
+			i++
+		case 'n':
+			b.WriteByte('\n')
+			i++
+		case 'r':
+			b.WriteByte('\r')
+			i++
+		default:
+			b.WriteByte(v[i])
+		}
+	}
+	return b.String()
 }
 
 // parseDotEnvLine returns (key, val, ok) for a single .env-style line.
@@ -352,10 +395,17 @@ func parseDotEnvLine(raw string) (key, val string, ok bool) {
 	}
 	key = strings.TrimSpace(line[:eq])
 	val = strings.TrimSpace(line[eq+1:])
-	// Strip matching surrounding quotes so `FOO="bar baz"` becomes `bar baz`.
+	// Strip matching surrounding quotes so `FOO="bar baz"` becomes
+	// `bar baz`. Double-quoted values additionally unescape the
+	// sequences quoteDotEnvValue emits (`\\`, `\"`, `\n`, `\r`) so a
+	// save/load round-trip is lossless; single-quoted values stay
+	// literal, matching shell conventions.
 	if len(val) >= 2 {
 		first, last := val[0], val[len(val)-1]
-		if (first == '"' && last == '"') || (first == '\'' && last == '\'') {
+		switch {
+		case first == '"' && last == '"':
+			val = unescapeDotEnvValue(val[1 : len(val)-1])
+		case first == '\'' && last == '\'':
 			val = val[1 : len(val)-1]
 		}
 	}

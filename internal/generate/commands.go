@@ -2,10 +2,12 @@ package generate
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/layout"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -89,18 +91,22 @@ func init() {
 	Cmd.AddCommand(methodCmd)
 	methodCmd.Flags().BoolVar(&methodDryRun, "dry-run", false,
 		"Preview the patches without writing")
+	methodCmd.Flags().StringVar(&methodReturns, "returns", "",
+		"Comma-separated return types (default \"error\"), e.g. --returns \"*models.Order, error\"")
+	methodCmd.Flags().BoolVar(&methodNoVerify, "no-verify", false,
+		"Skip the post-generation `go build ./...` check")
 
 	Cmd.AddCommand(fieldCmd)
 	fieldCmd.Flags().BoolVar(&fieldDryRun, "dry-run", false,
 		"Preview the patches + migration without writing")
 	fieldCmd.Flags().BoolVar(&fieldNoDTO, "no-dto", false,
-		"Skip DTO patches (only model + migration are updated)")
+		"Skip DTO/inputs/allowlist/SDL patches (only model + migration are updated)")
 	fieldCmd.Flags().BoolVar(&fieldNoCreate, "no-create", false,
-		"Skip the CreateRequest DTO when --no-dto is not set")
+		"Skip the create shapes (TCreate<R>Dto, Create<R>Input) when --no-dto is not set")
 	fieldCmd.Flags().BoolVar(&fieldNoUpdate, "no-update", false,
-		"Skip the UpdateRequest DTO when --no-dto is not set")
+		"Skip the update shapes (TUpdate<R>Dto/GraphQLInput, Update<R>Patch) when --no-dto is not set")
 	fieldCmd.Flags().BoolVar(&fieldNoResponse, "no-response", false,
-		"Skip the Response DTO when --no-dto is not set")
+		"Skip the response DTO + FromModel when --no-dto is not set")
 
 	Cmd.AddCommand(endpointCmd)
 	endpointCmd.Flags().BoolVar(&endpointDryRun, "dry-run", false,
@@ -109,10 +115,16 @@ func init() {
 		"Override the auto-derived handler name (e.g. --handler=ArchiveOrder)")
 	endpointCmd.Flags().BoolVar(&endpointNoService, "no-service", false,
 		"Skip the service-interface patch (controller + routes only)")
+	endpointCmd.Flags().BoolVar(&endpointNoVerify, "no-verify", false,
+		"Skip the post-generation `go build ./...` check")
 
 	Cmd.AddCommand(repoMethodCmd)
 	repoMethodCmd.Flags().BoolVar(&repoMethodDryRun, "dry-run", false,
 		"Preview the patches without writing")
+	repoMethodCmd.Flags().StringVar(&repoMethodReturns, "returns", "",
+		"Comma-separated return types (default \"error\"), e.g. --returns \"*models.Order, error\"")
+	repoMethodCmd.Flags().BoolVar(&repoMethodNoVerify, "no-verify", false,
+		"Skip the post-generation `go build ./...` check")
 
 	Cmd.AddCommand(middlewareCmd)
 	middlewareCmd.Flags().BoolVar(&middlewareDryRun, "dry-run", false,
@@ -126,10 +138,13 @@ func init() {
 	renameCmd.Flags().BoolVar(&renameApply, "apply", false,
 		"Actually write the rename (default: preview only — show every changed file)")
 
-	// Register --graphql flag on commands that support it
+	// Register --graphql / --no-graphql flags on commands that support
+	// them. GraphQL defaults ON when the project has GraphQL artifacts
+	// (gqlgen.yml / app/graphql/resolvers/) — see resolveGraphQLFlag.
 	for _, cmd := range []*cobra.Command{scaffoldCmd, serviceCmd, controllerCmd} {
-		cmd.Flags().Bool("graphql", false, "Also generate GraphQL schema and wire resolver")
+		cmd.Flags().Bool("graphql", false, "Force GraphQL generation on (default: auto-detected from gqlgen.yml)")
 		cmd.Flags().Bool("gql", false, "Shorthand for --graphql")
+		cmd.Flags().Bool("no-graphql", false, "Skip GraphQL generation even in a GraphQL-enabled project")
 	}
 
 	// Register --swagger flag on commands that produce controllers
@@ -203,7 +218,10 @@ func serviceSteps(d ScaffoldData) []Step {
 		{"Wire provider", GenWireProvider},
 	}
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"GraphQL schema", GenGraphQL})
+		steps = append(steps,
+			Step{"GraphQL schema", GenGraphQL},
+			Step{"GraphQL resolvers", GenResolverFile},
+		)
 	}
 	// Patch
 	steps = append(steps,
@@ -211,7 +229,10 @@ func serviceSteps(d ScaffoldData) []Step {
 		Step{"auto-wire: wire.go", PatchWireFile},
 	)
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
+		steps = append(steps,
+			Step{"auto-wire: resolver", PatchResolver},
+			Step{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
+		)
 	}
 	// Regenerate
 	steps = append(steps, Step{"regenerate Wire", RunWire})
@@ -221,49 +242,12 @@ func serviceSteps(d ScaffoldData) []Step {
 	return steps
 }
 
+// controllerSteps is scaffoldSteps under another name: `g controller`
+// generates the full REST (+optional GraphQL) stack, exactly like
+// `g scaffold`. Kept as a distinct function so the two commands can
+// diverge later without churning their call sites.
 func controllerSteps(d ScaffoldData) []Step {
-	steps := []Step{
-		// Files
-		{"model", GenModel},
-		{"migration", GenMigration},
-		{"repository interface", GenRepoInterface},
-		{"repository", GenRepo},
-		{"repository test", GenRepoTestFile},
-		{"sentinel errors", GenErrors},
-		{"domain inputs", GenInputs},
-		{"domain inputs test", GenInputsTestFile},
-		{"service interface", GenSvcInterface},
-		{"service", GenSvc},
-		{"service test", GenSvcTestFile},
-		{"DTOs", GenDTOs},
-		{"DTOs test", GenDTOsTestFile},
-		{"Wire provider", GenWireProvider},
-		{"controller", GenController},
-		{"controller test", GenControllerTestFile},
-		{"routes", GenRoutes},
-	}
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"GraphQL schema", GenGraphQL})
-	}
-	// Patch
-	steps = append(steps,
-		Step{"auto-wire: container", PatchContainer},
-		Step{"auto-wire: wire.go", PatchWireFile},
-	)
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
-	}
-	//nolint:gocritic // split intentionally around optional resolver step above.
-	steps = append(steps,
-		Step{"auto-wire: route config", PatchRouteConfig},
-		Step{"auto-wire: serve.go", PatchServeFile},
-	)
-	// Regenerate
-	steps = append(steps, Step{"regenerate Wire", RunWire})
-	if d.IncludeGraphQL {
-		steps = append(steps, Step{"regenerate gqlgen", RunGqlgen})
-	}
-	return steps
+	return scaffoldSteps(d)
 }
 
 func scaffoldSteps(d ScaffoldData) []Step {
@@ -288,7 +272,10 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		{"routes", GenRoutes},
 	}
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"GraphQL schema", GenGraphQL})
+		steps = append(steps,
+			Step{"GraphQL schema", GenGraphQL},
+			Step{"GraphQL resolvers", GenResolverFile},
+		)
 	}
 	// Patch
 	steps = append(steps,
@@ -296,7 +283,10 @@ func scaffoldSteps(d ScaffoldData) []Step {
 		Step{"auto-wire: wire.go", PatchWireFile},
 	)
 	if d.IncludeGraphQL {
-		steps = append(steps, Step{"auto-wire: resolver", PatchResolver})
+		steps = append(steps,
+			Step{"auto-wire: resolver", PatchResolver},
+			Step{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
+		)
 	}
 	//nolint:gocritic // split intentionally around optional resolver step above.
 	steps = append(steps,
@@ -317,9 +307,16 @@ func routeSteps() []Step {
 	}
 }
 
+// resolverSteps deliberately does NOT include GenResolverFile:
+// `g resolver` targets existing (possibly hand-written) schemas whose
+// input names may not match the generated DTO shapes, so emitting a
+// full resolver file here could reference DTOs that don't exist. Full
+// resolver bodies come from `g scaffold` / `g service` / `g controller`,
+// which own the schema fragment too.
 func resolverSteps() []Step {
 	return []Step{
 		{"auto-wire: resolver", GenResolver},
+		{"auto-wire: gqlgen autobind", PatchGqlgenAutobind},
 	}
 }
 
@@ -333,14 +330,88 @@ func providerSteps() []Step {
 
 // --- Helpers ---
 
-func buildFromArgs(args []string) ScaffoldData {
-	return BuildScaffoldData(args[0], ParseFields(args[1:]))
+// buildFromArgs validates the raw resource name and every raw field
+// name BEFORE they flow into BuildScaffoldData / ParseFields (and from
+// there into file paths and rendered templates), then builds the
+// ScaffoldData. A name containing `/`, `..`, whitespace, quotes, or a
+// semicolon is rejected with clierr.CodeInvalidName rather than being
+// turned into a traversal / injection payload.
+func buildFromArgs(args []string) (ScaffoldData, error) {
+	if err := validateIdentifier(args[0]); err != nil {
+		return ScaffoldData{}, err
+	}
+	for _, fieldArg := range args[1:] {
+		parts := strings.SplitN(fieldArg, ":", 2)
+		if len(parts) != 2 {
+			// ParseFields silently ignores args without a `name:type`
+			// shape; mirror that here so we don't reject them.
+			continue
+		}
+		if err := validateIdentifier(parts[0]); err != nil {
+			return ScaffoldData{}, err
+		}
+		if err := validateFieldNotBaseColumn(parts[0]); err != nil {
+			return ScaffoldData{}, err
+		}
+	}
+	return BuildScaffoldData(args[0], ParseFields(args[1:])), nil
 }
 
-func hasGraphQLFlag(cmd *cobra.Command) bool {
+// baseModelColumns are the columns models.BaseModelImpl already
+// provides (see gofasta/pkg/models/base.go — that struct is the source
+// of truth; keep this list in step with it). A user field with one of
+// these names would duplicate a struct field via the embedded base
+// (compile error or silent shadowing), duplicate the column in the
+// CREATE TABLE, and duplicate the JSON/GraphQL field.
+var baseModelColumns = map[string]bool{
+	"id": true, "created_at": true, "updated_at": true, "deleted_at": true,
+	"record_version": true, "is_active": true, "is_deletable": true,
+}
+
+// validateFieldNotBaseColumn rejects field names that collide with the
+// embedded BaseModelImpl columns, comparing on the snake form — the
+// column identity ("createdAt", "created_at", and "CreatedAt" all
+// collide with created_at).
+func validateFieldNotBaseColumn(name string) error {
+	if baseModelColumns[toSnakeCase(name)] {
+		return clierr.Newf(clierr.CodeInvalidName,
+			"field %q collides with a column models.BaseModelImpl already provides (id, created_at, updated_at, deleted_at, record_version, is_active, is_deletable) — every resource carries these automatically", name)
+	}
+	return nil
+}
+
+// buildResourceFromArgs is buildFromArgs with the STRICT resource-name
+// rule on args[0] (no hyphens — resources become Go package names and
+// feature-layout import aliases). The scaffold-family commands use
+// this; g job / g task / g email-template keep buildFromArgs so
+// kebab-case names like `cleanup-tokens` stay valid.
+func buildResourceFromArgs(args []string) (ScaffoldData, error) {
+	if err := validateResourceName(args[0]); err != nil {
+		return ScaffoldData{}, err
+	}
+	return buildFromArgs(args)
+}
+
+// resolveGraphQLFlag decides whether the GraphQL steps run for this
+// invocation. Precedence:
+//
+//  1. --no-graphql — explicit opt-out, always wins.
+//  2. --graphql / --gql — explicit opt-in (e.g. first GraphQL resource
+//     in a project that predates gqlgen.yml).
+//  3. Project state — a project with GraphQL artifacts (gqlgen.yml or
+//     app/graphql/resolvers/) gets GraphQL generation by default, the
+//     same way layout detection defaults from project state. Forgetting
+//     the flag used to silently skip schema + resolvers + autobind.
+func resolveGraphQLFlag(cmd *cobra.Command) bool {
+	if noGql, _ := cmd.Flags().GetBool("no-graphql"); noGql {
+		return false
+	}
 	gql, _ := cmd.Flags().GetBool("graphql")
 	gqlShort, _ := cmd.Flags().GetBool("gql")
-	return gql || gqlShort
+	if gql || gqlShort {
+		return true
+	}
+	return layout.HasGraphQLArtifacts()
 }
 
 func hasSwaggerFlag(cmd *cobra.Command) bool {
@@ -379,9 +450,12 @@ Files patched (4 per resource):
   app/rest/routes/index.routes.go
   cmd/serve.go
 
-Runs ` + "`go tool wire`" + ` as the final step. Use --graphql (alias --gql) to
-additionally generate a .gql schema fragment and patch the GraphQL
-resolver — both gqlgen and Wire regeneration then run at the end.
+Runs ` + "`go tool wire`" + ` as the final step. In a GraphQL-enabled project
+(gqlgen.yml present) the GraphQL steps run automatically: a .gql schema
+fragment, a fully-implemented resolver file, and the resolver/autobind
+patches — both gqlgen and Wire regeneration then run at the end. Use
+--graphql (alias --gql) to force them on elsewhere, or --no-graphql to
+skip them.
 
 Field syntax is ` + "`name:type`" + `. Supported types: string, text, int, float,
 bool, uuid, time.
@@ -395,9 +469,16 @@ logic in app/services/<name>.service.go.`,
 	Aliases: []string{"s"},
 	Args:    cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
 		d.IncludeController = true
-		d.IncludeGraphQL = hasGraphQLFlag(cmd)
+		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
 
 		// Dry-run mode swaps disk writes for in-memory plan recording.
@@ -459,23 +540,16 @@ func scaffoldStepsWithoutRegeneration(d ScaffoldData) []Step {
 	return out
 }
 
-// printPlanResult writes the recorded plan to stdout. In --json mode
-// the full []PlannedAction is emitted; otherwise the human table is.
-// Called at the end of a successful dry-run.
-func printPlanResult(cmd *cobra.Command) {
-	// Import cycle avoidance: generate package can't import cliout
-	// directly (cliout is in internal/, generate is in internal/ too
-	// — same level — but importing would cross the dependency graph
-	// that tests rely on). Use Cobra's OutOrStdout + check the --json
-	// flag manually.
-	jsonMode, _ := cmd.Root().PersistentFlags().GetBool("json")
-	w := cmd.OutOrStdout()
-	if jsonMode {
-		enc := jsonEncoder{}
-		enc.WriteTo(w, Plan())
-		return
-	}
-	PrintPlanText(w)
+// printPlanResult writes the recorded plan. In --json mode the full
+// []PlannedAction is emitted as a single-line JSON document; otherwise
+// the human-readable table is printed. Routing (stdout vs the JSON
+// contract) is handled by cliout.Print, which this package already
+// imports for the rest of its output. Called at the end of a
+// successful dry-run.
+func printPlanResult(_ *cobra.Command) {
+	cliout.Print(Plan(), func(w io.Writer) {
+		PrintPlanText(w)
+	})
 }
 
 var modelCmd = &cobra.Command{
@@ -487,7 +561,11 @@ when you only need persistence scaffolding and will write the repository
 and service layers by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), modelSteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, modelSteps())
 	},
 }
 
@@ -504,7 +582,11 @@ Use this when you want persistence + data-access but plan to write your
 own service or expose the repository directly.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), repositorySteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, repositorySteps())
 	},
 }
 
@@ -521,12 +603,21 @@ DTOs, then auto-wire it through the DI container:
   app/di/providers/<name>.go                  — Wire provider set
 
 Also patches app/di/container.go and app/di/wire.go, then regenerates the
-Wire injector. Use --graphql (or --gql) to additionally patch the GraphQL
-resolver with the new service dependency.`,
+Wire injector. In a GraphQL-enabled project (gqlgen.yml present) the
+GraphQL steps run automatically — schema fragment, implemented resolver
+file, resolver/autobind patches; --graphql (or --gql) forces them on
+elsewhere, --no-graphql skips them.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
-		d.IncludeGraphQL = hasGraphQLFlag(cmd)
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		return RunSteps(d, serviceSteps(d))
 	},
 }
@@ -541,16 +632,24 @@ var controllerCmd = &cobra.Command{
   app/rest/routes/<name>.routes.go           — route registration
 
 Patches app/rest/routes/index.routes.go and cmd/serve.go so the new routes
-are mounted on startup, then regenerates Wire. Use --graphql (or --gql) to
-additionally generate a GraphQL schema fragment and resolver wiring. The
+are mounted on startup, then regenerates Wire. In a GraphQL-enabled
+project (gqlgen.yml present) the GraphQL steps run automatically;
+--graphql (or --gql) forces them on elsewhere, --no-graphql skips. The
 only difference from ` + "`gofasta g scaffold`" + ` is that ` + "`scaffold`" + ` is the user-
 facing shortcut and this subcommand is the explicit "up through controller"
 step.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
 		d.IncludeController = true
-		d.IncludeGraphQL = hasGraphQLFlag(cmd)
+		d.IncludeGraphQL = resolveGraphQLFlag(cmd)
+		if d.IncludeGraphQL && len(d.Fields) == 0 {
+			return clierr.Newf(clierr.CodeInvalidName,
+				"GraphQL generation needs at least one field: a zero-field resource renders an empty `input TCreate%sDto {}` block, which is invalid GraphQL SDL and breaks every subsequent gqlgen run — add a field (e.g. name:string) or pass --no-graphql", d.Name)
+		}
 		d.IncludeSwagger = hasSwaggerFlag(cmd)
 		return RunSteps(d, controllerSteps(d))
 	},
@@ -565,7 +664,11 @@ no model, repository, or wiring — useful when you already have a model
 and want DTOs for an RPC or GraphQL-only resource.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), dtoSteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, dtoSteps())
 	},
 }
 
@@ -579,7 +682,11 @@ clickhouse). Does not touch any Go code — useful for schema-only changes
 such as indexes, constraints, or data migrations.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), migrationSteps())
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, migrationSteps())
 	},
 }
 
@@ -592,7 +699,11 @@ patch index.routes.go — use this when you want custom wiring or you have
 already written the controller by hand.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), routeSteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, routeSteps())
 	},
 }
 
@@ -605,7 +716,11 @@ GraphQL schema and want the resolver to gain access to a newly-created
 service without running full scaffolding.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), resolverSteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, resolverSteps())
 	},
 }
 
@@ -627,7 +742,10 @@ quoted so your shell does not expand ` + "`*`" + `:
   gofasta g job sync-data                         # every hour (default)`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		if len(args) >= 2 {
 			d.Schedule = args[1]
 		}
@@ -644,12 +762,15 @@ var emailTemplateCmd = &cobra.Command{
 	Short:   "Generate an HTML email template under templates/emails/",
 	Aliases: []string{"email"},
 	Long: `Generate templates/emails/<name>.html with a starter layout compatible
-with the framework's mailer package. The template is plain Go HTML
+with the gofasta library's mailer package. The template is plain Go HTML
 templating — substitute variables with ` + "`{{.FieldName}}`" + ` and render it via
 mailer.Renderer in your service code.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		d := buildFromArgs(args)
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
 		return RunSteps(d, []Step{{"email template", GenEmailTemplate}})
 	},
 }
@@ -668,7 +789,11 @@ Examples:
   gofasta g task resize-image`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), []Step{{"task handler", GenTask}})
+		d, err := buildFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, []Step{{"task handler", GenTask}})
 	},
 }
 
@@ -681,7 +806,11 @@ it, then regenerate the Wire injector. Useful when integrating hand-
 written services that were not created through ` + "`gofasta g service`" + `.`,
 	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return RunSteps(buildFromArgs(args), providerSteps())
+		d, err := buildResourceFromArgs(args)
+		if err != nil {
+			return err
+		}
+		return RunSteps(d, providerSteps())
 	},
 }
 
@@ -699,6 +828,8 @@ var (
 // command stays declarative and the RunE closures stay small.
 var (
 	methodDryRun        bool
+	methodReturns       string
+	methodNoVerify      bool
 	fieldDryRun         bool
 	fieldNoDTO          bool
 	fieldNoCreate       bool
@@ -707,11 +838,46 @@ var (
 	endpointDryRun      bool
 	endpointHandlerName string
 	endpointNoService   bool
+	endpointNoVerify    bool
 	repoMethodDryRun    bool
+	repoMethodReturns   string
+	repoMethodNoVerify  bool
 	middlewareDryRun    bool
 	relationDryRun      bool
 	renameApply         bool
 )
+
+// autoVerifyUnless runs the post-generation `go build ./...` check the
+// modify-aware generators share with scaffold, honoring the command's
+// --no-verify escape hatch. These generators patch existing compiled
+// code, so a silent breakage (wrong receiver, missing import, interface
+// no longer satisfied) would otherwise only surface on the user's next
+// build.
+func autoVerifyUnless(skip bool) error {
+	if skip {
+		return nil
+	}
+	return AutoVerify()
+}
+
+// parseReturnsFlag splits a --returns value into the MethodData.Returns
+// list. Empty input returns nil so methodDataDefaults applies the
+// ["error"] default. Splitting is on top-level commas — good for every
+// scaffold-shaped type (*models.X, []T, map[K]V, uuid.UUID); exotic
+// func-typed returns should be hand-written instead.
+func parseReturnsFlag(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
 
 // methodCmd is `gofasta g method <Resource> <Method> [param:type ...]`.
 // Appends a method to an existing service interface + impl using dst-
@@ -731,11 +897,21 @@ spell it out.
 Use --dry-run to preview the patches (same {create, patch} JSON shape
 as g scaffold --dry-run).
 
+Use --returns to give the method a result list other than the default
+bare error; the stub then returns zero values for each non-error result.
+
 Examples:
   gofasta g method Order Archive
-  gofasta g method Order ChangeStatus status:string reason:string`,
+  gofasta g method Order ChangeStatus status:string reason:string
+  gofasta g method Order Reprice amount:float --returns "*models.Order, error"`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[1]); err != nil {
+			return err
+		}
 		resource := args[0]
 		method := args[1]
 		fields := ParseFields(args[2:])
@@ -743,6 +919,7 @@ Examples:
 			Resource:   toPascalCase(resource),
 			MethodName: toPascalCase(method),
 			Args:       fields,
+			Returns:    parseReturnsFlag(methodReturns),
 		}
 		if methodDryRun {
 			SetDryRun(true)
@@ -753,7 +930,10 @@ Examples:
 			printPlanResult(cmd)
 			return nil
 		}
-		return GenMethod(d)
+		if err := GenMethod(d); err != nil {
+			return err
+		}
+		return autoVerifyUnless(methodNoVerify)
 	},
 }
 
@@ -762,19 +942,34 @@ Examples:
 var fieldCmd = &cobra.Command{
 	Use:   "field <Resource> <name>:<type>",
 	Short: "Add a field to an existing model, its DTOs, and emit a migration pair",
-	Long: `Append a column to an already-scaffolded resource. Patches:
+	Long: `Append a column to an already-scaffolded resource. Patches every
+surface a scaffolded field flows through:
 
   • app/models/<snake>.model.go               (struct field + GORM tag)
-  • app/dtos/<snake>.dtos.go                  (Create / Update / Response DTOs)
+  • app/dtos/<snake>.dtos.go                  (response DTO + FromModel, pointer
+                                               TCreate<R>Dto + ToCreateInput,
+                                               TUpdate<R>Dto / GraphQLInput +
+                                               ToPatch, filters DTO + ToFilter)
+  • app/services/<snake>_inputs.go            (Create<R>Input, Update<R>Patch +
+                                               AsMap, List<Plural>Filter +
+                                               AsRepoFilter)
+  • app/services/<snake>.service.go           (<lower>SortColumns allowlist)
+  • app/repositories/<snake>.repository.go    (<lower>FilterColumns allowlist)
+  • app/repositories/<snake>.repository_test.go (make<R> fixture, if present)
+  • app/graphql/schema/<snake>.gql            (all four blocks, if present —
+                                               re-run gqlgen afterwards)
   • db/migrations/NNNNNN_add_<field>_to_<plural>.up.sql / .down.sql
+
+Files that don't exist are skipped (a g-model-only resource has no
+DTOs); a file that exists with a missing anchor is a hard error.
 
 Supported types: string, text, int, float, bool, uuid, time.
 
 DTO patches are opt-out:
-  --no-dto       Skip every DTO patch (model + migration only)
-  --no-create    Skip the CreateRequest DTO
-  --no-update    Skip the UpdateRequest DTO
-  --no-response  Skip the Response DTO
+  --no-dto       Skip everything except model + migration
+  --no-create    Skip the create shapes (TCreate<R>Dto, Create<R>Input)
+  --no-update    Skip the update shapes (TUpdate<R>Dto/GraphQLInput, Update<R>Patch)
+  --no-response  Skip the response DTO + FromModel
 
 Use --dry-run to preview the patches and the migration that would be
 written (same {create, patch} JSON shape as g scaffold --dry-run).
@@ -784,12 +979,18 @@ Examples:
   gofasta g field Order deleted_at:time --no-create --no-update`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
 		resource := args[0]
 		fieldArg := args[1]
 		fields := ParseFields([]string{fieldArg})
 		if len(fields) == 0 {
 			return clierr.New(clierr.CodeInvalidName,
 				"field argument must be name:type (e.g. archive_reason:string)")
+		}
+		if err := validateFieldNotBaseColumn(fields[0].SnakeName); err != nil {
+			return err
 		}
 		d := FieldData{
 			Resource:     toPascalCase(resource),
@@ -835,6 +1036,9 @@ Use --dry-run to preview every patch (same {create, patch} JSON shape
 as g scaffold --dry-run).`,
 	Args: cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
 		d := EndpointData{
 			Resource:    toPascalCase(args[0]),
 			HTTPMethod:  args[1],
@@ -851,7 +1055,10 @@ as g scaffold --dry-run).`,
 			printPlanResult(cmd)
 			return nil
 		}
-		return GenEndpoint(d)
+		if err := GenEndpoint(d); err != nil {
+			return err
+		}
+		return autoVerifyUnless(endpointNoVerify)
 	},
 }
 
@@ -867,17 +1074,28 @@ impl in app/repositories/<snake>.repository.go. Same AST-based patching
 that g method uses, with repo-specific defaults:
 
   - InterfaceName defaults to <Resource>RepositoryInterface
-  - ImplStructName defaults to <lowerResource>Repository
+  - ImplStructName defaults to <Resource>Repository (the exported
+    struct the scaffold declares)
+
+Use --returns for repo-shaped result lists — repository methods usually
+return the entity, not just error.
 
 Examples:
-  gofasta g repo-method Order FindByCustomer customerID:string
+  gofasta g repo-method Order FindByCustomer customerID:string --returns "*models.Order, error"
   gofasta g repo-method Order ArchiveByID --dry-run`,
 	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[1]); err != nil {
+			return err
+		}
 		d := MethodData{
 			Resource:   toPascalCase(args[0]),
 			MethodName: toPascalCase(args[1]),
 			Args:       ParseFields(args[2:]),
+			Returns:    parseReturnsFlag(repoMethodReturns),
 		}
 		if repoMethodDryRun {
 			SetDryRun(true)
@@ -888,7 +1106,10 @@ Examples:
 			printPlanResult(cmd)
 			return nil
 		}
-		return GenRepoMethod(d)
+		if err := GenRepoMethod(d); err != nil {
+			return err
+		}
+		return autoVerifyUnless(repoMethodNoVerify)
 	},
 }
 
@@ -905,14 +1126,22 @@ chi handler chain to wrap it with the given middleware:
 
     r.Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
       →
-    r.With(auth.RequireRole("admin")).Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+    r.With(auth.JWTAuth(jwtService), auth.RequireRole("admin")).Post("/orders/{id}/archive", httputil.Handle(c.ArchiveOrder))
+
+IMPORTANT — role checks are a two-middleware chain: auth.RequireRole
+reads the JWT claims that auth.JWTAuth extracts into the request
+context. RequireRole WITHOUT JWTAuth in front of it rejects every
+request with 401, valid token or not. Always pass both, in that order.
+JWTAuth needs the *auth.JWTService — thread it into the route file
+(e.g. add a JWTService field to routes.RouteConfig and pass it to the
+per-resource route function).
 
 If the route already has a .With(...) chain, the new middleware is
 appended to the existing list (idempotent — re-running with a middleware
 already in the chain is a no-op).
 
 Examples:
-  gofasta g middleware POST /orders/{id}/archive auth.RequireRole("admin")
+  gofasta g middleware POST /orders/{id}/archive 'auth.JWTAuth(jwtService), auth.RequireRole("admin")'
   gofasta g middleware GET  /orders                middleware.Throttle(20)
   gofasta g middleware POST /orders --dry-run      middleware.Logger`,
 	Args: cobra.ExactArgs(3),
@@ -945,7 +1174,9 @@ var relationCmd = &cobra.Command{
 (for belongs_to) emit a paired migration that adds the FK column and
 constraint on the parent table.
 
-  belongs_to <Other>  → <Other>ID uuid.UUID + *<Other>; FK on this table.
+  belongs_to <Other>  → <Other>ID *uuid.UUID + *<Other>; nullable FK on this
+                        table (a NOT NULL FK could never migrate onto a
+                        populated table — backfill, then tighten yourself).
   has_many   <Other>  → []<Other>; FK lives on the OTHER table.
   has_one    <Other>  → *<Other>; FK lives on the OTHER table.
 
@@ -959,6 +1190,12 @@ Examples:
   gofasta g relation User has_one Profile --dry-run`,
 	Args: cobra.ExactArgs(3),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(args[0]); err != nil {
+			return err
+		}
+		if err := validateResourceName(args[2]); err != nil {
+			return err
+		}
 		d := RelationData{
 			Resource: toPascalCase(args[0]),
 			Kind:     RelationKind(args[1]),
@@ -1004,6 +1241,12 @@ Examples:
   gofasta g rename Order.Total AmountCents --json   # plan as JSON for agents`,
 	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResourceName(strings.SplitN(args[0], ".", 2)[0]); err != nil {
+			return err
+		}
+		if err := validateIdentifier(args[1]); err != nil {
+			return err
+		}
 		// First arg has the form "Resource.OldField".
 		parts := strings.SplitN(args[0], ".", 2)
 		if len(parts) != 2 {
@@ -1061,6 +1304,11 @@ Get with nil-safe assertion). Pointer / slice / map / qualified-type
 returns are guarded so a nil return value doesn't panic the test.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) > 0 {
+			if err := validateResourceName(args[0]); err != nil {
+				return err
+			}
+		}
 		name := ""
 		if len(args) == 1 {
 			name = args[0]

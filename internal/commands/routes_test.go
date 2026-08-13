@@ -5,7 +5,100 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+func TestRoutesCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.MkdirAll("app/rest/routes", 0755))
+	assert.NoError(t, routesCmd.RunE(routesCmd, nil))
+}
+
+func TestRunRoutes_SampleProject(t *testing.T) {
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+
+	// Index file includes a chi r.Mount("...", ...) call so the
+	// prefix extraction regex matches and apiPrefix gets set to "/api/v1".
+	index := `package routes
+func InitApi(r *chi.Mux) {
+	api := chi.NewRouter()
+	r.Get("/health", httputil.Handle(c.Ok))
+	r.Handle("/swagger/*", httpSwagger.WrapHandler)
+	r.Mount("/api/v1", api)
+}`
+	require.NoError(t, os.WriteFile(routesDir+"/index.routes.go", []byte(index), 0644))
+
+	user := `package routes
+func UserRoutes(r chi.Router) {
+	r.Get("/users", httputil.Handle(c.List))
+	r.Get("/users/{id}", httputil.Handle(c.Get))
+}`
+	require.NoError(t, os.WriteFile(routesDir+"/user.routes.go", []byte(user), 0644))
+
+	assert.NoError(t, runRoutes())
+}
+
+func TestRunRoutes_Empty(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.MkdirAll("app/rest/routes", 0755))
+	assert.NoError(t, runRoutes())
+}
+
+func TestRunRoutes_NoIndexFile(t *testing.T) {
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// Only a non-index file — apiPrefix will stay empty
+	user := `r.Get("/a", x)`
+	require.NoError(t, os.WriteFile(routesDir+"/a.routes.go", []byte(user), 0644))
+	assert.NoError(t, runRoutes())
+}
+
+func TestRunRoutes_ReadDirError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based access denial")
+	}
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// os.Stat passes (dir exists), but drop read permission so ReadDir fails.
+	require.NoError(t, os.Chmod(routesDir, 0o111))
+	t.Cleanup(func() { _ = os.Chmod(routesDir, 0o755) })
+
+	err := runRoutes()
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to read routes directory")
+}
+
+func TestRunRoutes_UnreadableRouteFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod-based access denial")
+	}
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// Write a valid route file, then revoke read permission. ReadDir can
+	// list the file (only needs execute on the parent dir), but ReadFile
+	// fails with EACCES. The file should be silently skipped.
+	require.NoError(t, os.WriteFile(routesDir+"/blocked.routes.go",
+		[]byte(`r.Get("/x", h)`), 0o000))
+	t.Cleanup(func() { _ = os.Chmod(routesDir+"/blocked.routes.go", 0o644) })
+
+	// Should not error — unreadable files are skipped (continue branch).
+	assert.NoError(t, runRoutes())
+}
+
+func TestRunRoutes_SkipsNonRouteFiles(t *testing.T) {
+	chdirTemp(t)
+	routesDir := "app/rest/routes"
+	require.NoError(t, os.MkdirAll(routesDir, 0755))
+	// A subdirectory + a non .routes.go file + an unreadable name
+	require.NoError(t, os.MkdirAll(routesDir+"/subdir", 0755))
+	require.NoError(t, os.WriteFile(routesDir+"/notaroute.go", []byte("package routes"), 0644))
+	assert.NoError(t, runRoutes())
+}
 
 func TestRoutesCmd_Registered(t *testing.T) {
 	found := false
@@ -106,4 +199,40 @@ func TestRunRoutes_NoRoutesDir(t *testing.T) {
 	err := runRoutes()
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "routes directory not found")
+}
+
+// TestRunRoutes_FeatureLayoutUsesLayoutRouteFiles covers the feature arm of
+// runRoutes' layout switch.
+//
+// Layered keeps every registration under app/rest/routes/, so runRoutes scans
+// that directory. Feature scatters them to app/<resource>/routes.go, and the
+// only thing that knows where they went is layout.RouteFiles(). Taking the
+// wrong arm makes `gofasta routes` silently report an empty route table for a
+// feature project.
+func TestRunRoutes_FeatureLayoutUsesLayoutRouteFiles(t *testing.T) {
+	inRenderedProject(t)
+
+	// Move the user routes into the feature package and declare the layout,
+	// which is what layout.Detect() reads.
+	_, _, err := migrateResource(userResourceFixture(), fixtureModulePath)
+	require.NoError(t, err)
+	require.NoError(t, setProjectLayout("feature"))
+
+	out := captureStdout(t, func() {
+		require.NoError(t, runRoutes())
+	})
+
+	assert.Contains(t, out, "/users",
+		"a feature project's per-resource routes must still be discovered")
+}
+
+// TestRunRoutes_FeatureLayoutWithNoRouteFiles covers the same arm when the
+// layout resolves to nothing — an empty listing rather than an error.
+func TestRunRoutes_FeatureLayoutWithNoRouteFiles(t *testing.T) {
+	inRenderedProject(t)
+	require.NoError(t, setProjectLayout("feature"))
+	require.NoError(t, os.RemoveAll("app/rest/routes"))
+
+	assert.NoError(t, runRoutes(),
+		"a project with no route files is an empty table, not a failure")
 }

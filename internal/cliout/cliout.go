@@ -50,13 +50,6 @@ func Print(payload any, textFn func(w io.Writer)) {
 	}
 }
 
-// PrintJSON always writes payload as JSON to stdout, regardless of mode.
-// Use this for subcommands that have their own --json flag with more
-// specific semantics than the global one.
-func PrintJSON(payload any) {
-	writeJSON(os.Stdout, payload)
-}
-
 // PrintError writes an error payload to stderr. Used by the root command
 // when a subcommand returns an error — in JSON mode the error is
 // serialized via its MarshalJSON method (clierr.Error implements this);
@@ -79,18 +72,7 @@ func PrintError(err error) {
 func writeJSON(w io.Writer, payload any) {
 	enc := json.NewEncoder(w)
 	// One-line-per-result is the shell-friendly convention (agents can
-	// pipe through `jq -c` or parse line-by-line). Indented output is
-	// available via PrintJSONIndented for humans.
+	// pipe through `jq -c` or parse line-by-line).
 	enc.SetEscapeHTML(false)
-	_ = enc.Encode(payload)
-}
-
-// PrintJSONIndented is the same as PrintJSON but with two-space
-// indentation. Useful for commands whose output a human is likely to
-// inspect directly (e.g., `gofasta inspect User --json`).
-func PrintJSONIndented(payload any) {
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetEscapeHTML(false)
-	enc.SetIndent("", "  ")
 	_ = enc.Encode(payload)
 }

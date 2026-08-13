@@ -166,13 +166,6 @@ func TestLoadConfig_EnvOverride(t *testing.T) {
 	assert.Equal(t, "mysql", k.String("database.driver"))
 }
 
-// --- Project-prefix env var support ---
-//
-// When a go.mod exists in cwd, env vars prefixed with the project name
-// (uppercase last-segment + "_") must override config.yaml the same way
-// GOFASTA_* does. Critical for `gofasta dev` / `gofasta migrate up` to
-// pick up DB connection overrides from a project's .env file.
-
 func TestLoadConfig_ProjectPrefixOverride(t *testing.T) {
 	setupConfigDir(t, `database:
   driver: postgres
@@ -259,8 +252,6 @@ func TestEnvPrefixes_DeDupesGofasta(t *testing.T) {
 		"duplicate prefixes should be collapsed")
 }
 
-// --- BuildDatabaseEndpoint ---
-
 func TestBuildDatabaseEndpoint_PostgresDefaults(t *testing.T) {
 	setupConfigDir(t, `database:
   driver: postgres
@@ -300,8 +291,6 @@ func TestBuildDatabaseEndpoint_Sqlite3AliasDisabled(t *testing.T) {
 	assert.Empty(t, endpoint)
 }
 
-// --- BuildCacheEndpoint ---
-
 func TestBuildCacheEndpoint_RedisDefaults(t *testing.T) {
 	setupConfigDir(t, `cache:
   driver: redis
@@ -339,8 +328,6 @@ func TestBuildCacheEndpoint_EmptyDisabled(t *testing.T) {
 	assert.Empty(t, endpoint)
 }
 
-// --- BuildQueueEndpoint ---
-
 func TestBuildQueueEndpoint_EnabledDefaults(t *testing.T) {
 	setupConfigDir(t, `queue:
   enabled: true
@@ -370,8 +357,6 @@ func TestBuildQueueEndpoint_Disabled(t *testing.T) {
 	assert.False(t, enabled)
 	assert.Empty(t, endpoint)
 }
-
-// --- Exported wrappers ---
 
 func TestEnvPrefixes_ExportedWrapper(t *testing.T) {
 	setupConfigDir(t, "")
@@ -442,4 +427,40 @@ func TestBuildMigrationURL_DefaultPortPerDriver(t *testing.T) {
 				"expected URL to include %q, got: %s", tc.urlContains, got)
 		})
 	}
+}
+
+// TestReadLayout covers the layout key. The empty-string return matters: it is
+// how a project scaffolded before the feature shipped is told apart from one
+// that explicitly chose "layered", so callers know when to fall back to
+// filesystem detection rather than trusting an absent value.
+func TestReadLayout(t *testing.T) {
+	cases := map[string]struct {
+		config string
+		want   string
+	}{
+		"feature":        {"project:\n  layout: feature\n", "feature"},
+		"layered":        {"project:\n  layout: layered\n", "layered"},
+		"key absent":     {"database:\n  driver: postgres\n", ""},
+		"no config file": {"", ""},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			setupConfigDir(t, tc.config)
+			assert.Equal(t, tc.want, ReadLayout())
+		})
+	}
+}
+
+// TestGetPort_PrefixedVarWins — the project-prefixed SERVER_PORT is
+// the only env var the app's config loader honors, so it outranks the
+// bare PORT compose convention.
+func TestGetPort_PrefixedVarWins(t *testing.T) {
+	setupConfigDir(t, `server:
+  port: "3000"
+`)
+	os.WriteFile("go.mod", []byte("module myapp\n\ngo 1.25\n"), 0644)
+	t.Setenv("MYAPP_SERVER_PORT", "7777")
+	t.Setenv("PORT", "9090")
+	assert.Equal(t, "7777", GetPort())
 }

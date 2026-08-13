@@ -249,13 +249,6 @@ func TestRunDebugStack_StdinDispatches(t *testing.T) {
 	require.NoError(t, runDebugStack(true))
 }
 
-// TestTrimLine_Truncates — input longer than n returns prefix + "…".
-func TestTrimLine_Truncates(t *testing.T) {
-	got := trimLine("This is a fairly long sentence that needs trimming", 20)
-	require.Len(t, []rune(got), 20)
-	require.Equal(t, '…', []rune(got)[19])
-}
-
 // TestPadLine — left-pads the number with spaces to the requested
 // width. Covers the entire 0%-coverage function.
 func TestPadLine_Padding(t *testing.T) {

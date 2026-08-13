@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gofastadev/cli/internal/clierr"
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
 
@@ -139,10 +139,8 @@ func runDebugProfile(kind string) error {
 		return clierr.Wrap(clierr.CodeFileIO, err, "profile write failed")
 	}
 	if debugProfileOutput != "" {
-		fprintln(os.Stderr, termcolor.CGreen(fmt.Sprintf(
-			"wrote %s (%d bytes) · open with `go tool pprof -http=:8090 %s`",
-			debugProfileOutput, n, debugProfileOutput,
-		)))
+		cliout.Success("wrote %s (%d bytes) · open with `go tool pprof -http=:8090 %s`",
+			debugProfileOutput, n, debugProfileOutput)
 	}
 	return nil
 }

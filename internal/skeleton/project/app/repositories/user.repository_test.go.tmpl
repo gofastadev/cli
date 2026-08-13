@@ -20,6 +20,9 @@ import (
 // the User model. Returned db is auto-cleaned up when the test ends.
 func setupUserRepoTest(t *testing.T) (*gorm.DB, *repositories.UserRepository) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("repository tests provision a database via testdb (Docker for container drivers); skipped in -short mode")
+	}
 	db := testdb.SetupTestDB(t)
 	require.NoError(t, db.AutoMigrate(&models.User{}),
 		"AutoMigrate must succeed against a fresh testcontainers Postgres")
@@ -128,6 +131,39 @@ func TestUserRepository_UpdateIfVersionMatches_VersionConflict(t *testing.T) {
 	var fresh models.User
 	require.NoError(t, db.Where("id = ?", u.ID).First(&fresh).Error)
 	assert.Equal(t, "Alice", fresh.FirstName, "the stale-version UPDATE must not have touched the row")
+}
+
+// TestUserRepository_UpdateIfVersionMatches_NotFound — unknown id →
+// gorm.ErrRecordNotFound (the service maps this to 404, distinct from
+// the version-conflict 412).
+func TestUserRepository_UpdateIfVersionMatches_NotFound(t *testing.T) {
+	_, repo := setupUserRepoTest(t)
+
+	updated, _, err := repo.UpdateIfVersionMatches(
+		context.Background(), uuid.New(), 1,
+		map[string]any{"first_name": "Renamed"},
+	)
+	require.Error(t, err)
+	assert.Nil(t, updated)
+	assert.ErrorIs(t, err, gorm.ErrRecordNotFound)
+}
+
+// TestUserRepository_UpdateIfVersionMatches_MatchAny — the -1 sentinel
+// (If-Match: *) skips the version precondition but still bumps
+// record_version from the current value.
+func TestUserRepository_UpdateIfVersionMatches_MatchAny(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	u := makeUser(t, db, "matchany@example.com")
+
+	updated, affected, err := repo.UpdateIfVersionMatches(
+		context.Background(), u.ID, -1,
+		map[string]any{"first_name": "Renamed"},
+	)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), affected)
+	require.NotNil(t, updated)
+	assert.Equal(t, "Renamed", updated.FirstName)
+	assert.Equal(t, u.RecordVersion+1, updated.RecordVersion)
 }
 
 // TestUserRepository_UpdateIfVersionMatches_AtomicityUnderRace — two
@@ -277,4 +313,35 @@ func TestUserRepository_List_PaginationAndSort(t *testing.T) {
 	require.Len(t, got, 2)
 	assert.Equal(t, "carol", got[0].FirstName)
 	assert.Equal(t, "dan", got[1].FirstName)
+}
+
+// TestUserRepository_List_FilterApplied — a REAL filter assertion: the
+// filter map must actually narrow the result set (this pins the
+// allowlisted WHERE-building path end to end, not just that List runs).
+// String filters match case-insensitively as substrings.
+func TestUserRepository_List_FilterApplied(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	kept := makeUser(t, db, "kept@example.com")
+	other := &models.User{FirstName: "Zed", OtherNames: "Y", Email: "other@example.com", PhoneNumber: "222", Password: "p"}
+	require.NoError(t, db.Create(other).Error)
+
+	got, total, err := repo.List(context.Background(),
+		map[string]any{"email": "KEPT@"}, 1, 10, "created_at ASC")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, got, 1)
+	assert.Equal(t, kept.ID, got[0].ID)
+}
+
+// TestUserRepository_List_UnknownFilterColumnIgnored — keys not in the
+// allowlist (including the never-filterable password column) are
+// dropped, never interpolated into SQL.
+func TestUserRepository_List_UnknownFilterColumnIgnored(t *testing.T) {
+	db, repo := setupUserRepoTest(t)
+	makeUser(t, db, "solo@example.com")
+
+	_, total, err := repo.List(context.Background(),
+		map[string]any{"password": "p", "no_such_column; DROP TABLE users": "x"}, 1, 10, "created_at ASC")
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total, "unknown filter keys must be ignored, not error or match nothing")
 }

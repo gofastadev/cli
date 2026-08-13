@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/docs"
 	"github.com/gofastadev/cli/internal/termcolor"
 	"github.com/spf13/cobra"
 )
@@ -83,6 +84,37 @@ type workflow struct {
 type workflowStep struct {
 	Description string
 	Args        []string
+}
+
+// workflowFacts projects the registry into the facts shape for
+// `gofasta facts`. Workflows that take positional arguments are rendered
+// with their Args placeholder so the step list stays illustrative
+// ("gofasta g scaffold <ResourceName>").
+func workflowFacts() []docs.Workflow {
+	out := make([]docs.Workflow, 0, len(workflows))
+	for _, wf := range workflows {
+		var placeholder []string
+		if wf.Args != "" {
+			placeholder = []string{strings.Fields(wf.Args)[0]}
+		}
+		steps, err := wf.Build(placeholder)
+		if err != nil {
+			// Build only errors on missing required args; the placeholder
+			// satisfies those, so this is unreachable — but stay safe.
+			continue
+		}
+		rendered := make([]string, len(steps))
+		for i, s := range steps {
+			rendered[i] = "gofasta " + strings.Join(s.Args, " ")
+		}
+		out = append(out, docs.Workflow{
+			Key:         wf.Key,
+			Description: wf.Description,
+			Args:        wf.Args,
+			Steps:       rendered,
+		})
+	}
+	return out
 }
 
 // workflows is the stable registry. Adding a new workflow: append an
@@ -214,12 +246,10 @@ func runWorkflow(name string, passed []string) error {
 			continue
 		}
 
-		if !cliout.JSON() {
-			fprintf(os.Stdout, "%s %s %s\n",
-				termcolor.CBrand("→"),
-				step.Description,
-				termcolor.CDim("(gofasta "+strings.Join(step.Args, " ")+")"))
-		}
+		cliout.Plain("%s %s %s\n",
+			termcolor.CBrand("→"),
+			step.Description,
+			termcolor.CDim("(gofasta "+strings.Join(step.Args, " ")+")"))
 		stepStart := time.Now()
 		err := runGofastaStep(step.Args)
 		stepResult.DurationMS = time.Since(stepStart).Milliseconds()
@@ -255,7 +285,7 @@ func runWorkflow(name string, passed []string) error {
 func runGofastaStep(args []string) error {
 	binary := os.Args[0]
 	cmd := execCommand(binary, args...)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
 	return cmd.Run()

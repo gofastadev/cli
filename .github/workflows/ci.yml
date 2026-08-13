@@ -5,43 +5,73 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Nightly: scaffolds install external tools (gqlgen, air, migrate,
+  # golangci-lint) at generation time, so an upstream release can break
+  # `gofasta new` while this repo is untouched. The cron makes that
+  # failure ours to discover instead of a user's.
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+# Least privilege: CI only needs to read the repo. Any job that needs more
+# must opt in explicitly. Actions are pinned to full commit SHAs (the tag
+# comment is for humans and Dependabot, which bumps SHA + comment together).
+permissions:
+  contents: read
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v9
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9
         with:
           version: v2.11.4
+
+      # Docs anti-drift gate: README generated blocks, inline fact
+      # annotations, fence-validated `gofasta` invocations, release
+      # platform matrix, lint-version parity. `make docs-check` builds
+      # the CLI first, so this needs nothing beyond setup-go.
+      - name: Docs check
+        run: make docs-check
 
   test:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        go-version: ["1.25.0"]
+        # The newest patch of the declared floor (exact-pinning the .0
+        # patch froze CI on unpatched stdlib — govulncheck rightly
+        # failed on reachable crypto/tls CVEs) plus current stable.
+        go-version: ["1.25.x", "stable"]
+    # Without GOTOOLCHAIN=local the go command silently upgrades itself
+    # to go.mod's toolchain and the matrix tests one version twice.
+    env:
+      GOTOOLCHAIN: local
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: ${{ matrix.go-version }}
 
       - name: Download dependencies
         run: go mod download
 
+      # -shuffle=on randomizes test order to surface order-coupled tests.
       - name: Test with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: go test -race -shuffle=on -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
 
       - name: Upload coverage to Codecov
-        uses: codecov/codecov-action@v5
+        if: matrix.go-version == '1.25.x'
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
         with:
@@ -51,6 +81,32 @@ jobs:
 
       - name: Build
         run: go build -o /dev/null ./cmd/gofasta/
+
+  # The CLI ships darwin and windows binaries; this job makes sure we
+  # compile (and, where the platform allows, test) what we ship. macOS
+  # runs the short unit suite (repo tests skip: no Docker on mac
+  # runners); Windows is compile-only for tests via `go vet` — the
+  # keyboard/PTY suites are unix-tagged.
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+      - name: Build
+        run: go build ./...
+      - name: Vet (compiles all test code)
+        run: go vet ./...
+      - name: Short tests (macOS only)
+        if: runner.os == 'macOS'
+        run: go test -short -shuffle=on ./...
 
   integration:
     runs-on: ubuntu-latest
@@ -75,11 +131,11 @@ jobs:
 
     steps:
       - name: Check out CLI repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: "1.25.0"
+          go-version: "1.25.x"
 
       - name: Build CLI
         run: go build -o /tmp/gofasta ./cmd/gofasta/
@@ -115,12 +171,12 @@ jobs:
                 -e POSTGRES_DB=testproject_test \
                 -p 5432:5432 \
                 postgres:18-alpine
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=5432" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 30); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=5432" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 30); do
                 docker exec testproject_db pg_isready -U testproject -d testproject_test && break
                 sleep 2
               done
@@ -142,12 +198,12 @@ jobs:
                 -e MYSQL_DATABASE=testproject_test \
                 -p 3306:3306 \
                 mysql:8.4 --log_bin_trust_function_creators=ON
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=3306" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 60); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=3306" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=testproject" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 60); do
                 docker exec testproject_db mysqladmin ping -h localhost -u testproject -ptestproject 2>/dev/null | grep -q 'mysqld is alive' && break
                 sleep 2
               done
@@ -160,13 +216,13 @@ jobs:
                 --user root \
                 -p 1433:1433 \
                 mcr.microsoft.com/mssql/server:2022-latest
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=1433" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=sa" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=YourStrong@Passw0rd" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=1433" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=sa" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=YourStrong@Passw0rd" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
               # SQL Server takes ~30s to be queryable on cold start.
-              for i in $(seq 1 60); do
+              for _ in $(seq 1 60); do
                 docker exec testproject_db /opt/mssql-tools18/bin/sqlcmd \
                   -S localhost -U sa -P 'YourStrong@Passw0rd' -No \
                   -Q "SELECT 1" >/dev/null 2>&1 && break
@@ -186,12 +242,12 @@ jobs:
                 --ulimit nofile=262144:262144 \
                 -p 9000:9000 -p 8123:8123 \
                 clickhouse/clickhouse-server:24.8-alpine
-              echo "TESTPROJECT_DATABASE_HOST=localhost" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PORT=9000" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_USER=default" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_PASSWORD=" >> $GITHUB_ENV
-              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> $GITHUB_ENV
-              for i in $(seq 1 30); do
+              echo "TESTPROJECT_DATABASE_HOST=localhost" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PORT=9000" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_USER=default" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_PASSWORD=" >> "$GITHUB_ENV"
+              echo "TESTPROJECT_DATABASE_NAME=testproject_test" >> "$GITHUB_ENV"
+              for _ in $(seq 1 30); do
                 curl -fsS http://localhost:8123/ping >/dev/null 2>&1 && break
                 sleep 2
               done
@@ -203,14 +259,15 @@ jobs:
       - name: Configure SQLite database name
         if: matrix.driver == 'sqlite'
         run: |
-          echo "TESTPROJECT_DATABASE_NAME=/tmp/testproject_test.db" >> $GITHUB_ENV
+          echo "TESTPROJECT_DATABASE_NAME=/tmp/testproject_test.db" >> "$GITHUB_ENV"
 
       - name: Scaffold a new project
-        # `gofasta new` runs `go get github.com/gofastadev/gofasta@latest`
-        # against the public Go module proxy. If this step fails right
-        # after a freshly-tagged framework release, sum.golang.org likely
-        # hasn't indexed the tag yet (5–30 min lag is typical); re-run
-        # the workflow once the sum DB catches up.
+        # `gofasta new` runs `go get github.com/gofastadev/gofasta@<pin>`
+        # (toolVersionGofasta in internal/commands/new.go) against the
+        # public Go module proxy. If this step fails right after bumping
+        # the pin to a freshly-tagged framework release, sum.golang.org
+        # likely hasn't indexed the tag yet (5–30 min lag is typical);
+        # re-run the workflow once the sum DB catches up.
         run: /tmp/gofasta new --driver ${{ matrix.driver }} /tmp/testproject
 
       - name: Verify generated project compiles
@@ -238,7 +295,12 @@ jobs:
       - name: Exercise generators
         working-directory: /tmp/testproject
         run: |
-          /tmp/gofasta g scaffold Product name:string price:float description:text active:bool
+          # uuid + time fields ride the full-stack scaffold so the whole
+          # chain (model imports, DTO pointers, sample literals in the
+          # generated tests, per-driver SQL types) is exercised for the
+          # non-scalar types too — a uuid/time regression used to slip
+          # through because no CI resource carried one.
+          /tmp/gofasta g scaffold Product name:string price:float description:text active:bool owner_id:uuid released_at:time
           /tmp/gofasta g model Article title:string body:text published:bool
           /tmp/gofasta g repository Tag name:string slug:string
           /tmp/gofasta g service Cart total:float currency:string
@@ -247,6 +309,31 @@ jobs:
           /tmp/gofasta g email-template welcome
           /tmp/gofasta g job cleanup-tokens "0 0 0 * * *"
           /tmp/gofasta g task send-welcome
+
+      # Modify-aware generators — each patches EXISTING code via AST
+      # surgery rather than rendering fresh files, so their failure
+      # mode (silently patching nothing, mangling an anchor) is
+      # invisible to the render-only exercise above. Every one runs
+      # against the resources just scaffolded; `make preflight` below
+      # compiles + tests the result, so a bad patch fails this job.
+      - name: Exercise modify-aware generators
+        working-directory: /tmp/testproject
+        run: |
+          /tmp/gofasta g field Product weight:float
+          grep -q '"weight"' app/services/product.service.go
+          grep -q '"weight"' app/repositories/product.repository.go
+          grep -q 'out\["weight"\]' app/services/product_inputs.go
+          /tmp/gofasta g method Product Recalculate
+          /tmp/gofasta g repo-method Product FindBySlug --returns "*models.Product, error"
+          /tmp/gofasta g endpoint Product POST '/products/{id}/archive'
+          # g middleware splices the expression verbatim; the import is
+          # the user's responsibility (same as hand-editing the chain).
+          # Add it the way a user would, then wrap the route.
+          /tmp/gofasta g middleware GET /products 'middleware.RequestID()'
+          sed -i 's#"github.com/gofastadev/gofasta/pkg/httputil"#"github.com/gofastadev/gofasta/pkg/httputil"\n\t"github.com/gofastadev/gofasta/pkg/middleware"#' app/rest/routes/product.routes.go
+          grep -q 'With(middleware.RequestID())' app/rest/routes/product.routes.go
+          /tmp/gofasta g relation Order belongs_to Product
+          /tmp/gofasta wire
 
       # Regenerate Wire + Swagger so the introspection step below sees
       # a clean tree. After the generator exercise above, new
@@ -352,7 +439,11 @@ jobs:
           /tmp/gofasta ai claude
           /tmp/gofasta ai status | grep -q claude
           /tmp/gofasta ai uninstall claude
-          ! /tmp/gofasta ai status | grep -q claude
+          # Explicit if/exit — a bare `! cmd` skips errexit (SC2251)
+          # and would never fail the job.
+          if /tmp/gofasta ai status | grep -q claude; then
+            echo "claude config still reported installed after uninstall"; exit 1
+          fi
 
       # ─────────────────────────────────────────────────────────────
       # Server smoke — start `gofasta serve` in the background, wait
@@ -365,9 +456,9 @@ jobs:
         run: |
           /tmp/gofasta serve &
           SERVE_PID=$!
-          trap "kill $SERVE_PID 2>/dev/null || true" EXIT
+          trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
           # Poll for readiness — give the server up to ~30s to bind.
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://localhost:8080/health/live >/dev/null 2>&1; then
               echo "serve is ready"
               break
@@ -391,3 +482,114 @@ jobs:
           /tmp/gofasta status
           /tmp/gofasta --json status > /tmp/status.json
           test -s /tmp/status.json
+
+  # ───────────────────────────────────────────────────────────────────
+  # Deploy end-to-end — runs `gofasta deploy setup/deploy/status/rollback`
+  # for real (both methods) against a disposable privileged container
+  # playing the VPS (systemd + sshd + Docker + PostgreSQL). This is the
+  # gate that unit tests structurally cannot provide: the fake-exec suite
+  # asserts command CONTENT, this job proves the commands WORK — image
+  # pinning, container/volume reuse across releases, the induced-failure
+  # automatic rollback, and the fresh-server binary deploy.
+  # Mirrored locally by `make deploy-e2e` (part of `make preflight`).
+  # ───────────────────────────────────────────────────────────────────
+  deploy-e2e:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out CLI repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Run deploy e2e
+        run: make deploy-e2e
+
+  # ───────────────────────────────────────────────────────────────────
+  # GraphQL + refactor leg — postgres-only (the per-driver matrix above
+  # covers driver variance; this job covers two flows whose breakages
+  # are invisible to it):
+  #
+  #   1. `gofasta new --graphql` + scaffolding INSIDE a GraphQL project.
+  #      gqlgen rewrites resolver files from the schema and relocates
+  #      non-resolver declarations into commented-out blocks — a class
+  #      of breakage only a gql scaffold exercises. The APIKey + sku
+  #      resource is the initialism/name-mangling gate: gqlgen binds
+  #      SDL names to the generated Go types via autobind, and `sku` /
+  #      `APIKey` are exactly the identifiers its golint-style mangler
+  #      historically mishandles.
+  #   2. `gofasta refactor` layered→feature→layered round-trip on a
+  #      committed scaffold (the clean-tree precheck requires a commit).
+  #
+  # The generated projects' repository tests run testcontainers, so no
+  # job-level database service is needed — Docker on the runner is
+  # enough.
+  # ───────────────────────────────────────────────────────────────────
+  integration-gql-and-refactor:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Check out CLI repo
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Build CLI
+        run: go build -o /tmp/gofasta ./cmd/gofasta/
+
+      - name: Install golang-migrate
+        run: go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
+
+      - name: Scaffold GraphQL project
+        run: /tmp/gofasta new /tmp/gqlproject --graphql
+
+      # Scaffold WITHOUT --graphql: gqlgen.yml auto-detection must kick
+      # in and produce the schema fragment + fully-implemented resolver
+      # file (no panic("not implemented") stubs).
+      - name: Scaffold resources inside the GraphQL project
+        working-directory: /tmp/gqlproject
+        run: |
+          /tmp/gofasta g scaffold Order title:string qty:int
+          test -f app/graphql/resolvers/order.resolvers.go
+          # `! grep` would skip errexit (SC2251) and never fail the job —
+          # the stub gate must be an explicit exit.
+          if grep -q "not implemented" app/graphql/resolvers/order.resolvers.go; then
+            echo "order.resolvers.go contains unimplemented stubs"; exit 1
+          fi
+          # Initialism/mangling gate: APIKey + sku through the full gql chain.
+          /tmp/gofasta g scaffold APIKey sku:string active:bool
+          test -f app/graphql/resolvers/api_key.resolvers.go
+          if grep -q "not implemented" app/graphql/resolvers/api_key.resolvers.go; then
+            echo "api_key.resolvers.go contains unimplemented stubs"; exit 1
+          fi
+          grep -q "TCreateAPIKeyDto" app/dtos/api_key.dtos.go
+          grep -q "sku: String" app/graphql/schema/api_key.gql
+
+      - name: Preflight the GraphQL project
+        working-directory: /tmp/gqlproject
+        run: make preflight
+
+      - name: Scaffold feature-layout project
+        run: /tmp/gofasta new /tmp/featureproject --layout feature
+
+      - name: Refactor round-trip (feature → layered → feature)
+        working-directory: /tmp/featureproject
+        run: |
+          /tmp/gofasta g scaffold Product name:string price:float
+          # The refactor precheck requires a clean tree — commit first.
+          git add -A && git -c user.email=ci@gofasta.dev -c user.name=ci commit -m "scaffold" -q
+          /tmp/gofasta refactor layered --all
+          go build ./...
+          git add -A && git -c user.email=ci@gofasta.dev -c user.name=ci commit -m "layered" -q
+          /tmp/gofasta refactor feature --all
+          go build ./...
+
+      - name: Preflight the refactored project
+        working-directory: /tmp/featureproject
+        run: make preflight

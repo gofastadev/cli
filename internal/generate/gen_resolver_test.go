@@ -6,16 +6,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func TestGenResolver_DelegatesToPatchResolver(t *testing.T) {
-	setupTempProject(t)
-	d := sampleScaffoldData()
-
-	// GenResolver calls PatchResolver, which reads app/graphql/resolvers/resolver.go.
-	// Without the file, it should return an error.
-	err := GenResolver(d)
-	assert.Error(t, err)
-}
-
 func TestGenResolver_SucceedsWithResolverFile(t *testing.T) {
 	setupTempProject(t)
 	d := sampleScaffoldData()
@@ -28,6 +18,7 @@ import (
 
 type Resolver struct {
 	UserService svcInterfaces.UserServiceInterface
+	// gofasta:scaffold:resolver-fields
 }
 
 // NewResolver creates a new resolver.

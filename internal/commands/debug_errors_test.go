@@ -3,6 +3,7 @@ package commands
 import (
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -49,4 +50,43 @@ func TestDebugErrorsCmd_RunE(t *testing.T) {
 	withDebugAppURL(t, url)
 	resetAllDebugFlags()
 	require.NoError(t, debugErrorsCmd.RunE(debugErrorsCmd, nil))
+}
+
+func TestRunDebugErrors_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/errors": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedException{
+				{Time: time.Now(), Method: "GET", Path: "/boom",
+					Recovered: "nil pointer deref",
+					Stack:     []string{"app.go:1 main"}, TraceID: "t1"},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugErrorsLimit = 0
+	require.NoError(t, runDebugErrors())
+}
+
+func TestRunDebugErrors_ContainsFilter(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/errors": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedException{
+				{Recovered: "nil pointer"},
+				{Recovered: "divide by zero"},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugErrorsContains = "divide"
+	debugErrorsLimit = 0
+	t.Cleanup(func() { debugErrorsContains = ""; debugErrorsLimit = 0 })
+	require.NoError(t, runDebugErrors())
+}
+
+func TestRunDebugErrors_Empty(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/errors": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedException{}) },
+	})
+	withDebugAppURL(t, url)
+	require.NoError(t, runDebugErrors())
 }

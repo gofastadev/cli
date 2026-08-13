@@ -112,3 +112,32 @@ func TestDebugCacheCmd_RunE(t *testing.T) {
 	resetAllDebugFlags()
 	require.NoError(t, debugCacheCmd.RunE(debugCacheCmd, nil))
 }
+
+func TestRunDebugCache_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/cache": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, sampleCacheOps()) },
+	})
+	withDebugAppURL(t, url)
+	resetCacheFlags()
+	require.NoError(t, runDebugCache())
+}
+
+func TestRunDebugCache_Empty(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/cache": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedCache{}) },
+	})
+	withDebugAppURL(t, url)
+	resetCacheFlags()
+	require.NoError(t, runDebugCache())
+}
+
+func TestRunDebugCache_BadFilter(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/cache": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedCache{}) },
+	})
+	withDebugAppURL(t, url)
+	resetCacheFlags()
+	debugCacheOp = "fubar"
+	t.Cleanup(resetCacheFlags)
+	require.Error(t, runDebugCache())
+}

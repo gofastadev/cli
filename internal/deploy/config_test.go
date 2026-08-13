@@ -1,11 +1,12 @@
 package deploy
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -74,7 +75,7 @@ func TestLoadDeployConfig_Defaults(t *testing.T) {
 	assert.Equal(t, "docker", cfg.Method)
 	assert.Equal(t, 22, cfg.Port)
 	assert.Equal(t, "amd64", cfg.Arch)
-	assert.Equal(t, "/health", cfg.HealthPath)
+	assert.Equal(t, "/health/ready", cfg.HealthPath)
 	assert.Equal(t, 30, cfg.HealthTimeout)
 	assert.Equal(t, 3, cfg.KeepReleases)
 	assert.Equal(t, "8080", cfg.ServerPort)
@@ -143,36 +144,6 @@ func TestLoadDeployConfig_EnvOverride(t *testing.T) {
 	assert.Equal(t, "env-host", cfg.Host)
 }
 
-func TestLoadDeployConfigLax_MissingHost(t *testing.T) {
-	chdirProject(t, `deploy:
-  method: docker
-`)
-	// LoadDeployConfigLax returns the same error because LoadDeployConfig
-	// returns a nil cfg when host is missing. Test that lax passes through.
-	_, err := LoadDeployConfigLax(nil)
-	assert.Error(t, err)
-}
-
-func TestLoadDeployConfigLax_Success(t *testing.T) {
-	chdirProject(t, `deploy:
-  host: h
-  method: docker
-`)
-	cfg, err := LoadDeployConfigLax(nil)
-	require.NoError(t, err)
-	assert.NotNil(t, cfg)
-}
-
-func TestLoadDeployConfigLax_InvalidMethod(t *testing.T) {
-	chdirProject(t, `deploy:
-  host: h
-  method: weird
-`)
-	_, err := LoadDeployConfigLax(nil)
-	// Lax mode still rejects invalid method
-	assert.Error(t, err)
-}
-
 func TestReadAppName_NoGoMod(t *testing.T) {
 	dir := t.TempDir()
 	origDir, _ := os.Getwd()
@@ -221,49 +192,238 @@ func TestDeployConfig_PathsFilepath(t *testing.T) {
 	assert.Contains(t, cfg.CurrentPath(), "current")
 }
 
-// TestLoadDeployConfigLax_HostRequiredSwallow — use the seam to
-// return (non-nil cfg, host-required err) → the swallow branch fires.
-func TestLoadDeployConfigLax_HostRequiredSwallow(t *testing.T) {
-	orig := loadDeployConfigForLax
-	loadDeployConfigForLax = func(cmd *cobra.Command) (*DeployConfig, error) {
-		return &DeployConfig{AppName: "t"}, fmt.Errorf("deploy host is required")
+// TestLoadDeployConfig_RejectsUnsafeHost covers the deployHostPattern branch.
+// A host is interpolated into an ssh argv, so a value starting with "-" would
+// be read by ssh as an option — "-oProxyCommand=..." executes a local command
+// (CVE-2017-1000117 class). config.yaml can come from a cloned repo, so this
+// rejection is a security boundary, not input tidiness.
+func TestLoadDeployConfig_RejectsUnsafeHost(t *testing.T) {
+	unsafe := map[string]string{
+		"leading dash option":  "-oProxyCommand=touch /tmp/pwned",
+		"shell metacharacter":  "server.com; rm -rf /",
+		"command substitution": "$(whoami)@server.com",
+		"space separated":      "server.com extra",
+		"backtick":             "`id`",
 	}
-	t.Cleanup(func() { loadDeployConfigForLax = orig })
-	cfg, err := LoadDeployConfigLax(&cobra.Command{})
-	require.NoError(t, err)
-	require.NotNil(t, cfg)
+
+	for name, host := range unsafe {
+		t.Run(name, func(t *testing.T) {
+			chdirProject(t, "deploy:\n  host: \""+host+"\"\n  method: docker\n")
+			_, err := LoadDeployConfig(nil)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid deploy.host")
+		})
+	}
 }
 
-// TestLoadDeployConfigLax_HostRequired — LoadDeployConfig returns
-// (nil, err) when host is missing, so LoadDeployConfigLax returns
-// the nil+err path directly.
-func TestLoadDeployConfigLax_HostRequired(t *testing.T) {
+// TestLoadDeployConfig_AcceptsValidHosts is the counterpart, so the pattern
+// cannot be tightened into rejecting ordinary hosts without a test failing.
+func TestLoadDeployConfig_AcceptsValidHosts(t *testing.T) {
+	for _, host := range []string{"server.com", "user@server.com", "10.0.0.1", "deploy-1.eu-west.example.com"} {
+		t.Run(host, func(t *testing.T) {
+			chdirProject(t, "deploy:\n  host: \""+host+"\"\n  method: docker\n")
+			cfg, err := LoadDeployConfig(nil)
+			require.NoError(t, err)
+			assert.Equal(t, host, cfg.Host)
+		})
+	}
+}
+
+// TestLoadDeployConfig_RejectsUnsafeAppName covers the deployAppNamePattern
+// branch. The app name is derived from go.mod's module path and lands in image
+// tags and remote command strings, so the same argument-injection reasoning
+// applies to a hostile module line.
+func TestLoadDeployConfig_RejectsUnsafeAppName(t *testing.T) {
 	dir := t.TempDir()
-	origDir, _ := os.Getwd()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
 	t.Cleanup(func() { _ = os.Chdir(origDir) })
 	require.NoError(t, os.Chdir(dir))
-	require.NoError(t, os.WriteFile("go.mod",
-		[]byte("module example.com/t\n\ngo 1.25.0\n"), 0o644))
 
-	cmd := newDeployCmdFlags()
-	cfg, err := LoadDeployConfigLax(cmd)
-	// Under the current LoadDeployConfig, cfg is nil when host is
-	// missing, so Lax returns (nil, err).
-	assert.Nil(t, cfg)
-	assert.Error(t, err)
+	// The last path segment becomes the app name.
+	require.NoError(t, os.WriteFile("go.mod", []byte("module github.com/test/app;rm -rf /\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile("config.yaml", []byte("deploy:\n  host: server.com\n  method: docker\n"), 0o644))
+
+	_, err = LoadDeployConfig(nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid app name")
 }
 
-// newDeployCmdFlags builds a cobra.Command with the deployment flags
-// LoadDeployConfig expects. No values set → host missing.
-func newDeployCmdFlags() *cobra.Command {
-	cmd := &cobra.Command{}
-	f := cmd.Flags()
-	f.String("host", "", "")
-	f.String("user", "", "")
-	f.Int("port", 22, "")
-	f.String("method", "", "")
-	f.String("path", "", "")
-	f.String("arch", "", "")
-	f.Bool("dry-run", false, "")
-	return cmd
+func TestDeployConfig_Defaults(t *testing.T) {
+	cfg := &DeployConfig{}
+
+	// Apply the same defaults as LoadDeployConfig
+	if cfg.Method == "" {
+		cfg.Method = "docker"
+	}
+	if cfg.Port == 0 {
+		cfg.Port = 22
+	}
+	if cfg.Arch == "" {
+		cfg.Arch = "amd64"
+	}
+	if cfg.HealthPath == "" {
+		cfg.HealthPath = "/health/ready"
+	}
+	if cfg.HealthTimeout == 0 {
+		cfg.HealthTimeout = 30
+	}
+	if cfg.KeepReleases == 0 {
+		cfg.KeepReleases = 3
+	}
+	if cfg.ServerPort == "" {
+		cfg.ServerPort = "8080"
+	}
+
+	assert.Equal(t, "docker", cfg.Method)
+	assert.Equal(t, 22, cfg.Port)
+	assert.Equal(t, "amd64", cfg.Arch)
+	assert.Equal(t, "/health/ready", cfg.HealthPath)
+	assert.Equal(t, 30, cfg.HealthTimeout)
+	assert.Equal(t, 3, cfg.KeepReleases)
+	assert.Equal(t, "8080", cfg.ServerPort)
+}
+
+func TestDeployConfig_ReleasePath(t *testing.T) {
+	cfg := &DeployConfig{
+		Path:       "/opt/myapp",
+		ReleaseTag: "20260409-150000",
+	}
+	assert.Equal(t, "/opt/myapp/releases/20260409-150000", cfg.ReleasePath())
+}
+
+func TestDeployConfig_SharedPath(t *testing.T) {
+	cfg := &DeployConfig{Path: "/opt/myapp"}
+	assert.Equal(t, "/opt/myapp/shared", cfg.SharedPath())
+}
+
+func TestDeployConfig_CurrentPath(t *testing.T) {
+	cfg := &DeployConfig{Path: "/opt/myapp"}
+	assert.Equal(t, "/opt/myapp/current", cfg.CurrentPath())
+}
+
+func TestDeployConfig_MethodValidation(t *testing.T) {
+	tests := []struct {
+		method  string
+		isValid bool
+	}{
+		{"docker", true},
+		{"binary", true},
+		{"invalid", false},
+		{"", true}, // empty defaults to "docker"
+	}
+
+	for _, tt := range tests {
+		method := tt.method
+		if method == "" {
+			method = "docker"
+		}
+		valid := method == "docker" || method == "binary"
+		assert.Equal(t, tt.isValid, valid, "method %q validation", tt.method)
+	}
+}
+
+func TestDeployHelperProcess(t *testing.T) {
+	if os.Getenv("GOFASTA_WANT_DEPLOY_HELPER") != "1" {
+		return
+	}
+	if out := os.Getenv(fakeEnvStdout); out != "" {
+		os.Stdout.WriteString(out)
+	}
+	code, _ := strconv.Atoi(os.Getenv(fakeEnvExitCode))
+	os.Exit(code)
+}
+
+// ── Validation: every config value interpolated into a remote shell must
+// reject metacharacters at load time, with the right clierr code. ──
+
+func TestLoadDeployConfig_RejectsHostileValues(t *testing.T) {
+	cases := []struct {
+		name   string
+		config string
+	}{
+		{"path with semicolon", "deploy:\n  host: host\n  path: \"/opt/x; rm -rf /\"\n"},
+		{"path with spaces", "deploy:\n  host: host\n  path: \"/opt/x $(whoami)\"\n"},
+		{"relative path", "deploy:\n  host: host\n  path: \"opt/x\"\n"},
+		{"arch injection", "deploy:\n  host: host\n  arch: \"amd64; rm -rf /\"\n"},
+		{"unknown arch", "deploy:\n  host: host\n  arch: riscv\n"},
+		{"health path injection", "deploy:\n  host: host\n  health_path: \"/health; reboot\"\n"},
+		{"domain injection", "deploy:\n  host: host\n  domain: \"example.com; reboot\"\n"},
+		{"domain with scheme", "deploy:\n  host: host\n  domain: \"https://example.com\"\n"},
+		{"strict host key injection", "deploy:\n  host: host\n  strict_host_key: \"no -oProxyCommand=payload\"\n"},
+		{"server port injection", "deploy:\n  host: host\nserver:\n  port: \"8080; reboot\"\n"},
+		{"ssh port out of range", "deploy:\n  host: host\n  port: 70000\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			chdirProject(t, tc.config)
+			_, err := LoadDeployConfig(nil)
+			require.Error(t, err, "hostile value must be rejected at load time")
+			ce, ok := clierr.As(err)
+			require.True(t, ok, "validation errors must carry a clierr code")
+			assert.Equal(t, string(clierr.CodeDeployConfig), ce.Code)
+		})
+	}
+}
+
+func TestLoadDeployConfig_MissingHostCode(t *testing.T) {
+	chdirProject(t, "")
+	_, err := LoadDeployConfig(nil)
+	require.Error(t, err)
+	ce, ok := clierr.As(err)
+	require.True(t, ok)
+	assert.Equal(t, string(clierr.CodeDeployHostRequired), ce.Code)
+}
+
+func TestLoadDeployConfig_AcceptsDomainAndStrictHostKey(t *testing.T) {
+	chdirProject(t, "deploy:\n  host: host\n  domain: api.example.com\n  strict_host_key: \"yes\"\n")
+	cfg, err := LoadDeployConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "api.example.com", cfg.Domain)
+	assert.Equal(t, "yes", cfg.StrictHostKey)
+}
+
+// ── Env overlay: multi-word keys were unreachable when every underscore
+// became a dot (GOFASTA_DEPLOY_HEALTH_PATH → deploy.health.path). Only the
+// FIRST underscore separates section from key. ──
+
+func TestLoadDeployConfig_EnvOverlay_MultiWordKeys(t *testing.T) {
+	chdirProject(t, "deploy:\n  host: host\n")
+	t.Setenv("GOFASTA_DEPLOY_HEALTH_PATH", "/env/health")
+	t.Setenv("GOFASTA_DEPLOY_HEALTH_TIMEOUT", "77")
+	t.Setenv("GOFASTA_DEPLOY_KEEP_RELEASES", "9")
+	t.Setenv("GOFASTA_DEPLOY_STRICT_HOST_KEY", "no")
+
+	cfg, err := LoadDeployConfig(nil)
+	require.NoError(t, err)
+	assert.Equal(t, "/env/health", cfg.HealthPath)
+	assert.Equal(t, 77, cfg.HealthTimeout)
+	assert.Equal(t, 9, cfg.KeepReleases)
+	assert.Equal(t, "no", cfg.StrictHostKey)
+}
+
+// ── Derived helpers ──
+
+func TestComposeProject_NormalizesAppName(t *testing.T) {
+	for in, want := range map[string]string{
+		"myapp":    "myapp",
+		"My.App":   "my-app",
+		"_leading": "leading",
+		"API_v2":   "api_v2",
+		"...":      "app",
+	} {
+		cfg := &DeployConfig{AppName: in}
+		assert.Equal(t, want, cfg.ComposeProject(), "AppName %q", in)
+	}
+}
+
+func TestEnvPrefix_MirrorsScaffoldUpper(t *testing.T) {
+	for in, want := range map[string]string{
+		"myapp":  "MYAPP",
+		"my-app": "MY_APP",
+		"api.v2": "API_V2",
+	} {
+		cfg := &DeployConfig{AppName: in}
+		assert.Equal(t, want, cfg.EnvPrefix(), "AppName %q", in)
+	}
 }

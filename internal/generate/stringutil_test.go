@@ -16,7 +16,7 @@ func TestToPascalCase(t *testing.T) {
 		{"product-name", "ProductName"},
 		{"", ""},
 		{"already", "Already"},
-		{"UPPER", "UPPER"},
+		{"UPPER", "Upper"},
 		{"a", "A"},
 		{"multi_word_name", "MultiWordName"},
 		{"kebab-case-name", "KebabCaseName"},
@@ -57,7 +57,7 @@ func TestToSnakeCase(t *testing.T) {
 		{"product", "product"},
 		{"", ""},
 		{"A", "a"},
-		{"ABTest", "a_b_test"},
+		{"ABTest", "ab_test"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.input, func(t *testing.T) {
@@ -88,5 +88,21 @@ func TestPluralize(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			assert.Equal(t, tc.expected, pluralize(tc.input))
 		})
+	}
+}
+
+func TestFieldPascalCase_Initialisms(t *testing.T) {
+	cases := map[string]string{
+		"owner_id":   "OwnerID",
+		"id":         "ID",
+		"api_key":    "APIKey",
+		"avatar_url": "AvatarURL",
+		"name":       "Name",
+		"unit_price": "UnitPrice",
+		"uuid":       "UUID",
+		"http_code":  "HTTPCode",
+	}
+	for in, want := range cases {
+		assert.Equal(t, want, fieldPascalCase(in), "fieldPascalCase(%q)", in)
 	}
 }

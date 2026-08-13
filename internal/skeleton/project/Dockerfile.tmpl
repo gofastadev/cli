@@ -3,13 +3,18 @@
 # Designed for VPS deployment with Docker — paired with `gofasta deploy`
 # (which ships the built image over SSH and starts it via Docker Compose).
 #
-# Build:  docker build -t myapp .
-# Run:    docker run -p 8080:8080 --env-file .env myapp
+# Build:  docker build -t {{.ProjectNameLower}} .
+# Run:    docker run -p 8080:8080 --env-file .env {{.ProjectNameLower}}
 
 # ── Stage 1: Build ──
 FROM golang:1.25.0-alpine AS builder
 
 RUN apk add --no-cache git
+{{- if eq .DBDriver "sqlite"}}
+# The sqlite3 migrate driver (mattn/go-sqlite3) is cgo-backed — the
+# builder needs a C toolchain for it.
+RUN apk add --no-cache build-base
+{{- end}}
 
 WORKDIR /build
 COPY go.mod go.sum ./
@@ -17,8 +22,11 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /app ./app/main
 
-# Install migrate CLI for the runner stage
-RUN go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' \
+# Install the migrate CLI for the runner stage — the app's `migrate`
+# subcommand shells out to it. Version pinned to v4.18.1; keep in sync
+# with the binary-method server install in the gofasta CLI
+# (internal/deploy/setup.go).
+RUN go install -tags '{{if eq .DBDriver "sqlite"}}sqlite3{{else}}{{.DBDriver}}{{end}}' \
     github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1
 
 # ── Stage 2: Run ──
@@ -31,10 +39,30 @@ COPY --from=builder /go/bin/migrate /usr/local/bin/migrate
 COPY db/migrations /migrations
 COPY config.yaml /config.yaml
 COPY templates /templates
+# Runtime assets resolved relative to the working directory: configs/
+# carries the Casbin RBAC model + policies (serve refuses to start
+# without them) and locales/ the i18n catalogs.
+COPY configs /configs
+COPY locales /locales
 
-ENV PORT=8080
+# Run as a non-root user: a compromised app process can't install
+# packages, rewrite the binary, or escalate inside the container. The
+# copied assets stay root-owned and world-readable, which is exactly
+# right — the app only reads them. Port 8080 needs no privileges.
+RUN addgroup -S app && adduser -S -G app app
+{{- if eq .DBDriver "sqlite"}}
+# SQLite writes its database under /data; compose mounts the app_data
+# volume there. Created app-owned here so the fresh volume inherits
+# writable ownership.
+RUN mkdir -p /data && chown app:app /data
+{{- end}}
+USER app
+
+# The production container listens on the fixed internal port 8080
+# (config.yaml's server.port default); compose maps the host port onto
+# it. No bare PORT env var — the app's config loader doesn't read one.
 # Container apps must listen on all interfaces so the published port is
-# reachable from outside the container. The framework default is 127.0.0.1
+# reachable from outside the container. The gofasta library's default is 127.0.0.1
 # (loopback) to avoid the macOS firewall prompt during local Air rebuilds;
 # inside a container that default would make the app unreachable, hence
 # this override.

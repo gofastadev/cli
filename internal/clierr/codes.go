@@ -98,11 +98,20 @@ const (
 	CodeDevServiceUnhealthy  Code = "DEV_SERVICE_UNHEALTHY"
 	CodeDevMigrationFailed   Code = "DEV_MIGRATION_FAILED"
 	CodeDevAirNotInstalled   Code = "DEV_AIR_NOT_INSTALLED"
+	CodeDevAirExit           Code = "DEV_AIR_EXIT"
 	CodeDevPortInUse         Code = "DEV_PORT_IN_USE"
 	CodeDevFlagConflict      Code = "DEV_FLAG_CONFLICT"
 	CodeDevLocalReplace      Code = "DEV_LOCAL_REPLACE"
 	CodeDevServiceUnknown    Code = "DEV_SERVICE_UNKNOWN"
 	CodeDevPreflightCancel   Code = "DEV_PREFLIGHT_CANCELED"
+
+	// --- Upgrade (gofasta upgrade) ---
+	//
+	// CodeUpgradeVerification fires when the self-update cannot prove the
+	// downloaded binary's integrity: the checksums.txt asset couldn't be
+	// fetched/parsed, or the computed SHA-256 does not match the published
+	// checksum. Either way we refuse to install the unverified binary.
+	CodeUpgradeVerification Code = "UPGRADE_VERIFICATION_FAILED"
 
 	// CodeInteractiveOnly is returned when a command that REQUIRES an
 	// interactive terminal (REPL, TUI, etc.) is invoked with --json.
@@ -168,6 +177,30 @@ const (
 	// --- Debug stack resolver (gofasta debug stack) ---
 	CodeDebugStackParseFailed  Code = "DEBUG_STACK_PARSE_FAILED"
 	CodeDebugSourceUnavailable Code = "DEBUG_SOURCE_UNAVAILABLE"
+
+	// --- Refactor (gofasta refactor feature-package) ---
+	//
+	// Ineligible — the project isn't in layered layout, so there's
+	// nothing to convert.
+	CodeRefactorIneligible Code = "REFACTOR_INELIGIBLE"
+	// Aborted — the migration ran the per-resource compile-gate and
+	// found a failure. The partial state is left for the user to
+	// inspect (or `git restore`).
+	CodeRefactorAborted Code = "REFACTOR_ABORTED"
+	// DirtyTree — the working tree has uncommitted changes; pass
+	// --force to proceed anyway.
+	CodeRefactorDirtyTree Code = "REFACTOR_DIRTY_TREE"
+	// ResourceNotFound — the named resource doesn't have a model file
+	// at the expected layered path.
+	CodeRefactorResourceNotFound Code = "REFACTOR_RESOURCE_NOT_FOUND"
+	// PrecheckFailed — the eligibility preflight found blocking
+	// conditions (torn per-resource state, unparseable files the
+	// migration must transform, a non-scaffold-shaped gqlgen.yml).
+	// Not overridable: proceeding would corrupt the project.
+	CodeRefactorPrecheckFailed Code = "REFACTOR_PRECHECK_FAILED"
+	// NoGit — the project is not a git repository, so an aborted
+	// migration cannot be reverted; pass --force to accept the risk.
+	CodeRefactorNoGit Code = "REFACTOR_NO_GIT"
 )
 
 // meta carries the remediation hint and docs URL for a code. Looked up
@@ -205,7 +238,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/getting-started/installation",
 	},
 	CodeGofastaInstall: {
-		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and retry, or run `go get github.com/gofastadev/gofasta@latest` inside the generated project once the sum DB catches up",
+		Hint: "wait 5–30 minutes for sum.golang.org to index a freshly-published release and re-run `gofasta new`; the CLI installs the exact gofasta library version it was tested against, so no manual `go get` is needed",
 		Docs: "https://gofasta.dev/docs/cli-reference/new",
 	},
 	CodeGoBuildFailed: {
@@ -275,6 +308,31 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/cli-reference/db",
 	},
 
+	CodeRefactorIneligible: {
+		Hint: "run `gofasta refactor status` to see the project's current layout — `refactor feature` needs a layered project, `refactor layered` a feature one",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorAborted: {
+		Hint: "inspect the reported failure, then `git restore .` (or `git checkout -- .`) to roll the partial migration back before retrying",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorDirtyTree: {
+		Hint: "commit or stash your changes first so an aborted migration can be reverted cleanly, or pass --force to proceed anyway",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorResourceNotFound: {
+		Hint: "check the resource name against `ls app/models/` (layered) or `ls app/` (feature), or pass --all to migrate every discovered resource",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorPrecheckFailed: {
+		Hint: "fix the blocking conditions listed above (run `gofasta refactor status` to re-check), then re-run the migration",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+	CodeRefactorNoGit: {
+		Hint: "run `git init && git add -A && git commit -m checkpoint` so an aborted migration can be reverted, or pass --force to accept the risk",
+		Docs: "https://gofasta.dev/docs/cli-reference/refactor",
+	},
+
 	CodeDeployHostRequired: {
 		Hint: "set `deploy.host` in config.yaml or pass --host user@server",
 		Docs: "https://gofasta.dev/docs/cli-reference/deploy",
@@ -288,7 +346,7 @@ var registry = map[Code]meta{
 		Docs: "https://gofasta.dev/docs/cli-reference/deploy",
 	},
 	CodeHealthCheckFailed: {
-		Hint: "the deployed app did not respond at the health endpoint within the timeout; the previous release is still active — inspect logs with `gofasta deploy logs`",
+		Hint: "the deployed app did not respond at the health endpoint within the timeout; gofasta automatically rolled back to the previous release (first deploys are left in place) — inspect logs with `gofasta deploy logs`",
 		Docs: "https://gofasta.dev/docs/cli-reference/deploy",
 	},
 	CodeDockerFailed: {
@@ -359,6 +417,10 @@ var registry = map[Code]meta{
 		Hint: "Air is not registered on the project toolchain; run `go get github.com/air-verse/air@latest && go mod edit -tool github.com/air-verse/air`",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
 	},
+	CodeDevAirExit: {
+		Hint: "the Air hot-reload process exited with an error that wasn't a user-initiated shutdown — scroll up for Air's own output (usually a compile error in the project or a broken air.toml)",
+		Docs: "https://gofasta.dev/docs/cli-reference/dev",
+	},
 	CodeDevPortInUse: {
 		Hint: "another process is already bound to the configured PORT; stop it, pick a different port with `--port`, or update `server.port` in config.yaml",
 		Docs: "https://gofasta.dev/docs/cli-reference/dev",
@@ -382,6 +444,10 @@ var registry = map[Code]meta{
 	CodeInteractiveOnly: {
 		Hint: "this command requires an interactive terminal and cannot run in --json / headless mode; drop --json or invoke a non-interactive equivalent",
 		Docs: "https://gofasta.dev/docs/cli-reference",
+	},
+	CodeUpgradeVerification: {
+		Hint: "could not verify the downloaded binary against the release checksums.txt — retry, or download and verify the release asset manually before installing",
+		Docs: "https://gofasta.dev/docs/cli-reference/upgrade",
 	},
 
 	CodeDebugAppUnreachable: {
@@ -530,15 +596,4 @@ func lookup(code Code) meta {
 		return m
 	}
 	return meta{}
-}
-
-// AllCodes returns every code present in the registry, sorted in the order
-// they are declared above. Intended for tests that want to assert all codes
-// have non-empty hint strings.
-func AllCodes() []Code {
-	codes := make([]Code, 0, len(registry))
-	for code := range registry {
-		codes = append(codes, code)
-	}
-	return codes
 }

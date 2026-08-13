@@ -42,11 +42,15 @@ AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE users
+    -- record_version derives from the PRE-update value (the deleted
+    -- pseudo-table), matching the OLD+1 semantics of the other drivers.
+    -- Reading the live row here would add 1 ON TOP of the increment the
+    -- application already wrote, skipping a version per update.
+    UPDATE t
     SET updated_at = GETDATE(),
-        record_version = users.record_version + 1
-    FROM users
-    INNER JOIN inserted ON users.id = inserted.id;
+        record_version = d.record_version + 1
+    FROM users t
+    INNER JOIN deleted d ON t.id = d.id;
 END';
 
 EXEC sp_executesql N'

@@ -2,13 +2,131 @@ package gitdiff
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
+
+// failingCommand returns a *exec.Cmd whose Run() / Output() will fail
+// because "false" exits with status 1 on every platform we support.
+func failingCommand(_ context.Context, _ string, _ ...string) *exec.Cmd {
+	return exec.Command("false")
+}
+
+func TestChangedFiles_GitNotOnPath(t *testing.T) {
+	saved := execLookPath
+	execLookPath = func(_ string) (string, error) { return "", errors.New("no git") }
+	t.Cleanup(func() { execLookPath = saved })
+
+	_, err := ChangedFiles(context.Background(), "HEAD", Options{})
+	require.Error(t, err)
+}
+
+func TestChangedFiles_DiffSinceRefFails(t *testing.T) {
+	savedExec := execCommand
+	savedLook := execLookPath
+	execLookPath = func(_ string) (string, error) { return "/usr/bin/git", nil }
+	// 1) is-inside-work-tree → "true"
+	// 2) rev-parse --verify ref → succeeds
+	// 3) diff --name-status ref...HEAD → fails
+	execCommand = stagedExecCommand(t, []func() *exec.Cmd{
+		okCmd("true\n"),
+		okCmd(""), // refResolves only needs no-error
+		failCmd(),
+	})
+	t.Cleanup(func() { execCommand = savedExec; execLookPath = savedLook })
+
+	_, err := ChangedFiles(context.Background(), "HEAD", Options{})
+	require.Error(t, err)
+}
+
+func TestChangedFiles_StagedDiffFails(t *testing.T) {
+	savedExec := execCommand
+	savedLook := execLookPath
+	execLookPath = func(_ string) (string, error) { return "/usr/bin/git", nil }
+	execCommand = stagedExecCommand(t, []func() *exec.Cmd{
+		okCmd("true\n"), // is-inside
+		failCmd(),       // git diff --cached fails (ref == "" so no ref-resolve call)
+	})
+	t.Cleanup(func() { execCommand = savedExec; execLookPath = savedLook })
+
+	_, err := ChangedFiles(context.Background(), "", Options{})
+	require.Error(t, err)
+}
+
+func TestChangedFiles_WorkingTreeDiffFails(t *testing.T) {
+	savedExec := execCommand
+	savedLook := execLookPath
+	execLookPath = func(_ string) (string, error) { return "/usr/bin/git", nil }
+	execCommand = stagedExecCommand(t, []func() *exec.Cmd{
+		okCmd("true\n"), // is-inside
+		okCmd(""),       // staged
+		failCmd(),       // unstaged fails
+	})
+	t.Cleanup(func() { execCommand = savedExec; execLookPath = savedLook })
+
+	_, err := ChangedFiles(context.Background(), "", Options{})
+	require.Error(t, err)
+}
+
+func TestChangedFiles_LsFilesFails(t *testing.T) {
+	savedExec := execCommand
+	savedLook := execLookPath
+	execLookPath = func(_ string) (string, error) { return "/usr/bin/git", nil }
+	execCommand = stagedExecCommand(t, []func() *exec.Cmd{
+		okCmd("true\n"), // is-inside
+		okCmd(""),       // staged
+		okCmd(""),       // unstaged
+		failCmd(),       // ls-files fails
+	})
+	t.Cleanup(func() { execCommand = savedExec; execLookPath = savedLook })
+
+	_, err := ChangedFiles(context.Background(), "", Options{})
+	require.Error(t, err)
+}
+
+func TestRunGit_NoStderrSurfacesUnderlyingError(t *testing.T) {
+	saved := execCommand
+	// Command that exits non-zero AND writes nothing to stderr. `false`
+	// fits the bill — on every platform it exits 1 with no output.
+	execCommand = failingCommand
+	t.Cleanup(func() { execCommand = saved })
+
+	_, err := runGit(context.Background(), "doesnotmatter")
+	require.Error(t, err)
+	// The msg from `false` is empty, so we fall through to err.Error()
+	// — non-empty by construction.
+	require.NotEmpty(t, err.Error())
+}
+
+func TestFileSet_AddEmptyIsNoop(t *testing.T) {
+	s := newFileSet()
+	s.add("")
+	require.Empty(t, s.sorted())
+}
+
+func TestAbsorbStatus_SkipsTooFewParts(t *testing.T) {
+	s := newFileSet()
+	// "M" with no tab → only 1 part; absorbStatus should skip.
+	s.absorbStatus("M\n", false)
+	require.Empty(t, s.sorted())
+}
+
+func TestAbsorbStatus_HandlesRenamesAndCopies(t *testing.T) {
+	s := newFileSet()
+	// R100  old.go  new.go  → take new.go
+	// C75   src.go  copy.go → take copy.go
+	// R100  shortrec      (only 2 parts) → ignored
+	s.absorbStatus("R100\told.go\tnew.go\nC75\tsrc.go\tcopy.go\nR100\tshortrec\n", false)
+	got := s.sorted()
+	require.ElementsMatch(t, []string{"new.go", "copy.go"}, got)
+}
 
 // setupGitRepo creates a temp git repo with a known structure for testing.
 // Returns the repo path so the test can chdir into it.
@@ -191,8 +309,6 @@ func TestChangedFiles_ErrorsOutsideGitRepo(t *testing.T) {
 		t.Fatal("expected error outside git repo, got nil")
 	}
 }
-
-// ----- helpers -----------------------------------------------------------
 
 func TestFilterGoFiles(t *testing.T) {
 	in := []string{"a.go", "b.txt", "pkg/c.go", "d.md"}

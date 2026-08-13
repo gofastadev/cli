@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
@@ -206,4 +207,62 @@ func TestDebugRequestsCmd_RunE(t *testing.T) {
 	withDebugAppURL(t, url)
 	resetAllDebugFlags()
 	require.NoError(t, debugRequestsCmd.RunE(debugRequestsCmd, nil))
+}
+
+func TestRunDebugRequests_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, sampleRequests())
+		},
+	})
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	require.NoError(t, runDebugRequests())
+}
+
+func TestRunDebugRequests_EmptyRing(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedRequest{})
+		},
+	})
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	require.NoError(t, runDebugRequests())
+}
+
+func TestRunDebugRequests_DevtoolsOff(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/health": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"devtools":"stub"}`))
+		},
+	})
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	err := runDebugRequests()
+	require.Error(t, err)
+}
+
+func TestRunDebugRequests_BadFilterPropagates(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, []scrapedRequest{}) },
+	})
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	debugRequestsSlowerThan = "not-a-duration"
+	t.Cleanup(resetRequestFlags)
+	require.Error(t, runDebugRequests())
+}
+
+func TestRunDebugRequests_LimitSlices(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, sampleRequests())
+		},
+	})
+	withDebugAppURL(t, url)
+	resetRequestFlags()
+	debugRequestsLimit = 2
+	t.Cleanup(resetRequestFlags)
+	require.NoError(t, runDebugRequests())
 }

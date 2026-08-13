@@ -1,0 +1,17 @@
+# Dependabot keeps both the Go module graph and the pinned GitHub
+# Actions SHAs current. Actions are pinned to full commit SHAs in the
+# workflows (supply-chain hardening); Dependabot understands the
+# `# vX.Y.Z` comment convention and bumps SHA + comment together.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      go-deps:
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

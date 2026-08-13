@@ -3,7 +3,6 @@ package generate
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/cliout"
@@ -18,9 +17,6 @@ func GenEmailTemplate(d ScaffoldData) error {
 		cliout.Skip(path, "exists")
 		return nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 
 	// Replace placeholders manually instead of using text/template
 	// (because the output itself contains {{...}} directives for the email renderer)
@@ -28,11 +24,11 @@ func GenEmailTemplate(d ScaffoldData) error {
 	content = strings.ReplaceAll(content, "__SNAKE_NAME__", d.SnakeName)
 	content = strings.ReplaceAll(content, "__NAME__", d.Name)
 
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		return err
-	}
-	cliout.Create(path)
-	return nil
+	// Through the planner chokepoint: honors dry-run, records the
+	// planned create, guards against paths outside the project, and
+	// owns the MkdirAll. This generator previously wrote directly to
+	// disk and was invisible to `--dry-run` plans.
+	return writeOrRecordCreate(path, []byte(content))
 }
 
 const emailTemplateContent = `{{template "base.html" .}}

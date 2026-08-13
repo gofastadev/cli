@@ -1,29 +1,33 @@
 # {{.ProjectName}} Systemd Service
-# For bare metal VPS deployment (no Docker).
+# For bare-metal VPS deployment (no Docker), managed by `gofasta deploy`.
 #
-# Setup:
-#   1. Build: go build -o /usr/local/bin/{{.ProjectNameLower}} ./app/main
-#   2. Copy config: cp config.yaml /etc/{{.ProjectNameLower}}/config.yaml
-#   3. Copy migrations: cp -r db/migrations /etc/{{.ProjectNameLower}}/migrations
-#   4. Copy templates: cp -r templates /etc/{{.ProjectNameLower}}/templates
-#   5. Create env file: cp .env /etc/{{.ProjectNameLower}}/.env
-#   6. Create user: useradd -r -s /bin/false {{.ProjectNameLower}}
-#   7. Install service: cp deployments/systemd/app.service /etc/systemd/system/{{.ProjectNameLower}}.service
-#   8. Enable: systemctl enable {{.ProjectNameLower}} && systemctl start {{.ProjectNameLower}}
-#   9. Logs: journalctl -u {{.ProjectNameLower}} -f
+# `gofasta deploy setup` installs prerequisites and creates the layout;
+# `gofasta deploy --method binary` then installs this unit and manages
+# releases under /opt/{{.ProjectNameLower}}:
+#
+#   /opt/{{.ProjectNameLower}}/releases/<timestamp>/   one directory per release
+#   /opt/{{.ProjectNameLower}}/shared/.env             production secrets (create this once)
+#   /opt/{{.ProjectNameLower}}/current                 symlink to the live release
+#
+# The unit runs from `current`, so config.yaml, migrations/, and templates/
+# always resolve inside the active release.
+#
+# Logs: journalctl -u {{.ProjectNameLower}} -f
 
 [Unit]
 Description={{.ProjectName}} Application Server
-After=network.target postgresql.service mysql.service
-Wants=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
 User={{.ProjectNameLower}}
 Group={{.ProjectNameLower}}
-WorkingDirectory=/etc/{{.ProjectNameLower}}
-EnvironmentFile=/etc/{{.ProjectNameLower}}/.env
-# The framework default Server.Host is 127.0.0.1 (loopback) — chosen so
+WorkingDirectory=/opt/{{.ProjectNameLower}}/current
+# "-" prefix: don't fail the unit when shared/.env doesn't exist (a
+# config.yaml-only project is valid); secrets normally live there.
+EnvironmentFile=-/opt/{{.ProjectNameLower}}/shared/.env
+# The gofasta library's default Server.Host is 127.0.0.1 (loopback) — chosen so
 # macOS doesn't prompt the firewall on every Air rebuild during local
 # development. On a production VPS the app must listen on all interfaces
 # (or at least the address nginx upstreams to), so override here.
@@ -39,7 +43,7 @@ StandardError=journal
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/etc/{{.ProjectNameLower}}
+ReadWritePaths=/opt/{{.ProjectNameLower}}
 PrivateTmp=true
 
 # Resource limits

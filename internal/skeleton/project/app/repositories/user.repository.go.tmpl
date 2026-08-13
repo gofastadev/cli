@@ -2,6 +2,7 @@ package repositories
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -35,6 +36,20 @@ func NewUserRepository(db *gorm.DB) *UserRepository {
 	return &UserRepository{db: db}
 }
 
+// userFilterColumns is the allowlist of database columns list queries
+// may filter by. Filter keys are interpolated into WHERE clauses as
+// column names, so this list — like the sort allowlist in the service —
+// is the trust boundary between request input and SQL; anything not
+// listed is silently ignored.
+// Note: password is deliberately NOT filterable.
+var userFilterColumns = []string{
+	"first_name",
+	"other_names",
+	"email",
+	"phone_number",
+	"is_active",
+}
+
 // List returns the paginated set of users matching `filter`, sorted by
 // `sort`, plus the total count for pagination. Soft-deleted rows are
 // excluded automatically because BaseModelImpl.DeletedAt is
@@ -45,7 +60,7 @@ func (r *UserRepository) List(ctx context.Context, filter map[string]any, page, 
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.List")
 	defer span.End()
 
-	query, err := utils.BuildQueryForAnyModel(r.db.WithContext(ctx).Model(&models.User{}), filter)
+	query, err := utils.BuildQueryForAnyModel(r.db.WithContext(ctx).Model(&models.User{}), filter, userFilterColumns)
 	if err != nil {
 		span.RecordError(err)
 		return nil, 0, fmt.Errorf("UserRepository.List: build query: %w", err)
@@ -81,8 +96,9 @@ func (r *UserRepository) FindByID(ctx context.Context, id uuid.UUID) (*models.Us
 	return &user, nil
 }
 
-// Create inserts a new user row. The framework's BeforeCreate hook on
-// BaseModelImpl populates ID, CreatedAt, UpdatedAt, and defaults.
+// Create inserts a new user row. The gofasta library's BeforeCreate
+// hook on BaseModelImpl populates ID, CreatedAt, UpdatedAt, and
+// defaults.
 func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.Create")
 	defer span.End()
@@ -94,17 +110,24 @@ func (r *UserRepository) Create(ctx context.Context, user *models.User) error {
 	return nil
 }
 
-// UpdateIfVersionMatches runs the optimistic-locking UPDATE with the
-// version check folded into the WHERE clause, then refetches the row
-// in the same transaction. The returned *models.User is exactly what
-// THIS update wrote — no other writer can race in between (snapshot
-// semantics).
+// UpdateIfVersionMatches runs the optimistic-locking update as
+// read-classify-write inside one transaction (same shape as
+// SoftDeleteIfDeletable), then refetches the row so the returned
+// *models.User is exactly what THIS update wrote (snapshot semantics).
 //
-// On version mismatch the UPDATE writes 0 rows; we return
-// (nil, 0, nil) so the service can map to ErrUserVersionConflict.
+// Outcomes the service maps to distinct domain sentinels:
 //
-// On success we bump record_version in the same UPDATE so concurrent
-// readers see the new version.
+//   - row missing OR already soft-deleted → gorm.ErrRecordNotFound
+//     (→ ErrUserNotFound → 404). Previously the version predicate
+//     alone made "missing" indistinguishable from "stale", so PUT on
+//     a nonexistent id returned 412 with retry advice that could
+//     never succeed.
+//   - version mismatch → (nil, 0, nil) (→ ErrUserVersionConflict → 412).
+//   - success → updated row, record_version bumped in the same UPDATE.
+//
+// expectedVersion == -1 means "match any version" — the RFC 7232
+// `If-Match: *` precondition. The version predicate is skipped but the
+// increment still applies (from the just-read current version).
 func (r *UserRepository) UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.User, int64, error) {
 	ctx, span := otel.Tracer(userRepositoryTracerName).Start(ctx, "UserRepository.UpdateIfVersionMatches")
 	defer span.End()
@@ -112,9 +135,20 @@ func (r *UserRepository) UpdateIfVersionMatches(ctx context.Context, id uuid.UUI
 	var user models.User
 	var affected int64
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		fields["record_version"] = expectedVersion + 1
+		var current models.User
+		if err := tx.Where("id = ?", id).First(&current).Error; err != nil {
+			return err // ErrRecordNotFound → caller maps to 404
+		}
+		version := expectedVersion
+		if version == -1 { // If-Match: * — accept whatever is current
+			version = current.RecordVersion
+		}
+		fields["record_version"] = version + 1
+		// Keep the version predicate in the UPDATE too: the read above
+		// classifies, the predicate guarantees no writer raced between
+		// the read and the write.
 		res := tx.Model(&models.User{}).
-			Where("id = ? AND record_version = ?", id, expectedVersion).
+			Where("id = ? AND record_version = ?", id, version).
 			Updates(fields)
 		if res.Error != nil {
 			return res.Error
@@ -127,6 +161,9 @@ func (r *UserRepository) UpdateIfVersionMatches(ctx context.Context, id uuid.UUI
 	})
 	if err != nil {
 		span.RecordError(err)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, 0, err // unwrapped so the service's errors.Is stays cheap
+		}
 		return nil, 0, fmt.Errorf("UserRepository.UpdateIfVersionMatches: %w", err)
 	}
 	if affected == 0 {

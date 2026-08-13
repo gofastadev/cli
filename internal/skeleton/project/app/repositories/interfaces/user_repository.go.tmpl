@@ -32,9 +32,10 @@ var ErrUserNotDeletable = errors.New("user is not deletable")
 type UserRepositoryInterface interface {
 	// List returns the paginated, sorted, filtered set of users.
 	// `filter` is the per-column ILIKE map (typically built from
-	// services.ListUsersFilter.AsRepoFilter()). `sort` is a
-	// pre-sanitized "<column> ASC|DESC" string from
-	// `utils.PreparePaginating.GetSort()`.
+	// services.ListUsersFilter.AsRepoFilter()). `sort` is an
+	// allowlist-validated "<column> ASC|DESC" string produced by the
+	// service's buildSortClause (via utils.SafeOrderBy) — never raw
+	// request input — so it is safe to pass to GORM's .Order().
 	List(ctx context.Context, filter map[string]any, page, limit int, sort string) ([]*models.User, int64, error)
 
 	// FindByID returns one user by primary key. Soft-deleted rows are
@@ -42,18 +43,20 @@ type UserRepositoryInterface interface {
 	// Returns gorm.ErrRecordNotFound when no row matches.
 	FindByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 
-	// Create inserts a new user row. The framework's BeforeCreate hook
-	// on BaseModelImpl sets the UUID, timestamps, and defaults.
+	// Create inserts a new user row. The gofasta library's BeforeCreate
+	// hook on BaseModelImpl sets the UUID, timestamps, and defaults.
 	Create(ctx context.Context, user *models.User) error
 
-	// UpdateIfVersionMatches runs an atomic UPDATE with the version
-	// check folded into the WHERE clause, then refetches the row in
-	// the same transaction so the returned *models.User is exactly
-	// what THIS update wrote (snapshot semantics).
+	// UpdateIfVersionMatches runs the optimistic-locking update as
+	// read-classify-write inside one transaction, then refetches the
+	// row so the returned *models.User is exactly what THIS update
+	// wrote (snapshot semantics). expectedVersion == -1 means "match
+	// any version" (the If-Match: * precondition).
 	//
 	// Returns:
 	//   (user, 1, nil) — success
-	//   (nil, 0, nil)  — version didn't match (caller maps to ErrUserVersionConflict)
+	//   (nil, 0, nil)  — row exists, version didn't match (caller maps to ErrUserVersionConflict)
+	//   (nil, 0, gorm.ErrRecordNotFound) — no live row with that id (caller maps to ErrUserNotFound)
 	//   (nil, 0, err)  — infrastructure failure
 	UpdateIfVersionMatches(ctx context.Context, id uuid.UUID, expectedVersion int, fields map[string]any) (*models.User, int64, error)
 

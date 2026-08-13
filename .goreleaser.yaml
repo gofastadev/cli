@@ -44,6 +44,12 @@ archives:
 
 checksum:
   name_template: "checksums.txt"
+
+# One SPDX SBOM per released archive (generated with syft, which the
+# release workflow installs). Lands next to the archives on the release
+# page so consumers can audit exactly what each binary contains.
+sboms:
+  - artifacts: archive
   algorithm: sha256
 
 snapshot:
@@ -83,11 +89,9 @@ release:
   header: |
     ## Gofasta CLI {{ .Tag }}
 
-    Install or upgrade with the shell installer (no Go toolchain required):
-
-    ```bash
-    curl -fsSL https://raw.githubusercontent.com/gofastadev/cli/main/dist/install.sh | sh
-    ```
+    Install or upgrade by downloading the pre-built archive for your
+    platform from the assets below and unpacking `gofasta` onto your
+    `PATH` (no Go toolchain required).
 
     Or with Go installed:
 

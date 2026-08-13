@@ -1,11 +1,14 @@
 package generate
 
 import (
+	"bytes"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/gofastadev/cli/internal/cliout"
+	"github.com/gofastadev/cli/internal/featurize"
 )
 
 // containerFieldsMarker pins the line `gofasta g scaffold` inserts new
@@ -15,30 +18,86 @@ import (
 // warning. Keep this string in sync with container.go.tmpl.
 const containerFieldsMarker = "// gofasta:scaffold:container-fields"
 
+// GeneratorMarkers maps project files to the scaffold marker comments
+// the `gofasta g` patchers anchor on. The refactor preflight consumes
+// this to warn when a marker was removed: the refactor itself succeeds
+// without them (its transforms are AST-anchored), but every future
+// `gofasta g scaffold` on the project would fail to patch that file.
+func GeneratorMarkers() map[string][]string {
+	return map[string][]string{
+		"app/di/container.go":             {containerFieldsMarker},
+		"app/di/wire.go":                  {wireProvidersMarker},
+		"app/rest/routes/index.routes.go": {routeConfigFieldsMarker, routeRegistrationsMarker},
+		"cmd/serve.go":                    {routeConfigInitMarker},
+		// Only present in GraphQL projects; the preflight checker skips
+		// files that don't exist.
+		"app/graphql/resolvers/resolver.go": {resolverFieldsMarker},
+	}
+}
+
+// identifierPresent reports whether ident occurs as a COMPLETE
+// identifier (or dotted reference) in src. The patchers use it for
+// idempotency instead of strings.Contains, whose substring semantics
+// false-skipped a new resource whose name is contained in an existing
+// one — after scaffolding SubOrder, Contains(s, "OrderService") is true
+// and a subsequent `g scaffold Order` silently skipped every wiring
+// patch while PatchWireFile still added the provider set, breaking
+// `go tool wire`. Word boundaries make "OrderService" match only
+// itself, never "SubOrderService" or "OrderServiceV2".
+func identifierPresent(src, ident string) bool {
+	re := regexp.MustCompile(`\b` + regexp.QuoteMeta(ident) + `\b`)
+	return re.MatchString(src)
+}
+
 // PatchContainer adds repo/service/controller fields to app/di/container.go.
+// Field type qualifiers depend on the project layout — in layered mode
+// the fields reference repoInterfaces/svcInterfaces/controllers, in
+// feature mode they reference the per-feature package alias.
 func PatchContainer(d ScaffoldData) error {
-	path := "app/di/container.go"
+	path := d.L().ContainerFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	s := string(content)
 
-	if strings.Contains(s, d.Name+"Service ") {
+	if identifierPresent(s, d.Name+"Service") {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
 
-	repoImport := fmt.Sprintf("\trepoInterfaces \"%s/app/repositories/interfaces\"", d.ModulePath)
-	controllersImport := fmt.Sprintf("\"%s/app/rest/controllers\"", d.ModulePath)
-	if !strings.Contains(s, "repoInterfaces") {
-		s = strings.Replace(s, "\t"+controllersImport, repoImport+"\n\t"+controllersImport, 1)
-	}
-
-	fields := fmt.Sprintf("\t%sRepo       repoInterfaces.%sRepositoryInterface\n\t%sService    svcInterfaces.%sServiceInterface\n",
-		d.Name, d.Name, d.Name, d.Name)
-	if d.IncludeController {
-		fields += fmt.Sprintf("\t%sController *controllers.%sController\n", d.Name, d.Name)
+	var fields string
+	if d.L().IsFeature() {
+		// Feature layout: ensure `<snake>pkg "<mod>/app/<snake>"` is
+		// imported, then reference fields via the alias.
+		alias := d.SnakeName + "pkg"
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			// Insert into the existing import block — anchored on the
+			// closing `)` of the first import GenDecl.
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+		fields = fmt.Sprintf("\t%sRepo       %s.%sRepositoryInterface\n\t%sService    %s.%sServiceInterface\n",
+			d.Name, alias, d.Name, d.Name, alias, d.Name)
+		if d.IncludeController {
+			fields += fmt.Sprintf("\t%sController *%s.%sController\n", d.Name, alias, d.Name)
+		}
+	} else {
+		// Layered layout: original behavior.
+		repoImport := fmt.Sprintf("\trepoInterfaces \"%s/app/repositories/interfaces\"", d.ModulePath)
+		controllersImport := fmt.Sprintf("\"%s/app/rest/controllers\"", d.ModulePath)
+		if !strings.Contains(s, "repoInterfaces") {
+			s = strings.Replace(s, "\t"+controllersImport, repoImport+"\n\t"+controllersImport, 1)
+		}
+		fields = fmt.Sprintf("\t%sRepo       repoInterfaces.%sRepositoryInterface\n\t%sService    svcInterfaces.%sServiceInterface\n",
+			d.Name, d.Name, d.Name, d.Name)
+		if d.IncludeController {
+			fields += fmt.Sprintf("\t%sController *controllers.%sController\n", d.Name, d.Name)
+		}
 	}
 
 	if !strings.Contains(s, containerFieldsMarker) {
@@ -56,16 +115,34 @@ func PatchContainer(d ScaffoldData) error {
 const wireProvidersMarker = "// gofasta:scaffold:wire-providers"
 
 // PatchWireFile adds the provider set to wire.Build in app/di/wire.go.
+// Provider reference depends on layout: `providers.<Name>Set` in
+// layered, `<snake>pkg.<Name>Set` in feature.
 func PatchWireFile(d ScaffoldData) error {
-	path := "app/di/wire.go"
+	path := d.L().WireFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	s := string(content)
 
-	providerRef := fmt.Sprintf("providers.%sSet", d.Name)
-	if strings.Contains(s, providerRef) {
+	var providerRef string
+	if d.L().IsFeature() {
+		alias := d.SnakeName + "pkg"
+		providerRef = fmt.Sprintf("%s.%sSet", alias, d.Name)
+		// Ensure the feature package import is present.
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+	} else {
+		providerRef = fmt.Sprintf("providers.%sSet", d.Name)
+	}
+
+	if identifierPresent(s, providerRef) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -80,9 +157,18 @@ func PatchWireFile(d ScaffoldData) error {
 		[]byte(s))
 }
 
+// resolverFieldsMarker pins the line `gofasta g scaffold` inserts new
+// service fields above in the Resolver struct. Keep in sync with
+// resolver.go.tmpl.
+const resolverFieldsMarker = "// gofasta:scaffold:resolver-fields"
+
 // PatchResolver adds a service field and constructor param to app/graphql/resolvers/resolver.go.
+// The service-interface qualifier depends on the project layout — in
+// layered mode the interface lives in svcInterfaces, in feature mode it
+// lives in the per-feature package (referenced via `<snake>pkg`), same
+// branching as PatchContainer / PatchWireFile.
 func PatchResolver(d ScaffoldData) error {
-	path := "app/graphql/resolvers/resolver.go"
+	path := d.L().ResolverFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -90,14 +176,37 @@ func PatchResolver(d ScaffoldData) error {
 	s := string(content)
 
 	fieldName := d.Name + "Service"
-	if strings.Contains(s, fieldName) {
+	if identifierPresent(s, fieldName) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
 
-	// Add field to Resolver struct
-	fieldLine := fmt.Sprintf("\t%s svcInterfaces.%sServiceInterface\n", fieldName, d.Name)
-	s = strings.Replace(s, "}\n\n// NewResolver", fieldLine+"}\n\n// NewResolver", 1)
+	// Pick the layout-dependent qualifier; in feature mode ensure the
+	// per-feature alias import exists (svcInterfaces is already imported
+	// by the layered resolver.go template).
+	qualifier := "svcInterfaces"
+	if d.L().IsFeature() {
+		qualifier = d.SnakeName + "pkg"
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", qualifier, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+	}
+	ifaceType := fmt.Sprintf("%s.%sServiceInterface", qualifier, d.Name)
+
+	// Add field to Resolver struct, anchored on the scaffold marker —
+	// the previous anchor ("}\n\n// NewResolver") depended on the doc
+	// comment's exact first word and blank-line shape, which one
+	// hand-edit silently broke.
+	if !strings.Contains(s, resolverFieldsMarker) {
+		return fmt.Errorf("%s is missing the %q marker — the scaffold template is out of sync with the patcher; restore the marker comment to enable code generation", path, resolverFieldsMarker)
+	}
+	fieldLine := fmt.Sprintf("\t%s %s\n", fieldName, ifaceType)
+	s = strings.Replace(s, "\t"+resolverFieldsMarker, fieldLine+"\t"+resolverFieldsMarker, 1)
 
 	// Update NewResolver signature
 	paramName := d.LowerName + "Service"
@@ -108,7 +217,7 @@ func PatchResolver(d ScaffoldData) error {
 	}
 	sigEnd := strings.Index(s[sigStart:], ")")
 	currentParams := s[sigStart+len(oldSig) : sigStart+sigEnd]
-	newParam := fmt.Sprintf("%s svcInterfaces.%sServiceInterface", paramName, d.Name)
+	newParam := fmt.Sprintf("%s %s", paramName, ifaceType)
 	s = s[:sigStart+len(oldSig)] + currentParams + ", " + newParam + s[sigStart+sigEnd:]
 
 	// Add field assignment in constructor body
@@ -127,9 +236,33 @@ func PatchResolver(d ScaffoldData) error {
 		[]byte(s))
 }
 
+// PatchGqlgenAutobind adds the new resource's feature package to
+// gqlgen.yml's autobind list, so gqlgen binds the schema types against
+// the hand-written DTOs in app/<snake>/ instead of regenerating
+// duplicates. Feature layout only — the layered autobind entry
+// (<mod>/app/dtos) already covers every resource's DTOs.
+func PatchGqlgenAutobind(d ScaffoldData) error {
+	if !d.L().IsFeature() {
+		return nil
+	}
+	const path = "gqlgen.yml"
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	out := featurize.EnsureGqlgenAutobind(content, d.ModulePath, d.SnakeName)
+	if bytes.Equal(out, content) {
+		cliout.Skip(path, "autobind already covers app/"+d.SnakeName)
+		return nil
+	}
+	return writeOrRecordPatch(path,
+		describePatch("add "+d.ModulePath+"/app/"+d.SnakeName+" to autobind"),
+		out)
+}
+
 // PatchRouteConfig adds controller to RouteConfig and registers routes in app/rest/routes/index.routes.go.
 func PatchRouteConfig(d ScaffoldData) error {
-	path := "app/rest/routes/index.routes.go"
+	path := d.L().RouteIndexFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -137,7 +270,7 @@ func PatchRouteConfig(d ScaffoldData) error {
 	s := string(content)
 
 	controllerField := d.Name + "Controller"
-	if strings.Contains(s, controllerField) {
+	if identifierPresent(s, controllerField) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}
@@ -149,13 +282,28 @@ func PatchRouteConfig(d ScaffoldData) error {
 		return fmt.Errorf("%s is missing the %q marker — restore the marker comment to enable code generation", path, routeRegistrationsMarker)
 	}
 
-	newField := fmt.Sprintf("\t%s *controllers.%sController", controllerField, d.Name)
+	var newField, routeCall string
+	if d.L().IsFeature() {
+		alias := d.SnakeName + "pkg"
+		// Ensure the feature import is in the import block.
+		featureImport := fmt.Sprintf("\t%s \"%s/app/%s\"", alias, d.ModulePath, d.SnakeName)
+		if !strings.Contains(s, featureImport) {
+			closeIdx := strings.Index(s, "\n)")
+			if closeIdx == -1 {
+				return fmt.Errorf("%s: could not locate import block close", path)
+			}
+			s = s[:closeIdx] + "\n" + featureImport + s[closeIdx:]
+		}
+		newField = fmt.Sprintf("\t%s *%s.%sController", controllerField, alias, d.Name)
+		routeCall = fmt.Sprintf("\t%s.RegisterRoutes(api, config.%s)", alias, controllerField)
+	} else {
+		newField = fmt.Sprintf("\t%s *controllers.%sController", controllerField, d.Name)
+		routeCall = fmt.Sprintf("\t%sRoutes(api, config.%s)", d.Name, controllerField)
+	}
 	s = strings.Replace(s,
 		"\t"+routeConfigFieldsMarker,
 		newField+"\n\t"+routeConfigFieldsMarker,
 		1)
-
-	routeCall := fmt.Sprintf("\t%sRoutes(api, config.%s)", d.Name, controllerField)
 	s = strings.Replace(s,
 		"\t"+routeRegistrationsMarker,
 		routeCall+"\n\t"+routeRegistrationsMarker,
@@ -181,7 +329,7 @@ const routeConfigInitMarker = "// gofasta:scaffold:routeconfig-init"
 
 // PatchServeFile adds the controller to RouteConfig initialization in cmd/serve.go.
 func PatchServeFile(d ScaffoldData) error {
-	path := "cmd/serve.go"
+	path := d.L().ServeFile()
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -189,7 +337,7 @@ func PatchServeFile(d ScaffoldData) error {
 	s := string(content)
 
 	controllerField := d.Name + "Controller"
-	if strings.Contains(s, controllerField) {
+	if identifierPresent(s, controllerField) {
 		cliout.Skip(path, "already wired")
 		return nil
 	}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -15,15 +16,6 @@ import (
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
-
-// Tier 4 coverage — the unix-only cbreak/poll code in
-// dev_keyboard_cbreak_unix.go. Three functions require a real PTY pair:
-// makeCbreak (sets termios on a TTY fd), cancelableStdinReader.Read
-// (uses unix.Poll on stdin), and newCancelableStdinReader (allocates a
-// self-pipe). The accessors Close/Fd just need an instance.
-//
-// We allocate the PTY via github.com/creack/pty, which uses /dev/ptmx
-// under the hood and works inside CI containers without a host TTY.
 
 // makeCbreak happy path — apply cbreak mode to a real PTY slave fd.
 // Restore the prior termios via term.Restore so the deferred cleanup
@@ -418,4 +410,36 @@ func TestCancelableStdinReader_ReadEmptyBuffer(t *testing.T) {
 	n, err := rdr.Read(nil)
 	assert.Equal(t, 0, n)
 	assert.NoError(t, err)
+}
+
+// TestStartKeyboardListener_HappyPath lives in the unix-tagged test
+// file because it constructs the unix cancelableStdinReader (the fd
+// field doesn't exist in the fallback build) — keeping it in the
+// cross-platform test file broke `go vet` on windows.
+// startKeyboardListener happy path — all seams succeed, listener
+// launches and returns a non-nil signals channel + active=true. The
+// race detector requires cancelableStdinReader.Close to serialize with
+// in-flight Read (see the readMu inside cancelableStdinReader).
+func TestStartKeyboardListener_HappyPath(t *testing.T) {
+	withTerminalStubs(t, true, nil)
+	origNew := newCancelableStdinReaderFn
+	newCancelableStdinReaderFn = func(fd int) (*cancelableStdinReader, error) {
+		r, w, err := os.Pipe()
+		require.NoError(t, err)
+		return &cancelableStdinReader{fd: fd, cancelR: r, cancelW: w}, nil
+	}
+	t.Cleanup(func() { newCancelableStdinReaderFn = origNew })
+
+	signals, cancel, active := startKeyboardListener(newFakeKB(""), false)
+	require.True(t, active)
+	assert.NotNil(t, signals)
+	cancel()
+	cancel() // idempotent
+}
+
+// killSelfWithSIGINT delivers a real SIGINT to the current process —
+// the fake-exec child uses it so the parent observes a genuinely
+// signaled wait status.
+func killSelfWithSIGINT() {
+	_ = syscall.Kill(os.Getpid(), syscall.SIGINT)
 }

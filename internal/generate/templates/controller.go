@@ -183,9 +183,16 @@ func (c *{{.Name}}Controller) Update(w http.ResponseWriter, r *http.Request) err
 	if err != nil {
 		return err
 	}
-	expectedVersion, err := strconv.Atoi(ifMatch)
-	if err != nil {
-		return apperrors.NewBadRequest(` + "`If-Match must be a positive integer wrapped in quotes (e.g. \"3\")`" + `, nil)
+	// RFC 7232: ` + "`If-Match: *`" + ` matches any current representation —
+	// skip the version precondition (-1 tells the service to accept
+	// whatever version is persisted). Previously this fell into the
+	// Atoi error and rejected the RFC-legal header with a 400.
+	expectedVersion := -1
+	if ifMatch != "*" {
+		expectedVersion, err = strconv.Atoi(ifMatch)
+		if err != nil {
+			return apperrors.NewBadRequest(` + "`If-Match must be a positive integer wrapped in quotes (e.g. \"3\") or *`" + `, nil)
+		}
 	}
 	in, err := httputil.DecodeJSON[dtos.TUpdate{{.Name}}Dto](r)
 	if err != nil {

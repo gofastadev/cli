@@ -201,11 +201,16 @@ AFTER UPDATE
 AS
 BEGIN
     SET NOCOUNT ON;
-    UPDATE {{.PluralSnake}}
+    -- record_version derives from the PRE-update value (the deleted
+    -- pseudo-table), matching the OLD+1 semantics of the other drivers.
+    -- Reading the live row here would add 1 ON TOP of the increment the
+    -- application already wrote, skipping a version per update and
+    -- breaking every optimistic-lock retry.
+    UPDATE t
     SET updated_at = GETDATE(),
-        record_version = {{.PluralSnake}}.record_version + 1
-    FROM {{.PluralSnake}}
-    INNER JOIN inserted ON {{.PluralSnake}}.id = inserted.id;
+        record_version = d.record_version + 1
+    FROM {{.PluralSnake}} t
+    INNER JOIN deleted d ON t.id = d.id;
 END';
 
 EXEC sp_executesql N'

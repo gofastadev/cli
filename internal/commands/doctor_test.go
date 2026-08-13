@@ -2,12 +2,110 @@ package commands
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestDoctorCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, doctorCmd.RunE(doctorCmd, nil))
+}
+
+func TestRunDoctor_AllSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runDoctor()
+	// no config.yaml present, so only required + optional checks run; all succeed
+	assert.NoError(t, err)
+}
+
+func TestRunDoctor_AllFail(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1)
+	err := runDoctor()
+	assert.Error(t, err)
+}
+
+func TestRunDoctor_WithConfigYaml(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	err := runDoctor()
+	assert.NoError(t, err)
+}
+
+func TestRunDoctor_WithConfigYaml_MigrateFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	err := runDoctor()
+	assert.Error(t, err)
+}
+
+func TestCheckGoVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkGoVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckGoVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkGoVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckMigrateVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkMigrateVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckMigrateVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkMigrateVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckDockerVersion_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	_, ok := checkDockerVersion()
+	assert.True(t, ok)
+}
+
+func TestCheckDockerVersion_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	_, ok := checkDockerVersion()
+	assert.False(t, ok)
+}
+
+func TestCheckGoTool_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	fn := checkGoTool("air")
+	_, ok := fn()
+	assert.True(t, ok)
+}
+
+func TestCheckGoTool_FakeFail(t *testing.T) {
+	withFakeExec(t, 1)
+	fn := checkGoTool("air")
+	msg, ok := fn()
+	assert.False(t, ok)
+	assert.Contains(t, msg, "air-verse/air")
+}
+
+func TestPrintDoctorSection(t *testing.T) {
+	assert.NotPanics(t, func() {
+		printDoctorSection(io.Discard, "Required:", []doctorEntry{
+			{Name: "foo", Status: "ok", Message: "bar"},
+			{Name: "foo", Status: "fail", Message: "bar"},
+		})
+	})
+}
 
 func TestDoctorCmd_Registered(t *testing.T) {
 	found := false
@@ -150,4 +248,72 @@ func TestPrintDoctorSection_AllStatuses(t *testing.T) {
 	assert.Contains(t, out, "good")
 	assert.Contains(t, out, "broken")
 	assert.Contains(t, out, "unknown")
+}
+
+// TestRunDoctor_RefactorEligibility: inside a real project shape,
+// doctor surfaces the refactor preflight as project-health entries.
+// The temp fixture is not a git repo, so the summary reports blockers;
+// required checks still pass, so doctor's exit stays zero (project
+// shape facts never flip Passed).
+func TestRunDoctor_RefactorEligibility(t *testing.T) {
+	inRenderedProject(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "refactor")
+	assert.Contains(t, out, "blocker(s) for `gofasta refactor feature`")
+	assert.Contains(t, out, "[no-git]")
+}
+
+func TestRunDoctor_RefactorEligibilityClean(t *testing.T) {
+	inRenderedProject(t)
+	gitInitOrSkip(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "eligible for `gofasta refactor feature`")
+}
+
+// TestRunDoctor_RefactorEligibilityFeatureLayout: a feature-layout
+// project assesses the reverse direction.
+func TestRunDoctor_RefactorEligibilityFeatureLayout(t *testing.T) {
+	migratedProject(t) // flips config.yaml to layout: feature
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "gofasta refactor layered")
+}
+
+// TestRunDoctor_RefactorEligibilityLayoutFallback: a project whose
+// config.yaml pre-dates the project.layout key still gets assessed —
+// app/models/ is the layered signal, same fallback as refactor status.
+func TestRunDoctor_RefactorEligibilityLayoutFallback(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.WriteFile("config.yaml", []byte("server:\n  port: \"8080\"\n"), 0o644))
+	require.NoError(t, os.MkdirAll("app/models", 0o755))
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "gofasta refactor feature")
+}
+
+// TestRunDoctor_RefactorEligibilityWarningsListed: preflight warnings
+// render as info entries (GraphQL projects always carry the
+// generated-hand-edits note).
+func TestRunDoctor_RefactorEligibilityWarningsListed(t *testing.T) {
+	inRenderedGraphQLProject(t)
+	withFakeExec(t, 0)
+
+	out := captureStdout(t, func() {
+		assert.NoError(t, runDoctor())
+	})
+	assert.Contains(t, out, "[generated-hand-edits]")
 }

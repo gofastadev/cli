@@ -2,8 +2,6 @@ package commands
 
 import (
 	"net/http"
-	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -14,15 +12,6 @@ import (
 func TestRunDebugGoroutines_DevtoolsError(t *testing.T) {
 	withDebugAppURL(t, "http://127.0.0.1:1")
 	require.Error(t, runDebugGoroutines())
-}
-
-// TestRunDebugGoroutines_FetchError — previously-unreachable branch
-// (client.Get err != nil after requireDevtools passed). Documenting
-// intentionally: the Get-error case requires a mid-flight connection
-// failure that httptest can't replay cheaply; the devtools-error path
-// exercises the pre-fetch return.
-func TestRunDebugGoroutines_FetchError(t *testing.T) {
-	t.Skip("Get error branch requires mid-flight connection failure; handled by TestRunDebugGoroutines_DevtoolsError which covers the outer function pre-fetch")
 }
 
 // TestRunDebugGoroutines_EmptyStates — a goroutine dump whose state
@@ -57,42 +46,29 @@ func TestRunDebugGoroutines_MinCountFilters(t *testing.T) {
 	require.NoError(t, runDebugGoroutines())
 }
 
-// TestRunDebugGoroutines_FetchErrCoverage — server accepts /debug/health
-// and then closes itself so the subsequent goroutine-dump fetch gets a
-// connect error. Either outcome covers the branch.
+// TestRunDebugGoroutines_FetchErrCoverage — /debug/health passes so
+// requireDevtools succeeds, then the goroutine endpoint hijacks and
+// closes the connection with no response, so the subsequent
+// client.Get fails deterministically (the Get-error branch).
 func TestRunDebugGoroutines_FetchErrCoverage(t *testing.T) {
-	// Close the server immediately after /debug/health responds so
-	// the second request (to /debug/pprof/goroutine) fails with a
-	// connect error.
-	mu := &sync.Mutex{}
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/debug/health" {
-			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
-			// Close the server asynchronously so subsequent connects
-			// get refused.
-			go func() {
-				mu.Lock()
-				defer mu.Unlock()
-				srv.Close()
-			}()
-			return
-		}
-	}))
-	t.Cleanup(srv.Close)
-	withDebugAppURL(t, srv.URL)
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				return
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				return
+			}
+			_ = conn.Close() // no HTTP response → client Get errors
+		},
+	})
+	withDebugAppURL(t, url)
 	debugGoroutinesFilter = ""
 	debugGoroutinesMinCount = 0
-	err := runDebugGoroutines()
-	// Either NoError (health succeeded before close) or Error
-	// (health failed on retry). Both cover the branch.
-	_ = err
-}
-
-// TestRunDebugGoroutines_FetchErrorViaClose — documented-unreachable
-// variant of the above; covered by the DevtoolsError test.
-func TestRunDebugGoroutines_FetchErrorViaClose(t *testing.T) {
-	t.Skip("covered by TestRunDebugGoroutines_DevtoolsError")
+	t.Cleanup(func() { debugGoroutinesFilter = ""; debugGoroutinesMinCount = 0 })
+	require.Error(t, runDebugGoroutines())
 }
 
 // TestDebugGoroutinesCmd_RunE — exercises the Cobra RunE wrapper.
@@ -101,4 +77,39 @@ func TestDebugGoroutinesCmd_RunE(t *testing.T) {
 	withDebugAppURL(t, url)
 	resetAllDebugFlags()
 	require.NoError(t, debugGoroutinesCmd.RunE(debugGoroutinesCmd, nil))
+}
+
+func TestRunDebugGoroutines_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+	})
+	withDebugAppURL(t, url)
+	debugGoroutinesFilter = ""
+	debugGoroutinesMinCount = 0
+	require.NoError(t, runDebugGoroutines())
+}
+
+func TestRunDebugGoroutines_Filtered(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+	})
+	withDebugAppURL(t, url)
+	debugGoroutinesFilter = "sync"
+	debugGoroutinesMinCount = 5
+	t.Cleanup(func() { debugGoroutinesFilter = ""; debugGoroutinesMinCount = 0 })
+	require.NoError(t, runDebugGoroutines())
+}
+
+func TestRunDebugGoroutines_EndpointError(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+	})
+	withDebugAppURL(t, url)
+	require.Error(t, runDebugGoroutines())
 }

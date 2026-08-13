@@ -9,15 +9,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for dev_logs.go:startLogStreamer.
-//
-// The function spawns `docker compose logs -f` in a background
-// goroutine. Tests don't actually want to run docker — we stub exec
-// and just verify the lifecycle (empty services short-circuits; a
-// real streamer returns a cancel func that stops cleanly).
-// ─────────────────────────────────────────────────────────────────────
-
 // TestStartLogStreamer_EmptyServices — no services → no subprocess,
 // cancel is a no-op func but not nil.
 func TestStartLogStreamer_EmptyServices(t *testing.T) {

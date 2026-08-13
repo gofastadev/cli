@@ -14,14 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for debug_watch. The top-level runDebugWatch runs an
-// indefinite poll loop gated by os.Interrupt / SIGTERM — we test the
-// helpers directly (pollChannel, watchMarks, watchEmitter,
-// wrapWatchEvent) to drive coverage up without wrestling with
-// goroutine lifetime.
-// ─────────────────────────────────────────────────────────────────────
-
 // resetWatchFlags puts every --with-* flag back to its init() default
 // so tests don't leak into one another.
 func resetWatchFlags() {

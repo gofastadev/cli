@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -9,9 +10,78 @@ import (
 	"testing"
 	"testing/fstest"
 
+	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNewCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	// Set both flags so we cover the || branch
+	newCmd.Flags().Set("graphql", "true")
+	t.Cleanup(func() { newCmd.Flags().Set("graphql", "false") })
+	assert.NoError(t, newCmd.RunE(newCmd, []string{"runelocaltestapp"}))
+}
+
+func TestRunNew_FakeSuccess(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runNew("testapp", false, "postgres", "layered")
+	assert.NoError(t, err)
+	// The project dir should have been created
+	_, err = os.Stat(filepath.Join("testapp", "config.yaml"))
+	// config.yaml is one of the skeleton files; it should exist after a successful run
+	assert.NoError(t, err)
+}
+
+func TestRunNew_FakeSuccess_GraphQL(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	err := runNew("gqlapp", true, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+func TestRunNew_GoModInitFails(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 1)
+	err := runNew("failapp", false, "postgres", "layered")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "go mod init")
+}
+
+// Staged: go mod init AND go get gofasta both succeed, everything after
+// fails. The gofasta install is a hard-fail step (see runNew) because the
+// scaffold is unusable without it, so to exercise the post-gofasta warning
+// branches we need the first two exec calls to succeed.
+func TestRunNew_WarningBranches(t *testing.T) {
+	chdirTemp(t)
+	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
+	stagedFakeExec(t, 0, 0, 0, 1)
+	err := runNew("warnapp", false, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0, 0, 0, 1)
+	err := runNew("warnapp", true, "postgres", "layered")
+	assert.NoError(t, err)
+}
+
+// When `go get github.com/gofastadev/gofasta` fails (e.g. sum.golang.org
+// has not yet indexed a freshly-published release), runNew must abort
+// with a clear error instead of silently producing a broken scaffold.
+// The longform "common causes" hint is printed to stdout before returning;
+// the returned error itself is short to keep staticcheck's ST1005 happy.
+func TestRunNew_GofastaInstallFails(t *testing.T) {
+	chdirTemp(t)
+	stagedFakeExec(t, 0, 1) // go mod init ok, go get gofasta fails
+	err := runNew("failapp", false, "postgres", "layered")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "github.com/gofastadev/gofasta")
+	assert.Contains(t, err.Error(), "failed to install")
+}
 
 func TestResolveProjectPaths_SimpleName(t *testing.T) {
 	dir, name, mod := resolveProjectPaths("myapp")
@@ -79,7 +149,7 @@ func TestRunNew_DirectoryAlreadyExists(t *testing.T) {
 	os.Chdir(dir)
 
 	os.Mkdir("myapp", 0755)
-	err := runNew("myapp", false, "postgres")
+	err := runNew("myapp", false, "postgres", "layered")
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
@@ -138,7 +208,7 @@ func TestRunNew_MkdirAllError(t *testing.T) {
 	parentFile := filepath.Join(dir, "parent")
 	require.NoError(t, os.WriteFile(parentFile, []byte("x"), 0o644))
 
-	err := runNew(filepath.Join(parentFile, "proj"), false, "postgres")
+	err := runNew(filepath.Join(parentFile, "proj"), false, "postgres", "layered")
 	assert.Error(t, err)
 }
 
@@ -158,16 +228,9 @@ func TestRunNew_ChdirError(t *testing.T) {
 	require.NoError(t, os.Chmod(parent, 0o600))
 	t.Cleanup(func() { _ = os.Chmod(parent, 0o755) })
 
-	err := runNew(filepath.Join(parent, "proj"), false, "postgres")
+	err := runNew(filepath.Join(parent, "proj"), false, "postgres", "layered")
 	assert.Error(t, err)
 }
-
-// chdirTemp is a lightweight helper that pins the test to a fresh temp
-// dir and restores the original cwd on cleanup. It's already defined in
-// commands_exec_test.go but re-declaring it in this file is a compile
-// error — tests that need it rely on the one in commands_exec_test.go.
-// No function here — this comment exists so future readers don't
-// accidentally add a duplicate.
 
 func TestProjectData_Fields(t *testing.T) {
 	data := ProjectData{
@@ -184,12 +247,6 @@ func TestProjectData_Fields(t *testing.T) {
 	assert.True(t, data.GraphQL)
 }
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for new.go walk-error / template-error branches. Uses the
-// projectFSOverride seam to inject synthetic filesystems that trigger
-// specific failure modes.
-// ─────────────────────────────────────────────────────────────────────
-
 // TestRunNew_ChdirFails — projectDir is created but Chdir fails via
 // the osChdir seam.
 func TestRunNew_ChdirFails(t *testing.T) {
@@ -201,7 +258,7 @@ func TestRunNew_ChdirFails(t *testing.T) {
 	osChdir = func(path string) error { return os.ErrPermission }
 	t.Cleanup(func() { osChdir = origOS })
 	withFakeExec(t, 0)
-	err := runNew("chdir-fail-app", false, "postgres")
+	err := runNew("chdir-fail-app", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -218,7 +275,7 @@ func TestRunNew_BadTemplate(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-tmpl-app", false, "postgres")
+	err := runNew("bad-tmpl-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parsing template")
 }
@@ -234,7 +291,7 @@ func TestRunNew_TemplateExecFails(t *testing.T) {
 	}
 	projectFSOverride = fsys
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("bad-exec-app", false, "postgres")
+	err := runNew("bad-exec-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "executing template")
 }
@@ -243,8 +300,10 @@ func TestRunNew_TemplateExecFails(t *testing.T) {
 // ReadFile for a specific path but lets WalkDir pass.
 type errFS struct{ base fs.FS }
 
-func (e errFS) Open(name string) (fs.File, error)    { return e.base.Open(name) }
+func (e errFS) Open(name string) (fs.File, error) { return e.base.Open(name) }
+
 func (e errFS) ReadFile(name string) ([]byte, error) { return nil, fs.ErrPermission }
+
 func (e errFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if rd, ok := e.base.(fs.ReadDirFS); ok {
 		return rd.ReadDir(name)
@@ -263,7 +322,7 @@ func TestRunNew_ReadFileFails(t *testing.T) {
 	}
 	projectFSOverride = errFS{base: base}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("read-fail-app", false, "postgres")
+	err := runNew("read-fail-app", false, "postgres", "layered")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading")
 }
@@ -278,7 +337,7 @@ func TestRunNew_WalkCallbackReceivesError(t *testing.T) {
 	// with an fs.PathError → the first branch in the callback fires.
 	projectFSOverride = fstest.MapFS{}
 	t.Cleanup(func() { projectFSOverride = nil })
-	err := runNew("walkerr-app", false, "postgres")
+	err := runNew("walkerr-app", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -288,7 +347,7 @@ func TestRunNew_UnreadableDir(t *testing.T) {
 	chdirTemp(t)
 	withFakeExec(t, 0)
 	require.NoError(t, os.WriteFile("conflict", []byte{}, 0o644))
-	err := runNew("conflict", false, "postgres")
+	err := runNew("conflict", false, "postgres", "layered")
 	require.Error(t, err)
 }
 
@@ -310,7 +369,7 @@ func TestRunNew_JSON_EmitsResultOnEarlyReturn(t *testing.T) {
 	require.NoError(t, os.MkdirAll("collision-app", 0o755))
 
 	out := captureStdout(t, func() {
-		err := runNew("collision-app", false, "postgres")
+		err := runNew("collision-app", false, "postgres", "layered")
 		require.Error(t, err)
 	})
 
@@ -371,7 +430,7 @@ func TestRunNew_PerDriverMigrationsCopied(t *testing.T) {
 
 			projectName := driver + "app"
 			_ = captureStdout(t, func() {
-				err := runNew(projectName, false, driver)
+				err := runNew(projectName, false, driver, "layered")
 				// runNew may fail later (no real go mod tidy possible
 				// against the synthetic FS), but the migrations copy
 				// happens BEFORE any of that. Tolerate the trailing
@@ -439,7 +498,7 @@ func TestRunNew_DriverEmptyDefaultsToPostgres(t *testing.T) {
 		// Best-effort: runNew may fail later because the synthetic FS
 		// doesn't carry a full project tree, but the empty-driver
 		// branch executes BEFORE any of that.
-		_ = runNew("emptydrivertest", false, "")
+		_ = runNew("emptydrivertest", false, "", "layered")
 	})
 
 	// db/migrations should contain the postgres set (5 up + 5 down)
@@ -465,7 +524,7 @@ func TestRunNew_CopyMigrationsErrorPropagates(t *testing.T) {
 	withFakeExec(t, 0)
 
 	_ = captureStdout(t, func() {
-		err := runNew("copyfailapp", false, "postgres")
+		err := runNew("copyfailapp", false, "postgres", "layered")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "copying postgres foundational migrations")
 	})
@@ -599,12 +658,14 @@ type errReadFS struct {
 }
 
 func (e errReadFS) Open(name string) (fs.File, error) { return e.base.Open(name) }
+
 func (e errReadFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	if rd, ok := e.base.(fs.ReadDirFS); ok {
 		return rd.ReadDir(name)
 	}
 	return fs.ReadDir(e.base, name)
 }
+
 func (e errReadFS) ReadFile(name string) ([]byte, error) {
 	if name == e.failOnPath {
 		return nil, fs.ErrPermission
@@ -628,4 +689,612 @@ func TestCopyMigrationsForDriver_ReadFileError(t *testing.T) {
 	err := copyMigrationsForDriver("postgres", ProjectData{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reading")
+}
+
+func TestStarterResources(t *testing.T) {
+	got := starterResources()
+	require.Len(t, got, 1, "the scaffold ships exactly one starter resource")
+	assert.Equal(t, featurize.Resource{Name: "User", Snake: "user", Plural: "Users"}, got[0])
+}
+
+func TestFeaturizeFile_ReroutesPerResourceFiles(t *testing.T) {
+	resources := starterResources()
+
+	cases := map[string]string{
+		"app/services/user.service.go":                   "app/user/service.go",
+		"app/repositories/user.repository.go":            "app/user/repository.go",
+		"app/rest/controllers/user.controller.go":        "app/user/controller.go",
+		"app/rest/routes/user.routes.go":                 "app/user/routes.go",
+		"app/dtos/user.dtos.go":                          "app/user/dtos.go",
+		"app/repositories/interfaces/user_repository.go": "app/user/repository_iface.go",
+		"app/services/interfaces/user_service.go":        "app/user/service_iface.go",
+		"app/di/providers/user.go":                       "app/user/wire.go",
+	}
+
+	for in, want := range cases {
+		t.Run(in, func(t *testing.T) {
+			out, body, err := featurizeFile(in, []byte("package services\n\ntype UserService struct{}\n"),
+				fixtureModulePath, resources)
+			require.NoError(t, err)
+			assert.Equal(t, want, out)
+			assert.Contains(t, string(body), "package user\n",
+				"a file rerouted into app/user/ must declare the feature package")
+		})
+	}
+}
+
+func TestFeaturizeFile_PerResourceTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/services/user.service.go",
+		[]byte("package services\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "featurize")
+}
+
+// TestFeaturizeFile_PasswordGeneratorFollowsUser covers the standalone file
+// that is not a per-resource mapping entry but still belongs to a feature.
+func TestFeaturizeFile_PasswordGeneratorFollowsUser(t *testing.T) {
+	out, body, err := featurizeFile("app/services/password_generator.go",
+		[]byte("package services\n\ntype PasswordGenerator struct{}\n"),
+		fixtureModulePath, starterResources())
+	require.NoError(t, err)
+
+	assert.Equal(t, "app/user/password_generator.go", out)
+	assert.Contains(t, string(body), "package user\n")
+}
+
+func TestFeaturizeFile_PasswordGeneratorTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/services/password_generator.go",
+		[]byte("package services\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_CrossCuttingFilesStayPut covers the four shared files: the
+// path is unchanged, only the content is rewritten to reach the feature
+// packages.
+func TestFeaturizeFile_CrossCuttingFilesStayPut(t *testing.T) {
+	resources := starterResources()
+
+	cases := map[string]string{
+		"app/di/container.go": `package di
+
+import (
+	svcInterfaces "` + fixtureModulePath + `/app/services/interfaces"
+)
+
+type Container struct {
+	UserService svcInterfaces.UserServiceInterface
+}
+`,
+		"app/di/wire.go": `package di
+
+import "github.com/google/wire"
+
+var Set = wire.NewSet()
+`,
+		"app/rest/routes/index.routes.go": `package routes
+
+type RouteConfig struct{}
+
+func InitAPIRoutes(config *RouteConfig) {}
+`,
+		"app/di/providers/core.go": `package providers
+
+import "` + fixtureModulePath + `/app/services"
+
+var CoreSet = services.NewDefaultPasswordGenerator
+`,
+	}
+
+	for path, src := range cases {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, []byte(src), fixtureModulePath, resources)
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "cross-cutting files must not be rerouted")
+			assert.NotEmpty(t, body)
+		})
+	}
+}
+
+func TestFeaturizeFile_CrossCuttingTransformFailures(t *testing.T) {
+	for _, path := range []string{
+		"app/di/container.go",
+		"app/di/wire.go",
+		"app/rest/routes/index.routes.go",
+		"app/di/providers/core.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			_, _, err := featurizeFile(path, []byte("package x\n\nfunc Broken( {\n"),
+				fixtureModulePath, starterResources())
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestFeaturizeFile_MocksAreRewrittenInPlace covers the testutil/mocks branch:
+// the mock stays where it is, but its qualifiers follow the resource.
+func TestFeaturizeFile_MocksAreRewrittenInPlace(t *testing.T) {
+	src := `package mocks
+
+import (
+	svcInterfaces "` + fixtureModulePath + `/app/services/interfaces"
+)
+
+type UserServiceMock struct{}
+
+var _ svcInterfaces.UserServiceInterface = (*UserServiceMock)(nil)
+`
+	for _, path := range []string{
+		"testutil/mocks/user_service_mock.go",
+		"testutil/mocks/user_repository_mock.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, []byte(src), fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "mocks stay in testutil/mocks")
+			assert.Contains(t, string(body), "userpkg")
+		})
+	}
+}
+
+// TestFeaturizeFile_MockForUnknownResourceIsUntouched covers the loop falling
+// through: a mock whose snake name matches no resource is left alone.
+func TestFeaturizeFile_MockForUnknownResourceIsUntouched(t *testing.T) {
+	src := []byte("package mocks\n\ntype GhostServiceMock struct{}\n")
+	out, body, err := featurizeFile("testutil/mocks/ghost_service_mock.go", src,
+		fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "testutil/mocks/ghost_service_mock.go", out)
+	assert.Equal(t, src, body)
+}
+
+func TestFeaturizeFile_MockTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("testutil/mocks/user_service_mock.go",
+		[]byte("package mocks\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_UnrelatedFilesPassThrough covers the default: a file that
+// matches no category lives in the same place in both layouts and must come
+// back byte-identical.
+func TestFeaturizeFile_UnrelatedFilesPassThrough(t *testing.T) {
+	src := []byte("package models\n\ntype User struct{}\n")
+
+	for _, path := range []string{
+		"app/models/user.model.go", // models deliberately do not move
+		"cmd/serve.go",
+		"config.yaml",
+		"db/migrations/000001_create_users.up.sql",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out)
+			assert.Equal(t, src, body)
+		})
+	}
+}
+
+// TestFeaturizeFile_SharedRelocationsMovePathOnly covers the relocation arm:
+// aliases.go changes location but not content, because the rewriting happens
+// on the caller side (see rewriteDtosImportPath).
+func TestFeaturizeFile_SharedRelocationsMovePathOnly(t *testing.T) {
+	src := []byte("package dtos\n\ntype TPaginationInputDto struct{}\n")
+
+	out, body, err := featurizeFile("app/dtos/aliases.go", src, fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "app/shared/dtos/aliases.go", out)
+	assert.Equal(t, src, body, "a relocation must not rewrite the file")
+}
+
+// TestFeaturizeFile_SharedInfraGetsDtosImportFlipped covers the two shared
+// infra files that stay where they are but import the relocated dtos package.
+// (GraphQL resolver files used to be in this list — they now route through
+// the full TransformGraphQL arm, covered below.)
+func TestFeaturizeFile_SharedInfraGetsDtosImportFlipped(t *testing.T) {
+	src := []byte(`package validators
+
+import "` + fixtureModulePath + `/app/dtos"
+
+func Check(in dtos.TPaginationInputDto) error { return nil }
+`)
+
+	for _, path := range []string{
+		"app/validators/app_validator.go",
+		"app/rest/controllers/validator.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "shared infra files stay put")
+			assert.Contains(t, string(body), "/app/shared/dtos",
+				"the import must follow the relocated package")
+		})
+	}
+}
+
+// TestFeaturizeFile_GraphQLResolverFilesAreRequalified covers the GraphQL arm:
+// EVERY .go file under app/graphql/resolvers/ — matched by prefix, not by a
+// hardcoded name — is re-qualified in place: per-resource symbols move to the
+// feature package alias, shared dtos references keep their qualifier with the
+// flipped import path.
+func TestFeaturizeFile_GraphQLResolverFilesAreRequalified(t *testing.T) {
+	src := []byte(`package resolvers
+
+import (
+	"` + fixtureModulePath + `/app/dtos"
+	"` + fixtureModulePath + `/app/services"
+)
+
+func (r *queryResolver) helper(in dtos.TCreateUserDto) error {
+	_ = dtos.TPaginationObjectDto{}
+	return services.ErrUserNotFound
+}
+`)
+
+	for _, path := range []string{
+		"app/graphql/resolvers/user.resolvers.go",
+		"app/graphql/resolvers/anything.resolvers.go",
+		"app/graphql/resolvers/gql_helpers.go",
+	} {
+		t.Run(path, func(t *testing.T) {
+			out, body, err := featurizeFile(path, src, fixtureModulePath, starterResources())
+			require.NoError(t, err)
+			assert.Equal(t, path, out, "resolver files stay put — gqlgen owns the directory")
+			s := string(body)
+			assert.Contains(t, s, "userpkg.TCreateUserDto")
+			assert.Contains(t, s, "userpkg.ErrUserNotFound")
+			assert.Contains(t, s, "dtos.TPaginationObjectDto", "shared aliases keep the dtos qualifier")
+			assert.Contains(t, s, "/app/shared/dtos")
+			assert.NotContains(t, s, `"`+fixtureModulePath+`/app/services"`)
+		})
+	}
+}
+
+func TestFeaturizeFile_GraphQLResolverTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/graphql/resolvers/user.resolvers.go",
+		[]byte("package resolvers\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestFeaturizeFile_GqlgenConfigIsRewritten covers the gqlgen.yml arm: the
+// model path and autobind list follow the dtos relocation so `new`'s gqlgen
+// step generates into the feature shape.
+func TestFeaturizeFile_GqlgenConfigIsRewritten(t *testing.T) {
+	src := []byte(`model:
+  filename: app/dtos/generated-types.dtos.go
+  package: dtos
+
+autobind:
+ - "` + fixtureModulePath + `/app/dtos"
+`)
+
+	out, body, err := featurizeFile("gqlgen.yml", src, fixtureModulePath, starterResources())
+	require.NoError(t, err)
+	assert.Equal(t, "gqlgen.yml", out)
+	s := string(body)
+	assert.Contains(t, s, "filename: app/shared/dtos/generated-types.dtos.go")
+	assert.Contains(t, s, `- "`+fixtureModulePath+`/app/shared/dtos"`)
+	assert.Contains(t, s, `- "`+fixtureModulePath+`/app/user"`)
+	assert.NotContains(t, s, `- "`+fixtureModulePath+`/app/dtos"`)
+}
+
+func TestFeaturizeFile_SharedInfraTransformFailure(t *testing.T) {
+	_, _, err := featurizeFile("app/validators/app_validator.go",
+		[]byte("package validators\n\nfunc Broken( {\n"), fixtureModulePath, starterResources())
+	require.Error(t, err)
+}
+
+// TestIsSupportedLayout covers both arms of the --layout validation. An
+// unrecognized value must be refused before scaffolding starts, not silently
+// treated as layered.
+func TestIsSupportedLayout(t *testing.T) {
+	assert.True(t, isSupportedLayout("layered"))
+	assert.True(t, isSupportedLayout("feature"))
+	assert.False(t, isSupportedLayout("hexagonal"))
+	assert.False(t, isSupportedLayout(""))
+}
+
+// TestToolVersions_ArePinned guards the pinning decision itself: an @latest
+// tool is exactly how the floor moved without anyone choosing it.
+func TestToolVersions_ArePinned(t *testing.T) {
+	versions := map[string]string{
+		"gqlgen":       toolVersionGqlgen,
+		"wire":         toolVersionWire,
+		"air":          toolVersionAir,
+		"swag":         toolVersionSwag,
+		"http-swagger": toolVersionHTTPSwagger,
+		"chi":          toolVersionChi,
+	}
+	for name, v := range versions {
+		t.Run(name, func(t *testing.T) {
+			assert.NotEqual(t, "latest", v, "tool versions must be pinned, not tracked")
+			assert.True(t, strings.HasPrefix(v, "v"), "want a semver tag, got %q", v)
+		})
+	}
+}
+
+// TestScaffoldGoVersion_MatchesSkeletonAndRepo keeps the three places that
+// declare the support floor from drifting apart.
+func TestScaffoldGoVersion_MatchesSkeletonAndRepo(t *testing.T) {
+	root := repoRoot(t)
+
+	goVersionFile, err := os.ReadFile(filepath.Join(root, "internal", "skeleton", "project", "dot-go-version"))
+	require.NoError(t, err)
+	assert.Equal(t, scaffoldGoVersion, strings.TrimSpace(string(goVersionFile)),
+		"skeleton dot-go-version must match scaffoldGoVersion")
+
+	goMod, err := os.ReadFile(filepath.Join(root, "go.mod"))
+	require.NoError(t, err)
+	assert.Equal(t, scaffoldGoVersion, readGoDirectiveFromBytes(goMod),
+		"this repo's go directive must match the floor it generates")
+}
+
+func TestReadGoDirective(t *testing.T) {
+	dir := t.TempDir()
+
+	cases := map[string]struct {
+		content string
+		want    string
+	}{
+		"plain": {"module example.com/a\n\ngo 1.25.0\n", "1.25.0"},
+		"with toolchain": {
+			"module example.com/a\n\ngo 1.26.0\n\ntoolchain go1.26.1\n", "1.26.0",
+		},
+		"with requires": {
+			"module example.com/a\n\ngo 1.25.0\n\nrequire (\n\tgithub.com/x/y v1.0.0\n)\n", "1.25.0",
+		},
+		"no directive": {"module example.com/a\n", ""},
+		// A `go` inside a require block must not be mistaken for the directive.
+		"go-prefixed require": {
+			"module example.com/a\n\nrequire golang.org/x/tools v0.45.0\n", "",
+		},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(dir, strings.ReplaceAll(name, " ", "_")+".mod")
+			require.NoError(t, os.WriteFile(path, []byte(tc.content), 0o644))
+			assert.Equal(t, tc.want, readGoDirective(path))
+		})
+	}
+}
+
+func TestReadGoDirective_UnreadableFile(t *testing.T) {
+	assert.Empty(t, readGoDirective(filepath.Join(t.TempDir(), "does-not-exist.mod")),
+		"a missing go.mod yields no directive rather than a panic")
+}
+
+// TestVerifyGoFloor_WarnsOnlyWhenTheFloorMoved drives the guard directly. It
+// warns rather than aborting: by this point the project is written and
+// otherwise usable, and the developer can pin the offending tool themselves.
+func TestVerifyGoFloor_WarnsOnlyWhenTheFloorMoved(t *testing.T) {
+	cases := map[string]struct {
+		goMod    string
+		wantWarn bool
+	}{
+		"at the floor":     {"module example.com/a\n\ngo " + scaffoldGoVersion + "\n", false},
+		"raised by a tool": {"module example.com/a\n\ngo 1.26.0\n", true},
+		"no go.mod at all": {"", false},
+	}
+
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			orig, err := os.Getwd()
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = os.Chdir(orig) })
+			require.NoError(t, os.Chdir(dir))
+
+			if tc.goMod != "" {
+				require.NoError(t, os.WriteFile("go.mod", []byte(tc.goMod), 0o644))
+			}
+
+			out := captureStdout(t, func() { verifyGoFloor("myapp") })
+
+			if tc.wantWarn {
+				assert.Contains(t, out, "raised this project's Go version to 1.26.0")
+				assert.Contains(t, out, "make lint", "the warning must name the concrete consequence")
+			} else {
+				assert.NotContains(t, out, "raised this project's Go version")
+			}
+		})
+	}
+}
+
+// readGoDirectiveFromBytes is the in-memory twin of readGoDirective, used to
+// check this repo's own go.mod without writing a temp copy.
+func readGoDirectiveFromBytes(b []byte) string {
+	m := goDirectivePattern.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return string(m[1])
+}
+
+// repoRoot walks up from the test's working directory to the module root.
+func repoRoot(t *testing.T) string {
+	t.Helper()
+	dir, err := os.Getwd()
+	require.NoError(t, err)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		require.NotEqual(t, parent, dir, "walked past the filesystem root without finding go.mod")
+		dir = parent
+	}
+}
+
+// TestNewCmd_RejectsUnsupportedLayout covers the --layout validation in the
+// command's RunE. An unrecognized layout must be refused before any scaffolding
+// begins, not silently treated as layered.
+func TestNewCmd_RejectsUnsupportedLayout(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, newCmd.Flags().Set("layout", "hexagonal"))
+	t.Cleanup(func() { _ = newCmd.Flags().Set("layout", "layered") })
+
+	err := newCmd.RunE(newCmd, []string{"someapp"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--layout")
+}
+
+// TestRunNew_EmptyLayoutDefaultsToLayered covers the default arm. runNew is
+// also called from `init`-style paths that pass no layout, and an empty value
+// must resolve rather than propagate into the template data.
+func TestRunNew_EmptyLayoutDefaultsToLayered(t *testing.T) {
+	chdirTemp(t)
+	require.NoError(t, os.MkdirAll("myapp", 0o755))
+
+	// The directory already exists, so runNew stops right after resolving the
+	// defaults — far enough to exercise the empty-layout branch.
+	err := runNew("myapp", false, "", "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "already exists")
+}
+
+// TestRunNew_FeatureLayoutRoutesFilesThroughFeaturize covers the feature arm of
+// the scaffold walk: a per-resource template must land at its feature path with
+// its package rewritten, rather than at the layered path it was authored as.
+func TestRunNew_FeatureLayoutRoutesFilesThroughFeaturize(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+	root, err := os.Getwd()
+	require.NoError(t, err)
+
+	projectFSOverride = fstest.MapFS{
+		"project":                              {Mode: fs.ModeDir},
+		"project/app":                          {Mode: fs.ModeDir},
+		"project/app/services":                 {Mode: fs.ModeDir},
+		"project/app/services/user.service.go": {Data: []byte("package services\n\ntype UserService struct{}\n")},
+	}
+	t.Cleanup(func() { projectFSOverride = nil })
+
+	require.NoError(t, runNew("featapp", false, "postgres", "feature"))
+
+	body, err := os.ReadFile(filepath.Join(root, "featapp", "app", "user", "service.go"))
+	require.NoError(t, err, "the per-resource file must be rerouted into the feature package")
+	assert.Contains(t, string(body), "package user\n")
+}
+
+// TestRunNew_FeatureLayoutReportsATransformFailure covers the error arm of that
+// same branch.
+func TestRunNew_FeatureLayoutReportsATransformFailure(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+
+	projectFSOverride = fstest.MapFS{
+		"project":                              {Mode: fs.ModeDir},
+		"project/app":                          {Mode: fs.ModeDir},
+		"project/app/services":                 {Mode: fs.ModeDir},
+		"project/app/services/user.service.go": {Data: []byte("package services\n\nfunc Broken( {\n")},
+	}
+	t.Cleanup(func() { projectFSOverride = nil })
+
+	err := runNew("brokenfeat", false, "postgres", "feature")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "featurize")
+}
+
+// swapRandRead replaces the crypto/rand seam for the duration of a test.
+func swapRandRead(t *testing.T, fn func([]byte) (int, error)) {
+	t.Helper()
+	orig := randReadFn
+	randReadFn = fn
+	t.Cleanup(func() { randReadFn = orig })
+}
+
+// TestRandomSecret_EntropyFailureIsReported covers the error return. It is only
+// reachable through the seam: rand.Read fails solely when the OS entropy source
+// is broken, and a scaffold must abort rather than mint a predictable secret.
+func TestRandomSecret_EntropyFailureIsReported(t *testing.T) {
+	swapRandRead(t, func([]byte) (int, error) { return 0, errors.New("entropy source unavailable") })
+
+	_, err := randomSecret()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "entropy")
+}
+
+func TestRandomSecret_ProducesDistinctURLSafeSecrets(t *testing.T) {
+	a, err := randomSecret()
+	require.NoError(t, err)
+	b, err := randomSecret()
+	require.NoError(t, err)
+
+	assert.NotEqual(t, a, b, "each scaffold must get its own secret")
+	assert.NotContains(t, a, "=", "the secret is raw URL encoding — no padding")
+	assert.NotContains(t, a, "+")
+	assert.NotContains(t, a, "/")
+}
+
+// TestRunNew_JWTSecretFailureStops and its session twin cover the two
+// propagation sites in runNew.
+func TestRunNew_JWTSecretFailureStops(t *testing.T) {
+	chdirTemp(t)
+	swapRandRead(t, func([]byte) (int, error) { return 0, errors.New("entropy source unavailable") })
+
+	err := runNew("secretless", false, "postgres", "layered")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "JWT secret")
+}
+
+func TestRunNew_SessionSecretFailureStops(t *testing.T) {
+	chdirTemp(t)
+	calls := 0
+	swapRandRead(t, func(b []byte) (int, error) {
+		calls++
+		if calls == 1 {
+			return len(b), nil // JWT secret succeeds
+		}
+		return 0, errors.New("entropy source unavailable")
+	})
+
+	err := runNew("sessionless", false, "postgres", "layered")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "session secret")
+}
+
+// TestRunNew_CleanupFailureWarns — runNew fails after creating the
+// project directory, and the partial-scaffold cleanup itself fails too
+// (a write-protected subdirectory blocks os.RemoveAll). The user must be
+// told to remove the directory manually instead of being left with a
+// silent half-scaffold that blocks every retry.
+func TestRunNew_CleanupFailureWarns(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can unlink from a write-protected directory")
+	}
+	chdirTemp(t)
+	withFakeExec(t, 0)
+
+	const projectDir = "cleanup-fail-app"
+	poison := filepath.Join(projectDir, "poison")
+
+	// The chdir seam runs between MkdirAll(projectDir) and the first
+	// scaffold write — the only window where a test can plant a
+	// RemoveAll-resistant entry inside the freshly created directory.
+	origOS := osChdir
+	osChdir = func(path string) error {
+		if err := os.MkdirAll(poison, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(poison, "keep.txt"), []byte("x"), 0o644); err != nil {
+			return err
+		}
+		if err := os.Chmod(poison, 0o555); err != nil {
+			return err
+		}
+		return os.ErrPermission
+	}
+	t.Cleanup(func() {
+		osChdir = origOS
+		_ = os.Chmod(poison, 0o755) // let TempDir cleanup succeed
+	})
+
+	out := captureStdout(t, func() {
+		require.Error(t, runNew(projectDir, false, "postgres", "layered"))
+	})
+
+	assert.Contains(t, stripANSI(out), "Could not clean up partial project directory")
+	_, statErr := os.Stat(projectDir)
+	assert.NoError(t, statErr, "the directory survives when cleanup fails")
 }

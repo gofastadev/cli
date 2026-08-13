@@ -3,6 +3,7 @@ package ai
 import (
 	"bytes"
 	"encoding/json"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,10 +12,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ─────────────────────────────────────────────────────────────────────
-// Coverage for the `gofasta ai uninstall <agent>` flow:
-// runUninstall + Uninstall + UninstallResult.
-// ─────────────────────────────────────────────────────────────────────
+// TestExpectedRenderings_TemplateFilesError — expectedRenderings
+// swallows TemplateFiles errors (returns an empty map) per design;
+// this exercises that branch via the fsWalkDir seam.
+func TestExpectedRenderings_TemplateFilesError(t *testing.T) {
+	orig := fsWalkDir
+	fsWalkDir = func(_ fs.FS, _ string, _ fs.WalkDirFunc) error {
+		return assertError("synthetic walk failure")
+	}
+	t.Cleanup(func() { fsWalkDir = orig })
+
+	got := expectedRenderings(AgentByKey("claude"), sampleData())
+	assert.Empty(t, got)
+}
 
 // TestRunUninstall_RemovesCreatedFiles — install claude, uninstall it,
 // assert all the dotfiles are gone and the manifest no longer records
@@ -99,16 +109,6 @@ func TestRunUninstall_DryRun(t *testing.T) {
 	m, err := LoadManifest(dir)
 	require.NoError(t, err)
 	assert.Equal(t, "claude", m.ActiveAgent)
-}
-
-// TestRunUninstall_FindProjectRootError — outside any Go module.
-func TestRunUninstall_FindProjectRootError(t *testing.T) {
-	dir := t.TempDir()
-	orig, _ := os.Getwd()
-	require.NoError(t, os.Chdir(dir))
-	t.Cleanup(func() { _ = os.Chdir(orig) })
-	err := runUninstall("claude", false)
-	require.Error(t, err)
 }
 
 // TestUninstall_NotFoundFiles — manifest references a file that's
@@ -239,34 +239,6 @@ func TestRemoveEmptyParents_NonEmptyDir(t *testing.T) {
 	removeEmptyParents(dir, sub)
 	_, err := os.Stat(sub)
 	assert.NoError(t, err)
-}
-
-// TestRunUninstall_LoadManifestError — corrupt manifest causes
-// LoadManifest to fail; runUninstall surfaces the error.
-func TestRunUninstall_LoadManifestError(t *testing.T) {
-	dir := scaffoldFakeProject(t, "example.com/app")
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".gofasta"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, manifestPath),
-		[]byte("not-json"), 0o644))
-	err := runUninstall("claude", false)
-	require.Error(t, err)
-}
-
-// TestRunUninstall_BuildInstallDataError — go.mod unreadable so the
-// inner buildInstallData call inside runUninstall fails.
-func TestRunUninstall_BuildInstallDataError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root bypasses chmod read denial")
-	}
-	dir := scaffoldFakeProject(t, "example.com/app")
-	_ = captureStdout(t, func() {
-		require.NoError(t, runInstall("claude", false, false))
-	})
-	require.NoError(t, os.Chmod(filepath.Join(dir, "go.mod"), 0o000))
-	t.Cleanup(func() { _ = os.Chmod(filepath.Join(dir, "go.mod"), 0o644) })
-
-	err := runUninstall("claude", false)
-	require.Error(t, err)
 }
 
 // TestRemoveEmptyParents_RemoveFails — empty directory inside a

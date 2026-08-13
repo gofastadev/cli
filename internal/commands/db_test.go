@@ -11,6 +11,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRunDBReset_FakeSuccess_SkipSeed(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, runDBReset(true))
+}
+
+func TestRunDBReset_FakeSuccess_WithSeed(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, runDBReset(false))
+}
+
+func TestRunDBReset_DropFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 1)
+	err := runDBReset(true)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "drop failed")
+}
+
+func TestRunDBReset_UpFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	stagedFakeExec(t, 0, 1) // drop ok, up fails
+	err := runDBReset(true)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "migration up failed")
+}
+
+func TestRunDBReset_SeedFails(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	stagedFakeExec(t, 0, 0, 1) // drop ok, up ok, seed fails
+	err := runDBReset(false)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "seeding failed")
+}
+
+func TestDbResetCmd_RunE(t *testing.T) {
+	chdirTemp(t)
+	writeConfigYAML(t)
+	withFakeExec(t, 0)
+	assert.NoError(t, dbResetCmd.RunE(dbResetCmd, nil))
+}
+
 func TestDbCmd_Registered(t *testing.T) {
 	found := false
 	for _, c := range rootCmd.Commands() {

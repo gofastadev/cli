@@ -67,7 +67,7 @@ func {{.PluralName}}FromModels(ms []*models.{{.Name}}) []*{{.Name}} {
 
 // T{{.Name}}ResponseDto is the success-shape envelope for endpoints
 // returning a single {{.LowerName}}. Validation/error responses flow
-// via HTTP status codes (4xx) carrying the framework's apperrors
+// via HTTP status codes (4xx) carrying the gofasta library's apperrors
 // envelope — there is intentionally no ` + "`Errors`" + ` field here.
 type T{{.Name}}ResponseDto struct {
 	Data *{{.Name}} ` + "`" + `json:"data,omitempty"` + "`" + `
@@ -83,18 +83,27 @@ type T{{.PluralName}}ResponseDto struct {
 // TCreate{{.Name}}Dto is the input for the create endpoint. validate
 // tags drive the AppValidator at the controller boundary — invalid
 // requests get HTTP 422 before reaching the service.
+//
+// Fields are POINTERS so ` + "`required`" + ` means "the key must be present",
+// not "the value must be non-zero": with value fields, sending
+// {"inStock": false} or {"price": 0} was rejected as missing — there
+// was no way to create a record with a legitimate zero/false field.
+// A present pointer is non-nil whatever the value; an absent key stays
+// nil and fails validation. The JSON wire shape is unchanged.
 type TCreate{{.Name}}Dto struct {
 {{- range .Fields}}
-	{{.Name}} {{.GoType}} ` + "`" + `json:"{{.JSONName}}" validate:"required"` + "`" + `
+	{{.Name}} *{{.GoType}} ` + "`" + `json:"{{.JSONName}}" validate:"required"` + "`" + `
 {{- end}}
 }
 
 // ToCreateInput maps the wire DTO to the typed domain input the
 // service expects. Keeps the service free of any wire-format knowledge.
+// Dereferences are safe: validation rejected any nil field before this
+// runs.
 func (d TCreate{{.Name}}Dto) ToCreateInput() services.Create{{.Name}}Input {
 	return services.Create{{.Name}}Input{
 {{- range .Fields}}
-		{{.Name}}: d.{{.Name}},
+		{{.Name}}: *d.{{.Name}},
 {{- end}}
 	}
 }
@@ -120,6 +129,40 @@ type TUpdate{{.Name}}Dto struct {
 
 // ToPatch maps the wire DTO to the typed domain patch.
 func (d TUpdate{{.Name}}Dto) ToPatch() services.Update{{.Name}}Patch {
+	return services.Update{{.Name}}Patch{
+{{- range .Fields}}
+		{{.Name}}: d.{{.Name}},
+{{- end}}
+		IsActive:    d.IsActive,
+		IsDeletable: d.IsDeletable,
+	}
+}
+
+// TUpdate{{.Name}}GraphQLInput is the GraphQL-only counterpart to
+// TUpdate{{.Name}}Dto. GraphQL has no HTTP headers and no URL paths, so
+// the id + recordVersion that REST carries in ` + "`PUT /{{.PluralLower}}/{id}`" + ` +
+// ` + "`If-Match: \"<v>\"`" + ` live inside the input object instead. Two
+// distinct types (rather than reusing TUpdate{{.Name}}Dto) keep the REST
+// shape strict — the JSON body for a REST PUT must not include id or
+// recordVersion.
+//
+// gqlgen's autobind picks this type up automatically because its name
+// matches the schema's ` + "`input TUpdate{{.Name}}GraphQLInput`" + ` — no
+// models block in gqlgen.yml needed.
+type TUpdate{{.Name}}GraphQLInput struct {
+	ID            uuid.UUID ` + "`" + `json:"id" validate:"required,uuid4_valid,does_record_exist_by_id_for_verification={{.PluralSnake}}"` + "`" + `
+	RecordVersion int       ` + "`" + `json:"recordVersion" validate:"required,min=1"` + "`" + `
+{{- range .Fields}}
+	{{.Name}} *{{.GoType}} ` + "`" + `json:"{{.JSONName}},omitempty"` + "`" + `
+{{- end}}
+	IsActive    *bool ` + "`" + `json:"isActive,omitempty"` + "`" + `
+	IsDeletable *bool ` + "`" + `json:"isDeletable,omitempty"` + "`" + `
+}
+
+// ToPatch translates the GraphQL input into the typed domain patch the
+// service consumes. Symmetric with TUpdate{{.Name}}Dto.ToPatch so both
+// resolver paths converge on services.Update{{.Name}}Patch.
+func (d TUpdate{{.Name}}GraphQLInput) ToPatch() services.Update{{.Name}}Patch {
 	return services.Update{{.Name}}Patch{
 {{- range .Fields}}
 		{{.Name}}: d.{{.Name}},

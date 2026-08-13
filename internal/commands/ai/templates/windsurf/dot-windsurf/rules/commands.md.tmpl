@@ -65,7 +65,7 @@ Prefer generators over hand-written CRUD:
 | `gofasta g method Order Archive [param:type ...]` | **Modify-aware.** Append a method to an existing service. |
 | `gofasta g field Order archive_reason:string` | **Modify-aware.** Add a column to model + DTOs + paired migration. |
 | `gofasta g endpoint Order POST /orders/{id}/archive` | **Modify-aware.** Add one REST endpoint. |
-| `gofasta g middleware POST /orders/{id}/archive auth.RequireRole("admin")` | **Modify-aware.** Wrap a route with a chi middleware. Idempotent. |
+| `gofasta g middleware POST /orders/{id}/archive 'auth.JWTAuth(jwtSvc), auth.RequireRole("admin")'` (RequireRole reads claims JWTAuth extracts — always chain both, JWTAuth first) | **Modify-aware.** Wrap a route with a chi middleware. Idempotent. |
 | `gofasta g repo-method Order FindByCustomer customerID:string` | **Modify-aware.** Add a repository method. |
 | `gofasta g relation Order belongs_to Customer` | **Modify-aware.** Wire a GORM association. |
 | `gofasta g rename Order.Total AmountCents` | **Modify-aware.** Preview by default; `--apply` to write. |

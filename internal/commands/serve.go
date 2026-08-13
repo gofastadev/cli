@@ -21,7 +21,7 @@ subcommand are forwarded through unchanged.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Load .env so the spawned `go run ./app/main serve` child
 		// process inherits DB credentials, REDIS_URL, etc. via
-		// os.Environ(). The framework's pkg/config reads from
+		// os.Environ(). The gofasta library's pkg/config reads from
 		// os.Environ() but does NOT load .env on its own (no
 		// godotenv import in the skeleton), so the parent must
 		// populate the env before exec. See migrate.go for the

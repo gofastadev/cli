@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
@@ -348,6 +351,17 @@ func upgradeViaBinary(execPath, version, oldVersion string) error {
 	}
 	_ = tmpFile.Close()
 
+	// Verify the download against the release's published checksums.txt
+	// BEFORE making it executable or overwriting the current binary. A
+	// self-updater that installs an unverified binary is a supply-chain
+	// hole: a MITM or a compromised mirror could swap the asset. Fetching
+	// checksums.txt over the same TLS-protected GitHub release and
+	// comparing SHA-256 closes that gap. Any failure here is fatal — we
+	// never fall back to installing an unverified binary.
+	if err := verifyDownloadChecksum(tmpPath, version, binary); err != nil {
+		return emitFail(err)
+	}
+
 	if err := osChmodFn(tmpPath, 0o755); err != nil {
 		return emitFail(fmt.Errorf("failed to set permissions: %w", err))
 	}
@@ -368,6 +382,85 @@ func upgradeViaBinary(execPath, version, oldVersion string) error {
 		Upgraded: true, Success: true,
 	})
 	return nil
+}
+
+// verifyDownloadChecksum fetches the release's checksums.txt asset (from
+// the same GitHub release as the binary), looks up the SHA-256 published
+// for the downloaded asset filename, and compares it against the SHA-256
+// computed over the temp file. Any failure — network, missing entry,
+// mismatch — returns a CodeUpgradeVerification clierr so the caller
+// aborts instead of installing an unverified binary.
+func verifyDownloadChecksum(tmpPath, version, binary string) error {
+	checksumsURL := fmt.Sprintf(githubDownloadURLFmt, version, "checksums.txt")
+
+	resp, err := httpGet(checksumsURL)
+	if err != nil {
+		return clierr.Wrapf(clierr.CodeUpgradeVerification, err,
+			"could not fetch checksums for verification from %s", checksumsURL)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return clierr.Newf(clierr.CodeUpgradeVerification,
+			"could not fetch checksums for verification: HTTP %d from %s",
+			resp.StatusCode, checksumsURL)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return clierr.Wrap(clierr.CodeUpgradeVerification, err,
+			"could not read checksums.txt body")
+	}
+
+	want, err := parseChecksumsFile(string(body), binary)
+	if err != nil {
+		return clierr.Wrap(clierr.CodeUpgradeVerification, err,
+			"could not resolve expected checksum")
+	}
+
+	got, err := sha256File(tmpPath)
+	if err != nil {
+		return clierr.Wrap(clierr.CodeUpgradeVerification, err,
+			"could not hash the downloaded binary")
+	}
+
+	if !strings.EqualFold(got, want) {
+		return clierr.Newf(clierr.CodeUpgradeVerification,
+			"checksum mismatch for %s: expected %s, got %s — refusing to install",
+			binary, want, got)
+	}
+	return nil
+}
+
+// parseChecksumsFile scans a goreleaser-style checksums.txt body for the
+// line matching filename and returns the expected lowercase-hex SHA-256.
+// Each line is "<sha256hex>  <filename>" (two spaces, but any run of
+// whitespace is tolerated). Returns an error if no entry matches.
+func parseChecksumsFile(body, filename string) (string, error) {
+	for _, line := range strings.Split(body, "\n") {
+		fields := strings.Fields(strings.TrimSpace(line))
+		if len(fields) != 2 {
+			continue
+		}
+		// The filename column may be prefixed with "*" for binary mode.
+		name := strings.TrimPrefix(fields[1], "*")
+		if name == filename {
+			return strings.ToLower(fields[0]), nil
+		}
+	}
+	return "", fmt.Errorf("no checksum entry for %q in checksums.txt", filename)
+}
+
+// sha256File returns the lowercase-hex SHA-256 of the file at path.
+func sha256File(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func replaceViaCopy(src, dst, oldVersion, version string) error {

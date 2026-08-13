@@ -240,8 +240,6 @@ func TestPrintCoverageTotal_ShellError(t *testing.T) {
 	printCoverageTotal()
 }
 
-// --- dropLDWarnings ---------------------------------------------------------
-
 // TestDropLDWarnings_PassesThroughNormalOutput — any line that's
 // neither a build marker nor an LC_DYSYMTAB warning must round-trip
 // untouched. This is the no-op baseline for the filter.
@@ -460,6 +458,13 @@ func TestTestCmd_RunE_PathsAndExtras(t *testing.T) {
 	stagedFakeExec(t, 0)
 	stubExecLookPathOK(t)
 	rootCmd.SetArgs([]string{"test", "./...", "--", "-count=1"})
-	t.Cleanup(func() { rootCmd.SetArgs(nil) })
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		// testCmd is package-level shared state: parsing `--` above
+		// leaves its pflag ArgsLenAtDash at a positive index, and a
+		// later direct-RunE test (shuffle order) would slice its own
+		// nil args with the stale index. Re-parse empty to reset.
+		_ = testCmd.Flags().Parse(nil)
+	})
 	assert.NoError(t, rootCmd.Execute())
 }

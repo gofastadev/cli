@@ -1,55 +1,11 @@
 package cliout
 
 import (
-	"bytes"
-	"io"
-	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
-
-// withStdouterr swaps os.Stdout and os.Stderr for pipes for the
-// duration of fn, then returns the captured stdout and stderr text.
-// Centralizes the dance so each helper test reads in two lines.
-func withStdouterr(t *testing.T, fn func()) (stdout, stderr string) {
-	t.Helper()
-	origOut := os.Stdout
-	origErr := os.Stderr
-	t.Cleanup(func() {
-		os.Stdout = origOut
-		os.Stderr = origErr
-	})
-
-	rOut, wOut, err := os.Pipe()
-	require.NoError(t, err)
-	rErr, wErr, err := os.Pipe()
-	require.NoError(t, err)
-	os.Stdout = wOut
-	os.Stderr = wErr
-
-	var outBuf, errBuf bytes.Buffer
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); _, _ = io.Copy(&outBuf, rOut) }()
-	go func() { defer wg.Done(); _, _ = io.Copy(&errBuf, rErr) }()
-
-	fn()
-	_ = wOut.Close()
-	_ = wErr.Close()
-	wg.Wait()
-	return outBuf.String(), errBuf.String()
-}
-
-// withJSONMode flips cliout into JSON mode and restores on cleanup.
-func withJSONMode(t *testing.T) {
-	t.Helper()
-	SetJSONMode(true)
-	t.Cleanup(func() { SetJSONMode(false) })
-}
 
 // TestStep_TextModeWritesToStdout — the baseline contract: text mode
 // puts progress on stdout where users see it directly. Strip ANSI by
@@ -58,17 +14,6 @@ func TestStep_TextModeWritesToStdout(t *testing.T) {
 	out, errOut := withStdouterr(t, func() { Step("hello %s", "world") })
 	assert.Contains(t, out, "hello world")
 	assert.Empty(t, errOut, "text mode must not touch stderr")
-}
-
-// TestStep_JSONModeWritesToStderr — the regression driver for the
-// "--json must keep stdout clean" promise. Step (and every progress
-// helper) routes to stderr in JSON mode so an agent piping stdout to
-// jq doesn't see human-readable chatter mixed with the JSON document.
-func TestStep_JSONModeWritesToStderr(t *testing.T) {
-	withJSONMode(t)
-	out, errOut := withStdouterr(t, func() { Step("hello %s", "world") })
-	assert.Empty(t, out, "JSON mode must not touch stdout")
-	assert.Contains(t, errOut, "hello world")
 }
 
 // TestEveryVerb_RoutingConsistent — every progress verb obeys the

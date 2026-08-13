@@ -17,23 +17,25 @@ import (
 // Command group IDs — mirror the structure of the whitepaper §4.2 tables so
 // the grouped listing users see matches the documentation one-to-one.
 const (
-	groupLifecycle = "lifecycle"
-	groupWorkflow  = "workflow"
-	groupDatabase  = "database"
-	groupGenerate  = "generate"
-	groupDeploy    = "deploy"
-	groupShell     = "shell"
+	groupLifecycle     = "lifecycle"
+	groupWorkflow      = "workflow"
+	groupDatabase      = "database"
+	groupGenerate      = "generate"
+	groupDeploy        = "deploy"
+	groupIntrospection = "introspection"
+	groupShell         = "shell"
 )
 
 // groupTitles maps a group ID to its human-readable heading. Keep in sync
 // with the section headings in the whitepaper.
 var groupTitles = map[string]string{
-	groupLifecycle: "Project lifecycle",
-	groupWorkflow:  "Development workflow",
-	groupDatabase:  "Database",
-	groupGenerate:  "Code generation",
-	groupDeploy:    "Deployment",
-	groupShell:     "Shell integration",
+	groupLifecycle:     "Project lifecycle",
+	groupWorkflow:      "Development workflow",
+	groupDatabase:      "Database",
+	groupGenerate:      "Code generation",
+	groupDeploy:        "Deployment",
+	groupIntrospection: "Introspection",
+	groupShell:         "Shell integration",
 }
 
 // groupOrder is the display order — alphabetical is wrong, we want lifecycle
@@ -44,6 +46,7 @@ var groupOrder = []string{
 	groupDatabase,
 	groupGenerate,
 	groupDeploy,
+	groupIntrospection,
 	groupShell,
 }
 
@@ -193,6 +196,15 @@ var commandGroupAssignments = map[string]string{
 	"generate": groupGenerate,
 	// Deployment
 	"deploy": groupDeploy,
+	// Introspection
+	"inspect":       groupIntrospection,
+	"inspect-jobs":  groupIntrospection,
+	"inspect-tasks": groupIntrospection,
+	"impact":        groupIntrospection,
+	"xrefs":         groupIntrospection,
+	"refactor":      groupIntrospection,
+	"test":          groupIntrospection,
+	"facts":         groupIntrospection,
 	// Shell integration
 	"completion": groupShell,
 	"help":       groupShell,

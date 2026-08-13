@@ -1,6 +1,8 @@
 package commands
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +16,45 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUpgradeCmd_RunE(t *testing.T) {
+	swapHTTP(t, func(url string) (*http.Response, error) { return nil, errDummy })
+	err := upgradeCmd.RunE(upgradeCmd, nil)
+	assert.Error(t, err)
+}
+
+// withFakeExecVersion is withFakeExec with a scripted --version response.
+//
+//nolint:unparam // exitCode kept symmetrical with fakeExecCommandWithVersion for future use.
+func withFakeExecVersion(t *testing.T, exitCode int, version string) {
+	t.Helper()
+	orig := execCommand
+	execCommand = fakeExecCommandWithVersion(exitCode, version)
+	t.Cleanup(func() { execCommand = orig })
+}
+
+// serveUpgradeAssets returns an httptest server that serves binBytes for
+// asset downloads and a goreleaser-style checksums.txt matching those
+// bytes, so upgradeViaBinary's SHA-256 verification passes. The checksum
+// list covers both the current-platform asset name and its windows .exe
+// variant (used by the WindowsSuffix test).
+func serveUpgradeAssets(t *testing.T, binBytes string) *httptest.Server {
+	t.Helper()
+	sum := sha256.Sum256([]byte(binBytes))
+	hexsum := hex.EncodeToString(sum[:])
+	checksums := fmt.Sprintf("%s  gofasta-%s-%s\n%s  gofasta-windows-%s.exe\n",
+		hexsum, runtime.GOOS, runtime.GOARCH,
+		hexsum, runtime.GOARCH)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			_, _ = io.WriteString(w, checksums)
+			return
+		}
+		_, _ = io.WriteString(w, binBytes)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
 
 // TestEmitUpgradeResult_JSON — JSON mode emits a cliout.Print
 // document for the supplied upgradeResult.
@@ -43,7 +84,8 @@ func TestEmitUpgradeResult_TextNoOp(t *testing.T) {
 type errReader struct{}
 
 func (errReader) Read(_ []byte) (int, error) { return 0, fmt.Errorf("simulated read error") }
-func (errReader) Close() error               { return nil }
+
+func (errReader) Close() error { return nil }
 
 // swapHTTP replaces httpGet and restores at cleanup.
 func swapHTTP(t *testing.T, fn func(url string) (*http.Response, error)) {
@@ -68,8 +110,6 @@ func swapDownloadURL(t *testing.T, fmtStr string) {
 	githubDownloadURLFmt = fmtStr
 	t.Cleanup(func() { githubDownloadURLFmt = orig })
 }
-
-// --- fetchLatestVersion ---
 
 func TestFetchLatestVersion_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -127,8 +167,6 @@ func TestFetchLatestVersion_HTTPError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- isGoInstall ---
-
 func TestIsGoInstall(t *testing.T) {
 	t.Setenv("GOPATH", "/my/go")
 	assert.True(t, isGoInstall("/my/go/bin/gofasta"))
@@ -141,16 +179,12 @@ func TestIsGoInstall_DefaultGopath(t *testing.T) {
 	assert.True(t, isGoInstall(home+"/go/bin/gofasta"))
 }
 
-// --- normalizeVersion ---
-
 func TestNormalizeVersion(t *testing.T) {
 	assert.Equal(t, "1.2.3", normalizeVersion("v1.2.3"))
 	assert.Equal(t, "1.2.3", normalizeVersion("1.2.3"))
 	assert.Equal(t, "", normalizeVersion(""))
 	assert.Equal(t, "0.1.3-0.20260411-abcdef", normalizeVersion("v0.1.3-0.20260411-abcdef"))
 }
-
-// --- goInstallTargetPath ---
 
 func TestGoInstallTargetPath_GOBIN(t *testing.T) {
 	t.Setenv("GOBIN", "/custom/gobin")
@@ -189,8 +223,6 @@ func TestGoInstallTargetPath_HomeError(t *testing.T) {
 	assert.Error(t, err)
 }
 
-// --- readBinaryVersion ---
-
 func TestReadBinaryVersion_Success(t *testing.T) {
 	withFakeExecVersion(t, 0, "v1.2.3")
 	v, err := readBinaryVersion("/fake/gofasta")
@@ -203,8 +235,6 @@ func TestReadBinaryVersion_ExecError(t *testing.T) {
 	_, err := readBinaryVersion("/fake/gofasta")
 	assert.Error(t, err)
 }
-
-// --- upgradeViaGoInstall ---
 
 func TestUpgradeViaGoInstall_Success(t *testing.T) {
 	t.Setenv("GOBIN", "/fake/gobin")
@@ -268,13 +298,8 @@ func TestUpgradeViaGoInstall_VerifyReadFails(t *testing.T) {
 	assert.NoError(t, upgradeViaGoInstall("v2.0.0", "2.0.0", "0.0.1"))
 }
 
-// --- upgradeViaBinary ---
-
 func TestUpgradeViaBinary_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("fake-binary-bytes"))
-	}))
-	t.Cleanup(srv.Close)
+	srv := serveUpgradeAssets(t, "fake-binary-bytes")
 
 	// redirect download URL format to our server
 	swapDownloadURL(t, srv.URL+"/%s/%s")
@@ -293,12 +318,10 @@ func TestUpgradeViaBinary_Success(t *testing.T) {
 // TestUpgradeViaBinary_WindowsSuffix — force runtimeGOOS to return
 // "windows" so the .exe suffix branch fires.
 func TestUpgradeViaBinary_WindowsSuffix(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Assert the URL ends with .exe (confirming the branch fired).
-		assert.Contains(t, r.URL.Path, ".exe")
-		w.Write([]byte("exe-bytes"))
-	}))
-	t.Cleanup(srv.Close)
+	// serveUpgradeAssets publishes a checksum line for the windows .exe
+	// asset, so a successful install confirms the .exe-suffix branch fired
+	// (the download+verify would fail otherwise).
+	srv := serveUpgradeAssets(t, "exe-bytes")
 	swapDownloadURL(t, srv.URL+"/%s/%s")
 	orig := runtimeGOOS
 	runtimeGOOS = func() string { return "windows" }
@@ -306,15 +329,12 @@ func TestUpgradeViaBinary_WindowsSuffix(t *testing.T) {
 	dir := t.TempDir()
 	execPath := filepath.Join(dir, "gofasta")
 	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
-	_ = upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
+	assert.NoError(t, upgradeViaBinary(execPath, "v1.0.0", "0.0.1"))
 }
 
 // TestUpgradeViaBinary_ChmodFails — inject a failing Chmod seam.
 func TestUpgradeViaBinary_ChmodFails(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("fake-binary-bytes"))
-	}))
-	t.Cleanup(srv.Close)
+	srv := serveUpgradeAssets(t, "fake-binary-bytes")
 	swapDownloadURL(t, srv.URL+"/%s/%s")
 
 	orig := osChmodFn
@@ -392,10 +412,7 @@ func TestUpgradeViaBinary_RenameFallback(t *testing.T) {
 	// a rename error by making the target path a non-existent parent dir.
 	// Instead, force the fallback by pointing execPath to a dir that exists so
 	// os.Rename fails with "is a directory".
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("newbin"))
-	}))
-	t.Cleanup(srv.Close)
+	srv := serveUpgradeAssets(t, "newbin")
 	swapDownloadURL(t, srv.URL+"/%s/%s")
 
 	dir := t.TempDir()
@@ -410,8 +427,6 @@ func TestUpgradeViaBinary_RenameFallback(t *testing.T) {
 	err := upgradeViaBinary(targetDir, "v1.0.0", "0.0.1")
 	assert.Error(t, err)
 }
-
-// --- replaceViaCopy ---
 
 func TestReplaceViaCopy_Success(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "src")
@@ -434,8 +449,6 @@ func TestReplaceViaCopy_DestUnwritable(t *testing.T) {
 	err := replaceViaCopy(src, "/nonexistent-dir/dst", "0.0.1", "v1.0.0")
 	assert.Error(t, err)
 }
-
-// --- runUpgrade ---
 
 func TestRunUpgrade_AlreadyUpToDate(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -531,8 +544,149 @@ func TestRunUpgrade_DispatchBinary(t *testing.T) {
 	_ = strings.Contains // keep import
 }
 
-// TestUpgradeViaBinary_ChmodError — os.Chmod on a freshly-created
-// temp file rarely fails in practice; documented as defensive-only.
-func TestUpgradeViaBinary_ChmodError(t *testing.T) {
-	t.Skip("os.Chmod on a just-created temp file rarely fails in practice")
+func TestParseChecksumsFile(t *testing.T) {
+	body := "abc123  gofasta-linux-amd64\ndef456  gofasta-darwin-arm64\n"
+
+	got, err := parseChecksumsFile(body, "gofasta-darwin-arm64")
+	require.NoError(t, err)
+	assert.Equal(t, "def456", got)
+
+	// binary-mode "*" filename prefix is tolerated.
+	got, err = parseChecksumsFile("AAA  *gofasta-x\n", "gofasta-x")
+	require.NoError(t, err)
+	assert.Equal(t, "aaa", got, "hash is lowercased")
+
+	_, err = parseChecksumsFile(body, "gofasta-windows-amd64.exe")
+	assert.Error(t, err, "missing entry must error")
+}
+
+func TestSha256File(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "f")
+	require.NoError(t, os.WriteFile(p, []byte("hello"), 0644))
+	sum := sha256.Sum256([]byte("hello"))
+	got, err := sha256File(p)
+	require.NoError(t, err)
+	assert.Equal(t, hex.EncodeToString(sum[:]), got)
+}
+
+// A checksums.txt whose published hash doesn't match the downloaded bytes
+// must abort the install and leave the existing binary untouched.
+func TestUpgradeViaBinary_ChecksumMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			_, _ = io.WriteString(w, fmt.Sprintf("deadbeef  gofasta-%s-%s\n",
+				runtime.GOOS, runtime.GOARCH))
+			return
+		}
+		_, _ = io.WriteString(w, "real-bytes")
+	}))
+	t.Cleanup(srv.Close)
+	swapDownloadURL(t, srv.URL+"/%s/%s")
+
+	execPath := filepath.Join(t.TempDir(), "gofasta")
+	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
+
+	err := upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "checksum mismatch")
+	content, _ := os.ReadFile(execPath)
+	assert.Equal(t, "old", string(content), "unverified binary must not overwrite the existing one")
+}
+
+// When checksums.txt can't be fetched (non-200) the install is refused
+// rather than silently proceeding with an unverified binary.
+func TestUpgradeViaBinary_ChecksumFetchFails(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, "real-bytes")
+	}))
+	t.Cleanup(srv.Close)
+	swapDownloadURL(t, srv.URL+"/%s/%s")
+
+	execPath := filepath.Join(t.TempDir(), "gofasta")
+	require.NoError(t, os.WriteFile(execPath, []byte("old"), 0755))
+
+	err := upgradeViaBinary(execPath, "v1.0.0", "0.0.1")
+	require.Error(t, err)
+	content, _ := os.ReadFile(execPath)
+	assert.Equal(t, "old", string(content))
+}
+
+// okResponse builds a 200 response carrying body.
+func okResponse(body string) *http.Response {
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}
+
+func TestVerifyDownloadChecksum_FetchFailure(t *testing.T) {
+	swapHTTP(t, func(string) (*http.Response, error) {
+		return nil, fmt.Errorf("network is down")
+	})
+
+	err := verifyDownloadChecksum(writeTempBinary(t, "payload"), "v1.0.0", "gofasta_linux_amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not fetch checksums")
+}
+
+func TestVerifyDownloadChecksum_BodyReadFailure(t *testing.T) {
+	swapHTTP(t, func(string) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: errReader{}}, nil
+	})
+
+	err := verifyDownloadChecksum(writeTempBinary(t, "payload"), "v1.0.0", "gofasta_linux_amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not read checksums.txt body")
+}
+
+// TestVerifyDownloadChecksum_EntryMissing covers the parse failure: the
+// checksums file downloaded fine but carries no line for this binary, so there
+// is nothing to compare against.
+func TestVerifyDownloadChecksum_EntryMissing(t *testing.T) {
+	swapHTTP(t, func(string) (*http.Response, error) {
+		return okResponse("abc123  some_other_binary\n"), nil
+	})
+
+	err := verifyDownloadChecksum(writeTempBinary(t, "payload"), "v1.0.0", "gofasta_linux_amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not resolve expected checksum")
+}
+
+// TestVerifyDownloadChecksum_HashFailure covers the branch where the
+// downloaded file cannot be hashed.
+func TestVerifyDownloadChecksum_HashFailure(t *testing.T) {
+	swapHTTP(t, func(string) (*http.Response, error) {
+		return okResponse("abc123  gofasta_linux_amd64\n"), nil
+	})
+
+	err := verifyDownloadChecksum(filepath.Join(t.TempDir(), "not-there"), "v1.0.0", "gofasta_linux_amd64")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "could not hash the downloaded binary")
+}
+
+func TestSha256File_OpenFailure(t *testing.T) {
+	_, err := sha256File(filepath.Join(t.TempDir(), "missing"))
+	require.Error(t, err)
+}
+
+// TestSha256File_ReadFailure covers the io.Copy error return. Opening a
+// directory succeeds; reading from it does not.
+func TestSha256File_ReadFailure(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "adir")
+	require.NoError(t, os.MkdirAll(dir, 0o755))
+
+	_, err := sha256File(dir)
+	require.Error(t, err)
+}
+
+// writeTempBinary writes content to a temp file and returns its path.
+func writeTempBinary(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gofasta-download")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
+	return path
 }

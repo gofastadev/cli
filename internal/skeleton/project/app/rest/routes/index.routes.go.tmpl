@@ -11,11 +11,11 @@ import (
 
 	"{{.ModulePath}}/app/rest/controllers"
 
-	// Importing the generated docs package for its side-effect: its
-	// init() registers the swagger spec with httpSwagger so the /swagger
-	// route can serve it. The package exposes no callable API; the
-	// blank import is the documented swag/http-swagger pattern.
-	_ "{{.ModulePath}}/docs"
+	// The comment justifying the blank import rides INLINE on the spec
+	// (not as a block above it) so it stays attached when `gofasta
+	// refactor` rewrites this import block — a detached comment leaves
+	// the blank import bare and trips revive's blank-imports rule.
+	_ "{{.ModulePath}}/docs" // side-effect import: its init() registers the swagger spec with httpSwagger so the /swagger route can serve it
 )
 
 // RouteConfig holds all controllers needed for route registration.

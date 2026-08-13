@@ -10,6 +10,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// RunWire + RunGqlgen via fake exec, direct invocations
+func TestRunWire_FakeOK(t *testing.T) {
+	fakeExecOK(t)
+	assert.NoError(t, RunWire(ScaffoldData{}))
+}
+
+func TestRunGqlgen_FakeOK(t *testing.T) {
+	fakeExecOK(t)
+	assert.NoError(t, RunGqlgen(ScaffoldData{}))
+}
+
 func TestRunSteps_AllSucceed(t *testing.T) {
 	called := make([]string, 0)
 	steps := []Step{

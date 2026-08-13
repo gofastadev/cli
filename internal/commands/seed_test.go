@@ -6,6 +6,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestSeedCmd_RunE_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	assert.NoError(t, seedCmd.RunE(seedCmd, nil))
+}
+
+func TestSeedCmd_RunE_Fresh(t *testing.T) {
+	withFakeExec(t, 0)
+	seedCmd.Flags().Set("fresh", "true")
+	t.Cleanup(func() { seedCmd.Flags().Set("fresh", "false") })
+	assert.NoError(t, seedCmd.RunE(seedCmd, nil))
+}
+
 func TestSeedCmd_Registered(t *testing.T) {
 	found := false
 	for _, c := range rootCmd.Commands() {

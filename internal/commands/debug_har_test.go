@@ -66,17 +66,35 @@ func TestRunDebugHar_EncodeError(t *testing.T) {
 	require.Error(t, runDebugHar())
 }
 
-// TestRunDebugHar_EncodeFailure — json.NewEncoder.Encode of a HAR
-// struct cannot fail without a Writer seam; the seam-based case is
-// TestRunDebugHar_EncodeFails above.
-func TestRunDebugHar_EncodeFailure(t *testing.T) {
-	t.Skip("json.NewEncoder.Encode of HAR struct cannot fail; would need io.Writer seam")
-}
-
 // TestDebugHarCmd_RunE — exercises the Cobra RunE wrapper.
 func TestDebugHarCmd_RunE(t *testing.T) {
 	url := debugFixtureAll(t)
 	withDebugAppURL(t, url)
 	resetAllDebugFlags()
 	require.NoError(t, debugHarCmd.RunE(debugHarCmd, nil))
+}
+
+func TestRunDebugHar_HappyPath(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedRequest{
+				{Method: "GET", Path: "/x", Status: 200},
+			})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugHarOutput = ""
+	require.NoError(t, runDebugHar())
+}
+
+func TestRunDebugHar_WritesFile(t *testing.T) {
+	url := debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests": func(w http.ResponseWriter, _ *http.Request) {
+			writeJSON(w, []scrapedRequest{{Method: "GET", Path: "/x", Status: 200}})
+		},
+	})
+	withDebugAppURL(t, url)
+	debugHarOutput = t.TempDir() + "/out.har"
+	t.Cleanup(func() { debugHarOutput = "" })
+	require.NoError(t, runDebugHar())
 }

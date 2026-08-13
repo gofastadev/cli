@@ -2,49 +2,143 @@ package generate
 
 import (
 	"errors"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/generate/astpatch"
 	"github.com/stretchr/testify/require"
 )
 
-func setupScaffoldedResource(t *testing.T) string {
-	t.Helper()
+// TestGenMethod_MissingImplFileErrors — interface exists, impl missing.
+func TestGenMethod_MissingImplFileErrors(t *testing.T) {
 	tmp := t.TempDir()
-
 	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
 		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
-
 	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
 	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "order_service.go"), []byte(`package interfaces
-
 import "context"
-
-// OrderServiceInterface is the order business-logic contract.
-type OrderServiceInterface interface {
-	// Create persists a new order.
-	Create(ctx context.Context, name string) error
-}
+type OrderServiceInterface interface { F(ctx context.Context) error }
 `), 0o644))
+	// Note: no impl file
+	chdirTest(t, tmp)
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "X"})
+	require.Error(t, err)
+}
 
+// TestGenMethod_InterfaceParseError — interface file unparseable.
+func TestGenMethod_InterfaceParseError(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "order_service.go"),
+		[]byte("package interfaces\nfunc {\n"), 0o644))
 	implDir := filepath.Join(tmp, "app", "services")
 	require.NoError(t, os.MkdirAll(implDir, 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.service.go"), []byte(`package services
-
-import "context"
-
-type orderService struct{}
-
-func (s *orderService) Create(ctx context.Context, name string) error {
-	return nil
+	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.service.go"),
+		[]byte("package services\n"), 0o644))
+	chdirTest(t, tmp)
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "X"})
+	require.Error(t, err)
 }
-`), 0o644))
 
-	return tmp
+// TestGenMethod_InterfaceNotFound — interface file parses but doesn't
+// have the expected interface.
+func TestGenMethod_InterfaceNotFound(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "order_service.go"),
+		[]byte("package interfaces\n// no OrderServiceInterface\n"), 0o644))
+	implDir := filepath.Join(tmp, "app", "services")
+	require.NoError(t, os.MkdirAll(implDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.service.go"),
+		[]byte("package services\n"), 0o644))
+	chdirTest(t, tmp)
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "X"})
+	require.Error(t, err)
+}
+
+// TestGenMethod_AppendInterfaceMethodError — pass an Arg with a bad
+// GoType that breaks the synthetic wrap.
+func TestGenMethod_AppendInterfaceMethodError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	err := GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "X",
+		Args:       []Field{{Name: "bad", GoType: "int }`broken"}},
+	})
+	require.Error(t, err)
+}
+
+// TestGenMethod_InterfaceWriteBackError — chmod the iface file readonly.
+func TestGenMethod_InterfaceWriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	ifacePath := filepath.Join(tmp, "app", "services", "interfaces", "order_service.go")
+	require.NoError(t, os.Chmod(ifacePath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(ifacePath, 0o644) })
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "X"})
+	require.Error(t, err)
+}
+
+// TestGenMethod_ImplParseError — impl file unparseable.
+func TestGenMethod_ImplParseError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	implPath := filepath.Join(tmp, "app", "services", "order.service.go")
+	require.NoError(t, os.WriteFile(implPath, []byte("package services\nfunc {\n"), 0o644))
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "X"})
+	require.Error(t, err)
+}
+
+// TestGenMethod_AppendFuncDeclError — set ImplStructName to a
+// non-identifier so the iface side passes (it uses InterfaceName) but
+// the impl-side AppendFuncDecl fails when wrapping receiver `(s *bad{)`.
+func TestGenMethod_AppendFuncDeclError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	err := GenMethod(MethodData{
+		Resource:       "Order",
+		MethodName:     "Valid",
+		InterfaceName:  "OrderServiceInterface",
+		ImplStructName: "bad{",
+		InterfaceFile:  filepath.Join("app", "services", "interfaces", "order_service.go"),
+		ImplFile:       filepath.Join("app", "services", "order.service.go"),
+	})
+	require.Error(t, err)
+}
+
+// TestWriteBackOrRecord_RenderError — inject a Render failure via the
+// astpatchRenderFn seam.
+func TestWriteBackOrRecord_RenderError(t *testing.T) {
+	tmp := t.TempDir()
+	srcPath := filepath.Join(tmp, "x.go")
+	require.NoError(t, os.WriteFile(srcPath, []byte("package x\n"), 0o644))
+	f, err := astpatch.Parse(srcPath)
+	require.NoError(t, err)
+
+	saved := astpatchRenderFn
+	astpatchRenderFn = func(_ *astpatch.File) ([]byte, error) {
+		return nil, errStubGenerate
+	}
+	t.Cleanup(func() { astpatchRenderFn = saved })
+
+	require.Error(t, writeBackOrRecord(f, "noop"))
 }
 
 func TestGenMethod_AppendsToInterfaceAndImpl(t *testing.T) {
@@ -60,7 +154,41 @@ func TestGenMethod_AppendsToInterfaceAndImpl(t *testing.T) {
 
 	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
 	require.NoError(t, err)
-	require.Contains(t, string(impl), "func (s *orderService) Archive(ctx context.Context) error")
+	// Default receiver matches the scaffold's exported `type OrderService`.
+	require.Contains(t, string(impl), "func (s *OrderService) Archive(ctx context.Context) error")
+	require.Contains(t, string(impl), "\"fmt\"")
+	// The patched file must remain valid Go (single-line import gained
+	// a second spec — the astpatch parenthesization regression).
+	_, perr := parser.ParseFile(token.NewFileSet(), "order.service.go", impl, 0)
+	require.NoError(t, perr, "patched impl must parse:\n%s", impl)
+}
+
+// TestGenMethod_ArgTypeImports — uuid/time args must pull their imports
+// into BOTH the interface and impl files.
+func TestGenMethod_ArgTypeImports(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Reschedule",
+		Args: []Field{
+			{Name: "OwnerID", GoType: "uuid.UUID"},
+			{Name: "DueAt", GoType: "time.Time"},
+		},
+	}))
+
+	for _, rel := range []string{
+		filepath.Join("app", "services", "interfaces", "order_service.go"),
+		filepath.Join("app", "services", "order.service.go"),
+	} {
+		body, err := os.ReadFile(filepath.Join(tmp, rel))
+		require.NoError(t, err)
+		require.Contains(t, string(body), "\"github.com/google/uuid\"", rel)
+		require.Contains(t, string(body), "\"time\"", rel)
+		_, perr := parser.ParseFile(token.NewFileSet(), rel, body, 0)
+		require.NoError(t, perr, "%s must parse:\n%s", rel, body)
+	}
 }
 
 func TestGenMethod_IdempotencyCheck(t *testing.T) {
@@ -126,4 +254,328 @@ func TestGenMethod_DryRunRecordsPatchesOnly(t *testing.T) {
 	// Disk must be unchanged in dry-run mode.
 	body, _ := os.ReadFile(filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"))
 	require.NotContains(t, string(body), "DryArchive")
+}
+
+func TestZeroValueFor(t *testing.T) {
+	cases := map[string]string{
+		"*models.Order":   "nil",
+		"[]*models.Order": "nil",
+		"map[string]int":  "nil",
+		"chan int":        "nil",
+		"func(int) error": "nil",
+		"any":             "nil",
+		"error":           "nil",
+		"interface{}":     "nil",
+		"string":          `""`,
+		"bool":            "false",
+		"int":             "0",
+		"int64":           "0",
+		"float64":         "0",
+		"uuid.UUID":       "uuid.Nil",
+		"time.Time":       "time.Time{}",
+		"models.Order":    "models.Order{}",
+	}
+	for in, want := range cases {
+		require.Equal(t, want, zeroValueFor(in), "zeroValueFor(%q)", in)
+	}
+}
+
+// TestGenMethod_ReturnsTuple — --returns "*models.Order, error" shape:
+// tuple signature on the interface, zero-value + fmt.Errorf stub body.
+func TestGenMethod_ReturnsTuple(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Reprice",
+		Returns:    []string{"*models.Order", "error"},
+	}))
+
+	iface, err := os.ReadFile(filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(iface), "Reprice(ctx context.Context) (*models.Order, error)")
+
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(impl), "func (s *OrderService) Reprice(ctx context.Context) (*models.Order, error)")
+	require.Contains(t, string(impl), `return nil, fmt.Errorf("OrderServiceInterface.Reprice: not implemented")`)
+}
+
+// TestGenMethod_ReturnsWithoutError — a non-error result list gets pure
+// zero values and must NOT force the fmt import.
+func TestGenMethod_ReturnsWithoutError(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "PendingCount",
+		Returns:    []string{"int"},
+	}))
+
+	impl, err := os.ReadFile(filepath.Join(tmp, "app", "services", "order.service.go"))
+	require.NoError(t, err)
+	require.Contains(t, string(impl), "func (s *OrderService) PendingCount(ctx context.Context) int {")
+	require.Contains(t, string(impl), "return 0")
+	require.NotContains(t, string(impl), "\"fmt\"")
+	_, perr := parser.ParseFile(token.NewFileSet(), "order.service.go", impl, 0)
+	require.NoError(t, perr, "patched impl must parse:\n%s", impl)
+}
+
+// TestBuildMockMethodDecl covers the two body shapes: the single-error
+// short form and the nil-guarded multi-result form.
+func TestBuildMockMethodDecl(t *testing.T) {
+	short := buildMockMethodDecl("mockOrderService", MethodData{
+		MethodName: "Recalculate",
+		Returns:    []string{"error"},
+	})
+	require.Contains(t, short, "func (m *mockOrderService) Recalculate(ctx context.Context) error {")
+	require.Contains(t, short, "return m.Called(ctx).Error(0)")
+
+	multi := buildMockMethodDecl("mockOrderRepository", MethodData{
+		MethodName: "FindBySlug",
+		Args:       ParseFields([]string{"slug:string"}),
+		Returns:    []string{"*models.Order", "error"},
+	})
+	require.Contains(t, multi, "func (m *mockOrderRepository) FindBySlug(ctx context.Context, slug string) (*models.Order, error) {")
+	require.Contains(t, multi, "callArgs := m.Called(ctx, slug)")
+	require.Contains(t, multi, "var r0 *models.Order")
+	require.Contains(t, multi, "r0 = v.(*models.Order)")
+	require.Contains(t, multi, "return r0, callArgs.Error(1)")
+}
+
+// TestPatchInlineTestMock_AppendsAndSkips — the inline mock in a
+// scaffolded test file gains the widened interface's method; re-running
+// is a no-op; a missing mock struct (user replaced it) is a skip.
+func TestPatchInlineTestMock_AppendsAndSkips(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte(`package controllers_test
+
+type mockOrderService struct {
+	mock.Mock
+}
+
+func (m *mockOrderService) Get(ctx context.Context, id uuid.UUID) (*models.Order, error) {
+	args := m.Called(ctx, id)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*models.Order), args.Error(1)
+}
+`), 0o644))
+
+	d := MethodData{
+		Resource:   "Order",
+		Snake:      "order",
+		MethodName: "Recalculate",
+		Returns:    []string{"error"},
+	}
+	require.NoError(t, patchInlineTestMock(mockFile, "mockOrderService", d))
+	body, err := os.ReadFile(mockFile)
+	require.NoError(t, err)
+	require.Contains(t, string(body), "func (m *mockOrderService) Recalculate(ctx context.Context) error {")
+
+	// Idempotent second run.
+	before := string(body)
+	require.NoError(t, patchInlineTestMock(mockFile, "mockOrderService", d))
+	after, err := os.ReadFile(mockFile)
+	require.NoError(t, err)
+	require.Equal(t, before, string(after))
+
+	// Missing struct → skip without error or write.
+	other := filepath.Join(tmp, "other_test.go")
+	require.NoError(t, os.WriteFile(other, []byte("package controllers_test\n"), 0o644))
+	require.NoError(t, patchInlineTestMock(other, "mockOrderService", d))
+	otherBody, err := os.ReadFile(other)
+	require.NoError(t, err)
+	require.Equal(t, "package controllers_test\n", string(otherBody))
+}
+
+// TestInlineMockTarget maps interface names to their scaffolded mock
+// hosts; unconventional names opt out.
+func TestInlineMockTarget(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	f, ty := inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "OrderServiceInterface",
+	})
+	require.Equal(t, "app/rest/controllers/order.controller_test.go", f)
+	require.Equal(t, "mockOrderService", ty)
+
+	f, ty = inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "OrderRepositoryInterface",
+	})
+	require.Equal(t, "app/services/order.service_test.go", f)
+	require.Equal(t, "mockOrderRepository", ty)
+
+	f, _ = inlineMockTarget(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "SomethingCustom",
+	})
+	require.Equal(t, "", f)
+}
+
+// TestBuildMethodImplStub_ReceiverMatchesTarget — repository stubs use
+// `r` (matching the scaffolded repo's receiver), services use `s`.
+// revive's receiver-naming rule fails the generated project's own lint
+// when one method of a type names its receiver differently.
+func TestBuildMethodImplStub_ReceiverMatchesTarget(t *testing.T) {
+	svc := buildMethodImplStub(MethodData{
+		MethodName:     "Recalculate",
+		InterfaceName:  "OrderServiceInterface",
+		ImplStructName: "OrderService",
+		ReceiverName:   "s",
+		Returns:        []string{"error"},
+	})
+	require.Contains(t, svc, "func (s *OrderService) Recalculate")
+
+	repo := buildMethodImplStub(MethodData{
+		MethodName:     "FindBySlug",
+		InterfaceName:  "OrderRepositoryInterface",
+		ImplStructName: "OrderRepository",
+		ReceiverName:   "r",
+		Returns:        []string{"*models.Order", "error"},
+	})
+	require.Contains(t, repo, "func (r *OrderRepository) FindBySlug")
+}
+
+// TestGenMethod_ImplWriteBackError — the interface write succeeds, then
+// the impl write-back fails on a read-only file.
+func TestGenMethod_ImplWriteBackError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses chmod")
+	}
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+	implPath := filepath.Join(tmp, "app", "services", "order.service.go")
+	require.NoError(t, os.Chmod(implPath, 0o444))
+	t.Cleanup(func() { _ = os.Chmod(implPath, 0o644) })
+
+	err := GenMethod(MethodData{Resource: "Order", MethodName: "Archive"})
+	require.Error(t, err)
+}
+
+// TestGenMethod_ReturnTypeImports — uuid/time RESULT types must pull
+// their imports into both the interface and impl files (the stub's zero
+// values reference uuid.Nil / time.Time{}).
+func TestGenMethod_ReturnTypeImports(t *testing.T) {
+	tmp := setupScaffoldedResource(t)
+	chdirTest(t, tmp)
+
+	require.NoError(t, GenMethod(MethodData{
+		Resource:   "Order",
+		MethodName: "Window",
+		Returns:    []string{"uuid.UUID", "time.Time", "error"},
+	}))
+
+	for _, rel := range []string{
+		filepath.Join("app", "services", "interfaces", "order_service.go"),
+		filepath.Join("app", "services", "order.service.go"),
+	} {
+		body, err := os.ReadFile(filepath.Join(tmp, rel))
+		require.NoError(t, err)
+		require.Contains(t, string(body), "\"github.com/google/uuid\"", rel)
+		require.Contains(t, string(body), "\"time\"", rel)
+		_, perr := parser.ParseFile(token.NewFileSet(), rel, body, 0)
+		require.NoError(t, perr, "%s must parse:\n%s", rel, body)
+	}
+}
+
+// TestPatchInterfaceMocks_RefreshErrorPropagates — a testutil mock file
+// exists, so refreshTestutilMock regenerates via GenMock; with no
+// interface anywhere in the project the regeneration fails, and
+// patchInterfaceMocks must surface that error.
+func TestPatchInterfaceMocks_RefreshErrorPropagates(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	mustWriteFile(t, filepath.Join(tmp, "testutil", "mocks", "order_service_interface_mock.go"),
+		"package mocks\n")
+	chdirTest(t, tmp)
+
+	err := patchInterfaceMocks(MethodData{InterfaceName: "OrderServiceInterface"})
+	require.Error(t, err)
+}
+
+// TestPatchInterfaceMocks_NoInlineTargetIsNoop — no testutil mock and an
+// interface outside the scaffold naming convention: nothing to do.
+func TestPatchInterfaceMocks_NoInlineTargetIsNoop(t *testing.T) {
+	chdirTest(t, t.TempDir())
+	require.NoError(t, patchInterfaceMocks(MethodData{
+		Resource: "Order", Snake: "order", InterfaceName: "SomethingCustom",
+	}))
+}
+
+// TestRefreshTestutilMock_DryRunRecordsIntent — in dry-run the interface
+// file was only recorded, so regenerating would read the OLD interface;
+// the mock refresh must be recorded, not executed.
+func TestRefreshTestutilMock_DryRunRecordsIntent(t *testing.T) {
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	mustWriteFile(t, filepath.Join(tmp, "testutil", "mocks", "order_service_interface_mock.go"),
+		"package mocks\n")
+	chdirTest(t, tmp)
+	resetPlannerState(t)
+	SetDryRun(true)
+	t.Cleanup(func() { SetDryRun(false) })
+
+	require.NoError(t, refreshTestutilMock("OrderServiceInterface"))
+
+	plan := Plan()
+	require.Len(t, plan, 1)
+	require.Equal(t, "patch", plan[0].Kind)
+	require.Contains(t, plan[0].Path, "order_service_interface_mock.go")
+}
+
+// TestInlineMockTarget_EmptyResourceOptsOut — repo-method style calls
+// without Resource/Snake have no scaffolded inline mock host.
+func TestInlineMockTarget_EmptyResourceOptsOut(t *testing.T) {
+	f, ty := inlineMockTarget(MethodData{InterfaceName: "OrderServiceInterface"})
+	require.Equal(t, "", f)
+	require.Equal(t, "", ty)
+
+	f, ty = inlineMockTarget(MethodData{Resource: "Order", InterfaceName: "OrderServiceInterface"})
+	require.Equal(t, "", f)
+	require.Equal(t, "", ty)
+}
+
+// TestPatchInlineTestMock_ParseError — the scaffolded test file exists
+// but is not valid Go.
+func TestPatchInlineTestMock_ParseError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte("package controllers_test\nfunc {\n"), 0o644))
+
+	err := patchInlineTestMock(mockFile, "mockOrderService", MethodData{
+		MethodName: "Recalculate", Returns: []string{"error"},
+	})
+	require.Error(t, err)
+}
+
+// TestPatchInlineTestMock_AppendFuncDeclError — the append fails via the
+// astpatchAppendFuncDeclFn seam.
+func TestPatchInlineTestMock_AppendFuncDeclError(t *testing.T) {
+	tmp := t.TempDir()
+	chdirTest(t, tmp)
+	mockFile := filepath.Join(tmp, "order.controller_test.go")
+	require.NoError(t, os.WriteFile(mockFile, []byte(`package controllers_test
+
+type mockOrderService struct {
+	mock.Mock
+}
+`), 0o644))
+
+	saved := astpatchAppendFuncDeclFn
+	astpatchAppendFuncDeclFn = func(_ *astpatch.File, _ string) error {
+		return errStubGenerate
+	}
+	t.Cleanup(func() { astpatchAppendFuncDeclFn = saved })
+
+	err := patchInlineTestMock(mockFile, "mockOrderService", MethodData{
+		MethodName: "Recalculate", Returns: []string{"error"},
+	})
+	require.ErrorIs(t, err, errStubGenerate)
 }

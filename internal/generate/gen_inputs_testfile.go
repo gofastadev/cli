@@ -1,8 +1,6 @@
 package generate
 
 import (
-	"fmt"
-
 	"github.com/gofastadev/cli/internal/generate/templates"
 )
 
@@ -10,7 +8,7 @@ import (
 // generated inputs file (AsMap negative-space + AsRepoFilter empty-map).
 func GenInputsTestFile(d ScaffoldData) error {
 	return WriteTemplate(
-		fmt.Sprintf("app/services/%s_inputs_test.go", d.SnakeName),
+		d.L().InputsTestFile(d.SnakeName),
 		"inputs_test", templates.InputsTest, d,
 	)
 }

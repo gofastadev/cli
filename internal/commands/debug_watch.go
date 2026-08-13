@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gofastadev/cli/internal/clierr"
-	"github.com/gofastadev/cli/internal/termcolor"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 )
 
@@ -119,7 +119,7 @@ func runDebugWatch() error {
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
-	fprintln(os.Stderr, termcolor.CDim("watching "+appURL+" — Ctrl+C to stop"))
+	cliout.Info("watching %s — Ctrl+C to stop", appURL)
 	runWatchLoop(ctx, ticker.C, heartbeat.C, appURL, &marks, emitter)
 	return nil
 }

@@ -10,6 +10,20 @@ package templates
 // unaware of any specific transport.
 var Inputs = `package services
 
+{{if and .HasTimeField .HasUUIDField -}}
+import (
+	"time"
+
+	"github.com/google/uuid"
+)
+
+{{else if .HasTimeField -}}
+import "time"
+
+{{else if .HasUUIDField -}}
+import "github.com/google/uuid"
+
+{{end -}}
 // Create{{.Name}}Input is the data required to create a new {{.LowerName}}.
 // Field order mirrors the resource definition.
 type Create{{.Name}}Input struct {
@@ -63,7 +77,7 @@ type List{{.PluralName}}Filter struct {
 	Page  int
 	Limit int
 
-	SortField string // already-sanitized column name; empty → default
+	SortField string // requested sort column (untrusted; validated in build{{.Name}}SortClause against {{.LowerName}}SortColumns)
 	SortDesc  bool   // true → DESC, false → ASC
 }
 

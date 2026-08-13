@@ -27,7 +27,10 @@ import (
 	"sort"
 	"strings"
 
+	goimports "golang.org/x/tools/imports"
+
 	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/layout"
 )
 
 // MockData is what GenMock needs to produce one mock file.
@@ -111,11 +114,11 @@ func GenMock(interfaceName string, opts GenMockOpts) error {
 // regenAllMocks walks the standard interfaces directories and regenerates
 // every mock file. Errors on individual interfaces don't kill the run —
 // each is reported via the normal cliout channels by writeMockForTarget.
+// Directories scanned depend on layout (layered scans
+// app/{services,repositories}/interfaces; feature walks per-resource
+// app/<resource>/ for *_iface.go).
 func regenAllMocks(module string, opts GenMockOpts) error {
-	dirs := []string{
-		filepath.Join("app", "services", "interfaces"),
-		filepath.Join("app", "repositories", "interfaces"),
-	}
+	dirs := layout.Detect().InterfaceDirs()
 	anyHit := false
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -140,8 +143,12 @@ func regenAllMocks(module string, opts GenMockOpts) error {
 		}
 	}
 	if !anyHit {
-		return clierr.New(clierr.CodeInterfaceNotFound,
-			"no interfaces found under app/services/interfaces or app/repositories/interfaces")
+		scanned := "the project's interface directories"
+		if len(dirs) > 0 {
+			scanned = strings.Join(dirs, ", ")
+		}
+		return clierr.Newf(clierr.CodeInterfaceNotFound,
+			"no interfaces found under %s", scanned)
 	}
 	return nil
 }
@@ -159,12 +166,9 @@ type interfaceTarget struct {
 // findInterface walks the standard interfaces dirs and returns the first
 // interface declaration matching name. Returns CodeInterfaceNotFound when
 // the name isn't found, CodeAmbiguousSymbol when two files define the
-// same interface name.
+// same interface name. Directories scanned depend on layout.
 func findInterface(name string) (interfaceTarget, error) {
-	dirs := []string{
-		filepath.Join("app", "services", "interfaces"),
-		filepath.Join("app", "repositories", "interfaces"),
-	}
+	dirs := layout.Detect().InterfaceDirs()
 	var hits []interfaceTarget
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -226,7 +230,11 @@ func scanFileForInterfaces(path string) ([]interfaceTarget, error) {
 			if !ok {
 				continue
 			}
-			out = append(out, buildInterfaceTarget(ts.Name.Name, path, f.Name.Name, fileImports, it))
+			target, err := buildInterfaceTarget(ts.Name.Name, path, f.Name.Name, fileImports, it)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, target)
 		}
 	}
 	return out, nil
@@ -250,9 +258,11 @@ func collectFileImports(f *ast.File) []MockImport {
 }
 
 // buildInterfaceTarget converts one parsed interface type into an
-// interfaceTarget, walking its method list and skipping embedded
-// interfaces (the initial release supports flat interfaces only).
-func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport, it *ast.InterfaceType) interfaceTarget {
+// interfaceTarget, walking its method list. Embedded interfaces are
+// not supported: silently skipping them used to emit a mock that
+// doesn't satisfy the interface — a compile error in the user's tests
+// with no hint where it came from — so we fail loudly instead.
+func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport, it *ast.InterfaceType) (interfaceTarget, error) {
 	t := interfaceTarget{
 		Name:       name,
 		SourcePath: sourcePath,
@@ -262,24 +272,28 @@ func buildInterfaceTarget(name, sourcePath, pkgName string, imports []MockImport
 	for _, fld := range it.Methods.List {
 		ft, ok := fld.Type.(*ast.FuncType)
 		if !ok || len(fld.Names) == 0 {
-			// Embedded interfaces — skip for now.
-			continue
+			return interfaceTarget{}, clierr.Newf(clierr.CodeMockGenFailed,
+				"interface %s embeds another interface — embedded interfaces are not supported yet; flatten the embedded methods into %s or write this mock by hand",
+				name, name)
 		}
-		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft))
+		t.Methods = append(t.Methods, buildMockMethod(fld.Names[0].Name, ft, pkgName))
 	}
-	return t
+	return t, nil
 }
 
 // buildMockMethod produces one MockMethod from a method's FuncType,
 // flattening parameter lists (multi-name fields like `a, b int` become
 // two MockParam entries) and detecting whether ctx.Context is first.
-func buildMockMethod(name string, ft *ast.FuncType) MockMethod {
+// pkgName qualifies package-local type identifiers (see
+// qualifyLocalTypes) so the emitted expressions compile inside
+// package mocks.
+func buildMockMethod(name string, ft *ast.FuncType, pkgName string) MockMethod {
 	m := MockMethod{Name: name}
 	if ft.Params != nil {
-		m.Params = flattenFuncFieldList(ft.Params)
+		m.Params = flattenFuncFieldList(ft.Params, pkgName)
 	}
 	if ft.Results != nil {
-		m.Returns = flattenFuncFieldList(ft.Results)
+		m.Returns = flattenFuncFieldList(ft.Results, pkgName)
 	}
 	if len(m.Params) > 0 && strings.HasSuffix(m.Params[0].Type, "context.Context") {
 		m.HasContext = true
@@ -289,10 +303,10 @@ func buildMockMethod(name string, ft *ast.FuncType) MockMethod {
 
 // flattenFuncFieldList turns Go's grouped-name field list (e.g. a, b int)
 // into a flat sequence of MockParam{Name, Type} entries.
-func flattenFuncFieldList(fl *ast.FieldList) []MockParam {
+func flattenFuncFieldList(fl *ast.FieldList, pkgName string) []MockParam {
 	var out []MockParam
 	for _, fld := range fl.List {
-		typ := exprString(fld.Type)
+		typ := exprString(qualifyLocalTypes(fld.Type, pkgName))
 		if len(fld.Names) == 0 {
 			out = append(out, MockParam{Type: typ})
 			continue
@@ -302,6 +316,87 @@ func flattenFuncFieldList(fl *ast.FieldList) []MockParam {
 		}
 	}
 	return out
+}
+
+// qualifyLocalTypes rewrites a type expression so it compiles from
+// OUTSIDE the interface's package: a bare exported identifier
+// (`InboxAttachment`) resolves to the interface package's own scope in
+// the source file, so the mock (package mocks) must say
+// `interfaces.InboxAttachment`. Bare exported idents are exactly the
+// package-local case — every predeclared type is lowercase, and
+// cross-package references are already SelectorExprs. Unexported bare
+// idents are left alone: a mock in another package could never
+// reference them anyway, and qualifying wouldn't fix that.
+//
+// The rewrite returns fresh nodes for the paths it touches and never
+// mutates the parsed file's AST (other consumers may still read it).
+func qualifyLocalTypes(e ast.Expr, pkgName string) ast.Expr {
+	if e == nil || pkgName == "" {
+		return e
+	}
+	switch n := e.(type) {
+	case *ast.Ident:
+		if n.IsExported() {
+			return &ast.SelectorExpr{X: ast.NewIdent(pkgName), Sel: ast.NewIdent(n.Name)}
+		}
+		return n
+	case *ast.SelectorExpr:
+		return n // already qualified (other package) — leave verbatim
+	}
+	return qualifyCompositeType(e, pkgName)
+}
+
+// qualifyCompositeType handles the composite/recursive type nodes for
+// qualifyLocalTypes (pointers, slices, maps, channels, generics, func types).
+// Split out from qualifyLocalTypes to keep each type switch small. Struct/
+// interface literals and anything exotic pass through verbatim.
+func qualifyCompositeType(e ast.Expr, pkgName string) ast.Expr {
+	switch n := e.(type) {
+	case *ast.StarExpr:
+		return &ast.StarExpr{X: qualifyLocalTypes(n.X, pkgName)}
+	case *ast.ArrayType:
+		return &ast.ArrayType{Len: n.Len, Elt: qualifyLocalTypes(n.Elt, pkgName)}
+	case *ast.Ellipsis:
+		return &ast.Ellipsis{Elt: qualifyLocalTypes(n.Elt, pkgName)}
+	case *ast.MapType:
+		return &ast.MapType{
+			Key:   qualifyLocalTypes(n.Key, pkgName),
+			Value: qualifyLocalTypes(n.Value, pkgName),
+		}
+	case *ast.ChanType:
+		return &ast.ChanType{Dir: n.Dir, Value: qualifyLocalTypes(n.Value, pkgName)}
+	case *ast.IndexExpr: // generic instantiation with one type arg
+		return &ast.IndexExpr{
+			X:     qualifyLocalTypes(n.X, pkgName),
+			Index: qualifyLocalTypes(n.Index, pkgName),
+		}
+	case *ast.IndexListExpr: // generic instantiation with several type args
+		indices := make([]ast.Expr, len(n.Indices))
+		for i, idx := range n.Indices {
+			indices[i] = qualifyLocalTypes(idx, pkgName)
+		}
+		return &ast.IndexListExpr{X: qualifyLocalTypes(n.X, pkgName), Indices: indices}
+	case *ast.FuncType:
+		return &ast.FuncType{
+			Params:  qualifyFieldList(n.Params, pkgName),
+			Results: qualifyFieldList(n.Results, pkgName),
+		}
+	case *ast.ParenExpr:
+		return &ast.ParenExpr{X: qualifyLocalTypes(n.X, pkgName)}
+	}
+	return e
+}
+
+// qualifyFieldList maps qualifyLocalTypes over a func-type field list.
+func qualifyFieldList(fl *ast.FieldList, pkgName string) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	fields := make([]*ast.Field, len(fl.List))
+	for i, f := range fl.List {
+		fields[i] = &ast.Field{Names: f.Names, Type: qualifyLocalTypes(f.Type, pkgName)}
+	}
+	return &ast.FieldList{List: fields}
 }
 
 // writeMockForTarget renders and writes the mock for one resolved
@@ -401,7 +496,16 @@ func renderMock(d MockData) []byte {
 		emitMockMethod(&b, mockType, m)
 	}
 
-	formatted, err := format.Source(b.Bytes())
+	// imports.Process (goimports) both formats and PRUNES unused
+	// imports: the mock re-emits every import from the interface's
+	// source file, but many (errors for sentinel docs, packages used
+	// only by other declarations in that file) never appear in the
+	// method signatures. format.Source alone would leave them and the
+	// build would fail.
+	// On failure return the unformatted bytes: goimports only fails when the
+	// source does not parse, and format.Source uses the same parser — so a
+	// gofmt fallback would fail on exactly the same input.
+	formatted, err := goimports.Process(d.OutPath, b.Bytes(), nil)
 	if err != nil {
 		return b.Bytes()
 	}

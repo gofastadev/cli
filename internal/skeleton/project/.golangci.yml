@@ -134,14 +134,38 @@ linters:
       - path: app/dtos/
         linters:
           - dupl
+      # The feature-package layout deliberately keeps the layered symbol
+      # names (package product still declares ProductController) so
+      # `gofasta refactor` can round-trip layered <-> feature without
+      # renaming symbols across the project. revive's stutter advice is
+      # incompatible with that contract; the text match keeps the rest
+      # of the exported rule active.
+      - path: app/
+        linters:
+          - revive
+        text: "and that stutters"
+      # The generated DTO -> domain mappers copy field-by-field on
+      # purpose: a type conversion compiles only while the wire shape
+      # and the domain shape stay identical, and silently breaks the
+      # moment they diverge — which is exactly what separate types
+      # exist to allow.
+      - path: app/
+        linters:
+          - staticcheck
+        text: "S1016"
       # gqlgen owns the layout of files under app/graphql/resolvers/ and
       # writes the type defs after the methods that reference them. That's
       # gqlgen's intentional output — we don't get to reformat it without
-      # losing the regenerate-on-schema-change workflow.
+      # losing the regenerate-on-schema-change workflow. dupl is off for
+      # the same reason the other per-resource dirs disable it — and more
+      # so here: resolver bodies carry no per-field content, so ANY two
+      # scaffolded resources' resolver files are token-identical and the
+      # second `g scaffold` in a GraphQL project would fail `make lint`.
       - path: app/graphql/resolvers/
         linters:
           - gocritic
           - revive
+          - dupl
 
 formatters:
   enable:

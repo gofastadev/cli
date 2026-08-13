@@ -1,4 +1,4 @@
-.PHONY: fmt vet lint lint-install test coverage build integration clean ci preflight
+.PHONY: fmt fmt-check vet lint lint-install test coverage build integration deploy-e2e clean ci preflight docs-sync docs-check
 
 ## Pinned golangci-lint version. MUST match .github/workflows/ci.yml so a
 ## green local run predicts a green CI run.
@@ -38,11 +38,13 @@ lint: lint-install
 
 ## Run tests with the race detector
 test:
-	go test -race ./...
+# -timeout 20m: internal/commands is large and its -race run sits near Go's
+# 10-minute default, which fails as a timeout rather than a test failure.
+	go test -race -shuffle=on -timeout 20m ./...
 
 ## Run tests with coverage report
 coverage:
-	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	go test -race -timeout 20m -coverprofile=coverage.out -covermode=atomic ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 ## Build the CLI binary
@@ -72,7 +74,7 @@ integration: build
 	@# job (cron), task (async queue handler). If one of these breaks
 	@# compilation or lint, scaffold's preflight below catches it.
 	cd /tmp/gofasta-integration-test && \
-		$(CURDIR)/bin/gofasta g scaffold Product name:string price:float description:text active:bool && \
+		$(CURDIR)/bin/gofasta g scaffold Product name:string price:float description:text active:bool owner_id:uuid released_at:time && \
 		$(CURDIR)/bin/gofasta g job cleanup-tokens "0 0 0 * * *" && \
 		$(CURDIR)/bin/gofasta g task send-welcome
 	cd /tmp/gofasta-integration-test && make preflight
@@ -87,13 +89,59 @@ integration: build
 	@# Running this here catches a regression in the --coverage flag
 	@# shape locally before it ships.
 	cd /tmp/gofasta-integration-test && $(CURDIR)/bin/gofasta test --coverage
+	@# The --graphql variant is a SEPARATE scaffold because its breakages are
+	@# invisible to the run above: `gofasta new --graphql` invokes gqlgen,
+	@# which rewrites app/graphql/resolvers/*.resolvers.go from the schema and
+	@# relocates any non-resolver declaration into a commented-out block. That
+	@# silently commented out the shared error helpers and shipped a project
+	@# that would not compile — for as long as this target only built the
+	@# non-GraphQL variant, nothing caught it.
+	rm -rf /tmp/gofasta-integration-test-gql
+	./bin/gofasta new /tmp/gofasta-integration-test-gql --graphql
+	@# Scaffold a resource inside the GraphQL project WITHOUT --graphql:
+	@# gqlgen.yml auto-detection must kick in and produce the schema
+	@# fragment + fully-implemented resolver file. The project's own
+	@# preflight then compiles the resolvers and runs the generated
+	@# tests — a panic("not implemented") stub or a broken binding
+	@# fails right here.
+	cd /tmp/gofasta-integration-test-gql && \
+		$(CURDIR)/bin/gofasta g scaffold Order title:string qty:int
+	@# The resolver file must exist and must not contain gqlgen's stock
+	@# panic stubs.
+	@if ! test -f /tmp/gofasta-integration-test-gql/app/graphql/resolvers/order.resolvers.go; then \
+		echo "integration: order.resolvers.go was not generated"; exit 1; fi
+	@if grep -q "not implemented" /tmp/gofasta-integration-test-gql/app/graphql/resolvers/order.resolvers.go; then \
+		echo "integration: order.resolvers.go contains unimplemented stubs"; exit 1; fi
+	cd /tmp/gofasta-integration-test-gql && make preflight
+
+## End-to-end deploy test: scaffolds a project and runs real
+## `gofasta deploy setup/deploy/status/rollback` (both methods, repeat
+## deploys, induced-failure auto-rollback) against a disposable Docker
+## "VPS" container (systemd + sshd + Docker + PostgreSQL). Requires
+## Docker and network access. Runs in CI as the deploy-e2e job.
+deploy-e2e: build
+	test/e2e-deploy/run.sh
 
 ## Remove build artifacts
 clean:
 	rm -rf bin/ coverage.out coverage.html
 
+## Regenerate the README's marker-delimited blocks from `gofasta facts`
+docs-sync: build
+	./bin/gofasta --no-banner facts sync --repo .
+
+## Verify docs match the facts document: README generated blocks, inline
+## fact annotations, every `gofasta …` invocation in code fences (README,
+## skeleton README template, ../.claude/docs when present), the release
+## platform matrix vs .goreleaser.yaml, and the golangci-lint version
+## parity between this Makefile and ci.yml.
+docs-check: build
+	./bin/gofasta --no-banner facts check --repo .
+
 ## Run all checks (what CI runs)
-ci: lint test build
+# The PR-level checks (what ci.yml's lint + test jobs run). `make
+# preflight` is the full local gate — it adds the integration scaffolds.
+ci: fmt-check vet lint test build docs-check
 
 ## Preflight — the full set of checks that MUST pass locally before any
 ## task is considered complete. Intended to be run before every commit and
@@ -102,8 +150,11 @@ ci: lint test build
 ##
 ## Order matters: fmt-check is first (cheapest, catches the most common
 ## slip), then vet, then lint (includes errcheck + staticcheck + revive +
-## the rest), then tests with -race, then a build, then the integration
-## smoke test that scaffolds a project and compiles it.
-preflight: fmt-check vet lint test build integration
+## the rest), then tests with -race, then a build, then docs-check (cheap,
+## catches documentation drift before the expensive steps), then the
+## integration smoke test that scaffolds a project and compiles it, then
+## the deploy end-to-end test against a disposable Docker VPS (mirrors the
+## CI deploy-e2e job — preflight runs everything CI runs).
+preflight: fmt-check vet lint test build docs-check integration deploy-e2e
 	@echo ""
 	@echo "  ✓ preflight green — safe to commit."

@@ -108,7 +108,7 @@ func init() {
 	f.StringVar(&devFlagValues.envFile, "env-file", ".env",
 		"path to the .env file to load before starting Air")
 	f.StringVar(&devFlagValues.port, "port", "",
-		"override the PORT env var passed to Air / the app binary")
+		"port the app binds (sets <PREFIX>_SERVER_PORT for the app plus PORT for compose port mappings)")
 	f.BoolVar(&devFlagValues.rebuild, "rebuild", false,
 		"force Air to do a rebuild cycle before first serve")
 	f.BoolVar(&devFlagValues.seed, "seed", false,
@@ -189,6 +189,12 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 		emitter.Info(fmt.Sprintf("loaded %d variables from %s", loaded, flags.envFile))
 	}
 	if flags.port != "" {
+		// The gofasta library's config binds server.port, overridable ONLY via the
+		// project-prefixed env var — a bare PORT never reaches config.
+		// Set both: <PREFIX>_SERVER_PORT is what makes the app actually
+		// bind the requested port; PORT stays for compose interpolation
+		// (host-side port mappings) and the devtools replay helper.
+		_ = os.Setenv(configutil.ProjectEnvPrefix()+"SERVER_PORT", flags.port)
 		_ = os.Setenv("PORT", flags.port)
 	}
 
@@ -259,12 +265,14 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	// `--keep-volumes=false` upgrades the teardown from `stop` (preserve
 	// containers + volumes) to `down -v` (destroy both). The default keeps
 	// volumes so the next `gofasta dev` reuses the primed database.
-	var teardownDone bool
+	// teardownDone is atomic because runTeardown is invoked from both
+	// the pipeline's deferred cleanup and the signal-handler goroutine.
+	var teardownDone atomicBool
 	runTeardown := func(reason string) {
-		if teardownDone || flags.noTeardown {
+		if teardownDone.Load() || flags.noTeardown {
 			return
 		}
-		teardownDone = true
+		teardownDone.Store(true)
 		if plan.orchestrate && len(plan.services.selected) > 0 {
 			var err error
 			var mode string
@@ -373,7 +381,7 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 	}
 
 	// In noDB mode print a loud banner so the user remembers why
-	// DB-touching endpoints are about to 5xx. The framework's
+	// DB-touching endpoints are about to 5xx. The scaffold's
 	// ProvideDB falls back to in-memory SQLite (no schema), so the
 	// app boots and non-DB endpoints work, but any Find/Save against
 	// the project's models fails with "no such table: X".
@@ -466,7 +474,7 @@ func runDevPipeline(flags devFlags, emitter devEmitter) (bool, error) {
 // up`'s own (unused) stdin handling.
 func runInDockerForeground(teardown func(string), keySignals <-chan keyboardSignal) (bool, error) {
 	cmd := execCommand("docker", "compose", "up", appServiceName)
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	// cmd.Stdin intentionally left nil — see function doc.
 
@@ -687,11 +695,11 @@ func captureVersionLine(cmd *exec.Cmd) string {
 	return strings.TrimSpace(line)
 }
 
-// runMigrationsWithCount re-uses the existing runMigrations but also
-// tries to extract a count of applied migrations from the migrate CLI
-// output. The golang-migrate CLI prints one line per applied step to
-// stderr in the form "N/u migration_name (duration)" — counting those
-// is a good-enough approximation of "how many ran".
+// runMigrationsWithCount runs `migrate up` and also tries to extract a
+// count of applied migrations from the migrate CLI output. The
+// golang-migrate CLI prints one line per applied step to stderr in the
+// form "N/u migration_name (duration)" — counting those is a
+// good-enough approximation of "how many ran".
 func runMigrationsWithCount() (int, error) {
 	if _, err := execLookPath("migrate"); err != nil {
 		return 0, errors.New("migrate CLI not found on $PATH")
@@ -720,7 +728,7 @@ func runMigrationsWithCount() (int, error) {
 // binary with the `seed` subcommand.
 func runSeedDelegation() error {
 	cmd := execCommand("go", "run", "./app/main", "seed")
-	cmd.Stdout = os.Stdout
+	cmd.Stdout = cliout.Out()
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -776,7 +784,7 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	}
 
 	airCmd := execCommand("go", args...)
-	airCmd.Stdout = os.Stdout
+	airCmd.Stdout = cliout.Out()
 	airCmd.Stderr = os.Stderr
 	// Deliberately do NOT pipe os.Stdin to Air. The keyboard listener
 	// in dev_keyboard.go owns stdin (in raw mode) for r/q/h shortcuts,
@@ -800,6 +808,17 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	}
 	airCmd.Env = append(airCmd.Env, appendTag(os.Getenv("GOFLAGS"), "devtools"))
 
+	// Menu option [3] "Run app without db" promises a degraded boot, but
+	// the scaffold's ProvideDB refuses to start without a database by
+	// default (database.degraded_fallback: false — production should
+	// crash-loop, not half-serve). The dev flow opts in explicitly for
+	// the child only, so the developer's choice at the menu and the
+	// app's behavior stay consistent without touching config.yaml.
+	if flags.noDB {
+		airCmd.Env = append(airCmd.Env,
+			configutil.ProjectEnvPrefix()+"DATABASE_DEGRADED_FALLBACK=true")
+	}
+
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
@@ -822,16 +841,26 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	handlerDone := make(chan struct{})
 
 	// restartFlag is set by the signal-handler goroutine when the
-	// caller pressed R. Read by the post-Run block to decide whether
-	// to return restart=true and let the outer loop re-run the
-	// pipeline.
-	var restartFlag atomicBool
+	// caller pressed R; userStopped is set on EVERY user-initiated stop
+	// (Ctrl+C, q, R). Read by the post-Wait block to classify Air's
+	// non-zero exit.
+	var restartFlag, userStopped atomicBool
+
+	// Start BEFORE spawning the handler so airCmd.Process is populated
+	// when the handler can first observe it — spawning the handler
+	// earlier raced its airCmd.Process reads against Start's write
+	// (visible with a fast Ctrl+C or a pre-buffered keypress). A Start
+	// failure is the genuine "air isn't runnable" case.
+	if err := airCmd.Start(); err != nil {
+		return false, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+			"failed to start air")
+	}
 	go func() {
 		defer close(handlerDone)
-		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag)
+		airSignalHandler(sigChan, keySignals, done, airCmd, teardown, &restartFlag, &userStopped)
 	}()
 
-	err := airCmd.Run()
+	err := airCmd.Wait()
 	// Air has exited. Either a signal was received (handler is mid-
 	// teardown) or Air died naturally (handler is blocked in select).
 	// Close `done` so a still-blocked handler can exit cleanly via its
@@ -841,15 +870,19 @@ func runAir(flags devFlags, teardown func(string), keySignals <-chan keyboardSig
 	close(done)
 	<-handlerDone
 	restart := restartFlag.Load()
-	// Air exits non-zero when it receives SIGINT. Treat a signal-triggered
-	// exit as a successful shutdown rather than a pipeline failure.
-	if err != nil && airCmd.ProcessState != nil && airCmd.ProcessState.Exited() {
-		if isSignaledExit(airCmd.ProcessState) {
-			return restart, nil
-		}
+	// A non-zero exit after an intentional stop is a clean shutdown,
+	// not a failure. Two signals identify it: the handler recorded a
+	// user-initiated stop (Ctrl+C / q / R — covers Air trapping SIGINT
+	// and calling exit(1) itself), or the process died BY a signal.
+	// Note the previous guard required Exited() && Signaled(), which
+	// are mutually exclusive on Unix — the clean-exit branch was
+	// unreachable and every Ctrl+C exited non-zero with a bogus
+	// DEV_AIR_NOT_INSTALLED error.
+	if err != nil && (userStopped.Load() || isSignaledExit(airCmd.ProcessState)) {
+		return restart, nil
 	}
 	if err != nil {
-		return restart, clierr.Wrap(clierr.CodeDevAirNotInstalled, err,
+		return restart, clierr.Wrap(clierr.CodeDevAirExit, err,
 			"air exited with error")
 	}
 	return restart, nil
@@ -889,6 +922,7 @@ func airSignalHandler(
 	airCmd *exec.Cmd,
 	teardown func(string),
 	restartFlag *atomicBool,
+	userStopped *atomicBool,
 ) {
 	select {
 	case <-done:
@@ -898,11 +932,13 @@ func airSignalHandler(
 		// OS signal channel.
 		return
 	case <-sigChan:
+		userStopped.Store(true)
 		if airCmd.Process != nil {
 			_ = airCmd.Process.Signal(os.Interrupt)
 		}
 		teardown("interrupted")
 	case sig := <-keySignals:
+		userStopped.Store(true)
 		if sig == sigKeyboardRestart {
 			restartFlag.Store(true)
 			if airCmd.Process != nil {
@@ -969,29 +1005,4 @@ func appendTag(existing, tag string) string {
 		break
 	}
 	return "GOFLAGS=" + strings.Join(parts, " ")
-}
-
-// Legacy helpers kept for backward-compat with other files that still
-// reference them. runMigrations is the original best-effort entrypoint
-// used elsewhere in the codebase; leaving it here avoids churning
-// callers outside the dev command.
-func runMigrations() error {
-	if _, err := execLookPath("migrate"); err != nil {
-		return fmt.Errorf("migrate CLI not found on $PATH — install with:\n" +
-			"  go install -tags 'postgres mysql sqlite3 sqlserver clickhouse' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.18.1")
-	}
-	dbURL := configutil.BuildMigrationURL()
-	if err := runMigrateUp(dbURL); err == nil {
-		return nil
-	}
-	cliout.Hint("Database not ready, retrying in 2 seconds...")
-	time.Sleep(2 * time.Second)
-	return runMigrateUp(dbURL)
-}
-
-func runMigrateUp(dbURL string) error {
-	cmd := execCommand("migrate", "-path", "db/migrations", "-database", dbURL, "up")
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

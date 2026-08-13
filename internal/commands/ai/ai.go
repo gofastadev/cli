@@ -36,9 +36,10 @@ var Cmd = &cobra.Command{
 needs to work smoothly in this codebase — permission allowlists, hooks,
 conventions files, and slash commands.
 
-Ships only AGENTS.md by default (the universal file every modern agent
-reads); per-agent configuration is opt-in via this command so developers
-who don't use AI agents aren't cluttered with dotfiles they don't need.
+The scaffold ships no agent configuration by default — everything,
+including each agent's root briefing file (CLAUDE.md, AGENTS.md,
+CONVENTIONS.md), is opt-in via this command so developers who don't use
+AI agents aren't cluttered with dotfiles they don't need.
 
 Every installer is idempotent — re-running after a gofasta update
 refreshes the config without touching files you've edited.
@@ -128,7 +129,7 @@ func runInstall(key string, dryRun, force bool) error {
 	// can decide. With --switch, uninstall the previous agent first.
 	if m.ActiveAgent != "" && m.ActiveAgent != agent.Key {
 		if !installSwitch {
-			return agentConflictError(m, agent, root, data)
+			return agentConflictError(m, agent)
 		}
 		if err := switchUninstall(m, root, dryRun); err != nil {
 			return err
@@ -189,7 +190,7 @@ func agentOwnedFiles(agent *Agent) ([]string, error) {
 // agentConflictError builds the "another agent is installed" error,
 // inlining the would-be diff (a dry-run of both the uninstall and the
 // install) so the user can see exactly what `--switch` would do.
-func agentConflictError(m *Manifest, target *Agent, root string, data InstallData) error {
+func agentConflictError(m *Manifest, target *Agent) error {
 	prev := AgentByKey(m.ActiveAgent)
 	prevName := m.ActiveAgent
 	if prev != nil {
@@ -227,8 +228,6 @@ func agentConflictError(m *Manifest, target *Agent, root string, data InstallDat
 		msg.WriteString(target.Name)
 		msg.WriteByte('.')
 	}
-	_ = root
-	_ = data
 	return clierr.New(clierr.CodeAIAgentConflict, msg.String())
 }
 

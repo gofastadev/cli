@@ -8,6 +8,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestServeCmd_RunE_FakeSuccess(t *testing.T) {
+	withFakeExec(t, 0)
+	assert.NoError(t, serveCmd.RunE(serveCmd, nil))
+}
+
 func TestServeCmd_Registered(t *testing.T) {
 	found := false
 	for _, c := range rootCmd.Commands() {
