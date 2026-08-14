@@ -548,36 +548,64 @@ func emitMockMethod(b *bytes.Buffer, mockType string, m MockMethod) {
 		return
 	}
 
-	fmt.Fprintf(b, "\targs := m.Called(%s)\n", strings.Join(callArgs, ", "))
+	// The local holding testify's Arguments must not collide with a
+	// parameter name — an interface method is free to declare `args`.
+	argsVar := uniqueLocalName("args", callArgs)
+
+	fmt.Fprintf(b, "\t%s := m.Called(%s)\n", argsVar, strings.Join(callArgs, ", "))
 	pieces := make([]string, len(returnList))
 	for i, r := range returnList {
-		pieces[i] = mockReturnAccessor(i, r)
+		pieces[i] = mockReturnAccessor(argsVar, i, r)
 	}
 	fmt.Fprintf(b, "\treturn %s\n", strings.Join(pieces, ", "))
 	fmt.Fprintln(b, "}")
 	fmt.Fprintln(b)
 }
 
+// uniqueLocalName returns base, or base with an underscore prefix repeated
+// until it no longer collides with any of the taken names.
+func uniqueLocalName(base string, taken []string) string {
+	name := base
+	for {
+		collides := false
+		for _, t := range taken {
+			if t == name {
+				collides = true
+				break
+			}
+		}
+		if !collides {
+			return name
+		}
+		name = "_" + name
+	}
+}
+
 // mockReturnAccessor picks the right testify/mock arg accessor for the
-// return at position i. error → args.Error(i); built-in → typed
-// shortcut; everything else → args.Get(i).(T).
-func mockReturnAccessor(i int, t string) string {
+// return at position i. error → argsVar.Error(i); built-in → typed
+// shortcut; everything else → argsVar.Get(i).(T).
+func mockReturnAccessor(argsVar string, i int, t string) string {
 	switch strings.TrimSpace(t) {
 	case "error":
-		return fmt.Sprintf("args.Error(%d)", i)
+		return fmt.Sprintf("%s.Error(%d)", argsVar, i)
 	case "string":
-		return fmt.Sprintf("args.String(%d)", i)
+		return fmt.Sprintf("%s.String(%d)", argsVar, i)
 	case "int":
-		return fmt.Sprintf("args.Int(%d)", i)
+		return fmt.Sprintf("%s.Int(%d)", argsVar, i)
 	case "bool":
-		return fmt.Sprintf("args.Bool(%d)", i)
+		return fmt.Sprintf("%s.Bool(%d)", argsVar, i)
 	}
-	// Pointer / interface returns may be nil; use a guarded type
-	// assertion so nil returns don't panic at runtime.
-	if strings.HasPrefix(t, "*") || strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "map[") || strings.Contains(t, ".") {
-		return fmt.Sprintf("func() %s {\n\t\tif v := args.Get(%d); v != nil {\n\t\t\treturn v.(%s)\n\t\t}\n\t\treturn nil\n\t}()", t, i, t)
+	// Anything else may legitimately be unset on the mock call. Guard the
+	// type assertion and fall back to the type's zero value: `nil` would be
+	// invalid for value types such as uuid.UUID, time.Time or a named
+	// struct, all of which are qualified and so reach this branch.
+	if strings.HasPrefix(t, "*") || strings.HasPrefix(t, "[]") || strings.HasPrefix(t, "map[") ||
+		strings.HasPrefix(t, "chan ") || strings.HasPrefix(t, "func(") || strings.Contains(t, ".") {
+		return fmt.Sprintf(
+			"func() %s {\n\t\tif v := %s.Get(%d); v != nil {\n\t\t\treturn v.(%s)\n\t\t}\n\t\tvar zero %s\n\t\treturn zero\n\t}()",
+			t, argsVar, i, t, t)
 	}
-	return fmt.Sprintf("args.Get(%d).(%s)", i, t)
+	return fmt.Sprintf("%s.Get(%d).(%s)", argsVar, i, t)
 }
 
 // ----- helpers -----------------------------------------------------------
