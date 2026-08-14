@@ -5,11 +5,13 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
 
+	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/featurize"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,17 +56,38 @@ func TestRunNew_GoModInitFails(t *testing.T) {
 // fails. The gofasta install is a hard-fail step (see runNew) because the
 // scaffold is unusable without it, so to exercise the post-gofasta warning
 // branches we need the first two exec calls to succeed.
+// warnBranchFakeExec makes every module-graph command (`go mod …`, `go get …`)
+// succeed and everything else — the `go tool wire|gqlgen|swag` codegen trio and
+// `git` — fail. That is precisely the state runNew's warning branches exist to
+// handle: a resolvable module graph whose optional codegen did not run.
+//
+// Keyed on the command rather than on call position, because position is not
+// stable: --graphql adds two more invocations, and the number of `go get`s
+// changes whenever a tool dependency is added.
+func warnBranchFakeExec(t *testing.T) {
+	t.Helper()
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		code := 1
+		if name == "go" && len(args) > 0 && (args[0] == "mod" || args[0] == "get") {
+			code = 0
+		}
+		return fakeExecCommand(code)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+	stubProbesOK(t)
+}
+
 func TestRunNew_WarningBranches(t *testing.T) {
 	chdirTemp(t)
-	// mod init ok, mod edit -go ok, gofasta install ok, everything else fails
-	stagedFakeExec(t, 0, 0, 0, 1)
+	warnBranchFakeExec(t)
 	err := runNew("warnapp", false, "postgres", "layered")
 	assert.NoError(t, err)
 }
 
 func TestRunNew_WarningBranches_GraphQL(t *testing.T) {
 	chdirTemp(t)
-	stagedFakeExec(t, 0, 0, 0, 1)
+	warnBranchFakeExec(t)
 	err := runNew("warnapp", true, "postgres", "layered")
 	assert.NoError(t, err)
 }
@@ -1297,4 +1320,39 @@ func TestRunNew_CleanupFailureWarns(t *testing.T) {
 	assert.Contains(t, stripANSI(out), "Could not clean up partial project directory")
 	_, statErr := os.Stat(projectDir)
 	assert.NoError(t, statErr, "the directory survives when cleanup fails")
+}
+
+// TestRunNew_TidyFailureIsFatal — `go mod tidy` is what writes the go.sum
+// entries for the whole transitive graph, so a scaffold whose tidy failed does
+// not compile at all. runNew must return that error rather than press on and
+// print a success banner: swallowing it once put a "✓ Project created
+// successfully!" line above an unusable project in CI, with the real cause (a
+// transient sum.golang.org tile fetch) hundreds of log lines further up.
+func TestRunNew_TidyFailureIsFatal(t *testing.T) {
+	chdirTemp(t)
+	withFakeExec(t, 0)
+
+	// Re-stub on top of withFakeExec's all-zero fake: everything succeeds
+	// except `go mod tidy`.
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		exit := 0
+		if name == "go" && len(args) >= 2 && args[0] == "mod" && args[1] == "tidy" {
+			exit = 1
+		}
+		return fakeExecCommand(exit)(name, args...)
+	}
+	t.Cleanup(func() { execCommand = orig })
+
+	var err error
+	out := captureStdout(t, func() {
+		err = runNew("tidyfailapp", false, "postgres", "layered")
+	})
+
+	require.Error(t, err)
+	var ce *clierr.Error
+	require.ErrorAs(t, err, &ce)
+	assert.Equal(t, string(clierr.CodeGoModTidyFailed), ce.Code)
+	assert.Contains(t, stripANSI(out), "go mod tidy failed")
+	assert.NotContains(t, stripANSI(out), "created successfully")
 }

@@ -550,7 +550,7 @@ func emitMockMethod(b *bytes.Buffer, mockType string, m MockMethod) {
 
 	// The local holding testify's Arguments must not collide with a
 	// parameter name — an interface method is free to declare `args`.
-	argsVar := uniqueLocalName("args", callArgs)
+	argsVar := uniqueArgsName(callArgs)
 
 	fmt.Fprintf(b, "\t%s := m.Called(%s)\n", argsVar, strings.Join(callArgs, ", "))
 	pieces := make([]string, len(returnList))
@@ -562,10 +562,10 @@ func emitMockMethod(b *bytes.Buffer, mockType string, m MockMethod) {
 	fmt.Fprintln(b)
 }
 
-// uniqueLocalName returns base, or base with an underscore prefix repeated
+// uniqueArgsName returns "args", or "args" with an underscore prefix repeated
 // until it no longer collides with any of the taken names.
-func uniqueLocalName(base string, taken []string) string {
-	name := base
+func uniqueArgsName(taken []string) string {
+	name := "args"
 	for {
 		collides := false
 		for _, t := range taken {

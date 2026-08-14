@@ -268,10 +268,10 @@ func TestMockReturnAccessor_HonoursArgsVar(t *testing.T) {
 
 // An interface method is free to name a parameter `args`; the emitted local
 // must not shadow it.
-func TestUniqueLocalName_AvoidsParameterCollision(t *testing.T) {
-	require.Equal(t, "args", uniqueLocalName("args", []string{"ctx", "query"}))
-	require.Equal(t, "_args", uniqueLocalName("args", []string{"ctx", "args"}))
-	require.Equal(t, "__args", uniqueLocalName("args", []string{"args", "_args"}))
+func TestUniqueArgsName_AvoidsParameterCollision(t *testing.T) {
+	require.Equal(t, "args", uniqueArgsName([]string{"ctx", "query"}))
+	require.Equal(t, "_args", uniqueArgsName([]string{"ctx", "args"}))
+	require.Equal(t, "__args", uniqueArgsName([]string{"args", "_args"}))
 }
 
 func TestExprString_HappyPath(t *testing.T) {

@@ -582,9 +582,20 @@ func runNew(nameOrPath string, includeGraphQL bool, driver, layoutKind string) (
 	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/air-verse/air")
 	_ = runCmdSilent("go", "mod", "edit", "-tool", "github.com/swaggo/swag/cmd/swag")
 
-	// Tidy
+	// Tidy. A failure here is fatal, not cosmetic: tidy is what writes the
+	// go.sum entries for the whole transitive graph, so a project whose tidy
+	// failed does not compile at all. Swallowing the error printed a success
+	// banner over an unusable project and pushed the real cause (typically a
+	// transient sum.golang.org tile fetch) hundreds of lines up the log.
 	cliout.Step("📦 Running go mod tidy...")
-	_ = runCmdSilent("go", "mod", "tidy")
+	if err := runCmdSilent("go", "mod", "tidy"); err != nil {
+		cliout.Warn("go mod tidy failed — the project's go.sum is incomplete and it will not compile.")
+		cliout.Plainln("  • a transient sum.golang.org / proxy.golang.org error is the usual cause")
+		cliout.Plain("    → re-run `go mod tidy` inside %s once the proxy recovers\n", projectName)
+		cliout.Plainln("  • a corporate proxy may require GOPROXY / GOSUMDB overrides.")
+		cliout.Blank()
+		return clierr.Wrap(clierr.CodeGoModTidyFailed, err, "failed to resolve project dependencies")
+	}
 
 	// Tidy resolves the final module graph, so this is the first point where
 	// the effective Go floor is known.
