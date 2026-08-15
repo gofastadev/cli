@@ -84,9 +84,9 @@ If you installed before v0.1.3, re-run `go install github.com/gofastadev/cli/cmd
 
 | You have Go installed | You don't have Go installed |
 |---|---|
-| **Option A** — `go install` compiles a native binary with your exact toolchain and there's nothing to keep in sync. Upgrade with `go install …@latest`. | **Option B** — pre-built binary from GitHub Releases. Upgrade with `gofasta upgrade`. |
+| **Option A** — `go install` compiles a native binary with your exact toolchain and there's nothing to keep in sync. | **Option B** — pre-built binary from GitHub Releases. |
 
-Both end up as a `gofasta` binary in a standard directory. Use whichever matches your environment.
+Both end up as a `gofasta` binary in a standard directory, and both upgrade with `gofasta upgrade` — it auto-detects how the running binary was installed: under `$GOBIN` / `$GOPATH/bin` it re-runs `go install …@latest`; elsewhere it downloads the platform-matched release asset and replaces the binary in place.
 
 ## Create a New Project
 
@@ -195,7 +195,7 @@ Your app is now running:
 
 ## Generate Code
 
-The `generate` command (shorthand: `g`) creates boilerplate code for new resources. Every generated file is auto-wired into the dependency injection container, routes, and GraphQL schema.
+The `generate` command (shorthand: `g`) creates boilerplate code for new resources. Generated resources are auto-wired into the dependency injection container, routes, and (in GraphQL-enabled projects) the GraphQL schema — the standalone pieces that deliberately skip wiring (`g dto`, `g migration`, `g route`, `g email-template`) say so in their help text.
 
 ### Scaffold a Full Resource
 
@@ -297,7 +297,9 @@ gofasta g resolver Product                          # Patch GraphQL resolver
 ### Modify Existing Resources
 
 The modify-aware generators patch code you already have (AST surgery,
-idempotent, `--dry-run` supported):
+idempotent). Every one of them can preview before writing: most take
+`--dry-run`, `g rename` previews by default (pass `--apply` to write),
+and `g mock --check` reports drift without touching disk:
 
 ```bash
 gofasta g field Product weight:float                # model + DTOs + inputs + allowlists + SDL + migration
@@ -338,7 +340,7 @@ gofasta g email-template order-confirmation
 
 ```bash
 gofasta migrate up     # Apply all pending migrations
-gofasta migrate down   # Rollback the last migration
+gofasta migrate down   # Rollback — interactive menu; --steps N / --all for scripts
 ```
 
 ### Database Seeding
@@ -376,7 +378,7 @@ Regenerates the Wire dependency injection code after manual changes to providers
 
 ## Agent-friendly commands
 
-Gofasta ships first-class integration with AI coding agents. Every command below honors the global `--json` flag for machine-parseable output, and every error carries a stable code + remediation hint + docs link.
+Gofasta ships first-class integration with AI coding agents. Every command below honors the global `--json` flag for machine-parseable output, and errors from the CLI's own checks carry a stable code + remediation hint + docs link (see [Structured errors](#structured-errors)).
 
 ### `gofasta verify` — one "am I done?" check
 
@@ -450,7 +452,7 @@ gofasta ai status     # what's currently installed in this project
 ```
 <!-- gofasta:end ai-agents -->
 
-Every install ships a slim root briefing (where the agent expects one) plus six topic chunks — `conventions`, `overview`, `workflow`, `commands`, `debugging`, `docs-index` — wrapped with the right activation metadata for that agent (Claude's `paths:`, Cursor's `alwaysApply` / `globs` / `description`, Windsurf's `trigger:`, etc.). Each chunk stays under the agent's per-file size cap (Claude 200-line target, Codex 32 KiB, Windsurf 12 KB).
+Every install ships a slim root briefing (where the agent expects one) plus six topic chunks — `conventions`, `overview`, `workflow`, `commands`, `debugging`, `docs-index` — wrapped with the right activation metadata for that agent (Claude's `paths:`, Cursor's `alwaysApply` / `globs` / `description`, Windsurf's `trigger:`, etc.). Each chunk stays under the agent's per-file size cap (Claude 200-line target, Codex 32 KiB, Windsurf 12 KB). Where the agent supports them, the install also includes ready-made slash commands / prompts / workflows for the common gofasta tasks (`/scaffold`, `/verify`, `/inspect`, `/debug-error`, …), hook scripts that catch forgotten Wire / Swagger / migration regeneration, and the agent's config file (Claude `settings.json`, Cursor/Windsurf `hooks.json`, Codex `config.toml`). Aider gets the briefing, docs chunks, and `.aider.conf.yml` only — it has no command or hook mechanism to target.
 
 Installs are idempotent, support `--dry-run`, and are tracked in `.gofasta/ai.json`. Only one agent can be active at a time — pass `--switch` to atomically uninstall the previous one and install the new one.
 
@@ -466,15 +468,15 @@ gofasta ai list --json
 
 ### Structured errors
 
-Every CLI error carries `{code, message, hint, docs}` — agents pattern-match on the stable code and read the hint for the remediation. No regex-parsing English error strings.
+Errors raised by the CLI's own checks carry `{code, message, hint, docs}` — agents pattern-match on the stable code and read the hint for the remediation, no regex-parsing English error strings. In `--json` mode the error document goes to **stderr** (stdout stays reserved for the command's JSON result). For example, running a project-scoped command outside a project:
 
 ```bash
-$ gofasta --json g scaffold 2>&1 >/dev/null | jq .
+$ gofasta --json config schema 2>&1 >/dev/null | jq .
 {
-  "code": "INVALID_NAME",
-  "message": "missing resource name",
-  "hint": "pass a PascalCase resource name — e.g. `gofasta g scaffold Product`",
-  "docs": "https://gofasta.dev/docs/cli-reference/generate/scaffold"
+  "code": "NOT_GOFASTA_PROJECT",
+  "message": "./cmd/schema/ not found — is this a gofasta project? Run this command from the project root",
+  "hint": "run this command from the root of a gofasta project (directory containing go.mod plus the scaffolded app/ directory)",
+  "docs": "https://gofasta.dev/docs/getting-started/project-structure"
 }
 ```
 
