@@ -59,12 +59,18 @@ build:
 ## here catches those regressions locally before they hit CI on a
 ## downstream user's project.
 ##
-## The scaffold runs `go get github.com/gofastadev/gofasta@latest`, which
-## pulls whatever is currently published on the framework module proxy.
-## A scaffold that fails here usually means the framework's most recent
-## release isn't yet indexed by sum.golang.org (the proxy and sum DB are
-## eventually-consistent); wait a few minutes and retry, or temporarily
-## pin GOPROXY=direct,off if the sum DB is the hold-up.
+## The scaffold runs `go get github.com/gofastadev/gofasta@<pin>`, where the
+## pin is `toolVersionGofasta` in internal/commands/new.go — the framework
+## release these templates were written for. It is NOT @latest: the pin is
+## what keeps a framework release from changing behavior under every new
+## scaffold before the CLI has been tested against it.
+##
+## A scaffold that fails here usually means the pinned release isn't yet
+## indexed by sum.golang.org — most often right after bumping the pin, since
+## the proxy and sum DB are eventually-consistent. Wait a few minutes and
+## retry, or temporarily set GOPROXY=direct,off if the sum DB is the hold-up.
+## If the pinned version doesn't exist at all, tag and publish the framework
+## release first (see ../.claude/docs/preflight.md → cross-repo changes).
 integration: build
 	rm -rf /tmp/gofasta-integration-test
 	./bin/gofasta new /tmp/gofasta-integration-test

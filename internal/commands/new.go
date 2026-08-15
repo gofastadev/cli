@@ -86,7 +86,7 @@ const (
 	// meant a library release could change behavior under every new
 	// scaffold before the CLI had been tested against it. Bump in
 	// lockstep with library releases, then re-run `make integration`.
-	toolVersionGofasta = "v0.1.10"
+	toolVersionGofasta = "v0.1.11"
 )
 
 // goDirectivePattern extracts the `go` directive from a go.mod file.
