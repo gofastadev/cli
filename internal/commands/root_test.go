@@ -2,12 +2,18 @@ package commands
 
 import (
 	"bytes"
+	"errors"
 	"html/template"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
+	"sync"
 	"testing"
 
+	"github.com/gofastadev/cli/internal/clierr"
+	"github.com/gofastadev/cli/internal/cliout"
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -621,4 +627,103 @@ func TestShouldSkipBanner_JSON(t *testing.T) {
 	jsonOutput = true
 	t.Cleanup(func() { jsonOutput = orig })
 	assert.True(t, shouldSkipBanner(rootCmd))
+}
+
+var errDummy = errors.New("dummy")
+
+// chdirTemp creates a new temp dir and cd's into it for the duration of the test.
+func chdirTemp(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	require.NoError(t, os.Chdir(dir))
+}
+
+// stripANSI removes any ESC-[…m escape sequence so tests don't have
+// to hardcode the color codes termcolor emits on TTY output.
+func stripANSI(s string) string {
+	var out bytes.Buffer
+	skip := false
+	for _, r := range s {
+		switch {
+		case skip:
+			if r == 'm' {
+				skip = false
+			}
+		case r == '\x1b':
+			skip = true
+		default:
+			out.WriteRune(r)
+		}
+	}
+	return out.String()
+}
+
+// captureStdout redirects os.Stdout into an in-memory buffer while fn
+// runs, then restores it. Used by JSON-mode tests so we can assert the
+// emitted NDJSON without polluting the test runner's own output.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	orig := os.Stdout
+	os.Stdout = w
+
+	var buf bytes.Buffer
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		_, _ = io.Copy(&buf, r)
+	}()
+
+	func() {
+		defer func() {
+			os.Stdout = orig
+			_ = w.Close()
+		}()
+		fn()
+	}()
+	wg.Wait()
+	return buf.String()
+}
+
+// errStub is a sentinel test error.
+var errStub = stubErr("stub error")
+
+type stubErr string
+
+func (s stubErr) Error() string { return string(s) }
+
+// withJSONMode flips cliout into JSON mode for the test and restores
+// it on cleanup. Centralizes the toggle so individual tests don't have
+// to remember to defer the restore.
+func withJSONMode(t *testing.T) {
+	t.Helper()
+	cliout.SetJSONMode(true)
+	t.Cleanup(func() { cliout.SetJSONMode(false) })
+}
+
+// helper: switch cwd into a temp dir for the duration of one test, ensure
+// the original cwd is restored regardless of the test outcome.
+func chdirTest(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+func codeOf(err error) string {
+	var ce *clierr.Error
+	if errors.As(err, &ce) {
+		return ce.Code
+	}
+	return ""
 }

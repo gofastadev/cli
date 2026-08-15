@@ -295,3 +295,7 @@ func TestResolveMany_SkipsBlankFrames(t *testing.T) {
 		t.Errorf("len(out) = %d, want 2 (blank entries skipped)", len(out))
 	}
 }
+
+type ioErr string
+
+func (e ioErr) Error() string { return string(e) }

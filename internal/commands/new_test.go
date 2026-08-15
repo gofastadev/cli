@@ -8,11 +8,14 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"text/template"
 
 	"github.com/gofastadev/cli/internal/clierr"
 	"github.com/gofastadev/cli/internal/featurize"
+	"github.com/gofastadev/cli/internal/skeleton"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1355,4 +1358,215 @@ func TestRunNew_TidyFailureIsFatal(t *testing.T) {
 	assert.Equal(t, string(clierr.CodeGoModTidyFailed), ce.Code)
 	assert.Contains(t, stripANSI(out), "go mod tidy failed")
 	assert.NotContains(t, stripANSI(out), "created successfully")
+}
+
+// TestToolVersionAir_StaysBelowTheGoFloorBump pins the specific version that
+// caused the incident. air v1.67.2 is the first release declaring go 1.26.0;
+// moving to it (or later) without also raising scaffoldGoVersion and the
+// linter reintroduces the exact failure.
+func TestToolVersionAir_StaysBelowTheGoFloorBump(t *testing.T) {
+	assert.Equal(t, "v1.67.1", toolVersionAir,
+		"air v1.67.2+ declares go 1.26.0 and raises the scaffold's Go floor; "+
+			"bumping this requires raising scaffoldGoVersion and the pinned golangci-lint together")
+}
+
+// fixtureModulePath is the module path every rendered fixture declares.
+const fixtureModulePath = "example.com/fixtureapp"
+
+// renderSkeleton writes the embedded skeleton into dir, mirroring runNew's
+// walk: dotfile renames, .tmpl rendering, and the GraphQL-only skip list.
+//
+// It renders the layered variant; graphQL toggles the GraphQL-only files
+// (app/graphql/, gqlgen.yml, app/di/providers/graphql.go) the same way
+// `gofasta new --graphql` does. The refactor's job is to turn exactly these
+// shapes into feature projects.
+func renderSkeleton(t *testing.T, dir string, graphQL bool) {
+	t.Helper()
+	const layout = "layered"
+
+	data := ProjectData{
+		ProjectName:      "Fixtureapp",
+		ProjectNameLower: "fixtureapp",
+		ProjectNameUpper: "FIXTUREAPP",
+		ModulePath:       fixtureModulePath,
+		GraphQL:          graphQL,
+		DBDriver:         "postgres",
+		Layout:           layout,
+	}
+
+	require.NoError(t, fs.WalkDir(skeleton.ProjectFS, "project", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(path, "project/")
+		if rel == "" || rel == "project" {
+			return nil
+		}
+		if !graphQL {
+			for _, prefix := range graphqlOnlyPaths {
+				if strings.HasPrefix(rel, prefix) {
+					if d.IsDir() {
+						return fs.SkipDir
+					}
+					return nil
+				}
+			}
+		}
+		if d.IsDir() {
+			return os.MkdirAll(filepath.Join(dir, rel), 0o755)
+		}
+
+		content, err := fs.ReadFile(skeleton.ProjectFS, path)
+		if err != nil {
+			return err
+		}
+
+		out := rel
+		isTemplate := strings.HasSuffix(out, ".tmpl")
+		if isTemplate {
+			out = strings.TrimSuffix(out, ".tmpl")
+		}
+		if renamed, ok := dotfileRenames[filepath.Base(out)]; ok {
+			out = filepath.Join(filepath.Dir(out), renamed)
+		}
+
+		body := content
+		if isTemplate {
+			tmpl, terr := template.New(filepath.Base(path)).Parse(string(content))
+			if terr != nil {
+				return terr
+			}
+			var buf strings.Builder
+			if eerr := tmpl.Execute(&buf, data); eerr != nil {
+				return eerr
+			}
+			body = []byte(buf.String())
+		}
+
+		full := filepath.Join(dir, out)
+		if mkErr := os.MkdirAll(filepath.Dir(full), 0o755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(full, body, 0o644)
+	}))
+
+	// go.mod is produced by `go mod init` in production, not by the skeleton.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"),
+		[]byte("module "+fixtureModulePath+"\n\ngo "+scaffoldGoVersion+"\n"), 0o644))
+}
+
+// inRenderedProject renders a skeleton into a temp dir and chdirs into it for
+// the duration of the test. The refactor functions all operate on paths
+// relative to the working directory, so this is how they are addressed.
+func inRenderedProject(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	copyTree(t, renderedSkeletonOnce(t), dir)
+
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+// The skeleton is rendered ONCE per test binary and copied per test.
+//
+// Rendering parses and executes ~78 templates; doing that in every test made
+// this package exceed the 10-minute -race timeout. Copying the finished tree is
+// an order of magnitude cheaper and gives each test the same isolated,
+// writable copy.
+var (
+	skeletonOnce sync.Once
+	skeletonDir  string
+	skeletonErr  error
+
+	gqlSkeletonOnce sync.Once
+	gqlSkeletonDir  string
+	gqlSkeletonErr  error
+)
+
+func renderedSkeletonOnce(t *testing.T) string {
+	t.Helper()
+	skeletonOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gofasta-skeleton-*")
+		if err != nil {
+			skeletonErr = err
+			return
+		}
+		skeletonDir = dir
+		renderSkeleton(t, dir, false)
+	})
+	require.NoError(t, skeletonErr)
+	require.NotEmpty(t, skeletonDir)
+	return skeletonDir
+}
+
+func renderedGraphQLSkeletonOnce(t *testing.T) string {
+	t.Helper()
+	gqlSkeletonOnce.Do(func() {
+		dir, err := os.MkdirTemp("", "gofasta-gql-skeleton-*")
+		if err != nil {
+			gqlSkeletonErr = err
+			return
+		}
+		gqlSkeletonDir = dir
+		renderSkeleton(t, dir, true)
+	})
+	require.NoError(t, gqlSkeletonErr)
+	require.NotEmpty(t, gqlSkeletonDir)
+	return gqlSkeletonDir
+}
+
+// inRenderedGraphQLProject is inRenderedProject with GraphQL enabled.
+// gqlgen never runs in unit tests, so the two files it would generate
+// that the refactor touches are seeded by hand: the generated models
+// file (relocates to app/shared/dtos/) and the exec file (deleted
+// before gqlgen reruns).
+func inRenderedGraphQLProject(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	copyTree(t, renderedGraphQLSkeletonOnce(t), dir)
+
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app", "dtos", "generated-types.dtos.go"),
+		[]byte("package dtos\n\ntype UserFiltersDto struct {\n\tFields *TUserFiltersDtoFields\n}\n\ntype TUserFiltersDtoFields struct {\n\tEmail *string\n}\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "app", "generated.go"),
+		[]byte("package app\n\nimport _ \""+fixtureModulePath+"/app/dtos\"\n"), 0o644))
+
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
+
+// copyTree copies the contents of src into dst, preserving file modes.
+func copyTree(t *testing.T, src, dst string) {
+	t.Helper()
+	require.NoError(t, filepath.WalkDir(src, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, p)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		info, ierr := d.Info()
+		if ierr != nil {
+			return ierr
+		}
+		body, rerr := os.ReadFile(p)
+		if rerr != nil {
+			return rerr
+		}
+		if mkErr := os.MkdirAll(filepath.Dir(target), 0o755); mkErr != nil {
+			return mkErr
+		}
+		return os.WriteFile(target, body, info.Mode().Perm())
+	}))
 }

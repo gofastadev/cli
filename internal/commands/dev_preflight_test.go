@@ -374,3 +374,37 @@ func TestProbeQueue_EmptyEndpointDefensive(t *testing.T) {
 	assert.Equal(t, probeUnreachable, got.Status)
 	assert.Contains(t, got.Reason, "incomplete")
 }
+
+// stubProbesOK swaps all three preflight probe functions to report OK
+// for the duration of the test. Tests that want to exercise the
+// preflight menu directly assign their own probe stubs *after*
+// calling withFakeExec (the last assignment wins; t.Cleanup restores
+// the original on exit either way).
+func stubProbesOK(t *testing.T) {
+	t.Helper()
+	// Compose availability is stubbed here too: the pipeline tests fake
+	// every docker invocation through execCommand, but the availability
+	// PRECHECK does a real LookPath — green on developer machines with
+	// Docker installed, red on mac CI runners that have none. Tests that
+	// exercise the unavailable path override this back to false AFTER
+	// calling stubProbesOK.
+	origCompose := composeAvailableFn
+	composeAvailableFn = func() bool { return true }
+	t.Cleanup(func() { composeAvailableFn = origCompose })
+
+	origDB, origCache, origQueue := probeDatabaseFn, probeCacheFn, probeQueueFn
+	probeDatabaseFn = func() probeResult {
+		return probeResult{Dep: "database", Status: probeOK, Endpoint: "stubbed"}
+	}
+	probeCacheFn = func() probeResult {
+		return probeResult{Dep: "cache", Status: probeNotConfigured}
+	}
+	probeQueueFn = func() probeResult {
+		return probeResult{Dep: "queue", Status: probeNotConfigured}
+	}
+	t.Cleanup(func() {
+		probeDatabaseFn = origDB
+		probeCacheFn = origCache
+		probeQueueFn = origQueue
+	})
+}

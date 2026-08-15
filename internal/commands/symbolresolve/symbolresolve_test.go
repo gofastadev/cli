@@ -751,3 +751,7 @@ func TestMatchIdent_AllShapes(t *testing.T) {
 	require.True(t, matchIdent(&ast.SelectorExpr{Sel: ident}, ident))
 	require.False(t, matchIdent(&ast.BasicLit{}, ident))
 }
+
+type stubErr string
+
+func (e stubErr) Error() string { return string(e) }

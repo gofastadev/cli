@@ -278,3 +278,42 @@ func TestWriteTemplate_FeatureFallsBackWhenTransformFails(t *testing.T) {
 	assert.Contains(t, string(body), "func Broken(",
 		"a failed transform must still emit the rendered bytes")
 }
+
+// makeParentAFile replaces the given path with a regular file so that any
+// subsequent MkdirAll on it returns an error. Parent directories are
+// created first so only the leaf component is a file.
+func makeParentAFile(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte("not a dir"), 0o644))
+}
+
+// mkReadOnlyLeaf creates parent dirs at 0o755 then the leaf at 0o555 so the
+// leaf exists (MkdirAll is a no-op in the generator) but writes inside fail.
+func mkReadOnlyLeaf(t *testing.T, path string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.Mkdir(path, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(path, 0o755) })
+}
+
+// writeTestFile is a helper to write a file in the current temp directory.
+func writeTestFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// readTestFile reads a file and returns its content.
+func readTestFile(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

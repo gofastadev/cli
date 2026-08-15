@@ -502,3 +502,50 @@ func menuFakeCmdWithOutput(t *testing.T, stdout string, code int) *exec.Cmd {
 	)
 	return c
 }
+
+func pipeStdin(t *testing.T, lines ...string) {
+	t.Helper()
+	in := bytes.NewBufferString(strings.Join(lines, "\n") + "\n")
+	orig := menuInputFn
+	menuInputFn = func() io.Reader { return in }
+	t.Cleanup(func() { menuInputFn = orig })
+}
+
+func captureMenuOutput(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	out := &bytes.Buffer{}
+	orig := menuOutputFn
+	menuOutputFn = func() io.Writer { return out }
+	t.Cleanup(func() { menuOutputFn = orig })
+	return out
+}
+
+func forceTTY(t *testing.T, isTTY bool) {
+	t.Helper()
+	orig := menuIsTTYFn
+	menuIsTTYFn = func() bool { return isTTY }
+	t.Cleanup(func() { menuIsTTYFn = orig })
+}
+
+func stubReprobe(t *testing.T, results []probeResult) {
+	t.Helper()
+	orig := menuReprobeFn
+	menuReprobeFn = func() []probeResult { return results }
+	t.Cleanup(func() { menuReprobeFn = orig })
+}
+
+func stubStartServices(t *testing.T, err error) {
+	t.Helper()
+	orig := menuStartServicesFn
+	menuStartServicesFn = func(_ []string) error { return err }
+	t.Cleanup(func() { menuStartServicesFn = orig })
+}
+
+func stubWaitHealthy(t *testing.T, err error) {
+	t.Helper()
+	orig := menuWaitHealthyFn
+	menuWaitHealthyFn = func(_ []string) error { return err }
+	t.Cleanup(func() { menuWaitHealthyFn = orig })
+}
+
+func unsetenv(k string) error { return os.Unsetenv(k) }

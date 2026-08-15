@@ -2654,3 +2654,17 @@ func TestDryRunGraphQLPlan_ReportsMissingResolvers(t *testing.T) {
 	assert.Contains(t, out, "invoice.resolvers.go")
 	assert.Contains(t, out, "would skip")
 }
+
+// writeRefactorFile creates parent dirs and writes content at a
+// fixture-relative path.
+func writeRefactorFile(t *testing.T, rel, content string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(rel), 0o755))
+	require.NoError(t, os.WriteFile(rel, []byte(content), 0o644))
+}
+
+// userResourceFixture is the resource every scaffold ships with, and therefore
+// the one the refactor tests can migrate without generating anything first.
+func userResourceFixture() featurize.Resource {
+	return featurize.Resource{Name: "User", Snake: "user", Plural: "Users"}
+}

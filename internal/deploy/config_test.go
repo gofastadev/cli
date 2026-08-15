@@ -427,3 +427,21 @@ func TestEnvPrefix_MirrorsScaffoldUpper(t *testing.T) {
 		assert.Equal(t, want, cfg.EnvPrefix(), "AppName %q", in)
 	}
 }
+
+// newTestCfg returns a DeployConfig suitable for dry-run-driven tests.
+func newTestCfg(method string) *DeployConfig {
+	return &DeployConfig{
+		Host:          "user@server.com",
+		Method:        method,
+		Port:          22,
+		Path:          "/opt/test",
+		Arch:          "amd64",
+		HealthPath:    "/health",
+		HealthTimeout: 1,
+		KeepReleases:  3,
+		DryRun:        true,
+		AppName:       "testapp",
+		ServerPort:    "8080",
+		ReleaseTag:    "20260101-000000",
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -125,4 +126,38 @@ func TestAutoVerify_FailureWithStdout(t *testing.T) {
 	t.Cleanup(func() { execCommand = orig })
 	err := AutoVerify()
 	require.Error(t, err)
+}
+
+// fakeExecOK swaps the runner execCommand to always succeed via TestHelperProcess.
+func fakeExecOK(t *testing.T) {
+	t.Helper()
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		cs := make([]string, 0, 3+len(args))
+		cs = append(cs, "-test.run=TestGenHelperProcess", "--", name)
+		cs = append(cs, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GOFASTA_GEN_HELPER=1",
+			"GOFASTA_GEN_EXIT=0",
+		)
+		return cmd
+	}
+	t.Cleanup(func() { execCommand = orig })
+}
+
+// fakeExec returns an execCommand that runs a TestHelperSub
+// subprocess with the configured exit code. Mirrors the pattern used
+// in the commands package and powers the AutoVerify + scaffold-RunE
+// coverage tests.
+func fakeExec(exitCode int) func(name string, args ...string) *exec.Cmd {
+	return func(name string, args ...string) *exec.Cmd {
+		cs := append([]string{"-test.run=TestHelperSub", "--", name}, args...)
+		cmd := exec.Command(os.Args[0], cs...)
+		cmd.Env = append(os.Environ(),
+			"GENERATE_HELPER=1",
+			"GENERATE_EXIT="+strconv.Itoa(exitCode),
+		)
+		return cmd
+	}
 }

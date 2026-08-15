@@ -661,3 +661,20 @@ func TestToMockSnake(t *testing.T) {
 		}
 	}
 }
+
+// setupMockProject lays out a minimal gofasta project tree under tmp
+// with go.mod + one interface file. Returns the project root.
+func setupMockProject(t *testing.T, ifaceSrc string) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+
+	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "thing_service.go"),
+		[]byte(ifaceSrc), 0o644))
+
+	return tmp
+}

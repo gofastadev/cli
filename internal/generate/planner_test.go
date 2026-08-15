@@ -183,3 +183,15 @@ func TestWriteOrRecordPatch_RefusesOutOfTreePath(t *testing.T) {
 		})
 	}
 }
+
+// resetPlannerState clears any dry-run state left over from earlier
+// tests. Called at the top of every test to isolate from other tests
+// that toggle the package-level planner flag.
+func resetPlannerState(t *testing.T) {
+	t.Helper()
+	SetDryRun(false)
+	// Clear the slice by re-enabling + disabling, which flushes via
+	// the "enabled" branch of SetDryRun.
+	SetDryRun(true)
+	SetDryRun(false)
+}

@@ -140,3 +140,10 @@ func TestStep_JSONModeWritesToStderr(t *testing.T) {
 	assert.Empty(t, out, "JSON mode must not touch stdout")
 	assert.Contains(t, errOut, "hello world")
 }
+
+// withJSONMode flips cliout into JSON mode and restores on cleanup.
+func withJSONMode(t *testing.T) {
+	t.Helper()
+	SetJSONMode(true)
+	t.Cleanup(func() { SetJSONMode(false) })
+}

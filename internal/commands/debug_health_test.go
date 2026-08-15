@@ -209,3 +209,29 @@ func TestReadDevtoolsState_MissingKey(t *testing.T) {
 	})
 	assert.Equal(t, "unreachable", readDevtoolsState(srv.appURL))
 }
+
+// debugHealthFixture spins up an httptest server that responds to
+// every /debug/* endpoint so the health command sees a complete
+// surface. The returned url is ready to pass as --app-url.
+func debugHealthFixture(t *testing.T, devtools string) string {
+	t.Helper()
+	handler := http.NewServeMux()
+	handler.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"devtools":"` + devtools + `"}`))
+	})
+	// Other endpoints respond 200 so the liveness matrix reflects
+	// reality under the devtools=enabled scenario.
+	for _, path := range []string{
+		"/debug/requests", "/debug/sql", "/debug/traces",
+		"/debug/logs", "/debug/errors", "/debug/cache",
+		"/debug/pprof/",
+	} {
+		handler.HandleFunc(path, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("[]"))
+		})
+	}
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}

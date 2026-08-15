@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -433,4 +434,30 @@ func TestResolveRepairTarget_TTYRoutesToPrompt(t *testing.T) {
 	target, err := resolveRepairTarget(7, t.TempDir())
 	require.NoError(t, err)
 	assert.Equal(t, 6, target, "revert at 7 should target 6")
+}
+
+// fakeMigrateVersionCmd builds a fake exec.Cmd that prints the given
+// stdout and exits with the given code — used to simulate the
+// `migrate version` probe.
+func fakeMigrateVersionCmd(stdout string, exitCode int) *exec.Cmd {
+	cs := []string{"-test.run=TestHelperProcess", "--", "migrate", "version"}
+	cmd := exec.Command(os.Args[0], cs...)
+	cmd.Env = append(os.Environ(),
+		"GOFASTA_WANT_HELPER_PROCESS=1",
+		fakeEnvExitCode+"="+strconv.Itoa(exitCode),
+		"GOFASTA_FAKE_STDOUT="+stdout,
+	)
+	return cmd
+}
+
+// withFakeMigrateOutput sets execCommand to a fake that returns the
+// supplied output + exit code on every call. Used when the test
+// doesn't care about distinguishing version vs force calls.
+func withFakeMigrateOutput(t *testing.T, output string, exitCode int) {
+	t.Helper()
+	orig := execCommand
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		return fakeMigrateVersionCmd(output, exitCode)
+	}
+	t.Cleanup(func() { execCommand = orig })
 }

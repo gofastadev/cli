@@ -149,3 +149,23 @@ func TestBuildScaffoldData_NoConfig(t *testing.T) {
 	assert.Equal(t, "postgres", d.DBDriver) // defaults to postgres
 	assert.Equal(t, "testmod", d.ModulePath)
 }
+
+// setupTempProject creates a temp dir with a minimal go.mod and db/migrations dir,
+// changes cwd to it, and returns a cleanup function that restores the original cwd.
+func setupTempProject(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	os.MkdirAll(filepath.Join(dir, "db", "migrations"), 0755)
+	os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module github.com/testorg/testapp\n\ngo 1.25.0\n"), 0644)
+	os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("database:\n  driver: postgres\n"), 0644)
+
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+}

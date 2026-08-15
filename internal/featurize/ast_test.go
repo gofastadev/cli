@@ -6,9 +6,17 @@ import (
 	"testing"
 
 	"github.com/dave/dst"
+	"github.com/dave/dst/decorator"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func parseDST(t *testing.T, src string) *dst.File {
+	t.Helper()
+	file, err := decorator.NewDecorator(token.NewFileSet()).Parse(src)
+	require.NoError(t, err)
+	return file
+}
 
 const walkerKitchenSink = `package services
 
