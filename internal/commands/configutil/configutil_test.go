@@ -555,3 +555,17 @@ func TestBuildDatabaseEndpoint_UnparseableDSNFallsBack(t *testing.T) {
 	require.True(t, enabled)
 	assert.Equal(t, "from-config:5432", endpoint)
 }
+
+func TestHostPortFromDSN_EmptyHostname(t *testing.T) {
+	// url.Parse accepts "postgres://:5432/db" with a non-empty Host of
+	// ":5432" whose Hostname() is empty — must report not-ok, not ":5432".
+	_, ok := hostPortFromDSN("postgres://:5432/db", "postgres")
+	assert.False(t, ok)
+}
+
+func TestHostPortFromDSN_NoPortAndNoDriverDefault(t *testing.T) {
+	// sqlite has no default port; a URL-form DSN without an explicit port
+	// leaves nothing to probe, so the parse must report not-ok.
+	_, ok := hostPortFromDSN("sqlite://replica/main.db", "sqlite")
+	assert.False(t, ok)
+}
