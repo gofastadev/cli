@@ -464,3 +464,29 @@ func TestStdinIsTTY_RealStat(t *testing.T) {
 	// (bool) by just calling and using the value.
 	_ = got
 }
+
+// writeConfigYAML drops a minimal postgres config.yaml into cwd.
+func writeConfigYAML(t *testing.T) {
+	t.Helper()
+	content := `database:
+  driver: postgres
+  user: u
+  password: p
+  host: localhost
+  port: "5432"
+  name: db
+server:
+  port: "8080"
+`
+	require.NoError(t, os.WriteFile("config.yaml", []byte(content), 0644))
+}
+
+// runMigration is a backward-compat dispatcher retained for tests only.
+// Production code calls runMigrationUp / runMigrationDown directly; this
+// helper lives in the test file so it isn't compiled into the binary.
+func runMigration(direction string) error {
+	if direction == "down" {
+		return runMigrationDown()
+	}
+	return runMigrationUp()
+}

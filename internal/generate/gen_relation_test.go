@@ -292,3 +292,34 @@ func TestRelationMigrationSQL_DriverForms(t *testing.T) {
 	require.NotContains(t, up, "FOREIGN KEY", "ClickHouse has no FK constraints")
 	require.Contains(t, down, "DROP COLUMN product_id")
 }
+
+func setupRelationProject(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "config.yaml"),
+		[]byte("database:\n  driver: postgres\n"), 0o644))
+
+	mustWriteFile(t, filepath.Join(tmp, "app", "models", "order.model.go"), `package models
+
+import "github.com/google/uuid"
+
+// Order is the customer order entity.
+type Order struct {
+	ID uuid.UUID `+"`gorm:\"primaryKey\"`"+`
+}
+`)
+	mustWriteFile(t, filepath.Join(tmp, "app", "models", "customer.model.go"), `package models
+
+import "github.com/google/uuid"
+
+// Customer is the customer entity.
+type Customer struct {
+	ID uuid.UUID `+"`gorm:\"primaryKey\"`"+`
+}
+`)
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "db", "migrations"), 0o755))
+	return tmp
+}

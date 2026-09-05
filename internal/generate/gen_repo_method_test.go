@@ -74,3 +74,39 @@ func TestGenRepoMethod_ReturnsRepoShape(t *testing.T) {
 	require.Contains(t, string(impl),
 		`return nil, 0, fmt.Errorf("OrderRepositoryInterface.ListByOwner: not implemented")`)
 }
+
+func setupScaffoldedRepo(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+
+	ifaceDir := filepath.Join(tmp, "app", "repositories", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "order_repository.go"),
+		[]byte(`package interfaces
+
+import "context"
+
+// OrderRepositoryInterface persists Order rows.
+type OrderRepositoryInterface interface {
+	Create(ctx context.Context, name string) error
+}
+`), 0o644))
+
+	implDir := filepath.Join(tmp, "app", "repositories")
+	require.NoError(t, os.MkdirAll(implDir, 0o755))
+	// Exported struct name mirrors templates/repo.go's `type <Name>Repository`.
+	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.repository.go"),
+		[]byte(`package repositories
+
+import "context"
+
+type OrderRepository struct{}
+
+func (r *OrderRepository) Create(ctx context.Context, name string) error {
+	return nil
+}
+`), 0o644))
+	return tmp
+}

@@ -795,3 +795,34 @@ func TestRunVerify_BreakOnFirstFail(t *testing.T) {
 	err := runVerify(verifyOptions{skipLint: true, skipRace: true, keepGoing: false})
 	require.Error(t, err)
 }
+
+// recordedShellCall captures what each step function asked runShellFn to
+// invoke. Tests use it to assert "scoped run passed only changed files
+// to gofmt, only affected packages to go test, etc."
+type recordedShellCall struct {
+	name string
+	args []string
+}
+
+// withStubShell swaps runShellFn for the duration of the test to a
+// scripted response. The responses slice is consumed in order; further
+// calls return the final entry.
+type stubResponse struct {
+	out string
+	err error
+}
+
+func withStubShell(t *testing.T, responses ...stubResponse) {
+	t.Helper()
+	orig := runShellFn
+	call := 0
+	runShellFn = func(_ string, _ ...string) (string, error) {
+		r := responses[len(responses)-1]
+		if call < len(responses) {
+			r = responses[call]
+		}
+		call++
+		return r.out, r.err
+	}
+	t.Cleanup(func() { runShellFn = orig })
+}

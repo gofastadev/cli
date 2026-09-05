@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -690,4 +691,43 @@ func TestRunUninstall_BuildInstallDataError(t *testing.T) {
 
 	err := runUninstall("claude", false)
 	require.Error(t, err)
+}
+
+// scaffoldFakeProject creates a temporary directory that looks like a
+// gofasta project to the ai package's helpers — just a go.mod with a
+// module declaration is enough. Chdirs into it for the duration of
+// the test so the install path is predictable.
+func scaffoldFakeProject(t *testing.T, modulePath string) string {
+	t.Helper()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(
+		filepath.Join(dir, "go.mod"),
+		[]byte("module "+modulePath+"\n\ngo 1.25.0\n"),
+		0o644,
+	))
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	return dir
+}
+
+// captureStdout redirects os.Stdout for the duration of fn and
+// returns whatever was written.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	os.Stdout = w
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = buf.ReadFrom(r)
+		done <- buf.String()
+	}()
+	fn()
+	_ = w.Close()
+	os.Stdout = orig
+	return strings.TrimSpace(<-done)
 }

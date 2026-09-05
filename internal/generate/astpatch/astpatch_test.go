@@ -325,6 +325,10 @@ func TestExtractFirstSpec_NonTypeSpecSkipped(t *testing.T) {
 	require.Nil(t, got)
 }
 
+type stubAstErr string
+
+func (s stubAstErr) Error() string { return string(s) }
+
 var errStubAst = stubAstErr("stub")
 
 func TestReceiverTypeName_Variants(t *testing.T) {

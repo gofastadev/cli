@@ -713,3 +713,12 @@ MYAPP_DATABASE_PORT=5433
 	assert.NotContains(t, dbURL, "://:@", "URL must not have empty user/password")
 	assert.NotContains(t, dbURL, "/?sslmode", "URL must include database name before query")
 }
+
+// fakeKeyboardReader is the in-memory stdin used by the listener tests.
+// It satisfies keyboardReader by wrapping a bytes.Reader plus a fake fd.
+type fakeKeyboardReader struct {
+	*bytes.Reader
+	fd uintptr
+}
+
+func (f *fakeKeyboardReader) Fd() uintptr { return f.fd }

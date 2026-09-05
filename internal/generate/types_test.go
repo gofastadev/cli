@@ -3,6 +3,7 @@ package generate
 import (
 	"testing"
 
+	"github.com/gofastadev/cli/internal/layout"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -97,5 +98,61 @@ func TestField_SampleJSON(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			assert.Equal(t, tc.want, tc.f.SampleJSON())
 		})
+	}
+}
+
+// featureScaffoldData is sampleScaffoldData switched to the feature layout.
+func featureScaffoldData() ScaffoldData {
+	d := sampleScaffoldData()
+	d.Layout = layout.For(layout.Feature)
+	return d
+}
+
+// sampleScaffoldData returns a fully populated ScaffoldData for testing.
+func sampleScaffoldData() ScaffoldData {
+	return ScaffoldData{
+		Name:              "Product",
+		LowerName:         "product",
+		SnakeName:         "product",
+		PluralName:        "Products",
+		PluralSnake:       "products",
+		PluralLower:       "products",
+		Fields:            sampleFields(),
+		MigrationNum:      "000001",
+		IncludeController: true,
+		IncludeGraphQL:    false,
+		DBDriver:          "postgres",
+		ModulePath:        "github.com/testorg/testapp",
+		Layout:            layout.For(layout.Layered),
+	}
+}
+
+// sampleFields returns a set of fields for testing.
+func sampleFields() []Field {
+	return []Field{
+		{
+			Name:            "Name",
+			JSONName:        "name",
+			SnakeName:       "name",
+			GoType:          "string",
+			GormType:        `gorm:"not null"`,
+			GQLType:         "String",
+			SQLType:         "VARCHAR(255) NOT NULL",
+			SQLTypePostgres: "VARCHAR(255) NOT NULL",
+			SQLTypeMySQL:    "VARCHAR(255) NOT NULL",
+			SQLTypeSQLite:   "TEXT NOT NULL",
+		},
+		{
+			Name:            "Price",
+			JSONName:        "price",
+			SnakeName:       "price",
+			GoType:          "float64",
+			GormType:        `gorm:"not null"`,
+			GQLType:         "Float",
+			SQLType:         "DECIMAL(10,2) NOT NULL",
+			SQLTypePostgres: "DECIMAL(10,2) NOT NULL",
+			SQLTypeMySQL:    "DECIMAL(10,2) NOT NULL",
+			SQLTypeSQLite:   "REAL NOT NULL",
+		},
 	}
 }

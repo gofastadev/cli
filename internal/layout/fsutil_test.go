@@ -6,11 +6,35 @@
 package layout
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// inProjectTree chdirs into a temp directory populated with the given files.
+// A file's parent directories are created automatically; an entry ending in
+// "/" creates an empty directory.
+func inProjectTree(t *testing.T, files map[string]string) {
+	t.Helper()
+	dir := t.TempDir()
+	orig, err := os.Getwd()
+	require.NoError(t, err)
+	require.NoError(t, os.Chdir(dir))
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	for path, content := range files {
+		full := filepath.Join(dir, path)
+		if path[len(path)-1] == '/' {
+			require.NoError(t, os.MkdirAll(full, 0o755))
+			continue
+		}
+		require.NoError(t, os.MkdirAll(filepath.Dir(full), 0o755))
+		require.NoError(t, os.WriteFile(full, []byte(content), 0o644))
+	}
+}
 
 // TestFeatureResourceDirs_ExcludesSharedConcerns is the crux of the feature
 // layout's discovery: app/ holds both resource directories and cross-cutting

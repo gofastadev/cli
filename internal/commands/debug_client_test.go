@@ -2,6 +2,7 @@ package commands
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -261,4 +262,73 @@ func TestRequireDevtools_Unreachable(t *testing.T) {
 		strings.Contains(string(b), "DEBUG_APP_UNREACHABLE"),
 		"expected DEBUG_APP_UNREACHABLE, got %s", string(b),
 	)
+}
+
+// Compile-time assertion: bytesReader returns an io.Reader.
+var _ io.Reader = bytesReader(nil)
+
+// debugFixture stands up a test server that serves every /debug/*
+// endpoint using the caller-supplied handler map. An entry for
+// /debug/health is prepended so requireDevtools passes unless the
+// caller overrides it.
+func debugFixture(t *testing.T, handlers map[string]http.HandlerFunc) (url string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	// Default /debug/health → enabled unless the caller overrode it.
+	if _, set := handlers["/debug/health"]; !set {
+		mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+		})
+	}
+	for path, h := range handlers {
+		mux.HandleFunc(path, h)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+// debug500 stands up a fixture whose named debug endpoint returns 500.
+// /debug/health still returns {"devtools":"enabled"} so requireDevtools
+// passes and runDebug* reaches the getJSON call.
+func debug500(t *testing.T, path string) string {
+	return debugFixture(t, map[string]http.HandlerFunc{
+		path: func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+	})
+}
+
+// writeJSON is a convenience so fixture handlers don't have to
+// remember to set Content-Type.
+func writeJSON(w http.ResponseWriter, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
+// errWriter returns an error on every Write; used by debug tests to
+// force encoder / io.Copy errors.
+type errWriter struct{}
+
+func (errWriter) Write(_ []byte) (int, error) { return 0, fmt.Errorf("write boom") }
+
+// debugFixtureAll serves an "everything succeeds" upstream app so any
+// runDebug* invocation that doesn't care about the filter arguments
+// returns nil. Individual tests can narrow this down if needed.
+func debugFixtureAll(t *testing.T) string {
+	return debugFixture(t, map[string]http.HandlerFunc{
+		"/debug/requests":   func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/sql":        func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/traces/t1":  func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"trace_id":"t1"}`)) },
+		"/debug/errors":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/cache":      func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/logs":       func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("[]")) },
+		"/debug/pprof/":     func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) },
+		"/debug/pprof/heap": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("heap-bytes")) },
+		"/debug/pprof/goroutine": func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte("goroutine 1 [running]:\nmain.x()\n"))
+		},
+		"/debug/explain": func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(`{"plan":"ok"}`)) },
+	})
 }

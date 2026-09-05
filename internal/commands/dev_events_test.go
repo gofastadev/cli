@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -158,3 +159,34 @@ func TestJSONEmitter_EmitMarshalFails(t *testing.T) {
 	assert.Contains(t, out, `"event":"error"`)
 	assert.Contains(t, out, `"boom"`)
 }
+
+// quietEmitter satisfies devEmitter, counting Info/Warn calls so
+// tests can assert without reading a terminal.
+type quietEmitter struct {
+	info atomic.Int32
+	warn atomic.Int32
+}
+
+func (q *quietEmitter) Preflight(_, _ string) {}
+
+func (q *quietEmitter) ServiceStart(_ string) {}
+
+func (q *quietEmitter) ServiceHealthy(_ string, _ time.Duration) {}
+
+func (q *quietEmitter) ServiceUnhealthy(_, _ string) {}
+
+func (q *quietEmitter) MigrateOK(_ int) {}
+
+func (q *quietEmitter) MigrateSkipped(_ string) {}
+
+func (q *quietEmitter) MigrateDelegated(_ string) {}
+
+func (q *quietEmitter) Air(_ int, _ map[string]string) {}
+
+func (q *quietEmitter) AirInDocker(_ int, _ map[string]string) {}
+
+func (q *quietEmitter) Shutdown(_ string, _ int) {}
+
+func (q *quietEmitter) Info(_ string) { q.info.Add(1) }
+
+func (q *quietEmitter) Warn(_ string) { q.warn.Add(1) }

@@ -1316,3 +1316,25 @@ func TestBuildHAR_EmptyRing(t *testing.T) {
 	assert.Equal(t, "1.2", har.Log.Version)
 	assert.Empty(t, har.Log.Entries)
 }
+
+// withUpstreamApp stands up a minimal "app" server and returns a
+// dashboardServer pointing at it. Handlers are caller-provided so
+// each test serves exactly the endpoints its handler needs. The
+// server itself is kept alive via t.Cleanup — callers don't need a
+// handle.
+func withUpstreamApp(t *testing.T, handlers map[string]http.HandlerFunc) *dashboardServer {
+	t.Helper()
+	mux := http.NewServeMux()
+	// Default /debug/health so requireDevtools-like probes pass.
+	if _, set := handlers["/debug/health"]; !set {
+		mux.HandleFunc("/debug/health", func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write([]byte(`{"devtools":"enabled"}`))
+		})
+	}
+	for path, h := range handlers {
+		mux.HandleFunc(path, h)
+	}
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return &dashboardServer{appURL: srv.URL}
+}

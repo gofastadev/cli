@@ -256,3 +256,31 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// withinProject cd's into a tempdir seeded with a minimal project layout.
+func withinProject(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	origDir, _ := os.Getwd()
+	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	require.NoError(t, os.Chdir(dir))
+
+	// Create directories & files the deploy functions expect
+	require.NoError(t, os.MkdirAll("deployments/docker", 0o755))
+	require.NoError(t, os.MkdirAll("deployments/nginx", 0o755))
+	require.NoError(t, os.MkdirAll("deployments/systemd", 0o755))
+	require.NoError(t, os.MkdirAll("db/migrations", 0o755))
+	require.NoError(t, os.MkdirAll("templates", 0o755))
+	require.NoError(t, os.MkdirAll("configs", 0o755))
+	require.NoError(t, os.MkdirAll("app/main", 0o755))
+	// Mirrors the real template's deploy contract (image pinned via
+	// APP_IMAGE, stable project name) — the previous "services: {}" stub
+	// hid the fact that the deploy never referenced the transferred image.
+	composeStub := "name: ${PROJECT_NAME:-testapp}\nservices:\n  app:\n    image: ${APP_IMAGE:-testapp:latest}\n"
+	require.NoError(t, os.WriteFile("deployments/docker/compose.production.yaml", []byte(composeStub), 0o644))
+	require.NoError(t, os.WriteFile("deployments/nginx/app.conf", []byte("server {}\n"), 0o644))
+	require.NoError(t, os.WriteFile("deployments/systemd/app.service", []byte("[Unit]\n"), 0o644))
+	require.NoError(t, os.WriteFile("config.yaml", []byte("server: {port: \"8080\"}\n"), 0o644))
+	require.NoError(t, os.WriteFile(".env", []byte("K=V\n"), 0o644))
+	require.NoError(t, os.WriteFile("db/migrations/1.sql", []byte("-- migration\n"), 0o644))
+}

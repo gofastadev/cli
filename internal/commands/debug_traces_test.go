@@ -170,3 +170,10 @@ func TestDebugTraceDetailCmd_RunE(t *testing.T) {
 	resetAllDebugFlags()
 	require.NoError(t, debugTraceCmd.RunE(debugTraceCmd, []string{"t1"}))
 }
+
+func resetTraceFlags() {
+	debugTracesSlowerThan = ""
+	debugTracesStatus = ""
+	debugTracesLimit = 0
+	debugTraceWithStacks = false
+}

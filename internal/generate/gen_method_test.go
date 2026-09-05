@@ -579,3 +579,48 @@ type mockOrderService struct {
 	})
 	require.ErrorIs(t, err, errStubGenerate)
 }
+
+var errStubGenerate = stubGenErr("stub")
+
+type stubGenErr string
+
+func (s stubGenErr) Error() string { return string(s) }
+
+func setupScaffoldedResource(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+
+	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "order_service.go"), []byte(`package interfaces
+
+import "context"
+
+// OrderServiceInterface is the order business-logic contract.
+type OrderServiceInterface interface {
+	// Create persists a new order.
+	Create(ctx context.Context, name string) error
+}
+`), 0o644))
+
+	implDir := filepath.Join(tmp, "app", "services")
+	require.NoError(t, os.MkdirAll(implDir, 0o755))
+	// Mirrors the real scaffold shape: exported struct (templates/svc.go
+	// declares `type <Name>Service`), single-line import so the astpatch
+	// parenthesization path is exercised when GenMethod adds "fmt".
+	require.NoError(t, os.WriteFile(filepath.Join(implDir, "order.service.go"), []byte(`package services
+
+import "context"
+
+type OrderService struct{}
+
+func (s *OrderService) Create(ctx context.Context, name string) error {
+	return nil
+}
+`), 0o644))
+
+	return tmp
+}

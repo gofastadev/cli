@@ -64,7 +64,7 @@ var CoreSet = wire.NewSet(
 	validators.NewAppValidator,
 	wire.Bind(new(controllers.Validator), new(*validators.AppValidator)),
 	ProvideTemplateRenderer,
-	mailer.NewEmailSender,
+	ProvideEmailSender,
 	slack.NewSlackSender,
 	whatsapp.NewSender,
 	auth.NewJWTService,
@@ -284,6 +284,18 @@ func ProvideQueueConfig(cfg *config.AppConfig) *config.QueueConfig { return &cfg
 // From-name as the default sender.
 func ProvideTemplateRenderer(cfg *config.AppConfig) *mailer.TemplateRenderer {
 	return mailer.NewTemplateRenderer("templates/emails", cfg.Email.FromName)
+}
+
+// ProvideEmailSender constructs the email sender selected by
+// `email.provider` in config (smtp, sendgrid, brevo, resend).
+//
+// mailer.NewEmailSender takes variadic mailer.SenderOption values, and
+// Wire treats a variadic parameter as a required []mailer.SenderOption
+// dependency, so the constructor cannot sit in the provider set
+// directly. This wrapper pins the option list; add options such as
+// mailer.WithHTTPClient here when the project needs a custom transport.
+func ProvideEmailSender(cfg *config.EmailConfig, renderer *mailer.TemplateRenderer, log *slog.Logger) (mailer.EmailSender, error) {
+	return mailer.NewEmailSender(cfg, renderer, log)
 }
 
 // ProvideWebSocketHub constructs the gofasta library's WebSocket hub used for

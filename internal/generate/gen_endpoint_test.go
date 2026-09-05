@@ -604,3 +604,59 @@ func TestPatchEndpointServiceImpl_WriteBackError(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+// setupEndpointResource lays out the minimal scaffold layout that
+// GenEndpoint expects: controller + routes + service-interface for one
+// resource. Returns the project root.
+func setupEndpointResource(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+
+	mustWriteFile(t, filepath.Join(tmp, "app", "rest", "controllers", "order.controller.go"), `package controllers
+
+import "net/http"
+
+// OrderController is the order REST surface.
+type OrderController struct{}
+
+// List handles GET /orders.
+func (c *OrderController) List(w http.ResponseWriter, r *http.Request) error { return nil }
+`)
+	mustWriteFile(t, filepath.Join(tmp, "app", "rest", "routes", "order.routes.go"), `package routes
+
+import (
+	"github.com/go-chi/chi/v5"
+)
+
+func OrderRoutes(r chi.Router) {
+	r.Get("/orders", nil)
+}
+`)
+	mustWriteFile(t, filepath.Join(tmp, "app", "services", "interfaces", "order_service.go"), `package interfaces
+
+import "context"
+
+// OrderServiceInterface is the order business-logic contract.
+type OrderServiceInterface interface {
+	List(ctx context.Context) error
+}
+`)
+	mustWriteFile(t, filepath.Join(tmp, "app", "services", "order.service.go"), `package services
+
+import "context"
+
+type OrderService struct{}
+
+func (s *OrderService) List(ctx context.Context) error { return nil }
+`)
+	return tmp
+}
+
+func mustWriteFile(t *testing.T, path, body string) {
+	t.Helper()
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o644))
+}

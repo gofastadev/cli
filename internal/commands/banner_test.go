@@ -214,3 +214,32 @@ func TestColorSupportFn_TTYError(t *testing.T) {
 func TestPrintBanner(t *testing.T) {
 	assert.NotPanics(t, printBanner)
 }
+
+// resetBannerShown clears the bannerShown guard so each test starts from
+// a clean slate. Test-only helper — the production banner never resets.
+func resetBannerShown() { bannerShown = false }
+
+// Helper to swap the color-support detector and restore on cleanup.
+// Also resets the bannerShown guard so each test starts fresh.
+func withColorSupport(t *testing.T, truecolor, any bool) {
+	t.Helper()
+	orig := colorSupportFn
+	colorSupportFn = func(_ io.Writer) (bool, bool) { return truecolor, any }
+	resetBannerShown()
+	t.Cleanup(func() {
+		colorSupportFn = orig
+		resetBannerShown()
+	})
+}
+
+// Helper to swap the suppression decider.
+func withBannerSuppressed(t *testing.T, suppressed bool) {
+	t.Helper()
+	orig := bannerSuppressedFn
+	bannerSuppressedFn = func() bool { return suppressed }
+	resetBannerShown()
+	t.Cleanup(func() {
+		bannerSuppressedFn = orig
+		resetBannerShown()
+	})
+}

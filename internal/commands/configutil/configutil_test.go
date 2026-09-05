@@ -464,3 +464,108 @@ func TestGetPort_PrefixedVarWins(t *testing.T) {
 	t.Setenv("PORT", "9090")
 	assert.Equal(t, "7777", GetPort())
 }
+
+// --- Explicit DSN ---------------------------------------------------------
+//
+// The library treats an explicit DSN as authoritative (config.BuildDSN returns
+// cfg.DSN verbatim), because the discrete fields cannot express everything a
+// driver accepts — search_path, a socket path, a multi-host failover list. The
+// CLI has to agree, or `gofasta dev`'s preflight probes a database the app
+// never opens and the developer is told to duplicate credentials into
+// config.yaml to satisfy it.
+
+const dsnComposedConfig = `database:
+  driver: postgres
+  host: from-config
+  port: "5432"
+  name: appdb
+  user: appuser
+  password: ""
+`
+
+func TestBuildMigrationURL_PrefersExplicitDSN(t *testing.T) {
+	setupConfigDir(t, dsnComposedConfig)
+	t.Setenv("DATABASE_URL", "postgresql://real:secret@realhost:6457/realdb?search_path=public&sslmode=disable")
+
+	assert.Equal(t,
+		"postgresql://real:secret@realhost:6457/realdb?search_path=public&sslmode=disable",
+		BuildMigrationURL(),
+		"an explicit DSN must be returned verbatim, options and all")
+}
+
+// database.dsn is the library's own field; DATABASE_URL is a convention we
+// also honor. When both are present the explicit field wins.
+func TestDatabaseDSN_ConfigDSNOutranksDatabaseURL(t *testing.T) {
+	setupConfigDir(t, `database:
+  driver: postgres
+  dsn: postgres://from-config@confighost:5432/configdb
+`)
+	t.Setenv("DATABASE_URL", "postgres://from-env@envhost:5432/envdb")
+
+	assert.Equal(t, "postgres://from-config@confighost:5432/configdb", DatabaseDSN())
+}
+
+func TestBuildDatabaseEndpoint_UsesDSNHost(t *testing.T) {
+	setupConfigDir(t, dsnComposedConfig)
+	t.Setenv("DATABASE_URL", "postgresql://u:p@realhost:6457/db?sslmode=disable")
+
+	endpoint, enabled := BuildDatabaseEndpoint()
+	require.True(t, enabled)
+	assert.Equal(t, "realhost:6457", endpoint, "the probe must dial the host the app connects to")
+}
+
+// A DSN may omit the port; the probe still needs one to dial.
+func TestBuildDatabaseEndpoint_DSNWithoutPort(t *testing.T) {
+	setupConfigDir(t, dsnComposedConfig)
+	t.Setenv("DATABASE_URL", "postgres://u:p@hostonly/db")
+
+	endpoint, enabled := BuildDatabaseEndpoint()
+	require.True(t, enabled)
+	assert.Equal(t, "hostonly:5432", endpoint)
+}
+
+// With nothing set explicitly, the previous behavior must be untouched.
+func TestBuildDatabaseEndpoint_FallsBackToDiscreteFields(t *testing.T) {
+	setupConfigDir(t, dsnComposedConfig)
+	t.Setenv("DATABASE_URL", "")
+
+	endpoint, enabled := BuildDatabaseEndpoint()
+	require.True(t, enabled)
+	assert.Equal(t, "from-config:5432", endpoint)
+	assert.Equal(t, "postgres://appuser:@from-config:5432/appdb?sslmode=disable", BuildMigrationURL())
+}
+
+// sqlite has no network endpoint. A stray DATABASE_URL in the environment must
+// not turn a file-backed driver into something the preflight probes.
+func TestBuildDatabaseEndpoint_SQLiteIgnoresDatabaseURL(t *testing.T) {
+	setupConfigDir(t, "database:\n  driver: sqlite\n  name: app.db\n")
+	t.Setenv("DATABASE_URL", "postgres://u:p@somewhere:5432/db")
+
+	_, enabled := BuildDatabaseEndpoint()
+	assert.False(t, enabled, "sqlite must stay unprobed")
+}
+
+// mysql DSNs use user:pass@tcp(host:port)/db, which url.Parse cannot read.
+// An unparseable DSN must fall back rather than yield a bad endpoint.
+func TestBuildDatabaseEndpoint_UnparseableDSNFallsBack(t *testing.T) {
+	setupConfigDir(t, dsnComposedConfig)
+	t.Setenv("DATABASE_URL", "user:pass@tcp(mysqlhost:3306)/db")
+
+	endpoint, enabled := BuildDatabaseEndpoint()
+	require.True(t, enabled)
+	assert.Equal(t, "from-config:5432", endpoint)
+}
+
+func TestHostPortFromDSN_EmptyHostname(t *testing.T) {
+	// url.Parse accepts "postgres://:5432/db" with a non-empty Host of
+	// ":5432" whose Hostname() is empty — must report not-ok, not ":5432".
+	_, ok := hostPortFromDSN("postgres://:5432/db", "postgres")
+	assert.False(t, ok)
+}
+
+func TestHostPortFromDSN_NoPortAndNoDriverDefault(t *testing.T) {
+	// sqlite has no default port; a URL-form DSN without an explicit port
+	// leaves nothing to probe, so the parse must report not-ok.
+	_, ok := hostPortFromDSN("sqlite://replica/main.db", "sqlite")
+	assert.False(t, ok)
+}

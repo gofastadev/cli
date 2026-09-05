@@ -239,15 +239,39 @@ type Void interface { Do(x int) }
 }
 
 func TestMockReturnAccessor_AllPrimitiveBranches(t *testing.T) {
-	require.Equal(t, "args.Error(0)", mockReturnAccessor(0, "error"))
-	require.Equal(t, "args.String(1)", mockReturnAccessor(1, "string"))
-	require.Equal(t, "args.Int(2)", mockReturnAccessor(2, "int"))
-	require.Equal(t, "args.Bool(3)", mockReturnAccessor(3, "bool"))
-	require.Contains(t, mockReturnAccessor(0, "*Foo"), "v.(*Foo)")
-	require.Contains(t, mockReturnAccessor(0, "[]string"), "v.([]string)")
-	require.Contains(t, mockReturnAccessor(0, "map[string]int"), "v.(map[string]int)")
-	require.Contains(t, mockReturnAccessor(0, "pkg.Type"), "v.(pkg.Type)")
-	require.Equal(t, "args.Get(0).(NoMatch)", mockReturnAccessor(0, "NoMatch"))
+	require.Equal(t, "args.Error(0)", mockReturnAccessor("args", 0, "error"))
+	require.Equal(t, "args.String(1)", mockReturnAccessor("args", 1, "string"))
+	require.Equal(t, "args.Int(2)", mockReturnAccessor("args", 2, "int"))
+	require.Equal(t, "args.Bool(3)", mockReturnAccessor("args", 3, "bool"))
+	require.Contains(t, mockReturnAccessor("args", 0, "*Foo"), "v.(*Foo)")
+	require.Contains(t, mockReturnAccessor("args", 0, "[]string"), "v.([]string)")
+	require.Contains(t, mockReturnAccessor("args", 0, "map[string]int"), "v.(map[string]int)")
+	require.Contains(t, mockReturnAccessor("args", 0, "pkg.Type"), "v.(pkg.Type)")
+	require.Equal(t, "args.Get(0).(NoMatch)", mockReturnAccessor("args", 0, "NoMatch"))
+}
+
+// A guarded accessor must fall back to the type's zero value, not nil:
+// qualified value types such as uuid.UUID or time.Time reach that branch
+// and `return nil` would not compile.
+func TestMockReturnAccessor_GuardedBranchUsesZeroValue(t *testing.T) {
+	got := mockReturnAccessor("args", 0, "uuid.UUID")
+	require.Contains(t, got, "var zero uuid.UUID")
+	require.Contains(t, got, "return zero")
+	require.NotContains(t, got, "return nil")
+}
+
+// The accessor must address whichever local the emitter chose.
+func TestMockReturnAccessor_HonoursArgsVar(t *testing.T) {
+	require.Equal(t, "_args.Error(0)", mockReturnAccessor("_args", 0, "error"))
+	require.Contains(t, mockReturnAccessor("_args", 1, "*Foo"), "_args.Get(1)")
+}
+
+// An interface method is free to name a parameter `args`; the emitted local
+// must not shadow it.
+func TestUniqueArgsName_AvoidsParameterCollision(t *testing.T) {
+	require.Equal(t, "args", uniqueArgsName([]string{"ctx", "query"}))
+	require.Equal(t, "_args", uniqueArgsName([]string{"ctx", "args"}))
+	require.Equal(t, "__args", uniqueArgsName([]string{"args", "_args"}))
 }
 
 func TestExprString_HappyPath(t *testing.T) {
@@ -636,4 +660,21 @@ func TestToMockSnake(t *testing.T) {
 			t.Errorf("toMockSnake(%q) = %q, want %q", in, got, want)
 		}
 	}
+}
+
+// setupMockProject lays out a minimal gofasta project tree under tmp
+// with go.mod + one interface file. Returns the project root.
+func setupMockProject(t *testing.T, ifaceSrc string) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+
+	ifaceDir := filepath.Join(tmp, "app", "services", "interfaces")
+	require.NoError(t, os.MkdirAll(ifaceDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(ifaceDir, "thing_service.go"),
+		[]byte(ifaceSrc), 0o644))
+
+	return tmp
 }

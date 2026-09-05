@@ -615,3 +615,27 @@ func TestRunDev_WaitHealthyFails(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func stubComposeAvailable(t *testing.T, ok bool) {
+	t.Helper()
+	orig := composeAvailableFn
+	composeAvailableFn = func() bool { return ok }
+	t.Cleanup(func() { composeAvailableFn = orig })
+}
+
+// hasComposeSub reports whether `args` represents a `docker compose
+// [--profile X]... <sub> ...` invocation. The exec stubs in this file
+// matched the subcommand by literal positional index before
+// runDev started prepending profile flags; this helper restores the
+// match logic to "subcommand-by-content" so multi-profile invocations
+// route to the correct stub.
+func hasComposeSub(args []string, sub string) bool {
+	if len(args) < 2 || args[0] != "compose" {
+		return false
+	}
+	i := 1
+	for i+1 < len(args) && args[i] == "--profile" {
+		i += 2
+	}
+	return i < len(args) && args[i] == sub
+}

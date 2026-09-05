@@ -39,8 +39,40 @@ func DefaultPortForDriver(driver string) string {
 	return "5432"
 }
 
+// DatabaseDSN returns a connection string the developer configured explicitly,
+// or "" when they left it to the discrete database.* fields.
+//
+// Checked in order:
+//
+//  1. `database.dsn` in config.yaml, or its env override
+//     <PREFIX>_DATABASE_DSN. This is the gofasta library's own escape hatch —
+//     config.BuildDSN returns cfg.DSN verbatim when set — and exists because
+//     the composed form cannot express everything a driver accepts
+//     (`search_path`, a socket path, a multi-host failover list).
+//  2. The bare DATABASE_URL. Not a gofasta invention, but near-universal
+//     (12-factor, Heroku, Docker Compose), and a project that sets it is
+//     unambiguously naming its database.
+//
+// Honoring these keeps the CLI's view of "which database?" identical to the
+// running app's. Without it, a project whose real DSN carries options the
+// discrete fields cannot express has to duplicate host/user/password into
+// config.yaml purely to satisfy the CLI — two sources of truth for one fact,
+// which drift the first time a password changes.
+func DatabaseDSN() string {
+	if dsn := strings.TrimSpace(loadConfig().String("database.dsn")); dsn != "" {
+		return dsn
+	}
+	return strings.TrimSpace(os.Getenv("DATABASE_URL"))
+}
+
 // BuildMigrationURL reads config.yaml and env vars to build a database migration URL.
+//
+// An explicitly configured DSN is returned verbatim, matching the library's
+// config.BuildDSN.
 func BuildMigrationURL() string {
+	if dsn := DatabaseDSN(); dsn != "" {
+		return dsn
+	}
 	k := loadConfig()
 	driver := k.String("database.driver")
 	if driver == "" {
@@ -127,6 +159,11 @@ func BuildDatabaseEndpoint() (endpoint string, enabled bool) {
 	driver := strings.ToLower(strings.TrimSpace(k.String("database.driver")))
 	if driver == "sqlite" || driver == "sqlite3" {
 		return "", false
+	}
+	// An explicit DSN names the host the app will really dial; probing the
+	// discrete fields instead would report on a database nothing connects to.
+	if host, ok := hostPortFromDSN(DatabaseDSN(), driver); ok {
+		return host, true
 	}
 	host := k.String("database.host")
 	if host == "" {
@@ -330,4 +367,32 @@ func projectPrefix() string {
 		return strings.ToUpper(cleaned) + "_"
 	}
 	return ""
+}
+
+// hostPortFromDSN extracts host:port from an explicitly configured connection
+// string, filling in the driver's default port when the DSN omits one.
+//
+// Reports ok=false for anything it cannot parse — a file path, a mysql
+// tcp(...) form, an empty string — so the caller falls back to the discrete
+// fields rather than probing a host derived from a bad guess.
+func hostPortFromDSN(dsn, driver string) (string, bool) {
+	if dsn == "" {
+		return "", false
+	}
+	u, err := url.Parse(dsn)
+	if err != nil || u.Host == "" {
+		return "", false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return "", false
+	}
+	port := u.Port()
+	if port == "" {
+		port = DefaultPortForDriver(driver)
+	}
+	if port == "" {
+		return "", false
+	}
+	return host + ":" + port, true
 }

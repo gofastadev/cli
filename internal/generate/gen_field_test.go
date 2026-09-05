@@ -1214,3 +1214,45 @@ func TestSqlZeroDefault(t *testing.T) {
 	require.Equal(t, "", sqlZeroDefault("bool"))
 	require.Equal(t, "", sqlZeroDefault("time.Time"))
 }
+
+func setupModelOnlyProject(t *testing.T) string {
+	t.Helper()
+	tmp := t.TempDir()
+
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "go.mod"),
+		[]byte("module example.com/m\n\ngo 1.25\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(tmp, "config.yaml"),
+		[]byte("database:\n  driver: postgres\n"), 0o644))
+
+	models := filepath.Join(tmp, "app", "models")
+	require.NoError(t, os.MkdirAll(models, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(models, "order.model.go"), []byte(`package models
+
+import "github.com/google/uuid"
+
+// Order is the customer order entity.
+type Order struct {
+	ID    uuid.UUID `+"`gorm:\"primaryKey\"`"+`
+	Total int       `+"`gorm:\"not null\"`"+`
+}
+`), 0o644))
+
+	require.NoError(t, os.MkdirAll(filepath.Join(tmp, "db", "migrations"), 0o755))
+
+	return tmp
+}
+
+// chdirTest is a local test helper — switch cwd for the duration of one
+// test, restore on cleanup. Mirrors the one in the commands package; kept
+// here so the generate package's tests stay self-contained.
+func chdirTest(t *testing.T, dir string) {
+	t.Helper()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+}
